@@ -12,7 +12,7 @@ from __future__ import annotations
 import pytest
 
 try:
-    from Sunny.Theory.rhythm import RhythmEngine, NoteEvent
+    from sunny.theory.rhythm import RhythmEngine, NoteEvent
     ENGINE_AVAILABLE = True
 except ImportError:
     ENGINE_AVAILABLE = False

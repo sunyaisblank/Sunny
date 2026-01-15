@@ -1,7 +1,7 @@
 """Tests for the Functional Harmony module."""
 
 import pytest
-from Sunny.Theory.harmony import (
+from sunny.theory.harmony import (
     HarmonyModule,
     FunctionalRole,
     ChordInfo,

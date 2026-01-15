@@ -42,10 +42,10 @@ except ImportError:
     logger.warning("music21 not available - using fallback theory engine")
 
 # Import our advanced modules
-from Sunny.Theory.harmony import HarmonyModule, FunctionalRole, ChordInfo
-from Sunny.Theory.voiceleading import VoiceLeadingEngine
-from Sunny.Theory.cadences import CadenceEngine, CadenceType
-from Sunny.Theory.scales import ScaleSystem, ALL_SCALES
+from sunny.theory.harmony import HarmonyModule, FunctionalRole, ChordInfo
+from sunny.theory.voiceleading import VoiceLeadingEngine
+from sunny.theory.cadences import CadenceEngine, CadenceType
+from sunny.theory.scales import ScaleSystem, ALL_SCALES
 
 
 class TheoryEngine:

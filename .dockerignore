@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+ENV/
+.eggs/
+*.egg-info/
+*.egg
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Git
+.git/
+.gitignore
+
+# Documentation
+docs/
+
+# Tests (keeping for CI in image)
+# tests/
+
+# CI/CD
+.github/
+
+# Claude
+.claude/
+
+# Ableton Remote Script (not needed in container)
+lib/
+
+# Local config
+*.local.*
+sunny.toml
+.env
+
+# Snapshots
+snapshots/

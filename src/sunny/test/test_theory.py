@@ -12,7 +12,7 @@ import pytest
 
 # Import with fallback for when music21 is not installed
 try:
-    from Sunny.Theory.engine import TheoryEngine
+    from sunny.theory.engine import TheoryEngine
     ENGINE_AVAILABLE = True
 except ImportError:
     ENGINE_AVAILABLE = False

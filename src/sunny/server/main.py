@@ -15,10 +15,38 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, AsyncIterator
 
 from mcp.server.fastmcp import FastMCP, Context
+
+from sunny.audit import (
+    AuditConfig,
+    AuditEntry,
+    AuditFormat,
+    ActionCategory,
+    Outcome,
+    Severity,
+    audit_log,
+    init_global_logger,
+)
+from sunny.security import (
+    SecurityConfig,
+    TrustLevel,
+    TrustModel,
+    RateLimiter,
+    ValidationError,
+    get_security_config_from_env,
+    validate_midi_note,
+    validate_midi_velocity,
+    validate_tempo,
+    validate_track_index,
+    validate_clip_index,
+    validate_note_name,
+    validate_scale_name,
+)
 
 # Configure logging
 logging.basicConfig(
@@ -26,6 +54,47 @@ logging.basicConfig(
     level=logging.INFO
 )
 logger = logging.getLogger("sunny")
+
+# Initialize audit logging
+_audit_path = os.getenv("SUNNY_AUDIT_LOG")
+_audit_format = AuditFormat.JSON_LINES if os.getenv("SUNNY_AUDIT_JSON") else AuditFormat.TEXT
+if _audit_path:
+    init_global_logger(
+        AuditConfig(
+            log_path=Path(_audit_path),
+            echo_stdout=os.getenv("SUNNY_LOG_LEVEL", "").upper() == "DEBUG",
+            format=_audit_format,
+        )
+    )
+else:
+    # Default: stdout-only audit logging
+    init_global_logger(
+        AuditConfig(
+            echo_stdout=False,  # Don't spam stdout by default
+            format=_audit_format,
+        )
+    )
+
+# Initialize security configuration
+_security_config = get_security_config_from_env()
+_rate_limiter = RateLimiter(max_requests=_security_config.rate_limit) if _security_config.rate_limit > 0 else None
+
+# Log security configuration at startup
+audit_log(
+    AuditEntry(
+        action="SECURITY_INIT",
+        entity_type="Security",
+        entity_id="config",
+        description=f"Security initialized: trust_model={_security_config.trust_model.value}",
+        category=ActionCategory.SYSTEM,
+        severity=Severity.INFO if _security_config.trust_model != TrustModel.PERMISSIVE else Severity.WARNING,
+        metadata={
+            "trust_model": _security_config.trust_model.value,
+            "rate_limit": str(_security_config.rate_limit),
+            "strict_validation": str(_security_config.strict_validation),
+        },
+    )
+)
 
 
 # =============================================================================
@@ -35,38 +104,79 @@ logger = logging.getLogger("sunny")
 @asynccontextmanager
 async def lifespan(server: FastMCP) -> AsyncIterator[dict[str, Any]]:
     """Manage server lifecycle and shared resources.
-    
+
     Yields:
         Dictionary containing shared resources (Ableton connection, theory engine)
     """
     logger.info("Sunny starting...")
-    
+    audit_log(
+        AuditEntry(
+            action="STARTUP",
+            entity_type="Server",
+            entity_id="sunny",
+            description="MCP server starting",
+            category=ActionCategory.SYSTEM,
+        )
+    )
+
     # Import here to avoid circular imports
-    from Sunny.Server.transport import AbletonConnection
-    from Sunny.Theory.engine import TheoryEngine
-    from Sunny.Server.snapshot import SnapshotManager
-    
+    from sunny.server.transport import AbletonConnection
+    from sunny.theory.engine import TheoryEngine
+    from sunny.server.snapshot import SnapshotManager
+
     # Initialize shared resources
     ableton = AbletonConnection()
     theory = TheoryEngine()
     snapshots = SnapshotManager()
-    
+
     try:
         # Attempt connection to Ableton
         connected = await ableton.connect()
         if connected:
             logger.info("Connected to Ableton Live")
+            audit_log(
+                AuditEntry(
+                    action="CONNECT",
+                    entity_type="Ableton",
+                    entity_id=f"{ableton.tcp.host}:{ableton.tcp.port}",
+                    description="Connected to Ableton Live",
+                    category=ActionCategory.CONNECTION,
+                    outcome=Outcome.SUCCESS,
+                )
+            )
         else:
             logger.warning("Could not connect to Ableton Live - running in offline mode")
-        
+            audit_log(
+                AuditEntry(
+                    action="CONNECT",
+                    entity_type="Ableton",
+                    entity_id="offline",
+                    description="Running in offline mode (Ableton not available)",
+                    category=ActionCategory.CONNECTION,
+                    severity=Severity.WARNING,
+                    outcome=Outcome.PARTIAL,
+                )
+            )
+
         yield {
             "ableton": ableton,
             "theory": theory,
             "snapshots": snapshots,
+            "security": _security_config,
+            "rate_limiter": _rate_limiter,
         }
     finally:
         await ableton.disconnect()
         logger.info("Sunny stopped")
+        audit_log(
+            AuditEntry(
+                action="SHUTDOWN",
+                entity_type="Server",
+                entity_id="sunny",
+                description="MCP server stopped",
+                category=ActionCategory.SYSTEM,
+            )
+        )
 
 
 # =============================================================================
@@ -114,12 +224,61 @@ def get_snapshots(ctx: Context) -> Any:
     lifespan_ctx = ctx.request_context.lifespan_context
     if lifespan_ctx is None:
         raise RuntimeError("Lifespan context not initialized - server may still be starting")
-    
+
     snapshots = lifespan_ctx.get("snapshots")
     if snapshots is None:
         raise RuntimeError("Snapshot manager not available")
-    
+
     return snapshots
+
+
+def get_security(ctx: Context) -> SecurityConfig:
+    """Get security configuration from context."""
+    lifespan_ctx = ctx.request_context.lifespan_context
+    if lifespan_ctx is None:
+        return _security_config  # Fall back to global config
+
+    return lifespan_ctx.get("security", _security_config)
+
+
+def check_rate_limit(ctx: Context, client_id: str = "default") -> None:
+    """Check rate limit and raise if exceeded.
+
+    Args:
+        ctx: MCP context.
+        client_id: Client identifier for rate limiting.
+
+    Raises:
+        RuntimeError: If rate limit exceeded.
+    """
+    lifespan_ctx = ctx.request_context.lifespan_context
+    if lifespan_ctx is None:
+        return
+
+    rate_limiter = lifespan_ctx.get("rate_limiter")
+    if rate_limiter and not rate_limiter.is_allowed(client_id):
+        audit_log(
+            AuditEntry(
+                action="RATE_LIMIT",
+                entity_type="Client",
+                entity_id=client_id,
+                description="Rate limit exceeded",
+                category=ActionCategory.SYSTEM,
+                severity=Severity.WARNING,
+                outcome=Outcome.FAILURE,
+            )
+        )
+        raise RuntimeError("Rate limit exceeded. Please wait before making more requests.")
+
+
+def validate_input_strict(ctx: Context) -> bool:
+    """Check if strict input validation is enabled.
+
+    Returns:
+        True if strict validation should be enforced.
+    """
+    security = get_security(ctx)
+    return security.strict_validation
 
 
 # =============================================================================
@@ -152,20 +311,26 @@ async def get_session_info(ctx: Context) -> str:
 @mcp.tool()
 async def set_tempo(ctx: Context, bpm: float) -> str:
     """Set the project tempo in BPM.
-    
+
     Args:
         bpm: Tempo in beats per minute (20.0 to 999.0)
-    
+
     Returns:
         Confirmation message
     """
-    if not 20.0 <= bpm <= 999.0:
-        return json.dumps({"error": "BPM must be between 20.0 and 999.0"})
-    
     try:
+        # Rate limit check
+        check_rate_limit(ctx)
+
+        # Input validation
+        validated_bpm = validate_tempo(bpm, "bpm")
+
         ableton = get_ableton(ctx)
-        result = await ableton.send_command("set_tempo", {"bpm": bpm})
-        return f"Tempo set to {bpm} BPM"
+        result = await ableton.send_command("set_tempo", {"bpm": validated_bpm})
+        return f"Tempo set to {validated_bpm} BPM"
+    except ValidationError as e:
+        logger.warning(f"Validation error in set_tempo: {e}")
+        return json.dumps({"error": str(e)})
     except Exception as e:
         logger.error(f"Error setting tempo: {e}")
         return json.dumps({"error": str(e)})
@@ -234,29 +399,62 @@ async def create_audio_track(
 @mcp.tool()
 async def delete_track(ctx: Context, track_index: int) -> str:
     """Delete a track from the session.
-    
+
     SAFETY: Automatically creates a project snapshot before deletion.
-    
+
     Args:
         track_index: Index of the track to delete
-    
+
     Returns:
         Confirmation with snapshot ID for recovery
     """
     try:
+        # Rate limit check
+        check_rate_limit(ctx)
+
+        # Input validation
+        validated_index = validate_track_index(track_index, "track_index")
+
+        # Audit log for destructive operation
+        audit_log(
+            AuditEntry(
+                action="DELETE_TRACK",
+                entity_type="Track",
+                entity_id=str(validated_index),
+                description=f"Deleting track {validated_index}",
+                category=ActionCategory.TOOL,
+                severity=Severity.WARNING,
+            )
+        )
+
         # Create snapshot before destructive operation
         snapshots = get_snapshots(ctx)
-        snapshot_id = await snapshots.create_snapshot(f"Before delete track {track_index}")
-        
+        snapshot_id = await snapshots.create_snapshot(f"Before delete track {validated_index}")
+
         ableton = get_ableton(ctx)
-        result = await ableton.send_command("delete_track", {"track_index": track_index})
-        
+        result = await ableton.send_command("delete_track", {"track_index": validated_index})
+
+        audit_log(
+            AuditEntry(
+                action="DELETE_TRACK",
+                entity_type="Track",
+                entity_id=str(validated_index),
+                description=f"Track {validated_index} deleted successfully",
+                category=ActionCategory.TOOL,
+                outcome=Outcome.SUCCESS,
+                metadata={"snapshot_id": snapshot_id},
+            )
+        )
+
         return json.dumps({
             "status": "success",
-            "message": f"Deleted track {track_index}",
+            "message": f"Deleted track {validated_index}",
             "snapshot_id": snapshot_id,
             "recovery": f"Use restore_snapshot('{snapshot_id}') to undo"
         }, indent=2)
+    except ValidationError as e:
+        logger.warning(f"Validation error in delete_track: {e}")
+        return json.dumps({"error": str(e)})
     except Exception as e:
         logger.error(f"Error deleting track: {e}")
         return json.dumps({"error": str(e)})
@@ -300,37 +498,47 @@ async def generate_progression(
     octave: int = 4
 ) -> str:
     """Generate a chord progression from Roman numerals.
-    
+
     Uses music theory to create proper chord voicings based on
     the specified key and scale/mode.
-    
+
     Args:
         root: Root note (e.g., "C", "F#", "Bb")
         scale: Scale/mode name (e.g., "major", "minor", "dorian", "phrygian")
         numerals: List of Roman numerals (e.g., ["ii", "V", "I"])
         octave: Base octave for chord voicings (default: 4)
-    
+
     Returns:
         JSON array of chord objects, each containing:
         - numeral: The Roman numeral
         - root: Chord root note
         - quality: Chord quality (major, minor, diminished, etc.)
         - notes: MIDI note numbers
-    
+
     Example:
         generate_progression("C", "major", ["ii", "V", "I"])
         Returns: Dm, G, C chords with MIDI notes
     """
     try:
+        # Rate limit check
+        check_rate_limit(ctx)
+
+        # Input validation
+        validated_root = validate_note_name(root, "root")
+        validated_scale = validate_scale_name(scale, "scale")
+
         theory = get_theory(ctx)
-        logger.info(f"Generating progression: {root} {scale} {numerals}")
-        progression = theory.generate_progression(root, scale, numerals, octave)
+        logger.info(f"Generating progression: {validated_root} {validated_scale} {numerals}")
+        progression = theory.generate_progression(validated_root, validated_scale, numerals, octave)
         logger.info(f"Generated {len(progression)} chords")
-        
+
         if not progression:
-            logger.warning(f"Empty progression for {numerals} in {root} {scale}")
-        
+            logger.warning(f"Empty progression for {numerals} in {validated_root} {validated_scale}")
+
         return json.dumps(progression, indent=2)
+    except ValidationError as e:
+        logger.warning(f"Validation error in generate_progression: {e}")
+        return json.dumps({"error": str(e)})
     except ValueError as e:
         logger.warning(f"Invalid theory input: {e}")
         return json.dumps({"error": f"Invalid theory input: {e}"})
@@ -1310,7 +1518,7 @@ async def suggest_instruments(
         JSON array of instrument suggestions with rationale
     """
     try:
-        from Sunny.Theory.orchestration import OrchestrationGuide
+        from sunny.theory.orchestration import OrchestrationGuide
         guide = OrchestrationGuide()
         suggestions = guide.suggest_instruments(emotional_color, register, category, limit)
         return json.dumps(suggestions, indent=2)
@@ -1337,7 +1545,7 @@ async def get_voice_assignment(
         and suggested instruments for each
     """
     try:
-        from Sunny.Theory.orchestration import OrchestrationGuide
+        from sunny.theory.orchestration import OrchestrationGuide
         guide = OrchestrationGuide()
         assignment = guide.get_voice_assignment(chord_notes)
         return json.dumps(assignment, indent=2)
@@ -1357,7 +1565,7 @@ async def list_emotional_colors(ctx: Context) -> str:
         JSON array of emotional colors with sample instruments
     """
     try:
-        from Sunny.Theory.orchestration import OrchestrationGuide
+        from sunny.theory.orchestration import OrchestrationGuide
         guide = OrchestrationGuide()
         colors = guide.list_emotional_colors()
         return json.dumps(colors, indent=2)
@@ -1384,7 +1592,7 @@ async def list_orchestral_instruments(
         JSON array of instruments with details
     """
     try:
-        from Sunny.Theory.orchestration import OrchestrationGuide
+        from sunny.theory.orchestration import OrchestrationGuide
         guide = OrchestrationGuide()
         instruments = guide.list_instruments(category)
         return json.dumps(instruments, indent=2)

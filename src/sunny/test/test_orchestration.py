@@ -9,7 +9,7 @@ import pytest
 
 
 try:
-    from Sunny.Theory.orchestration import (
+    from sunny.theory.orchestration import (
         OrchestrationGuide,
         InstrumentRole,
         EmotionalColor,

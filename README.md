@@ -1,70 +1,70 @@
 # Sunny
 
-Sunny is a professional-grade MCP server designed to provide AI agents with complete agency over Ableton Live. The system implements a comprehensive music theory engine, real-time parameter modulation, and intelligent project management, enabling autonomous music production from initial composition through mixing to final master.
+*An MCP server for AI-assisted music production*
 
-## Music Theory Engine
+Sunny provides AI agents with structured control over Ableton Live. The system combines a music theory engine with real-time transport, enabling operations from chord generation through parameter modulation.
 
-The theoretical foundation encompasses functional harmony analysis, voice leading algorithms, and a comprehensive scale system supporting over forty distinct tonalities. The theory engine classifies chords according to their functional role within a key:
+## Motivation
 
-$$
-F(c) \in \{T, S, D\}
-$$
+Music production involves two kinds of knowledge: theoretical and practical. Theoretical knowledge concerns scales, harmony, voice leading, and orchestration. Practical knowledge concerns the DAW: where controls are, what parameters do, how sessions are structured.
 
-where tonic function $T$ provides stability, subdominant function $S$ creates departure, and dominant function $D$ generates tension seeking resolution. This classification extends to secondary dominants, modal interchange chords, and the complete family of augmented sixth preparations.
+AI models possess general knowledge but lack the specific interface to apply it. They cannot press buttons, turn knobs, or hear results. Sunny bridges this gap. The theory engine makes musical knowledge executable. The transport layer makes the DAW controllable. Together they enable AI participation in music production.
 
-The voice leading engine implements the nearest-tone algorithm for smooth chord progressions, minimising the aggregate voice motion while respecting part-writing constraints. For successive chords $C_1$ and $C_2$ with voicings $V_1$ and $V_2$, the algorithm minimises:
+## Principles
 
-$$
-\sum_{i=1}^{n} |V_2^{(i)} - V_1^{(i)}|
-$$
+**Theory first.** Musical operations should be expressed in musical terms. The AI requests a dominant chord, not MIDI notes 67, 71, 74. The theory engine translates between musical intention and technical implementation.
 
-subject to no parallel fifths, no parallel octaves, and proper resolution of tendency tones.
+**Real-time response.** Parameter modulation requires low latency. The hybrid transport layer uses UDP for time-critical operations, achieving sub-5ms response.
 
-## Scale System
+**Reversibility.** Creative exploration requires the freedom to make mistakes. The snapshot system captures state before destructive operations, enabling recovery.
 
-The scale system extends beyond the seven church modes to encompass symmetric scales, bebop scales, and exotic tonalities from various musical traditions. Symmetric scales exhibit interval patterns that map onto themselves under transposition by their generating interval. The octatonic scale alternates half and whole steps, producing a scale invariant under minor third transposition. The whole-tone scale consists entirely of major seconds, yielding invariance under major second transposition.
-
-The bebop scales insert chromatic passing tones to align chord tones with strong beats during eighth-note runs. Double harmonic scales feature augmented seconds creating characteristic Middle Eastern and Romani sonorities.
-
-## Orchestration Guidance
-
-The orchestration module provides instrument suggestions based on emotional intent and voice register. Instruments are classified by their frequency role—bass, tenor, alto, soprano, and super—enabling appropriate voice assignment for chord voicings. Emotional colours including heroic, melancholy, ethereal, climactic, and pastoral map to characteristic instrument combinations drawn from orchestral practice.
-
-## Transport Layer
-
-The system implements hybrid TCP/UDP communication with Ableton Live. Reliable commands for session queries, track creation, and device configuration traverse TCP with acknowledgement. Low-latency parameter modulation employs UDP with OSC message formatting, achieving sub-5ms latency suitable for real-time performance control.
-
-The OSC address space follows the hierarchical structure:
-
-```
-/track/{index}/device/{index}/param/{index} {value}
-```
-
-where values are normalised to the unit interval regardless of the underlying parameter range.
-
-## Project Snapshots
-
-Before any destructive operation, the system automatically creates a timestamped project snapshot enabling creative undo functionality. The snapshot manager enforces a configurable retention policy, removing oldest snapshots when the maximum count is exceeded. This safety mechanism permits exploratory editing without risk of irreversible loss.
+**Bounded agency.** The AI operates within defined limits. Operations that could cause irreversible harm require explicit confirmation.
 
 ## Architecture
 
-The system is organised into domain-specific components. `Sunny.Server` implements the FastMCP server with lifespan management, TCP/UDP transport, and the complete tool registry. `Sunny.Theory` contains the music theory engine including harmony analysis, voice leading, cadence management, scale system, and orchestration guidance. `Sunny.Test` maintains the test suite with over 125 passing tests covering all functional modules. `Sunny.RemoteScript` provides the Ableton Live Remote Script for bidirectional communication. `Sunny.Governance` maintains the structural compliance standards and development roadmap.
+| Component | Purpose |
+|-----------|---------|
+| `src/sunny/server/` | MCP interface and transport layer |
+| `src/sunny/theory/` | Music theory engine |
+| `src/sunny/test/` | Test suite |
+| `lib/remotescript/` | Ableton Live extension |
+| `docs/` | Documentation |
+
+## Theory Engine
+
+The theory engine encodes musical knowledge in executable form.
+
+**Scales.** Over forty tonalities: church modes, symmetric scales, bebop scales, exotic modes. Given a root and scale type, returns constituent pitches.
+
+**Functional harmony.** Chords classified by role: tonic, subdominant, dominant. Given a key and function, returns appropriate chords.
+
+**Voice leading.** The nearest-tone algorithm for smooth progressions. Given two chords, computes optimal voice distribution minimising aggregate motion.
+
+**Orchestration.** Instrument suggestions by emotional intent and register. Given a mood, returns characteristic instrument combinations.
+
+## Transport Layer
+
+Communication with Ableton Live uses a hybrid protocol.
+
+**TCP** for structural commands: track creation, device insertion, clip manipulation. These operations must complete reliably.
+
+**UDP** for parameter modulation: filter sweeps, volume automation, send adjustments. These operations must occur with minimal latency.
+
+The remote script translates protocol messages to Live API calls. It runs within Ableton's Python environment and accesses the Live Object Model directly.
 
 ## Installation
 
-Clone the repository and install dependencies:
-
 ```bash
+# Clone and install
 git clone https://github.com/averagestudentdontfail/Sunny.git
 cd Sunny
-pip install -e .
+make install
+
+# Install remote script
+cp -r lib/remotescript ~/Music/Ableton/User\ Library/Remote\ Scripts/Sunny
 ```
 
-Copy the Remote Script to the Ableton User Library and enable it in Preferences under Control Surface.
-
-## Setup
-
-Once the Remote Script is installed and your AI client is configured (see Installation and Configuration), establishing a connection requires only two steps. Start Ableton Live first, ensuring the Sunny control surface is selected in Preferences under Link, Tempo & MIDI. Then start your AI client, which will automatically spawn the Sunny MCP server and connect to the Remote Script. The connection is established immediately and your AI assistant can begin invoking Sunny tools to control Ableton in real time.
+Configure Ableton: Preferences → Link, Tempo & MIDI → Control Surface → Sunny
 
 ## Configuration
 
@@ -75,13 +75,49 @@ Add to your AI assistant's MCP configuration:
   "mcpServers": {
     "Sunny": {
       "command": "python",
-      "args": ["-m", "Sunny.Server.main"],
+      "args": ["-m", "sunny.server"],
       "cwd": "/path/to/Sunny"
     }
   }
 }
 ```
 
+Environment variables (see `.env.example`):
+
+| Variable | Purpose | Default |
+|----------|---------|---------|
+| `SUNNY_LOG_LEVEL` | Logging verbosity | `INFO` |
+| `SUNNY_SNAPSHOT_DIR` | Snapshot storage | `~/.sunny/snapshots` |
+| `SUNNY_TCP_PORT` | Reliable transport | `9000` |
+| `SUNNY_UDP_PORT` | Low-latency transport | `9001` |
+
+## Development
+
+```bash
+make check      # Run all checks
+make test       # Run tests with coverage
+make lint       # Run linter
+make typecheck  # Run type checker
+make format     # Format code
+```
+
 ## Documentation
 
-The governance documentation in `Sunny.Governance` establishes naming conventions, technical standards, and the development roadmap. Component specifications are maintained in the module docstrings following Google style conventions.
+The `docs/` directory contains comprehensive documentation:
+
+| Document | Purpose |
+|----------|---------|
+| [philosophy.md](docs/philosophy.md) | Design worldview |
+| [foundations.md](docs/foundations.md) | Technical foundations |
+| [guide.md](docs/guide.md) | Practical operation |
+| [standard.md](docs/standard.md) | Coding conventions |
+
+## Requirements
+
+- Python 3.10 or later
+- Ableton Live 11 or later
+- Dependencies: mcp, music21, python-osc
+
+## Licence
+
+MIT

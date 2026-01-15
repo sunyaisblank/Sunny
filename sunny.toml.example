@@ -1,0 +1,74 @@
+# Sunny Configuration
+# Copy this file to sunny.toml or ~/.config/sunny/config.toml
+# Environment variables (SUNNY_*) override config file values.
+
+[server]
+# Server name shown to MCP clients
+name = "Sunny"
+
+# Log level: "debug", "info", "warning", "error"
+log_level = "info"
+
+[ableton]
+# TCP connection settings
+tcp_host = "127.0.0.1"
+tcp_port = 9876
+
+# UDP/OSC connection for low-latency parameter modulation
+udp_host = "127.0.0.1"
+udp_port = 9877
+
+# Connection timeout in seconds
+timeout = 5.0
+
+# Automatically reconnect on connection loss
+auto_reconnect = true
+
+# Reconnection delay in seconds
+reconnect_delay = 2.0
+
+[snapshots]
+# Directory for project snapshots
+directory = "~/.sunny/snapshots"
+
+# Maximum number of snapshots to retain
+max_snapshots = 50
+
+# Automatically create snapshot before destructive operations
+auto_snapshot = true
+
+[audit]
+# Enable audit logging
+enabled = false
+
+# Audit log file path (empty for no file logging)
+log_path = ""
+
+# Log format: "text" or "json"
+format = "text"
+
+# Echo audit entries to stdout
+echo_stdout = false
+
+[theory]
+# Default MIDI octave for theory operations
+default_octave = 4
+
+# Default voice leading algorithm: "nearest_tone", "smooth", "minimal"
+voice_leading = "nearest_tone"
+
+# Enable voice leading violation checks
+check_parallels = true
+
+[security]
+# Trust model: "local" (localhost only) or "network" (requires auth)
+trust_model = "local"
+
+# Allowed client hosts (only used when trust_model = "network")
+# allowed_hosts = ["127.0.0.1", "192.168.1.0/24"]
+
+# API key for network access (only used when trust_model = "network")
+# api_key = ""
+
+# Rate limiting: max requests per minute (0 = unlimited)
+rate_limit = 0

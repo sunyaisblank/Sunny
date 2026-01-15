@@ -12,7 +12,7 @@ from unittest.mock import patch, MagicMock
 
 
 try:
-    from Sunny.Server.transport import (
+    from sunny.server.transport import (
         TCPConnection,
         UDPConnection,
         AbletonConnection,

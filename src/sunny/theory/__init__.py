@@ -9,12 +9,12 @@ Professional-grade music theory engine powered by music21 for:
 - Advanced rhythm (nested tuplets, metric modulation, polymeter)
 """
 
-from Sunny.Theory.engine import TheoryEngine
-from Sunny.Theory.scales import ScaleSystem
-from Sunny.Theory.rhythm import RhythmEngine
-from Sunny.Theory.harmony import HarmonyModule, FunctionalRole, ChordInfo
-from Sunny.Theory.voiceleading import VoiceLeadingEngine
-from Sunny.Theory.cadences import CadenceEngine, CadenceType
+from sunny.theory.engine import TheoryEngine
+from sunny.theory.scales import ScaleSystem
+from sunny.theory.rhythm import RhythmEngine
+from sunny.theory.harmony import HarmonyModule, FunctionalRole, ChordInfo
+from sunny.theory.voiceleading import VoiceLeadingEngine
+from sunny.theory.cadences import CadenceEngine, CadenceType
 
 __all__ = [
     # Core engines

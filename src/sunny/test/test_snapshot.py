@@ -14,7 +14,7 @@ from pathlib import Path
 
 
 try:
-    from Sunny.Server.snapshot import SnapshotManager
+    from sunny.server.snapshot import SnapshotManager
     SNAPSHOT_AVAILABLE = True
 except ImportError:
     SNAPSHOT_AVAILABLE = False

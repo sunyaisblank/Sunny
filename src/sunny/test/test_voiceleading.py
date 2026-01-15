@@ -1,7 +1,7 @@
 """Tests for the Voice Leading module."""
 
 import pytest
-from Sunny.Theory.voiceleading import (
+from sunny.theory.voiceleading import (
     VoiceLeadingEngine,
     VoiceLeadingViolation,
 )

@@ -16,6 +16,11 @@ Error Codes:
     - 1100: Connection failed
     - 1101: Connection timeout
     - 1102: Invalid response format
+
+Enterprise Features:
+    - Automatic reconnection with exponential backoff
+    - Connection health monitoring
+    - Graceful degradation to offline mode
 """
 
 from __future__ import annotations
@@ -25,9 +30,91 @@ import json
 import logging
 import os
 import socket
+import time
+from dataclasses import dataclass, field
 from typing import Any
 
 logger = logging.getLogger("sunny.transport")
+
+
+# =============================================================================
+# Connection Resilience
+# =============================================================================
+
+
+@dataclass
+class RetryConfig:
+    """Configuration for connection retry behavior."""
+
+    max_retries: int = 3
+    base_delay: float = 1.0  # Initial delay in seconds
+    max_delay: float = 30.0  # Maximum delay between retries
+    exponential_base: float = 2.0  # Backoff multiplier
+
+
+@dataclass
+class ConnectionHealth:
+    """Tracks connection health metrics."""
+
+    connected: bool = False
+    last_success: float = 0.0
+    last_failure: float = 0.0
+    consecutive_failures: int = 0
+    total_reconnects: int = 0
+
+    def record_success(self) -> None:
+        """Record a successful operation."""
+        self.connected = True
+        self.last_success = time.time()
+        self.consecutive_failures = 0
+
+    def record_failure(self) -> None:
+        """Record a failed operation."""
+        self.last_failure = time.time()
+        self.consecutive_failures += 1
+
+    def record_reconnect(self) -> None:
+        """Record a reconnection attempt."""
+        self.total_reconnects += 1
+
+
+async def retry_with_backoff(
+    operation,
+    config: RetryConfig,
+    operation_name: str = "operation",
+) -> Any:
+    """Execute an operation with exponential backoff retry.
+
+    Args:
+        operation: Async callable to execute.
+        config: Retry configuration.
+        operation_name: Name for logging.
+
+    Returns:
+        Result from the operation.
+
+    Raises:
+        The last exception if all retries fail.
+    """
+    last_exception = None
+    delay = config.base_delay
+
+    for attempt in range(config.max_retries + 1):
+        try:
+            return await operation()
+        except (ConnectionError, TimeoutError, socket.error) as e:
+            last_exception = e
+            if attempt < config.max_retries:
+                logger.warning(
+                    f"{operation_name} failed (attempt {attempt + 1}/{config.max_retries + 1}): {e}"
+                )
+                logger.info(f"Retrying in {delay:.1f}s...")
+                await asyncio.sleep(delay)
+                delay = min(delay * config.exponential_base, config.max_delay)
+            else:
+                logger.error(f"{operation_name} failed after {config.max_retries + 1} attempts")
+
+    raise last_exception or ConnectionError(f"{operation_name} failed")
 
 
 class TCPConnection:
@@ -253,61 +340,119 @@ class UDPConnection:
 
 class AbletonConnection:
     """Hybrid TCP/UDP connection manager for Ableton Live.
-    
+
     Provides unified interface for both reliable and low-latency
     communication with the Ableton Remote Script.
+
+    Enterprise Features:
+        - Automatic reconnection with exponential backoff
+        - Connection health monitoring
+        - Graceful degradation to offline mode
     """
-    
-    def __init__(self):
-        """Initialize connection manager."""
+
+    def __init__(self, retry_config: RetryConfig | None = None):
+        """Initialize connection manager.
+
+        Args:
+            retry_config: Optional retry configuration. Uses defaults if not provided.
+        """
         self.tcp = TCPConnection()
         self.udp = UDPConnection()
         self._connected = False
-    
+        self._retry_config = retry_config or RetryConfig()
+        self._health = ConnectionHealth()
+
     async def connect(self) -> bool:
         """Connect to Ableton via both TCP and UDP.
-        
+
         Returns:
             True if TCP connection succeeded (UDP is optional)
         """
         tcp_ok = await self.tcp.connect()
         udp_ok = await self.udp.connect()
-        
+
         self._connected = tcp_ok
-        
+
         if tcp_ok:
             logger.info("Ableton connection established")
+            self._health.record_success()
         else:
             logger.warning("Running in offline mode (no Ableton connection)")
-        
+            self._health.record_failure()
+
         return tcp_ok
-    
+
     async def disconnect(self):
         """Disconnect from Ableton."""
         await self.tcp.disconnect()
         await self.udp.disconnect()
         self._connected = False
-    
+        self._health.connected = False
+
     @property
     def is_connected(self) -> bool:
         """Check if connected to Ableton."""
         return self._connected
-    
+
+    @property
+    def health(self) -> ConnectionHealth:
+        """Get connection health metrics."""
+        return self._health
+
+    async def reconnect(self) -> bool:
+        """Attempt to reconnect to Ableton.
+
+        Returns:
+            True if reconnection succeeded.
+        """
+        logger.info("Attempting to reconnect to Ableton...")
+        self._health.record_reconnect()
+
+        await self.disconnect()
+        return await self.connect()
+
     async def send_command(self, command: str, params: dict | None = None) -> dict:
-        """Send reliable command via TCP.
-        
+        """Send reliable command via TCP with automatic retry.
+
         Args:
             command: Command type name
             params: Optional parameters
-        
+
         Returns:
             Response dictionary
         """
         if not self._connected:
             # Return mock data for offline mode
             return self._get_mock_response(command, params)
-        
-        return await self.tcp.send(command, params)
+
+        async def _send():
+            return await self.tcp.send(command, params)
+
+        try:
+            result = await retry_with_backoff(
+                _send,
+                self._retry_config,
+                f"Command '{command}'",
+            )
+            self._health.record_success()
+            return result
+        except (ConnectionError, TimeoutError) as e:
+            self._health.record_failure()
+
+            # After max retries, attempt full reconnection
+            if self._health.consecutive_failures >= self._retry_config.max_retries:
+                logger.warning("Max failures reached, attempting full reconnection...")
+                if await self.reconnect():
+                    # Try one more time after reconnection
+                    try:
+                        return await self.tcp.send(command, params)
+                    except Exception:
+                        pass
+
+            # Fall back to offline mode
+            logger.warning(f"Falling back to offline mode for command: {command}")
+            self._connected = False
+            return self._get_mock_response(command, params)
     
     def send_realtime(self, address: str, *args: Any):
         """Send low-latency message via UDP/OSC.
