@@ -1,0 +1,188 @@
+{
+	"patcher": {
+		"fileversion": 1,
+		"appversion": {
+			"major": 8,
+			"minor": 5,
+			"revision": 0,
+			"architecture": "x64",
+			"modernui": 1
+		},
+		"classnamespace": "rnbo",
+		"description": "Euclidean Rhythm Generator - Sample-accurate trigger generation",
+		"rect": [100.0, 100.0, 800.0, 600.0],
+		"gridsize": [15.0, 15.0],
+		"boxes": [
+			{
+				"box": {
+					"id": "param_pulses",
+					"maxclass": "newobj",
+					"numinlets": 0,
+					"numoutlets": 1,
+					"outlettype": ["signal"],
+					"patching_rect": [50.0, 50.0, 120.0, 22.0],
+					"rnbo_classname": "param",
+					"rnbo_extra_attributes": {
+						"minimum": 0,
+						"maximum": 16,
+						"initialvalue": 3,
+						"steps": 17,
+						"displayname": "Pulses"
+					},
+					"text": "param pulses @min 0 @max 16 @initial 3"
+				}
+			},
+			{
+				"box": {
+					"id": "param_steps",
+					"maxclass": "newobj",
+					"numinlets": 0,
+					"numoutlets": 1,
+					"outlettype": ["signal"],
+					"patching_rect": [200.0, 50.0, 120.0, 22.0],
+					"rnbo_classname": "param",
+					"rnbo_extra_attributes": {
+						"minimum": 1,
+						"maximum": 16,
+						"initialvalue": 8,
+						"steps": 16,
+						"displayname": "Steps"
+					},
+					"text": "param steps @min 1 @max 16 @initial 8"
+				}
+			},
+			{
+				"box": {
+					"id": "param_rotation",
+					"maxclass": "newobj",
+					"numinlets": 0,
+					"numoutlets": 1,
+					"outlettype": ["signal"],
+					"patching_rect": [350.0, 50.0, 140.0, 22.0],
+					"rnbo_classname": "param",
+					"rnbo_extra_attributes": {
+						"minimum": 0,
+						"maximum": 15,
+						"initialvalue": 0,
+						"steps": 16,
+						"displayname": "Rotation"
+					},
+					"text": "param rotation @min 0 @max 15 @initial 0"
+				}
+			},
+			{
+				"box": {
+					"id": "in_clock",
+					"maxclass": "newobj",
+					"numinlets": 0,
+					"numoutlets": 1,
+					"outlettype": ["signal"],
+					"patching_rect": [50.0, 120.0, 60.0, 22.0],
+					"rnbo_classname": "in~",
+					"text": "in~ 1"
+				}
+			},
+			{
+				"box": {
+					"id": "euclidean_gen",
+					"maxclass": "newobj",
+					"numinlets": 4,
+					"numoutlets": 1,
+					"outlettype": ["signal"],
+					"patching_rect": [50.0, 200.0, 200.0, 22.0],
+					"rnbo_classname": "codebox",
+					"rnbo_extra_attributes": {
+						"code": "// Euclidean Rhythm Generator (Bresenham)\n@state pattern = new Int32Array(16);\n@state current_step = 0;\n@state prev_clock = 0;\n@state pattern_valid = false;\n@state last_pulses = -1;\n@state last_steps = -1;\n@state last_rotation = -1;\n\nfunction regenerate(pulses, steps, rotation) {\n    // Bresenham's algorithm\n    let p = Math.floor(Math.max(0, Math.min(steps, pulses)));\n    let s = Math.floor(Math.max(1, steps));\n    let r = Math.floor(rotation) % s;\n    if (r < 0) r += s;\n    \n    for (let i = 0; i < s; i++) {\n        let threshold = (i + 1) * p;\n        let prev_threshold = i * p;\n        pattern[(i + r) % s] = (Math.floor(threshold / s) > Math.floor(prev_threshold / s)) ? 1 : 0;\n    }\n    \n    last_pulses = pulses;\n    last_steps = steps;\n    last_rotation = rotation;\n    pattern_valid = true;\n}\n\nfunction process(clock, pulses, steps, rotation) {\n    let s = Math.floor(Math.max(1, steps));\n    \n    // Regenerate if parameters changed\n    if (pulses != last_pulses || steps != last_steps || rotation != last_rotation) {\n        regenerate(pulses, s, rotation);\n        current_step = current_step % s;\n    }\n    \n    let trigger = 0;\n    \n    // Rising edge detection\n    if (clock > 0 && prev_clock <= 0) {\n        current_step = (current_step + 1) % s;\n        if (pattern[current_step]) {\n            trigger = 1;\n        }\n    }\n    \n    prev_clock = clock;\n    return trigger;\n}"
+					},
+					"text": "codebox"
+				}
+			},
+			{
+				"box": {
+					"id": "out_trigger",
+					"maxclass": "newobj",
+					"numinlets": 1,
+					"numoutlets": 0,
+					"patching_rect": [50.0, 280.0, 60.0, 22.0],
+					"rnbo_classname": "out~",
+					"text": "out~ 1"
+				}
+			}
+		],
+		"lines": [
+			{
+				"patchline": {
+					"destination": ["euclidean_gen", 0],
+					"source": ["in_clock", 0]
+				}
+			},
+			{
+				"patchline": {
+					"destination": ["euclidean_gen", 1],
+					"source": ["param_pulses", 0]
+				}
+			},
+			{
+				"patchline": {
+					"destination": ["euclidean_gen", 2],
+					"source": ["param_steps", 0]
+				}
+			},
+			{
+				"patchline": {
+					"destination": ["euclidean_gen", 3],
+					"source": ["param_rotation", 0]
+				}
+			},
+			{
+				"patchline": {
+					"destination": ["out_trigger", 0],
+					"source": ["euclidean_gen", 0]
+				}
+			}
+		],
+		"parameters": [
+			{
+				"name": "pulses",
+				"paramId": "pulses",
+				"minimum": 0,
+				"maximum": 16,
+				"initialvalue": 3,
+				"steps": 17,
+				"displayname": "Pulses"
+			},
+			{
+				"name": "steps",
+				"paramId": "steps",
+				"minimum": 1,
+				"maximum": 16,
+				"initialvalue": 8,
+				"steps": 16,
+				"displayname": "Steps"
+			},
+			{
+				"name": "rotation",
+				"paramId": "rotation",
+				"minimum": 0,
+				"maximum": 15,
+				"initialvalue": 0,
+				"steps": 16,
+				"displayname": "Rotation"
+			}
+		],
+		"inports": [
+			{
+				"name": "clock",
+				"index": 1,
+				"comment": "Clock input (rising edge triggers step)"
+			}
+		],
+		"outports": [
+			{
+				"name": "trigger",
+				"index": 1,
+				"comment": "Trigger output (1 on hit)"
+			}
+		]
+	}
+}

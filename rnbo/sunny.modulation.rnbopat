@@ -1,0 +1,315 @@
+{
+	"patcher": {
+		"fileversion": 1,
+		"appversion": {
+			"major": 8,
+			"minor": 5,
+			"revision": 0,
+			"architecture": "x64",
+			"modernui": 1
+		},
+		"classnamespace": "rnbo",
+		"description": "Parameter Modulation Engine - LFO, envelope follower, and smoothing",
+		"rect": [100.0, 100.0, 800.0, 600.0],
+		"gridsize": [15.0, 15.0],
+		"boxes": [
+			{
+				"box": {
+					"id": "param_mode",
+					"maxclass": "newobj",
+					"numinlets": 0,
+					"numoutlets": 1,
+					"outlettype": ["signal"],
+					"patching_rect": [50.0, 50.0, 160.0, 22.0],
+					"rnbo_classname": "param",
+					"rnbo_extra_attributes": {
+						"minimum": 0,
+						"maximum": 3,
+						"initialvalue": 0,
+						"steps": 4,
+						"displayname": "Mode",
+						"enumvalues": "lfo envelope smooth sample_hold"
+					},
+					"text": "param mode @min 0 @max 3 @initial 0"
+				}
+			},
+			{
+				"box": {
+					"id": "param_rate",
+					"maxclass": "newobj",
+					"numinlets": 0,
+					"numoutlets": 1,
+					"outlettype": ["signal"],
+					"patching_rect": [230.0, 50.0, 160.0, 22.0],
+					"rnbo_classname": "param",
+					"rnbo_extra_attributes": {
+						"minimum": 0.01,
+						"maximum": 20.0,
+						"initialvalue": 1.0,
+						"exponent": 2,
+						"displayname": "Rate (Hz)"
+					},
+					"text": "param rate @min 0.01 @max 20 @initial 1"
+				}
+			},
+			{
+				"box": {
+					"id": "param_shape",
+					"maxclass": "newobj",
+					"numinlets": 0,
+					"numoutlets": 1,
+					"outlettype": ["signal"],
+					"patching_rect": [410.0, 50.0, 160.0, 22.0],
+					"rnbo_classname": "param",
+					"rnbo_extra_attributes": {
+						"minimum": 0,
+						"maximum": 4,
+						"initialvalue": 0,
+						"steps": 5,
+						"displayname": "Shape",
+						"enumvalues": "sine triangle saw ramp_up ramp_down"
+					},
+					"text": "param shape @min 0 @max 4 @initial 0"
+				}
+			},
+			{
+				"box": {
+					"id": "param_depth",
+					"maxclass": "newobj",
+					"numinlets": 0,
+					"numoutlets": 1,
+					"outlettype": ["signal"],
+					"patching_rect": [590.0, 50.0, 140.0, 22.0],
+					"rnbo_classname": "param",
+					"rnbo_extra_attributes": {
+						"minimum": 0,
+						"maximum": 1,
+						"initialvalue": 1,
+						"displayname": "Depth"
+					},
+					"text": "param depth @min 0 @max 1 @initial 1"
+				}
+			},
+			{
+				"box": {
+					"id": "param_attack",
+					"maxclass": "newobj",
+					"numinlets": 0,
+					"numoutlets": 1,
+					"outlettype": ["signal"],
+					"patching_rect": [50.0, 90.0, 140.0, 22.0],
+					"rnbo_classname": "param",
+					"rnbo_extra_attributes": {
+						"minimum": 0.1,
+						"maximum": 1000,
+						"initialvalue": 10,
+						"exponent": 3,
+						"displayname": "Attack (ms)"
+					},
+					"text": "param attack @min 0.1 @max 1000 @initial 10"
+				}
+			},
+			{
+				"box": {
+					"id": "param_release",
+					"maxclass": "newobj",
+					"numinlets": 0,
+					"numoutlets": 1,
+					"outlettype": ["signal"],
+					"patching_rect": [210.0, 90.0, 140.0, 22.0],
+					"rnbo_classname": "param",
+					"rnbo_extra_attributes": {
+						"minimum": 0.1,
+						"maximum": 2000,
+						"initialvalue": 100,
+						"exponent": 3,
+						"displayname": "Release (ms)"
+					},
+					"text": "param release @min 0.1 @max 2000 @initial 100"
+				}
+			},
+			{
+				"box": {
+					"id": "in_signal",
+					"maxclass": "newobj",
+					"numinlets": 0,
+					"numoutlets": 1,
+					"outlettype": ["signal"],
+					"patching_rect": [50.0, 150.0, 60.0, 22.0],
+					"rnbo_classname": "in~",
+					"text": "in~ 1"
+				}
+			},
+			{
+				"box": {
+					"id": "in_sync",
+					"maxclass": "newobj",
+					"numinlets": 0,
+					"numoutlets": 1,
+					"outlettype": ["signal"],
+					"patching_rect": [150.0, 150.0, 60.0, 22.0],
+					"rnbo_classname": "in~",
+					"text": "in~ 2"
+				}
+			},
+			{
+				"box": {
+					"id": "modulation_engine",
+					"maxclass": "newobj",
+					"numinlets": 9,
+					"numoutlets": 1,
+					"outlettype": ["signal"],
+					"patching_rect": [50.0, 230.0, 400.0, 22.0],
+					"rnbo_classname": "codebox",
+					"rnbo_extra_attributes": {
+						"code": "// Modulation Engine\n@state phase = 0;\n@state env_value = 0;\n@state prev_sync = 0;\n@state sh_value = 0;\n\nconst PI = 3.14159265359;\nconst TWO_PI = 6.28318530718;\n\n// LFO shapes: 0=sine, 1=triangle, 2=saw, 3=ramp_up, 4=ramp_down\nfunction lfo_shape(phase, shape) {\n    let s = Math.floor(shape);\n    switch (s) {\n        case 0: // Sine\n            return Math.sin(phase * TWO_PI);\n        case 1: // Triangle\n            let t = phase * 4;\n            if (t < 1) return t;\n            if (t < 3) return 2 - t;\n            return t - 4;\n        case 2: // Saw\n            return phase * 2 - 1;\n        case 3: // Ramp up\n            return phase * 2 - 1;\n        case 4: // Ramp down\n            return 1 - phase * 2;\n        default:\n            return Math.sin(phase * TWO_PI);\n    }\n}\n\nfunction process(input, sync, mode, rate, shape, depth, attack, release, samplerate) {\n    let output = 0;\n    let m = Math.floor(mode);\n    \n    // Sync reset\n    if (sync > 0 && prev_sync <= 0) {\n        phase = 0;\n    }\n    prev_sync = sync;\n    \n    switch (m) {\n        case 0: // LFO\n            phase += rate / samplerate;\n            if (phase >= 1) phase -= 1;\n            output = lfo_shape(phase, shape);\n            break;\n            \n        case 1: // Envelope follower\n            let abs_input = Math.abs(input);\n            let att_coeff = Math.exp(-1 / (attack * samplerate / 1000));\n            let rel_coeff = Math.exp(-1 / (release * samplerate / 1000));\n            \n            if (abs_input > env_value) {\n                env_value = abs_input + att_coeff * (env_value - abs_input);\n            } else {\n                env_value = abs_input + rel_coeff * (env_value - abs_input);\n            }\n            output = env_value * 2 - 1; // Scale to [-1, 1]\n            break;\n            \n        case 2: // Smooth (lowpass)\n            let smooth_coeff = Math.exp(-TWO_PI * rate / samplerate);\n            env_value = input + smooth_coeff * (env_value - input);\n            output = env_value;\n            break;\n            \n        case 3: // Sample & Hold\n            if (sync > 0 && prev_sync <= 0) {\n                sh_value = input;\n            }\n            output = sh_value;\n            break;\n    }\n    \n    // Apply depth\n    return output * depth;\n}"
+					},
+					"text": "codebox"
+				}
+			},
+			{
+				"box": {
+					"id": "out_mod",
+					"maxclass": "newobj",
+					"numinlets": 1,
+					"numoutlets": 0,
+					"patching_rect": [50.0, 310.0, 60.0, 22.0],
+					"rnbo_classname": "out~",
+					"text": "out~ 1"
+				}
+			}
+		],
+		"lines": [
+			{
+				"patchline": {
+					"destination": ["modulation_engine", 0],
+					"source": ["in_signal", 0]
+				}
+			},
+			{
+				"patchline": {
+					"destination": ["modulation_engine", 1],
+					"source": ["in_sync", 0]
+				}
+			},
+			{
+				"patchline": {
+					"destination": ["modulation_engine", 2],
+					"source": ["param_mode", 0]
+				}
+			},
+			{
+				"patchline": {
+					"destination": ["modulation_engine", 3],
+					"source": ["param_rate", 0]
+				}
+			},
+			{
+				"patchline": {
+					"destination": ["modulation_engine", 4],
+					"source": ["param_shape", 0]
+				}
+			},
+			{
+				"patchline": {
+					"destination": ["modulation_engine", 5],
+					"source": ["param_depth", 0]
+				}
+			},
+			{
+				"patchline": {
+					"destination": ["modulation_engine", 6],
+					"source": ["param_attack", 0]
+				}
+			},
+			{
+				"patchline": {
+					"destination": ["modulation_engine", 7],
+					"source": ["param_release", 0]
+				}
+			},
+			{
+				"patchline": {
+					"destination": ["out_mod", 0],
+					"source": ["modulation_engine", 0]
+				}
+			}
+		],
+		"parameters": [
+			{
+				"name": "mode",
+				"paramId": "mode",
+				"minimum": 0,
+				"maximum": 3,
+				"initialvalue": 0,
+				"steps": 4,
+				"displayname": "Mode",
+				"enumvalues": ["LFO", "Envelope", "Smooth", "Sample&Hold"]
+			},
+			{
+				"name": "rate",
+				"paramId": "rate",
+				"minimum": 0.01,
+				"maximum": 20.0,
+				"initialvalue": 1.0,
+				"exponent": 2,
+				"displayname": "Rate (Hz)"
+			},
+			{
+				"name": "shape",
+				"paramId": "shape",
+				"minimum": 0,
+				"maximum": 4,
+				"initialvalue": 0,
+				"steps": 5,
+				"displayname": "Shape",
+				"enumvalues": ["Sine", "Triangle", "Saw", "Ramp Up", "Ramp Down"]
+			},
+			{
+				"name": "depth",
+				"paramId": "depth",
+				"minimum": 0,
+				"maximum": 1,
+				"initialvalue": 1,
+				"displayname": "Depth"
+			},
+			{
+				"name": "attack",
+				"paramId": "attack",
+				"minimum": 0.1,
+				"maximum": 1000,
+				"initialvalue": 10,
+				"exponent": 3,
+				"displayname": "Attack (ms)"
+			},
+			{
+				"name": "release",
+				"paramId": "release",
+				"minimum": 0.1,
+				"maximum": 2000,
+				"initialvalue": 100,
+				"exponent": 3,
+				"displayname": "Release (ms)"
+			}
+		],
+		"inports": [
+			{
+				"name": "signal",
+				"index": 1,
+				"comment": "Input signal (for envelope follower/smooth)"
+			},
+			{
+				"name": "sync",
+				"index": 2,
+				"comment": "Sync/trigger input (resets LFO phase, triggers S&H)"
+			}
+		],
+		"outports": [
+			{
+				"name": "modulation",
+				"index": 1,
+				"comment": "Modulation output (-1 to 1)"
+			}
+		]
+	}
+}

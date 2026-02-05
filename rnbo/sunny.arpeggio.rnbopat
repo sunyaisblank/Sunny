@@ -1,0 +1,263 @@
+{
+	"patcher": {
+		"fileversion": 1,
+		"appversion": {
+			"major": 8,
+			"minor": 5,
+			"revision": 0,
+			"architecture": "x64",
+			"modernui": 1
+		},
+		"classnamespace": "rnbo",
+		"description": "Arpeggiation Engine - Sample-accurate note sequencing with multiple patterns",
+		"rect": [100.0, 100.0, 800.0, 600.0],
+		"gridsize": [15.0, 15.0],
+		"boxes": [
+			{
+				"box": {
+					"id": "param_pattern",
+					"maxclass": "newobj",
+					"numinlets": 0,
+					"numoutlets": 1,
+					"outlettype": ["signal"],
+					"patching_rect": [50.0, 50.0, 180.0, 22.0],
+					"rnbo_classname": "param",
+					"rnbo_extra_attributes": {
+						"minimum": 0,
+						"maximum": 7,
+						"initialvalue": 0,
+						"steps": 8,
+						"displayname": "Pattern",
+						"enumvalues": "up down updown random played converge diverge chord"
+					},
+					"text": "param pattern @min 0 @max 7 @initial 0"
+				}
+			},
+			{
+				"box": {
+					"id": "param_octave_range",
+					"maxclass": "newobj",
+					"numinlets": 0,
+					"numoutlets": 1,
+					"outlettype": ["signal"],
+					"patching_rect": [250.0, 50.0, 160.0, 22.0],
+					"rnbo_classname": "param",
+					"rnbo_extra_attributes": {
+						"minimum": 1,
+						"maximum": 4,
+						"initialvalue": 1,
+						"steps": 4,
+						"displayname": "Octave Range"
+					},
+					"text": "param octaves @min 1 @max 4 @initial 1"
+				}
+			},
+			{
+				"box": {
+					"id": "param_rate",
+					"maxclass": "newobj",
+					"numinlets": 0,
+					"numoutlets": 1,
+					"outlettype": ["signal"],
+					"patching_rect": [430.0, 50.0, 160.0, 22.0],
+					"rnbo_classname": "param",
+					"rnbo_extra_attributes": {
+						"minimum": 0,
+						"maximum": 7,
+						"initialvalue": 2,
+						"steps": 8,
+						"displayname": "Rate",
+						"enumvalues": "1/1 1/2 1/4 1/8 1/16 1/32 1/4T 1/8T"
+					},
+					"text": "param rate @min 0 @max 7 @initial 2"
+				}
+			},
+			{
+				"box": {
+					"id": "param_gate_length",
+					"maxclass": "newobj",
+					"numinlets": 0,
+					"numoutlets": 1,
+					"outlettype": ["signal"],
+					"patching_rect": [610.0, 50.0, 140.0, 22.0],
+					"rnbo_classname": "param",
+					"rnbo_extra_attributes": {
+						"minimum": 0.1,
+						"maximum": 1.0,
+						"initialvalue": 0.5,
+						"displayname": "Gate Length"
+					},
+					"text": "param gate @min 0.1 @max 1 @initial 0.5"
+				}
+			},
+			{
+				"box": {
+					"id": "in_clock",
+					"maxclass": "newobj",
+					"numinlets": 0,
+					"numoutlets": 1,
+					"outlettype": ["signal"],
+					"patching_rect": [50.0, 120.0, 60.0, 22.0],
+					"rnbo_classname": "in~",
+					"text": "in~ 1"
+				}
+			},
+			{
+				"box": {
+					"id": "inport_notes",
+					"maxclass": "newobj",
+					"numinlets": 0,
+					"numoutlets": 1,
+					"outlettype": [""],
+					"patching_rect": [200.0, 120.0, 100.0, 22.0],
+					"rnbo_classname": "inport",
+					"text": "inport notes"
+				}
+			},
+			{
+				"box": {
+					"id": "arpeggio_engine",
+					"maxclass": "newobj",
+					"numinlets": 6,
+					"numoutlets": 2,
+					"outlettype": ["signal", "signal"],
+					"patching_rect": [50.0, 200.0, 300.0, 22.0],
+					"rnbo_classname": "codebox",
+					"rnbo_extra_attributes": {
+						"code": "// Arpeggiator Engine\n@state notes = new Int32Array(16);\n@state note_count = 0;\n@state current_index = 0;\n@state direction = 1;\n@state prev_clock = 0;\n@state gate_samples = 0;\n@state current_note = 0;\n@state gate_length_samples = 0;\n\n// Pattern types:\n// 0: up, 1: down, 2: updown, 3: random\n// 4: played, 5: converge, 6: diverge, 7: chord\n\nfunction get_next_index(pattern, count) {\n    if (count <= 0) return 0;\n    \n    switch (Math.floor(pattern)) {\n        case 0: // Up\n            current_index = (current_index + 1) % count;\n            break;\n        case 1: // Down\n            current_index = (current_index - 1 + count) % count;\n            break;\n        case 2: // Up-Down\n            current_index += direction;\n            if (current_index >= count - 1) { direction = -1; current_index = count - 1; }\n            if (current_index <= 0) { direction = 1; current_index = 0; }\n            break;\n        case 3: // Random\n            current_index = Math.floor(Math.random() * count);\n            break;\n        case 4: // Played order (same as up for now)\n            current_index = (current_index + 1) % count;\n            break;\n        case 5: // Converge\n            if (direction == 1) {\n                current_index = Math.floor(count / 2) + Math.floor(current_index / 2);\n            } else {\n                current_index = Math.floor(count / 2) - Math.floor(current_index / 2) - 1;\n            }\n            current_index = Math.max(0, Math.min(count - 1, current_index));\n            direction *= -1;\n            break;\n        default:\n            current_index = (current_index + 1) % count;\n    }\n    return current_index;\n}\n\nfunction process(clock, pattern, octaves, rate, gate, samplerate) {\n    let pitch = 0;\n    let gate_out = 0;\n    \n    // Rising edge detection\n    if (clock > 0 && prev_clock <= 0) {\n        if (note_count > 0) {\n            let idx = get_next_index(pattern, note_count);\n            let octave_offset = Math.floor(idx / note_count) * 12;\n            current_note = notes[idx % note_count] + octave_offset;\n            \n            // Calculate gate length in samples\n            gate_length_samples = Math.floor(gate * samplerate / 10); // Simplified\n            gate_samples = gate_length_samples;\n        }\n    }\n    prev_clock = clock;\n    \n    // Output\n    if (gate_samples > 0) {\n        pitch = current_note;\n        gate_out = 1;\n        gate_samples--;\n    } else {\n        pitch = current_note;\n        gate_out = 0;\n    }\n    \n    return [pitch, gate_out];\n}"
+					},
+					"text": "codebox"
+				}
+			},
+			{
+				"box": {
+					"id": "out_pitch",
+					"maxclass": "newobj",
+					"numinlets": 1,
+					"numoutlets": 0,
+					"patching_rect": [50.0, 280.0, 60.0, 22.0],
+					"rnbo_classname": "out~",
+					"text": "out~ 1"
+				}
+			},
+			{
+				"box": {
+					"id": "out_gate",
+					"maxclass": "newobj",
+					"numinlets": 1,
+					"numoutlets": 0,
+					"patching_rect": [150.0, 280.0, 60.0, 22.0],
+					"rnbo_classname": "out~",
+					"text": "out~ 2"
+				}
+			}
+		],
+		"lines": [
+			{
+				"patchline": {
+					"destination": ["arpeggio_engine", 0],
+					"source": ["in_clock", 0]
+				}
+			},
+			{
+				"patchline": {
+					"destination": ["arpeggio_engine", 1],
+					"source": ["param_pattern", 0]
+				}
+			},
+			{
+				"patchline": {
+					"destination": ["arpeggio_engine", 2],
+					"source": ["param_octave_range", 0]
+				}
+			},
+			{
+				"patchline": {
+					"destination": ["arpeggio_engine", 3],
+					"source": ["param_rate", 0]
+				}
+			},
+			{
+				"patchline": {
+					"destination": ["arpeggio_engine", 4],
+					"source": ["param_gate_length", 0]
+				}
+			},
+			{
+				"patchline": {
+					"destination": ["out_pitch", 0],
+					"source": ["arpeggio_engine", 0]
+				}
+			},
+			{
+				"patchline": {
+					"destination": ["out_gate", 0],
+					"source": ["arpeggio_engine", 1]
+				}
+			}
+		],
+		"parameters": [
+			{
+				"name": "pattern",
+				"paramId": "pattern",
+				"minimum": 0,
+				"maximum": 7,
+				"initialvalue": 0,
+				"steps": 8,
+				"displayname": "Pattern",
+				"enumvalues": ["up", "down", "updown", "random", "played", "converge", "diverge", "chord"]
+			},
+			{
+				"name": "octaves",
+				"paramId": "octaves",
+				"minimum": 1,
+				"maximum": 4,
+				"initialvalue": 1,
+				"steps": 4,
+				"displayname": "Octave Range"
+			},
+			{
+				"name": "rate",
+				"paramId": "rate",
+				"minimum": 0,
+				"maximum": 7,
+				"initialvalue": 2,
+				"steps": 8,
+				"displayname": "Rate",
+				"enumvalues": ["1/1", "1/2", "1/4", "1/8", "1/16", "1/32", "1/4T", "1/8T"]
+			},
+			{
+				"name": "gate",
+				"paramId": "gate",
+				"minimum": 0.1,
+				"maximum": 1.0,
+				"initialvalue": 0.5,
+				"displayname": "Gate Length"
+			}
+		],
+		"inports": [
+			{
+				"name": "clock",
+				"index": 1,
+				"comment": "Clock input"
+			},
+			{
+				"name": "notes",
+				"tag": "notes",
+				"comment": "Note list (MIDI note numbers)"
+			}
+		],
+		"outports": [
+			{
+				"name": "pitch",
+				"index": 1,
+				"comment": "Current pitch (MIDI note)"
+			},
+			{
+				"name": "gate",
+				"index": 2,
+				"comment": "Gate signal"
+			}
+		]
+	}
+}

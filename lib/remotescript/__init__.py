@@ -62,7 +62,7 @@ except ImportError:
 
 # Configuration
 TCP_HOST = "127.0.0.1"
-TCP_PORT = 9876
+TCP_PORT = 9001  # Match transport.py default
 BUFFER_SIZE = 65536
 
 
@@ -256,9 +256,10 @@ class Sunny(ControlSurface):
                     # Incomplete JSON, continue receiving
                     continue
                 
-                # Process command
-                command = request.get("type")
+                # Process command (support both 'type' and 'command' keys for compatibility)
+                command = request.get("type") or request.get("command")
                 params = request.get("params", {})
+                request_id = request.get("id")
                 
                 self.log_message(f"Received command: {command}")
                 
@@ -288,14 +289,14 @@ class Sunny(ControlSurface):
                     try:
                         response = response_queue.get(timeout=30.0)
                         if response.get("status") == "error":
-                            self._send_error(client_socket, response.get("message", "Unknown error"))
+                            self._send_error(client_socket, response.get("message", "Unknown error"), request_id)
                         else:
-                            self._send_response(client_socket, response.get("result"))
+                            self._send_response(client_socket, response.get("result"), request_id)
                     except queue.Empty:
                         self.log_message(f"Timeout waiting for {command}")
-                        self._send_error(client_socket, "Command execution timeout")
+                        self._send_error(client_socket, "Command execution timeout", request_id)
                 else:
-                    self._send_error(client_socket, f"Unknown command: {command}")
+                    self._send_error(client_socket, f"Unknown command: {command}", request_id)
                     
             except socket.timeout:
                 # This shouldn't happen with settimeout(None), but handle gracefully
@@ -306,35 +307,43 @@ class Sunny(ControlSurface):
         
         self.log_message("Client handler stopped")
     
-    def _send_response(self, client_socket, result):
+    def _send_response(self, client_socket, result, request_id=None):
         """Send success response to client.
-        
+
         Args:
             client_socket: Client socket
             result: Response data
+            request_id: Optional request ID for correlation
         """
         response = {
             "status": "success",
             "result": result,
         }
+        if request_id is not None:
+            response["id"] = request_id
         try:
-            client_socket.sendall(json.dumps(response).encode("utf-8"))
+            # Add newline delimiter for line-based protocol
+            client_socket.sendall((json.dumps(response) + "\n").encode("utf-8"))
         except Exception as e:
             self.log_message(f"Send error: {e}")
-    
-    def _send_error(self, client_socket, message):
+
+    def _send_error(self, client_socket, message, request_id=None):
         """Send error response to client.
-        
+
         Args:
             client_socket: Client socket
             message: Error message
+            request_id: Optional request ID for correlation
         """
         response = {
             "status": "error",
             "message": message,
         }
+        if request_id is not None:
+            response["id"] = request_id
         try:
-            client_socket.sendall(json.dumps(response).encode("utf-8"))
+            # Add newline delimiter for line-based protocol
+            client_socket.sendall((json.dumps(response) + "\n").encode("utf-8"))
         except Exception as e:
             self.log_message(f"Send error: {e}")
     
