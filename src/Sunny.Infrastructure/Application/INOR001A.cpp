@@ -12,7 +12,9 @@
 #include "Harmony/HRRN001A.h"
 #include "VoiceLeading/VLNT001A.h"
 #include "Rhythm/RHEU001A.h"
+#include "Arpeggio/RDAP001A.h"
 
+#include <algorithm>
 #include <chrono>
 #include <sstream>
 #include <iomanip>
@@ -182,14 +184,107 @@ OrchestratorResult Orchestrator::apply_euclidean_rhythm(
 }
 
 OrchestratorResult Orchestrator::apply_arpeggio(
-    int /* track_index */,
-    int /* slot_index */,
-    const std::vector<std::string>& /* numerals */,
-    const std::string& /* direction */,
-    double /* step_duration */
+    int track_index,
+    int slot_index,
+    const std::vector<std::string>& numerals,
+    const std::string& direction,
+    double step_duration
 ) {
-    // Stub implementation
-    return {false, "", "Arpeggio not yet implemented"};
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    // Parse direction
+    Render::ArpDirection arp_dir = Render::ArpDirection::Up;
+    if (direction == "down") {
+        arp_dir = Render::ArpDirection::Down;
+    } else if (direction == "updown" || direction == "up_down") {
+        arp_dir = Render::ArpDirection::UpDown;
+    } else if (direction == "downup" || direction == "down_up") {
+        arp_dir = Render::ArpDirection::DownUp;
+    } else if (direction == "random") {
+        arp_dir = Render::ArpDirection::Random;
+    } else if (direction == "order") {
+        arp_dir = Render::ArpDirection::Order;
+    }
+
+    // Build a chord from each numeral (using C major as default context)
+    // The orchestrator's create_progression_clip accepts root/scale;
+    // arpeggio uses the same approach internally
+    auto scale_def = Core::find_scale("major");
+    if (!scale_def) {
+        return {false, "", "Scale lookup failed"};
+    }
+
+    // Collect all notes from all chords into a single voicing
+    Core::ChordVoicing combined;
+    for (const auto& numeral : numerals) {
+        auto chord_result = Core::generate_chord_from_numeral(
+            numeral, 0, scale_def->intervals, 4
+        );
+        if (chord_result) {
+            for (auto note : chord_result->notes) {
+                combined.notes.push_back(note);
+            }
+        }
+    }
+
+    if (combined.notes.empty()) {
+        return {false, "", "No valid chords for arpeggio"};
+    }
+
+    // Generate arpeggio pattern
+    auto beat_dur = Core::Beat::from_float(step_duration);
+    auto events = Render::generate_arpeggio(
+        combined, arp_dir, beat_dur, 0.8, 1
+    );
+
+    if (events.empty()) {
+        return {false, "", "Arpeggio generated no events"};
+    }
+
+    std::string op_id = generate_operation_id();
+
+    // Calculate total duration
+    double total_duration = 0.0;
+    for (const auto& ev : events) {
+        double end = ev.start_time.to_float() + ev.duration.to_float();
+        if (end > total_duration) {
+            total_duration = end;
+        }
+    }
+
+    BridgeMessage create_msg;
+    create_msg.type = BridgeMessageType::CreateClip;
+    create_msg.path = "tracks/" + std::to_string(track_index) +
+                      "/clip_slots/" + std::to_string(slot_index);
+    create_msg.args.push_back(std::to_string(total_duration));
+    queue_message(create_msg);
+
+    BridgeMessage notes_msg;
+    notes_msg.type = BridgeMessageType::AddNotes;
+    notes_msg.path = create_msg.path + "/clip";
+    notes_msg.notes = events;
+    queue_message(notes_msg);
+
+    // Undo operation
+    Operation op;
+    op.id = op_id;
+    op.description = "Apply arpeggio " + direction;
+    op.execute = [this, create_msg, notes_msg]() {
+        queue_message(create_msg);
+        queue_message(notes_msg);
+    };
+    op.undo = [this, track_index, slot_index]() {
+        BridgeMessage delete_msg;
+        delete_msg.type = BridgeMessageType::CallMethod;
+        delete_msg.path = "tracks/" + std::to_string(track_index) +
+                          "/clip_slots/" + std::to_string(slot_index);
+        delete_msg.args.push_back("delete_clip");
+        queue_message(delete_msg);
+    };
+    push_operation(std::move(op));
+
+    return {true, op_id, "Created arpeggio with " +
+            std::to_string(events.size()) + " notes"};
 }
 
 bool Orchestrator::undo() {

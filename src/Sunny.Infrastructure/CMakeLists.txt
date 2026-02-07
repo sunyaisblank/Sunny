@@ -23,6 +23,9 @@ file(GLOB_RECURSE INFRA_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/Transport/*.h"
     "${CMAKE_CURRENT_SOURCE_DIR}/Session/*.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/Session/*.h"
+    "${CMAKE_CURRENT_SOURCE_DIR}/Protocol/*.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/Protocol/*.h"
+    "${CMAKE_CURRENT_SOURCE_DIR}/RealTime/*.h"
 )
 
 add_library(Sunny.Infrastructure STATIC
@@ -41,6 +44,13 @@ target_link_libraries(Sunny.Infrastructure
         Sunny::Core
         Sunny::Render
 )
+
+# nlohmann/json — header-only, used only internally.
+# Use include_directories instead of target_link to avoid export issues.
+if(TARGET nlohmann_json::nlohmann_json)
+    get_target_property(_json_inc nlohmann_json::nlohmann_json INTERFACE_INCLUDE_DIRECTORIES)
+    target_include_directories(Sunny.Infrastructure PRIVATE ${_json_inc})
+endif()
 
 target_compile_features(Sunny.Infrastructure PUBLIC cxx_std_23)
 

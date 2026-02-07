@@ -7,18 +7,25 @@
  *
  * Provides network transport for communicating with the
  * Ableton Remote Script bridge:
- * - TCP for reliable command/response
- * - UDP for low-latency events (optional)
+ * - TCP for reliable command/response (4-byte length-prefixed framing)
+ * - UDP for low-latency events (datagram boundary = message boundary)
  *
- * Note: This is a minimal stub. Actual network code would use
- * asio or platform-specific APIs.
+ * Implementation uses POSIX sockets with poll()-based non-blocking I/O.
+ * Reconnection with exponential backoff (1s, 2s, 4s, 8s, max 30s).
+ *
+ * Preconditions: Valid config with host and port
+ * Postconditions: is_connected() reflects actual socket state
+ * Failure: send() returns false on failure; state transitions to Error
  */
 
 #pragma once
 
+#include <atomic>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace Sunny::Infrastructure {
@@ -31,6 +38,7 @@ struct TransportConfig {
     int timeout_ms{5000};
     int retry_count{3};
     int retry_delay_ms{1000};
+    int max_retry_delay_ms{30000};
 };
 
 /// Transport state
@@ -38,6 +46,7 @@ enum class TransportState {
     Disconnected,
     Connecting,
     Connected,
+    Reconnecting,
     Error
 };
 
@@ -49,9 +58,6 @@ using StateCallback = std::function<void(TransportState, const std::string&)>;
 
 /**
  * @brief Network Transport Interface
- *
- * Abstract interface for network transport.
- * Implementations can use TCP, UDP, WebSocket, etc.
  */
 class ITransport {
 public:
@@ -67,10 +73,13 @@ public:
 };
 
 /**
- * @brief TCP Transport
+ * @brief TCP Transport with length-prefixed framing
  *
- * Reliable transport using TCP sockets.
- * Stub implementation - actual code would use networking library.
+ * Framing protocol: each message is prefixed with a 4-byte big-endian
+ * length header, followed by the message bytes.
+ *
+ * Background receive thread uses poll() for non-blocking I/O.
+ * Thread-safe send queue for concurrent access.
  */
 class TcpTransport : public ITransport {
 public:
@@ -89,18 +98,31 @@ public:
 
 private:
     TransportConfig config_;
-    TransportState state_{TransportState::Disconnected};
+    std::atomic<TransportState> state_{TransportState::Disconnected};
+    int socket_fd_{-1};
+
     MessageCallback message_callback_;
     StateCallback state_callback_;
+    std::mutex callback_mutex_;
+
+    std::mutex send_mutex_;
+
+    std::atomic<bool> running_{false};
+    std::thread receive_thread_;
+    std::thread reconnect_thread_;
 
     void set_state(TransportState new_state, const std::string& message = "");
+    bool connect_socket();
+    void close_socket();
+    void receive_loop();
+    void reconnect_loop();
+    bool send_raw(const std::string& message);
+    bool send_framed(const void* data, std::size_t len);
+    bool recv_exact(void* buf, std::size_t len);
 };
 
 /**
- * @brief UDP Transport
- *
- * Low-latency transport for events.
- * Stub implementation.
+ * @brief UDP Transport (connectionless, datagram-based)
  */
 class UdpTransport : public ITransport {
 public:
@@ -117,13 +139,23 @@ public:
 
 private:
     TransportConfig config_;
-    TransportState state_{TransportState::Disconnected};
+    std::atomic<TransportState> state_{TransportState::Disconnected};
+    int socket_fd_{-1};
+
     MessageCallback message_callback_;
     StateCallback state_callback_;
+    std::mutex callback_mutex_;
+
+    std::atomic<bool> running_{false};
+    std::thread receive_thread_;
+
+    void set_state(TransportState new_state, const std::string& message = "");
+    void receive_loop();
+    void close_socket();
 };
 
 /**
- * @brief Create default transport
+ * @brief Create default transport (TCP)
  */
 [[nodiscard]] std::unique_ptr<ITransport> create_transport(
     const TransportConfig& config = TransportConfig{}

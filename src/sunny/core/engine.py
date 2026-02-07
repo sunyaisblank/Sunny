@@ -5,6 +5,9 @@ Domain: CR (Core) | Category: EN (Engine)
 
 Provides a Python-friendly interface to the C++ native backend.
 All computation is delegated to the native extension.
+
+The C++ backend (sunny_native) is required. If unavailable,
+ImportError is raised on construction.
 """
 
 from __future__ import annotations
@@ -23,48 +26,7 @@ from sunny.core import (
     NOTE_NAME_TO_PC,
 )
 
-# Try to import native backend for advanced features
-try:
-    import sunny_native
-except ImportError:
-    sunny_native = None
-
-
-# Scale intervals (fallback if native not available)
-SCALE_INTERVALS = {
-    "major": [0, 2, 4, 5, 7, 9, 11],
-    "minor": [0, 2, 3, 5, 7, 8, 10],
-    "harmonic_minor": [0, 2, 3, 5, 7, 8, 11],
-    "melodic_minor": [0, 2, 3, 5, 7, 9, 11],
-    "dorian": [0, 2, 3, 5, 7, 9, 10],
-    "phrygian": [0, 1, 3, 5, 7, 8, 10],
-    "lydian": [0, 2, 4, 6, 7, 9, 11],
-    "mixolydian": [0, 2, 4, 5, 7, 9, 10],
-    "aeolian": [0, 2, 3, 5, 7, 8, 10],
-    "locrian": [0, 1, 3, 5, 6, 8, 10],
-    "pentatonic_major": [0, 2, 4, 7, 9],
-    "pentatonic_minor": [0, 3, 5, 7, 10],
-    "blues": [0, 3, 5, 6, 7, 10],
-    "whole_tone": [0, 2, 4, 6, 8, 10],
-    "chromatic": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
-}
-
-# Chord intervals
-CHORD_INTERVALS = {
-    "major": [0, 4, 7],
-    "minor": [0, 3, 7],
-    "diminished": [0, 3, 6],
-    "augmented": [0, 4, 8],
-    "sus2": [0, 2, 7],
-    "sus4": [0, 5, 7],
-    "7": [0, 4, 7, 10],
-    "maj7": [0, 4, 7, 11],
-    "m7": [0, 3, 7, 10],
-    "dim7": [0, 3, 6, 9],
-    "m7b5": [0, 3, 6, 10],
-}
-
-# Roman numeral to degree mapping
+# Roman numeral to degree mapping (used by Python-level helpers)
 NUMERAL_TO_DEGREE = {
     "I": 0, "i": 0,
     "II": 1, "ii": 1,
@@ -75,7 +37,7 @@ NUMERAL_TO_DEGREE = {
     "VII": 6, "vii": 6,
 }
 
-# Harmonic functions by degree (0-indexed)
+# Harmonic functions by degree (used by analyze_progression_functions)
 HARMONIC_FUNCTIONS = {
     0: "T",  # I - Tonic
     1: "S",  # ii - Subdominant
@@ -88,20 +50,29 @@ HARMONIC_FUNCTIONS = {
 
 
 class TheoryEngine:
-    """High-level theory engine with Python fallback.
+    """High-level theory engine backed by sunny_native.
 
-    This is a thin wrapper that delegates to the C++ native backend
-    when available, with pure Python fallback.
+    Requires the C++ native backend. Raises ImportError if unavailable.
     """
 
     def __init__(self) -> None:
-        """Initialize the theory engine."""
-        self._native = sunny_native if NATIVE_AVAILABLE else None
+        """Initialize the theory engine.
+
+        Raises:
+            ImportError: If sunny_native is not available.
+        """
+        if not NATIVE_AVAILABLE:
+            raise ImportError(
+                "sunny_native C++ backend is required. "
+                "Build the project with -DSUNNY_BUILD_PYTHON_BINDINGS=ON."
+            )
+        import sunny_native
+        self._native = sunny_native
 
     @property
     def is_native(self) -> bool:
-        """Check if using native backend."""
-        return self._native is not None
+        """Always True — native backend is required."""
+        return True
 
     def get_scale_notes(
         self,
@@ -109,25 +80,9 @@ class TheoryEngine:
         mode: str,
         octave: int = 4
     ) -> list[int]:
-        """Get MIDI notes for a scale.
-
-        Args:
-            root: Root note name (e.g., "C", "F#")
-            mode: Scale mode name
-            octave: Base octave
-
-        Returns:
-            List of MIDI note numbers
-        """
+        """Get MIDI notes for a scale."""
         root_pc = NOTE_NAME_TO_PC.get(root, 0)
-        intervals = SCALE_INTERVALS.get(mode.lower(), SCALE_INTERVALS["major"])
-
-        if self._native:
-            return self._native.generate_scale_notes(root_pc, intervals, octave)
-
-        # Fallback
-        base_midi = pitch_octave_to_midi(root_pc, octave)
-        return [base_midi + interval for interval in intervals]
+        return self._native.generate_scale_notes(root_pc, mode, octave)
 
     def generate_progression(
         self,
@@ -136,76 +91,27 @@ class TheoryEngine:
         numerals: list[str],
         octave: int = 4
     ) -> list[dict[str, Any]]:
-        """Generate a chord progression from Roman numerals.
-
-        Args:
-            root: Key root note
-            scale: Scale name
-            numerals: List of Roman numerals
-            octave: Base octave
-
-        Returns:
-            List of chord dictionaries
-        """
+        """Generate a chord progression from Roman numerals."""
         root_pc = NOTE_NAME_TO_PC.get(root, 0)
-        scale_intervals = SCALE_INTERVALS.get(scale.lower(), SCALE_INTERVALS["major"])
 
         chords = []
         for numeral in numerals:
-            chord = self._generate_chord_from_numeral(
-                numeral, root_pc, scale_intervals, octave
-            )
-            if chord:
-                chords.append(chord)
+            try:
+                voicing = self._native.generate_chord_from_numeral(
+                    numeral, root_pc, scale, octave
+                )
+                notes = list(voicing.notes) if voicing else []
+                quality = voicing.quality if voicing else "unknown"
+                chords.append({
+                    "numeral": numeral,
+                    "root": note_name(notes[0] % 12 if notes else root_pc),
+                    "quality": quality,
+                    "notes": notes,
+                })
+            except Exception:
+                pass
 
         return chords
-
-    def _generate_chord_from_numeral(
-        self,
-        numeral: str,
-        key_root: int,
-        scale_intervals: list[int],
-        octave: int
-    ) -> dict[str, Any] | None:
-        """Generate a chord from a Roman numeral."""
-        # Strip modifiers for degree lookup
-        base_numeral = numeral.rstrip("°o+7")
-
-        degree = NUMERAL_TO_DEGREE.get(base_numeral)
-        if degree is None:
-            return None
-
-        # Determine chord root from scale degree
-        if degree < len(scale_intervals):
-            chord_root_pc = (key_root + scale_intervals[degree]) % 12
-        else:
-            return None
-
-        # Determine quality
-        is_upper = base_numeral[0].isupper() if base_numeral else True
-        has_dim = "°" in numeral or "o" in numeral
-        has_7 = "7" in numeral
-
-        if has_dim:
-            quality = "dim7" if has_7 else "diminished"
-        elif is_upper:
-            quality = "7" if has_7 else "major"
-        else:
-            quality = "m7" if has_7 else "minor"
-
-        # Get chord intervals
-        intervals = CHORD_INTERVALS.get(quality, CHORD_INTERVALS["major"])
-
-        # Generate MIDI notes
-        base_midi = pitch_octave_to_midi(chord_root_pc, octave)
-        notes = [base_midi + i for i in intervals if base_midi + i <= 127]
-
-        return {
-            "numeral": numeral,
-            "root": note_name(chord_root_pc),
-            "quality": quality,
-            "notes": notes,
-        }
 
     def generate_progression_voiced(
         self,
@@ -217,10 +123,6 @@ class TheoryEngine:
         """Generate a progression with voice leading."""
         chords = self.generate_progression(root, scale, numerals, octave)
 
-        if not chords or not self._native:
-            return chords
-
-        # Apply voice leading between successive chords
         for i in range(1, len(chords)):
             source = chords[i - 1]["notes"]
             target_pcs = [n % 12 for n in chords[i]["notes"]]
@@ -276,22 +178,18 @@ class TheoryEngine:
             base = numeral.rstrip("°o+7")
             degree = NUMERAL_TO_DEGREE.get(base, 0)
 
-            # Get chord pitch classes
-            scale_intervals = SCALE_INTERVALS.get(scale.lower(), SCALE_INTERVALS["major"])
-            if degree < len(scale_intervals):
-                chord_root = (root_pc + scale_intervals[degree]) % 12
-            else:
-                chord_root = root_pc
-
-            # Apply negative harmony
-            if self._native:
-                original_pcs = {chord_root, (chord_root + 4) % 12, (chord_root + 7) % 12}
-                neg_pcs = self._native.negative_harmony(original_pcs, root_pc)
-                neg_root = min(neg_pcs) if neg_pcs else chord_root
-            else:
-                # Fallback: simple inversion
-                axis = (root_pc + 4) % 12
-                neg_root = (2 * axis - chord_root) % 12
+            try:
+                voicing = self._native.generate_chord_from_numeral(
+                    numeral, root_pc, scale, 4
+                )
+                if voicing:
+                    original_pcs = {n % 12 for n in voicing.notes}
+                    neg_pcs = self._native.negative_harmony(original_pcs, root_pc)
+                    neg_root = min(neg_pcs) if neg_pcs else root_pc
+                else:
+                    neg_root = root_pc
+            except Exception:
+                neg_root = root_pc
 
             result.append({
                 "original": numeral,
@@ -309,7 +207,6 @@ class TheoryEngine:
         result = []
         for numeral in progression:
             if numeral == before_numeral:
-                # Add V/x before x
                 result.append(f"V/{before_numeral}")
             result.append(numeral)
         return result
@@ -327,11 +224,10 @@ class TheoryEngine:
                 {"numeral": "bVII", "source": "minor", "description": "Flat VII"},
                 {"numeral": "bIII", "source": "minor", "description": "Flat III"},
             ]
-        else:
-            return [
-                {"numeral": "IV", "source": "major", "description": "Major IV"},
-                {"numeral": "V", "source": "major", "description": "Major V"},
-            ]
+        return [
+            {"numeral": "IV", "source": "major", "description": "Major IV"},
+            {"numeral": "V", "source": "major", "description": "Major V"},
+        ]
 
     def create_cadence(
         self,
@@ -377,7 +273,6 @@ class TheoryEngine:
         scale_notes = self.get_scale_notes(root, scale, octave)
 
         if contour == "arch":
-            # Rise then fall
             mid = length // 2
             indices = list(range(mid)) + list(range(mid, -1, -1))
         elif contour == "ascending":
@@ -401,19 +296,19 @@ class TheoryEngine:
 
     def get_available_scales(self) -> list[str]:
         """Get list of available scale names."""
-        return sorted(SCALE_INTERVALS.keys())
+        return sorted(self._native.list_scale_names())
 
     def get_scale_info(self, scale_name: str) -> dict[str, Any] | None:
         """Get detailed information about a scale."""
-        intervals = SCALE_INTERVALS.get(scale_name.lower())
-        if intervals is None:
+        try:
+            notes = self._native.generate_scale_notes(0, scale_name, 4)
+            return {
+                "name": scale_name,
+                "intervals": [n - notes[0] for n in notes] if notes else [],
+                "note_count": len(notes),
+            }
+        except Exception:
             return None
-
-        return {
-            "name": scale_name,
-            "intervals": intervals,
-            "note_count": len(intervals),
-        }
 
 
 # Singleton instance

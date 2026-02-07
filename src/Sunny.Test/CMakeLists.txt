@@ -44,6 +44,12 @@ if(UNIT_TEST_SOURCES)
     )
     target_compile_features(Sunny.Test.Unit PRIVATE cxx_std_23)
 
+    # nlohmann/json headers needed for MCP tests (TSMC001A)
+    if(TARGET nlohmann_json::nlohmann_json)
+        get_target_property(_json_inc nlohmann_json::nlohmann_json INTERFACE_INCLUDE_DIRECTORIES)
+        target_include_directories(Sunny.Test.Unit PRIVATE ${_json_inc})
+    endif()
+
     include(Catch)
     catch_discover_tests(Sunny.Test.Unit
         TEST_PREFIX "Unit."
@@ -90,6 +96,12 @@ if(INTEGRATION_TEST_SOURCES)
         Catch2::Catch2WithMain
     )
     target_compile_features(Sunny.Test.Integration PRIVATE cxx_std_23)
+
+    # nlohmann/json headers for bridge tests
+    if(TARGET nlohmann_json::nlohmann_json)
+        get_target_property(_json_inc nlohmann_json::nlohmann_json INTERFACE_INCLUDE_DIRECTORIES)
+        target_include_directories(Sunny.Test.Integration PRIVATE ${_json_inc})
+    endif()
 
     catch_discover_tests(Sunny.Test.Integration
         TEST_PREFIX "Integration."

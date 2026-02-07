@@ -50,6 +50,7 @@ endif()
 option(SUNNY_BUILD_TESTS "Build test suite" ON)
 option(SUNNY_BUILD_PYTHON_BINDINGS "Build Python bindings" ON)
 option(SUNNY_BUILD_MAX "Build Max/MSP externals" OFF)
+option(SUNNY_BUILD_MCP_SERVER "Build MCP server binary" ON)
 option(SUNNY_BUILD_BENCHMARKS "Build benchmarks" OFF)
 
 # =============================================================================
@@ -57,6 +58,17 @@ option(SUNNY_BUILD_BENCHMARKS "Build benchmarks" OFF)
 # =============================================================================
 
 include(FetchContent)
+
+# nlohmann/json for JSON-RPC, LOM bridge, OSC-JSON interop
+find_package(nlohmann_json 3 QUIET)
+if(NOT nlohmann_json_FOUND)
+    FetchContent_Declare(
+        json
+        GIT_REPOSITORY https://github.com/nlohmann/json.git
+        GIT_TAG v3.11.3
+    )
+    FetchContent_MakeAvailable(json)
+endif()
 
 # Catch2 for testing
 if(SUNNY_BUILD_TESTS)
@@ -115,6 +127,37 @@ if(SUNNY_BUILD_MAX)
 endif()
 
 # =============================================================================
+# MCP Server Binary (optional)
+# =============================================================================
+
+if(SUNNY_BUILD_MCP_SERVER)
+    add_executable(sunny-mcp
+        src/Sunny.Infrastructure/Mcp/MCPS001A.cpp
+        src/Sunny.Infrastructure/Mcp/MCPT001A.cpp
+        src/Sunny.Infrastructure/Mcp/main.cpp
+    )
+    target_link_libraries(sunny-mcp PRIVATE
+        Sunny::Infrastructure
+        nlohmann_json::nlohmann_json
+    )
+    target_include_directories(sunny-mcp PRIVATE
+        src/Sunny.Core
+        src/Sunny.Infrastructure
+    )
+    target_compile_features(sunny-mcp PRIVATE cxx_std_23)
+
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        target_compile_options(sunny-mcp PRIVATE
+            -Wall -Wextra -Wpedantic -Werror
+        )
+    endif()
+
+    install(TARGETS sunny-mcp
+        RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+    )
+endif()
+
+# =============================================================================
 # Installation
 # =============================================================================
 
@@ -153,4 +196,5 @@ message(STATUS "  C++ Standard:      ${CMAKE_CXX_STANDARD}")
 message(STATUS "  Tests:             ${SUNNY_BUILD_TESTS}")
 message(STATUS "  Python bindings:   ${SUNNY_BUILD_PYTHON_BINDINGS}")
 message(STATUS "  Max externals:     ${SUNNY_BUILD_MAX}")
+message(STATUS "  MCP server:        ${SUNNY_BUILD_MCP_SERVER}")
 message(STATUS "")

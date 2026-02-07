@@ -101,8 +101,16 @@ enum class ErrorCode : int {
 
     // Infrastructure errors (4xxx)
     ConnectionFailed = 4100,
+    ConnectionLost = 4101,
+    SendFailed = 4102,
+    ReceiveFailed = 4103,
+    ProtocolError = 4110,
     SessionNotReady = 4200,
-    TransactionFailed = 4300,
+    TransactionFailed = 4250,
+    McpParseError = 4300,
+    McpToolNotFound = 4301,
+    OscEncodeError = 4400,
+    OscDecodeError = 4401,
 };
 
 /**

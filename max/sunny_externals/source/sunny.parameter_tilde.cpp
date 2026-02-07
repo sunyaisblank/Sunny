@@ -32,6 +32,10 @@
 #include "ext_obex.h"
 #include "z_dsp.h"
 
+#ifdef SUNNY_CORE_AVAILABLE
+#include "RealTime/RTLF001A.h"
+#endif
+
 #include <atomic>
 #include <cmath>
 #include <string>
@@ -39,6 +43,12 @@
 // =============================================================================
 // Object Structure
 // =============================================================================
+
+/// Parameter update message for lock-free queue
+struct ParamUpdate {
+    float value{0.0f};
+    float ramp_ms{0.0f};
+};
 
 typedef struct _sunny_parameter {
     t_pxobject ob;              // MSP object header
@@ -63,6 +73,11 @@ typedef struct _sunny_parameter {
 
     // Outlets
     void* bang_outlet;
+
+#ifdef SUNNY_CORE_AVAILABLE
+    // Lock-free SPSC queue for parameter updates from control thread
+    Sunny::Infrastructure::SpscRingBuffer<ParamUpdate, 64>* param_queue;
+#endif
 
 } t_sunny_parameter;
 
@@ -164,6 +179,10 @@ void* sunny_parameter_new(t_symbol* s, long argc, t_atom* argv) {
 
         // Process arguments/attributes
         attr_args_process(x, argc, argv);
+
+#ifdef SUNNY_CORE_AVAILABLE
+        x->param_queue = new Sunny::Infrastructure::SpscRingBuffer<ParamUpdate, 64>();
+#endif
     }
 
     return x;
@@ -171,6 +190,9 @@ void* sunny_parameter_new(t_symbol* s, long argc, t_atom* argv) {
 
 void sunny_parameter_free(t_sunny_parameter* x) {
     dsp_free((t_pxobject*)x);
+#ifdef SUNNY_CORE_AVAILABLE
+    delete x->param_queue;
+#endif
 }
 
 // =============================================================================
@@ -198,6 +220,26 @@ void sunny_parameter_perform64(t_sunny_parameter* x, t_object* dsp64,
     double current = x->current_value;
     double target = x->target_value;
     double coeff = x->smooth_coeff;
+
+#ifdef SUNNY_CORE_AVAILABLE
+    // Drain lock-free queue (no allocation, no locks — audio-safe)
+    ParamUpdate update;
+    while (x->param_queue->try_pop(update)) {
+        if (update.ramp_ms > 0.0f) {
+            double samplerate = sys_getsr();
+            if (samplerate <= 0.0) samplerate = 44100.0;
+            long ramp_samples = static_cast<long>(update.ramp_ms * samplerate / 1000.0);
+            if (ramp_samples < 1) ramp_samples = 1;
+            x->target_value = static_cast<double>(update.value);
+            x->ramp_increment = (x->target_value - current) / static_cast<double>(ramp_samples);
+            x->ramp_samples_remaining = ramp_samples;
+        } else {
+            x->target_value = static_cast<double>(update.value);
+            x->ramp_samples_remaining = 0;
+        }
+        target = x->target_value;
+    }
+#endif
 
     for (long i = 0; i < sampleframes; i++) {
         // Handle ramping

@@ -3,13 +3,24 @@
  * @brief LOM Bridge Protocol implementation
  *
  * Component: INBR001A
+ *
+ * Serialisation uses nlohmann/json for correctness (proper string
+ * escaping, numeric precision). Deserialisation parses JSON responses
+ * from the Python Remote Script.
  */
 
 #include "INBR001A.h"
 
+#include <nlohmann/json.hpp>
 #include <sstream>
 
 namespace Sunny::Infrastructure {
+
+using json = nlohmann::json;
+
+// =============================================================================
+// LomPath
+// =============================================================================
 
 std::string LomPath::to_string() const {
     std::ostringstream oss;
@@ -42,83 +53,132 @@ LomPath LomPath::child(int index) const {
     return child(std::to_string(index));
 }
 
-std::string LomProtocol::serialize_request(const LomRequest& request) {
-    std::ostringstream oss;
-    oss << "{";
+// =============================================================================
+// Serialisation
+// =============================================================================
 
-    // Type
-    oss << "\"type\":\"";
-    switch (request.type) {
-        case LomRequestType::GetProperty: oss << "get"; break;
-        case LomRequestType::SetProperty: oss << "set"; break;
-        case LomRequestType::CallMethod: oss << "call"; break;
-        case LomRequestType::Observe: oss << "observe"; break;
-        case LomRequestType::Unobserve: oss << "unobserve"; break;
-    }
-    oss << "\",";
+namespace {
 
-    // Path
-    oss << "\"path\":\"" << request.path.to_string() << "\",";
-
-    // Property or method
-    oss << "\"name\":\"" << request.property_or_method << "\"";
-
-    // Args (simplified serialization)
-    if (!request.args.empty()) {
-        oss << ",\"args\":[";
-        for (std::size_t i = 0; i < request.args.size(); ++i) {
-            if (i > 0) oss << ",";
-            std::visit([&oss](const auto& v) {
-                using T = std::decay_t<decltype(v)>;
-                if constexpr (std::is_same_v<T, bool>) {
-                    oss << (v ? "true" : "false");
-                } else if constexpr (std::is_same_v<T, int>) {
-                    oss << v;
-                } else if constexpr (std::is_same_v<T, double>) {
-                    oss << v;
-                } else if constexpr (std::is_same_v<T, std::string>) {
-                    oss << "\"" << v << "\"";
-                } else {
-                    oss << "null";  // Arrays not fully supported
-                }
-            }, request.args[i]);
+json lom_value_to_json(const LomValue& value) {
+    return std::visit([](const auto& v) -> json {
+        using T = std::decay_t<decltype(v)>;
+        if constexpr (std::is_same_v<T, bool>) {
+            return v;
+        } else if constexpr (std::is_same_v<T, int>) {
+            return v;
+        } else if constexpr (std::is_same_v<T, double>) {
+            return v;
+        } else if constexpr (std::is_same_v<T, std::string>) {
+            return v;
+        } else if constexpr (std::is_same_v<T, std::vector<int>>) {
+            return json(v);
+        } else if constexpr (std::is_same_v<T, std::vector<double>>) {
+            return json(v);
+        } else if constexpr (std::is_same_v<T, std::vector<std::string>>) {
+            return json(v);
+        } else {
+            return nullptr;
         }
-        oss << "]";
+    }, value);
+}
+
+LomValue json_to_lom_value(const json& j) {
+    if (j.is_boolean()) {
+        return j.get<bool>();
+    } else if (j.is_number_integer()) {
+        return j.get<int>();
+    } else if (j.is_number_float()) {
+        return j.get<double>();
+    } else if (j.is_string()) {
+        return j.get<std::string>();
+    } else if (j.is_array() && !j.empty()) {
+        if (j[0].is_number_integer()) {
+            return j.get<std::vector<int>>();
+        } else if (j[0].is_number_float()) {
+            return j.get<std::vector<double>>();
+        } else if (j[0].is_string()) {
+            return j.get<std::vector<std::string>>();
+        }
+    }
+    return std::string{};  // Fallback
+}
+
+}  // namespace
+
+std::string LomProtocol::serialize_request(const LomRequest& request) {
+    json j;
+
+    switch (request.type) {
+        case LomRequestType::GetProperty: j["type"] = "get"; break;
+        case LomRequestType::SetProperty: j["type"] = "set"; break;
+        case LomRequestType::CallMethod:  j["type"] = "call"; break;
+        case LomRequestType::Observe:     j["type"] = "observe"; break;
+        case LomRequestType::Unobserve:   j["type"] = "unobserve"; break;
     }
 
-    // Callback ID
+    j["path"] = request.path.to_string();
+    j["name"] = request.property_or_method;
+
+    if (!request.args.empty()) {
+        json args_array = json::array();
+        for (const auto& arg : request.args) {
+            args_array.push_back(lom_value_to_json(arg));
+        }
+        j["args"] = args_array;
+    }
+
     if (request.callback_id) {
-        oss << ",\"callback_id\":\"" << *request.callback_id << "\"";
+        j["callback_id"] = *request.callback_id;
     }
 
-    oss << "}";
-    return oss.str();
+    return j.dump();
 }
 
 std::optional<LomResponse> LomProtocol::deserialize_response(
-    const std::string& /* json */
+    const std::string& input
 ) {
-    // Simplified - actual implementation would use JSON parser
+    json j;
+    try {
+        j = json::parse(input);
+    } catch (const json::parse_error&) {
+        return std::nullopt;
+    }
+
     LomResponse response;
-    response.success = true;
+
+    if (j.contains("success") && j["success"].is_boolean()) {
+        response.success = j["success"].get<bool>();
+    } else {
+        response.success = false;
+    }
+
+    if (j.contains("value") && !j["value"].is_null()) {
+        response.value = json_to_lom_value(j["value"]);
+    }
+
+    if (j.contains("error") && j["error"].is_string()) {
+        response.error = j["error"].get<std::string>();
+    }
+
+    if (j.contains("callback_id") && j["callback_id"].is_string()) {
+        response.callback_id = j["callback_id"].get<std::string>();
+    }
+
     return response;
 }
 
 std::string LomProtocol::serialize_notes(const std::vector<LomNoteData>& notes) {
-    std::ostringstream oss;
-    oss << "[";
-    for (std::size_t i = 0; i < notes.size(); ++i) {
-        if (i > 0) oss << ",";
-        const auto& n = notes[i];
-        oss << "{\"pitch\":" << static_cast<int>(n.pitch)
-            << ",\"start\":" << n.start_time
-            << ",\"duration\":" << n.duration
-            << ",\"velocity\":" << static_cast<int>(n.velocity)
-            << ",\"muted\":" << (n.muted ? "true" : "false")
-            << "}";
+    json arr = json::array();
+    for (const auto& n : notes) {
+        arr.push_back({
+            {"pitch",    static_cast<int>(n.pitch)},
+            {"start",    n.start_time},
+            {"duration", n.duration},
+            {"velocity", static_cast<int>(n.velocity)},
+            {"muted",    n.muted}
+        });
     }
-    oss << "]";
-    return oss.str();
+    return arr.dump();
 }
 
 LomNoteData LomProtocol::from_note_event(const Core::NoteEvent& event) {
@@ -130,6 +190,10 @@ LomNoteData LomProtocol::from_note_event(const Core::NoteEvent& event) {
     data.muted = false;
     return data;
 }
+
+// =============================================================================
+// Request builders
+// =============================================================================
 
 LomRequest LomProtocol::get_property(
     const LomPath& path,

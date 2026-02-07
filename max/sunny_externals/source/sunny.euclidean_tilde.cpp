@@ -36,6 +36,10 @@
 #include "ext_obex.h"
 #include "z_dsp.h"
 
+#ifdef SUNNY_CORE_AVAILABLE
+#include "Rhythm/RHEU001A.h"
+#endif
+
 #include <vector>
 #include <cmath>
 
@@ -329,7 +333,25 @@ void sunny_euclidean_bang(t_sunny_euclidean* x) {
 }
 
 void sunny_euclidean_regenerate(t_sunny_euclidean* x) {
+#ifdef SUNNY_CORE_AVAILABLE
+    // Use Sunny::Core Euclidean algorithm (production path)
+    auto result = Sunny::Core::euclidean_rhythm(
+        static_cast<int>(x->pulses), static_cast<int>(x->steps));
+    if (result) {
+        auto& core_pattern = *result;
+        x->pattern->resize(core_pattern.size());
+        // Apply rotation
+        long rotation = ((x->rotation % x->steps) + x->steps) % x->steps;
+        for (size_t i = 0; i < core_pattern.size(); i++) {
+            (*x->pattern)[i] = core_pattern[(i + rotation) % core_pattern.size()];
+        }
+    } else {
+        // Fallback to standalone on error
+        generate_euclidean_pattern(*x->pattern, x->pulses, x->steps, x->rotation);
+    }
+#else
     generate_euclidean_pattern(*x->pattern, x->pulses, x->steps, x->rotation);
+#endif
     x->pattern_dirty = false;
     sunny_euclidean_output_pattern(x);
 }

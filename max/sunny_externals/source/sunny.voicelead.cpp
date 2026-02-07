@@ -29,6 +29,11 @@
 #include "ext.h"
 #include "ext_obex.h"
 
+#ifdef SUNNY_CORE_AVAILABLE
+#include "Tensor/TNTP001A.h"
+#include "VoiceLeading/VLNT001A.h"
+#endif
+
 #include <vector>
 #include <cmath>
 #include <algorithm>
@@ -290,14 +295,49 @@ void sunny_voicelead_bang(t_sunny_voicelead* x) {
         return;
     }
 
-    // Compute voice leading
-    long motion = compute_voice_leading(
+    long motion = 0;
+
+#ifdef SUNNY_CORE_AVAILABLE
+    // Use Sunny::Core voice leading (production path)
+    {
+        std::vector<Sunny::Core::MidiNote> source;
+        source.reserve(x->source_chord->size());
+        for (auto n : *x->source_chord) {
+            source.push_back(static_cast<Sunny::Core::MidiNote>(n));
+        }
+
+        std::vector<Sunny::Core::PitchClass> target;
+        target.reserve(x->target_pcs->size());
+        for (auto pc : *x->target_pcs) {
+            target.push_back(static_cast<Sunny::Core::PitchClass>(pc));
+        }
+
+        auto result = Sunny::Core::voice_lead_nearest_tone(
+            source, target, x->lock_bass != 0);
+
+        if (result) {
+            x->result_chord->clear();
+            for (auto n : result->voiced_notes) {
+                x->result_chord->push_back(static_cast<long>(n));
+            }
+            motion = result->total_motion;
+        } else {
+            // Fallback to standalone algorithm on error
+            motion = compute_voice_leading(
+                *x->source_chord, *x->target_pcs, *x->result_chord,
+                x->lock_bass != 0, x->max_jump);
+        }
+    }
+#else
+    // Standalone voice leading (no Sunny::Core)
+    motion = compute_voice_leading(
         *x->source_chord,
         *x->target_pcs,
         *x->result_chord,
         x->lock_bass != 0,
         x->max_jump
     );
+#endif
 
     // Output motion
     outlet_int(x->motion_outlet, motion);

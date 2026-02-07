@@ -110,6 +110,10 @@ macro(add_max_external NAME)
 
     if(SUNNY_CORE_AVAILABLE)
         target_link_libraries(${NAME} PRIVATE Sunny::Core)
+        target_compile_definitions(${NAME} PRIVATE SUNNY_CORE_AVAILABLE=1)
+        target_include_directories(${NAME} PRIVATE
+            "${CMAKE_CURRENT_SOURCE_DIR}/../src/Sunny.Infrastructure"
+        )
     endif()
 
     set_target_properties(${NAME} PROPERTIES
