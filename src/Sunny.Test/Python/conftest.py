@@ -11,13 +11,16 @@ from pathlib import Path
 
 import pytest
 
+# Project root: src/Sunny.Test/Python/ → src/Sunny.Test/ → src/ → root
+PROJECT_ROOT = Path(__file__).parent.parent.parent.parent
+
 # Add build directory to path for sunny_native
-BUILD_DIR = Path(__file__).parent.parent / "build" / "src" / "Sunny.Infrastructure"
+BUILD_DIR = PROJECT_ROOT / "build" / "src" / "Sunny.Infrastructure"
 if BUILD_DIR.exists():
     sys.path.insert(0, str(BUILD_DIR))
 
 # Add src to path for Python modules
-SRC_DIR = Path(__file__).parent.parent / "src"
+SRC_DIR = PROJECT_ROOT / "src"
 sys.path.insert(0, str(SRC_DIR))
 
 

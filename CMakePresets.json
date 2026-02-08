@@ -1,0 +1,81 @@
+{
+    "version": 6,
+    "cmakeMinimumRequired": {
+        "major": 3,
+        "minor": 20,
+        "patch": 0
+    },
+    "configurePresets": [
+        {
+            "name": "linux-debug",
+            "displayName": "Linux Debug",
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/build/debug",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug",
+                "SUNNY_BUILD_TESTS": "ON",
+                "SUNNY_BUILD_PYTHON_BINDINGS": "ON",
+                "SUNNY_BUILD_BENCHMARKS": "ON"
+            }
+        },
+        {
+            "name": "linux-release",
+            "displayName": "Linux Release",
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/build/release",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release",
+                "SUNNY_BUILD_TESTS": "ON",
+                "SUNNY_BUILD_PYTHON_BINDINGS": "ON"
+            }
+        },
+        {
+            "name": "ci",
+            "displayName": "CI",
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/build",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release",
+                "SUNNY_BUILD_TESTS": "ON",
+                "SUNNY_BUILD_PYTHON_BINDINGS": "ON"
+            }
+        }
+    ],
+    "buildPresets": [
+        {
+            "name": "linux-debug",
+            "configurePreset": "linux-debug"
+        },
+        {
+            "name": "linux-release",
+            "configurePreset": "linux-release"
+        },
+        {
+            "name": "ci",
+            "configurePreset": "ci"
+        }
+    ],
+    "testPresets": [
+        {
+            "name": "linux-debug",
+            "configurePreset": "linux-debug",
+            "output": {
+                "outputOnFailure": true
+            }
+        },
+        {
+            "name": "linux-release",
+            "configurePreset": "linux-release",
+            "output": {
+                "outputOnFailure": true
+            }
+        },
+        {
+            "name": "ci",
+            "configurePreset": "ci",
+            "output": {
+                "outputOnFailure": true
+            }
+        }
+    ]
+}

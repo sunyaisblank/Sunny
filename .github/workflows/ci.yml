@@ -67,12 +67,12 @@ jobs:
 
       - name: Run tests
         run: |
-          PYTHONPATH=src uv run pytest tests/ -v --tb=short
+          PYTHONPATH=src uv run pytest src/Sunny.Test/Python/ -v --tb=short
         continue-on-error: true  # Allow failure until all tests pass
 
       - name: Run tests with coverage
         run: |
-          PYTHONPATH=src uv run pytest tests/ --cov=src/sunny --cov-report=xml
+          PYTHONPATH=src uv run pytest src/Sunny.Test/Python/ --cov=src/sunny --cov-report=xml
         continue-on-error: true
 
       - name: Upload coverage

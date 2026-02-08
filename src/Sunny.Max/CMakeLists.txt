@@ -29,7 +29,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # Try to find Max SDK in common locations
 set(MAX_SDK_SEARCH_PATHS
     "$ENV{MAX_SDK_PATH}"
-    "${CMAKE_CURRENT_SOURCE_DIR}/../max-sdk"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../max-sdk"
     "${CMAKE_CURRENT_SOURCE_DIR}/max-sdk"
     "/Applications/Max 8/Contents/Resources/C74/packages/max-sdk"
     "$ENV{HOME}/Documents/Max 8/Packages/max-sdk"
@@ -83,7 +83,7 @@ if(TARGET Sunny::Core)
     message(STATUS "Linking to Sunny::Core from parent project")
 else()
     # Try to find from parent directory
-    set(SUNNY_CORE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/../src/Sunny.Core")
+    set(SUNNY_CORE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/../Sunny.Core")
     if(EXISTS "${SUNNY_CORE_PATH}/CMakeLists.txt")
         add_subdirectory("${SUNNY_CORE_PATH}" "${CMAKE_BINARY_DIR}/Sunny.Core")
         set(SUNNY_CORE_AVAILABLE TRUE)
@@ -105,14 +105,14 @@ macro(add_max_external NAME)
 
     target_include_directories(${NAME} PRIVATE
         ${MAX_INCLUDES}
-        "${CMAKE_CURRENT_SOURCE_DIR}/../src/Sunny.Core"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../Sunny.Core"
     )
 
     if(SUNNY_CORE_AVAILABLE)
         target_link_libraries(${NAME} PRIVATE Sunny::Core)
         target_compile_definitions(${NAME} PRIVATE SUNNY_CORE_AVAILABLE=1)
         target_include_directories(${NAME} PRIVATE
-            "${CMAKE_CURRENT_SOURCE_DIR}/../src/Sunny.Infrastructure"
+            "${CMAKE_CURRENT_SOURCE_DIR}/../Sunny.Infrastructure"
         )
     endif()
 
@@ -138,23 +138,23 @@ endmacro()
 # =============================================================================
 
 # sunny.parameter~ - Real-time parameter control with sample-accurate timing
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/sunny_externals/source/sunny.parameter_tilde.cpp")
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/External/sunny.parameter_tilde.cpp")
     add_max_external(sunny.parameter~
-        sunny_externals/source/sunny.parameter_tilde.cpp
+        External/sunny.parameter_tilde.cpp
     )
 endif()
 
 # sunny.euclidean~ - Euclidean rhythm generator
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/sunny_externals/source/sunny.euclidean_tilde.cpp")
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/External/sunny.euclidean_tilde.cpp")
     add_max_external(sunny.euclidean~
-        sunny_externals/source/sunny.euclidean_tilde.cpp
+        External/sunny.euclidean_tilde.cpp
     )
 endif()
 
 # sunny.voicelead - Voice leading calculator (non-audio)
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/sunny_externals/source/sunny.voicelead.cpp")
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/External/sunny.voicelead.cpp")
     add_max_external(sunny.voicelead
-        sunny_externals/source/sunny.voicelead.cpp
+        External/sunny.voicelead.cpp
     )
 endif()
 
@@ -169,7 +169,7 @@ elseif(WIN32)
     set(MAX_PACKAGES_DIR "$ENV{USERPROFILE}/Documents/Max 8/Packages/Sunny")
 endif()
 
-install(DIRECTORY abstractions/
+install(DIRECTORY Abstraction/
     DESTINATION "${MAX_PACKAGES_DIR}/patchers"
     FILES_MATCHING PATTERN "*.maxpat"
 )

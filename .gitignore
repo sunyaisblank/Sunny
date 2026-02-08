@@ -52,6 +52,9 @@ htmlcov/
 *.manifest
 *.spec
 
+# CTest output
+Testing/
+
 # Snapshots (local only)
 .sunny/
 
