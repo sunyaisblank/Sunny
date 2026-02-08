@@ -51,7 +51,6 @@ option(SUNNY_BUILD_TESTS "Build test suite" ON)
 option(SUNNY_BUILD_PYTHON_BINDINGS "Build Python bindings" ON)
 option(SUNNY_BUILD_MAX "Build Max/MSP externals" OFF)
 option(SUNNY_BUILD_MCP_SERVER "Build MCP server binary" ON)
-option(SUNNY_BUILD_BENCHMARKS "Build benchmarks" OFF)
 
 # =============================================================================
 # Dependencies

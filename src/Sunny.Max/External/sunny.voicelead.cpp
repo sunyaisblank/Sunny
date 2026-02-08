@@ -29,6 +29,8 @@
 #include "ext.h"
 #include "ext_obex.h"
 
+#include "Algorithm/VoiceLeadStandalone.h"
+
 #ifdef SUNNY_CORE_AVAILABLE
 #include "Tensor/TNTP001A.h"
 #include "VoiceLeading/VLNT001A.h"
@@ -60,34 +62,11 @@ typedef struct _sunny_voicelead {
 
 } t_sunny_voicelead;
 
-// =============================================================================
-// Voice Leading Algorithm
-// =============================================================================
-
-/**
- * Find the nearest MIDI pitch to source with the given pitch class.
- */
+// Delegate to extracted algorithm header
 static long nearest_pitch(long source, long target_pc) {
-    long source_pc = source % 12;
-    long diff = target_pc - source_pc;
-
-    // Normalize to [-6, 5] for minimal motion
-    if (diff > 6) diff -= 12;
-    if (diff < -6) diff += 12;
-
-    long result = source + diff;
-
-    // Clamp to valid MIDI range
-    if (result < 0) result = target_pc;
-    if (result > 127) result = 127 - (12 - target_pc);
-
-    return result;
+    return Sunny::Max::Algorithm::nearest_pitch(source, target_pc);
 }
 
-/**
- * Compute optimal voice leading.
- * Returns total motion.
- */
 static long compute_voice_leading(
     const std::vector<long>& source,
     const std::vector<long>& target_pcs,
@@ -95,82 +74,8 @@ static long compute_voice_leading(
     bool lock_bass,
     long max_jump
 ) {
-    result.clear();
-    if (source.empty() || target_pcs.empty()) return 0;
-
-    // Extend target PCs if needed
-    std::vector<long> targets = target_pcs;
-    while (targets.size() < source.size()) {
-        targets.push_back(target_pcs[targets.size() % target_pcs.size()]);
-    }
-
-    std::vector<bool> used(targets.size(), false);
-    long total_motion = 0;
-
-    for (size_t i = 0; i < source.size(); i++) {
-        long src = source[i];
-        long best_pitch = src;
-        long best_distance = std::numeric_limits<long>::max();
-        size_t best_idx = 0;
-
-        if (lock_bass && i == 0) {
-            // Bass takes root
-            best_pitch = nearest_pitch(src, targets[0]);
-            used[0] = true;
-        } else {
-            // Find closest available target
-            for (size_t j = 0; j < targets.size(); j++) {
-                if (used[j] && used.size() > source.size()) continue;
-
-                long candidate = nearest_pitch(src, targets[j]);
-                long distance = std::abs(candidate - src);
-
-                // Prefer unused targets
-                if (!used[j] && distance < best_distance) {
-                    best_distance = distance;
-                    best_pitch = candidate;
-                    best_idx = j;
-                } else if (used[j] && distance < best_distance - 2) {
-                    // Reuse only if significantly closer
-                    best_distance = distance;
-                    best_pitch = candidate;
-                    best_idx = j;
-                }
-            }
-            used[best_idx] = true;
-        }
-
-        // Apply max jump constraint
-        long motion = std::abs(best_pitch - src);
-        if (max_jump > 0 && motion > max_jump) {
-            if (best_pitch > src) {
-                best_pitch = src + max_jump;
-            } else {
-                best_pitch = src - max_jump;
-            }
-            // Re-align to target pitch class
-            long target_pc = targets[best_idx];
-            long diff = target_pc - (best_pitch % 12);
-            if (diff > 6) diff -= 12;
-            if (diff < -6) diff += 12;
-            best_pitch += diff;
-            best_pitch = std::clamp(best_pitch, 0L, 127L);
-        }
-
-        result.push_back(best_pitch);
-        total_motion += std::abs(best_pitch - src);
-    }
-
-    // Fix voice crossings
-    for (size_t i = 1; i < result.size(); i++) {
-        if (result[i] <= result[i - 1]) {
-            while (result[i] <= result[i - 1] && result[i] + 12 <= 127) {
-                result[i] += 12;
-            }
-        }
-    }
-
-    return total_motion;
+    return Sunny::Max::Algorithm::compute_voice_leading(
+        source, target_pcs, result, lock_bass, max_jump);
 }
 
 // =============================================================================

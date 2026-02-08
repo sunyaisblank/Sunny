@@ -5,11 +5,11 @@
 # Component: TSPK001A
 # Domain: TS (Test) | Category: PK (Package)
 #
-# Test categories:
-# - Unit: 1:1 component tests (TSXX tests XX)
-# - Diagnostic: Mathematical invariant verification
-# - Integration: Pipeline and routing tests
-# - Benchmark: Performance tracking
+# Domain-aligned test targets mirroring source structure:
+# - Sunny.Test.Core:           Tests for Sunny.Core (pitch, scale, harmony, etc.)
+# - Sunny.Test.Render:         Tests for Sunny.Render (transport, modulation, arpeggio)
+# - Sunny.Test.Infrastructure: Tests for Sunny.Infrastructure (protocol, bridge, MCP, etc.)
+# - Sunny.Test.Max:            Tests for Sunny.Max standalone algorithms
 #
 # =============================================================================
 
@@ -26,108 +26,105 @@ if(NOT Catch2_FOUND)
     FetchContent_MakeAvailable(Catch2)
 endif()
 
+include(Catch)
+
 # =============================================================================
-# Unit Tests
+# Sunny.Test.Core
 # =============================================================================
 
-file(GLOB UNIT_TEST_SOURCES
-    "${CMAKE_CURRENT_SOURCE_DIR}/Unit/*.cpp"
+file(GLOB_RECURSE CORE_TEST_SOURCES
+    "${CMAKE_CURRENT_SOURCE_DIR}/Sunny.Core/**/*.cpp"
 )
 
-if(UNIT_TEST_SOURCES)
-    add_executable(Sunny.Test.Unit ${UNIT_TEST_SOURCES})
-    target_link_libraries(Sunny.Test.Unit PRIVATE
+if(CORE_TEST_SOURCES)
+    add_executable(Sunny.Test.Core ${CORE_TEST_SOURCES})
+    target_link_libraries(Sunny.Test.Core PRIVATE
+        Sunny::Core
+        Catch2::Catch2WithMain
+    )
+    target_compile_features(Sunny.Test.Core PRIVATE cxx_std_23)
+
+    catch_discover_tests(Sunny.Test.Core
+        TEST_PREFIX "Core."
+        EXTRA_ARGS --reporter=console
+    )
+endif()
+
+# =============================================================================
+# Sunny.Test.Render
+# =============================================================================
+
+file(GLOB_RECURSE RENDER_TEST_SOURCES
+    "${CMAKE_CURRENT_SOURCE_DIR}/Sunny.Render/**/*.cpp"
+)
+
+if(RENDER_TEST_SOURCES)
+    add_executable(Sunny.Test.Render ${RENDER_TEST_SOURCES})
+    target_link_libraries(Sunny.Test.Render PRIVATE
+        Sunny::Core
+        Sunny::Render
+        Catch2::Catch2WithMain
+    )
+    target_compile_features(Sunny.Test.Render PRIVATE cxx_std_23)
+
+    catch_discover_tests(Sunny.Test.Render
+        TEST_PREFIX "Render."
+        EXTRA_ARGS --reporter=console
+    )
+endif()
+
+# =============================================================================
+# Sunny.Test.Infrastructure
+# =============================================================================
+
+file(GLOB_RECURSE INFRA_TEST_SOURCES
+    "${CMAKE_CURRENT_SOURCE_DIR}/Sunny.Infrastructure/**/*.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/Sunny.Infrastructure/*.cpp"
+)
+
+if(INFRA_TEST_SOURCES)
+    add_executable(Sunny.Test.Infrastructure ${INFRA_TEST_SOURCES})
+    target_link_libraries(Sunny.Test.Infrastructure PRIVATE
         Sunny::Core
         Sunny::Render
         Sunny::Infrastructure
         Catch2::Catch2WithMain
     )
-    target_compile_features(Sunny.Test.Unit PRIVATE cxx_std_23)
+    target_compile_features(Sunny.Test.Infrastructure PRIVATE cxx_std_23)
 
-    # nlohmann/json headers needed for MCP tests (TSMC001A)
+    # nlohmann/json headers needed for MCP and bridge tests
     if(TARGET nlohmann_json::nlohmann_json)
         get_target_property(_json_inc nlohmann_json::nlohmann_json INTERFACE_INCLUDE_DIRECTORIES)
-        target_include_directories(Sunny.Test.Unit PRIVATE ${_json_inc})
+        target_include_directories(Sunny.Test.Infrastructure PRIVATE ${_json_inc})
     endif()
 
-    include(Catch)
-    catch_discover_tests(Sunny.Test.Unit
-        TEST_PREFIX "Unit."
+    catch_discover_tests(Sunny.Test.Infrastructure
+        TEST_PREFIX "Infra."
         EXTRA_ARGS --reporter=console
     )
 endif()
 
 # =============================================================================
-# Diagnostic Tests
+# Sunny.Test.Max
 # =============================================================================
 
-file(GLOB DIAGNOSTIC_TEST_SOURCES
-    "${CMAKE_CURRENT_SOURCE_DIR}/Diagnostic/*.cpp"
+file(GLOB_RECURSE MAX_TEST_SOURCES
+    "${CMAKE_CURRENT_SOURCE_DIR}/Sunny.Max/**/*.cpp"
 )
 
-if(DIAGNOSTIC_TEST_SOURCES)
-    add_executable(Sunny.Test.Diagnostic ${DIAGNOSTIC_TEST_SOURCES})
-    target_link_libraries(Sunny.Test.Diagnostic PRIVATE
+if(MAX_TEST_SOURCES)
+    add_executable(Sunny.Test.Max ${MAX_TEST_SOURCES})
+    target_link_libraries(Sunny.Test.Max PRIVATE
         Sunny::Core
         Catch2::Catch2WithMain
     )
-    target_compile_features(Sunny.Test.Diagnostic PRIVATE cxx_std_23)
-
-    catch_discover_tests(Sunny.Test.Diagnostic
-        TEST_PREFIX "Diagnostic."
-        EXTRA_ARGS --reporter=console
+    target_include_directories(Sunny.Test.Max PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/../Sunny.Max"
     )
-endif()
+    target_compile_features(Sunny.Test.Max PRIVATE cxx_std_23)
 
-# =============================================================================
-# Integration Tests
-# =============================================================================
-
-file(GLOB INTEGRATION_TEST_SOURCES
-    "${CMAKE_CURRENT_SOURCE_DIR}/Integration/*.cpp"
-)
-
-if(INTEGRATION_TEST_SOURCES)
-    add_executable(Sunny.Test.Integration ${INTEGRATION_TEST_SOURCES})
-    target_link_libraries(Sunny.Test.Integration PRIVATE
-        Sunny::Core
-        Sunny::Render
-        Sunny::Infrastructure
-        Catch2::Catch2WithMain
-    )
-    target_compile_features(Sunny.Test.Integration PRIVATE cxx_std_23)
-
-    # nlohmann/json headers for bridge tests
-    if(TARGET nlohmann_json::nlohmann_json)
-        get_target_property(_json_inc nlohmann_json::nlohmann_json INTERFACE_INCLUDE_DIRECTORIES)
-        target_include_directories(Sunny.Test.Integration PRIVATE ${_json_inc})
-    endif()
-
-    catch_discover_tests(Sunny.Test.Integration
-        TEST_PREFIX "Integration."
-        EXTRA_ARGS --reporter=console
-    )
-endif()
-
-# =============================================================================
-# Benchmark Tests
-# =============================================================================
-
-file(GLOB BENCHMARK_TEST_SOURCES
-    "${CMAKE_CURRENT_SOURCE_DIR}/Benchmark/*.cpp"
-)
-
-if(BENCHMARK_TEST_SOURCES)
-    add_executable(Sunny.Test.Benchmark ${BENCHMARK_TEST_SOURCES})
-    target_link_libraries(Sunny.Test.Benchmark PRIVATE
-        Sunny::Core
-        Sunny::Render
-        Catch2::Catch2WithMain
-    )
-    target_compile_features(Sunny.Test.Benchmark PRIVATE cxx_std_23)
-
-    catch_discover_tests(Sunny.Test.Benchmark
-        TEST_PREFIX "Benchmark."
+    catch_discover_tests(Sunny.Test.Max
+        TEST_PREFIX "Max."
         EXTRA_ARGS --reporter=console
     )
 endif()

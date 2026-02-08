@@ -32,6 +32,8 @@
 #include "ext_obex.h"
 #include "z_dsp.h"
 
+#include "Algorithm/ParameterSmoothing.h"
+
 #ifdef SUNNY_CORE_AVAILABLE
 #include "RealTime/RTLF001A.h"
 #endif
@@ -202,12 +204,7 @@ void sunny_parameter_free(t_sunny_parameter* x) {
 void sunny_parameter_dsp64(t_sunny_parameter* x, t_object* dsp64, short* count,
                            double samplerate, long maxvectorsize, long flags) {
     // Calculate smoothing coefficient
-    if (x->smooth_ms > 0.0 && samplerate > 0.0) {
-        double smooth_samples = x->smooth_ms * samplerate / 1000.0;
-        x->smooth_coeff = exp(-1.0 / smooth_samples);
-    } else {
-        x->smooth_coeff = 0.0;
-    }
+    x->smooth_coeff = Sunny::Max::Algorithm::one_pole_coefficient(samplerate, x->smooth_ms);
 
     object_method(dsp64, gensym("dsp_add64"), x, sunny_parameter_perform64, 0, nullptr);
 }

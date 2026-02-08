@@ -36,6 +36,8 @@
 #include "ext_obex.h"
 #include "z_dsp.h"
 
+#include "Algorithm/EuclideanBresenham.h"
+
 #ifdef SUNNY_CORE_AVAILABLE
 #include "Rhythm/RHEU001A.h"
 #endif
@@ -94,49 +96,9 @@ void sunny_euclidean_output_pattern(t_sunny_euclidean* x);
 
 void sunny_euclidean_assist(t_sunny_euclidean* x, void* b, long m, long a, char* s);
 
-// =============================================================================
-// Euclidean Algorithm (Bresenham)
-// =============================================================================
-
-/**
- * Generate Euclidean rhythm using Bresenham's algorithm.
- * Integer arithmetic for exact results.
- */
+// Delegate to extracted algorithm header
 static void generate_euclidean_pattern(std::vector<bool>& pattern, long pulses, long steps, long rotation) {
-    pattern.resize(steps);
-
-    if (steps <= 0) return;
-
-    // Clamp pulses
-    if (pulses < 0) pulses = 0;
-    if (pulses > steps) pulses = steps;
-
-    // Edge cases
-    if (pulses == 0) {
-        for (long i = 0; i < steps; i++) pattern[i] = false;
-        return;
-    }
-    if (pulses == steps) {
-        for (long i = 0; i < steps; i++) pattern[i] = true;
-        return;
-    }
-
-    // Bresenham's algorithm
-    for (long i = 0; i < steps; i++) {
-        long threshold = (i + 1) * pulses;
-        long prev_threshold = i * pulses;
-        pattern[i] = (threshold / steps) > (prev_threshold / steps);
-    }
-
-    // Apply rotation
-    if (rotation != 0) {
-        rotation = ((rotation % steps) + steps) % steps;
-        std::vector<bool> rotated(steps);
-        for (long i = 0; i < steps; i++) {
-            rotated[i] = pattern[(i + rotation) % steps];
-        }
-        pattern = rotated;
-    }
+    Sunny::Max::Algorithm::generate_euclidean_pattern(pattern, pulses, steps, rotation);
 }
 
 // =============================================================================
