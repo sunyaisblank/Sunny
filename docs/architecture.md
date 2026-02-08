@@ -326,7 +326,7 @@ lcm(a, 0) == 0
 # - Python 3.11+ with dev headers
 
 # Build
-mkdir build && cd build
+mkdir bin && cd bin
 cmake .. -DCMAKE_BUILD_TYPE=Release
 cmake --build .
 
@@ -475,7 +475,7 @@ tests/
 
 ```bash
 # C++ tests
-cd build && ctest --output-on-failure
+cd bin && ctest --output-on-failure
 
 # Python tests (requires pytest)
 PYTHONPATH=src pytest tests/ -v

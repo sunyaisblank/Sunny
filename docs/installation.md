@@ -120,7 +120,7 @@ sudo apt install build-essential cmake python3-dev
 
 ```bash
 cd cpp
-mkdir build && cd build
+mkdir bin && cd bin
 
 # Configure
 cmake .. -DCMAKE_BUILD_TYPE=Release
@@ -168,7 +168,7 @@ Native available: True
 
 ```bash
 cd max
-mkdir build && cd build
+mkdir bin && cd bin
 
 # Configure with SDK path
 cmake .. -DMAX_SDK_PATH=$MAX_SDK_PATH
@@ -301,7 +301,7 @@ pytest tests/ -v
 pytest tests/ -v --cov=src/sunny --cov-report=html
 
 # C++ tests
-cd cpp/build && ctest --output-on-failure
+cd cpp/bin && ctest --output-on-failure
 ```
 
 ### 8.2 Verify MCP Server
@@ -359,7 +359,7 @@ pip show sunny
 **Solution:**
 ```bash
 # Rebuild with verbose output
-cd cpp/build
+cd cpp/bin
 cmake .. -DCMAKE_BUILD_TYPE=Debug
 cmake --build .
 
@@ -375,8 +375,8 @@ otool -L sunny_native*.so  # macOS
 **Solution:**
 1. Verify externals were built:
    ```bash
-   ls max/build/*.mxo  # macOS
-   ls max/build/*.mxe64  # Windows
+   ls max/bin/*.mxo  # macOS
+   ls max/bin/*.mxe64  # Windows
    ```
 2. Check Max console for error messages
 3. Verify file is in correct Packages folder
@@ -419,7 +419,7 @@ python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 
 # 2. Build native backend (optional but recommended)
-cd cpp && mkdir build && cd build
+cd cpp && mkdir bin && cd bin
 cmake .. -DCMAKE_BUILD_TYPE=Release
 cmake --build .
 cd ../..

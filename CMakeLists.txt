@@ -12,7 +12,7 @@
 # - Sunny.Test:           Validation suite (C++)
 #
 # Build:
-#   mkdir build && cd build
+#   mkdir bin && cd bin
 #   cmake .. -DCMAKE_BUILD_TYPE=Release
 #   cmake --build .
 #   ctest --output-on-failure

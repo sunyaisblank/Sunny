@@ -20,19 +20,19 @@ jobs:
           sudo apt-get install -y cmake ninja-build python3-dev
 
       - name: Configure CMake
-        run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+        run: cmake -B bin -G Ninja -DCMAKE_BUILD_TYPE=Release
 
       - name: Build C++
-        run: cmake --build build
+        run: cmake --build bin
 
       - name: Run C++ tests
-        run: ctest --test-dir build --output-on-failure
+        run: ctest --test-dir bin --output-on-failure
 
       - name: Upload sunny_native module
         uses: actions/upload-artifact@v4
         with:
           name: sunny-native-linux
-          path: build/sunny_native*.so
+          path: bin/sunny_native*.so
           if-no-files-found: warn
 
   # Python tests (with native module)
@@ -147,10 +147,10 @@ jobs:
         run: brew install cmake ninja
 
       - name: Configure CMake
-        run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+        run: cmake -B bin -G Ninja -DCMAKE_BUILD_TYPE=Release
 
       - name: Build C++
-        run: cmake --build build
+        run: cmake --build bin
 
       - name: Run C++ tests
-        run: ctest --test-dir build --output-on-failure
+        run: ctest --test-dir bin --output-on-failure

@@ -10,7 +10,7 @@
             "name": "linux-debug",
             "displayName": "Linux Debug",
             "generator": "Ninja",
-            "binaryDir": "${sourceDir}/build/debug",
+            "binaryDir": "${sourceDir}/bin/debug",
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Debug",
                 "SUNNY_BUILD_TESTS": "ON",
@@ -22,7 +22,7 @@
             "name": "linux-release",
             "displayName": "Linux Release",
             "generator": "Ninja",
-            "binaryDir": "${sourceDir}/build/release",
+            "binaryDir": "${sourceDir}/bin/release",
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Release",
                 "SUNNY_BUILD_TESTS": "ON",
@@ -33,7 +33,7 @@
             "name": "ci",
             "displayName": "CI",
             "generator": "Ninja",
-            "binaryDir": "${sourceDir}/build",
+            "binaryDir": "${sourceDir}/bin",
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Release",
                 "SUNNY_BUILD_TESTS": "ON",

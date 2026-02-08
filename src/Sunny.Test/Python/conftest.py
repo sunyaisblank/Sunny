@@ -15,7 +15,7 @@ import pytest
 PROJECT_ROOT = Path(__file__).parent.parent.parent.parent
 
 # Add build directory to path for sunny_native
-BUILD_DIR = PROJECT_ROOT / "build" / "src" / "Sunny.Infrastructure"
+BUILD_DIR = PROJECT_ROOT / "bin" / "src" / "Sunny.Infrastructure"
 if BUILD_DIR.exists():
     sys.path.insert(0, str(BUILD_DIR))
 
