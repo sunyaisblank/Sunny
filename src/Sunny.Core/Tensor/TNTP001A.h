@@ -87,6 +87,9 @@ enum class ErrorCode : int {
     InvalidRomanNumeral = 2113,
     InvalidNoteName = 2114,
     InvalidOctave = 2115,
+    InvalidLetterName = 2116,
+    InvalidSpelledPitch = 2117,
+    InvalidIntervalQuality = 2118,
 
     // Theory computation errors (3xxx)
     ScaleGenerationFailed = 3100,
@@ -136,6 +139,7 @@ constexpr int OCTAVE_MIN = -1;
 constexpr int OCTAVE_MAX = 9;
 constexpr double TEMPO_MIN_BPM = 20.0;
 constexpr double TEMPO_MAX_BPM = 999.0;
+constexpr int DIATONIC_COUNT = 7;
 constexpr int EUCLIDEAN_MAX_STEPS = 64;
 
 }  // namespace Constants
