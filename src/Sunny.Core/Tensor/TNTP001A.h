@@ -90,6 +90,11 @@ enum class ErrorCode : int {
     InvalidLetterName = 2116,
     InvalidSpelledPitch = 2117,
     InvalidIntervalQuality = 2118,
+    InvalidTimeSignature = 2120,
+    InvalidAppliedChord = 2125,
+    InvalidToneRow = 2130,
+    InvalidTriad = 2131,
+    InvalidMelody = 2132,
 
     // Theory computation errors (3xxx)
     ScaleGenerationFailed = 3100,
@@ -101,6 +106,7 @@ enum class ErrorCode : int {
     HarmonyAnalysisFailed = 3150,
     NegativeHarmonyFailed = 3151,
     InvalidPitchClassOp = 3170,
+    InvalidGeneratedScale = 3180,
 
     // Infrastructure errors (4xxx)
     ConnectionFailed = 4100,
@@ -114,6 +120,13 @@ enum class ErrorCode : int {
     McpToolNotFound = 4301,
     OscEncodeError = 4400,
     OscDecodeError = 4401,
+
+    // Format errors (45xx)
+    FormatError       = 4500,
+    InvalidScalaFile  = 4501,
+    InvalidMidiFile   = 4502,
+    InvalidAbcFile    = 4503,
+    InvalidMusicXml   = 4504,
 };
 
 /**

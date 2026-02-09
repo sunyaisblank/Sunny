@@ -26,6 +26,8 @@ file(GLOB_RECURSE INFRA_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/Protocol/*.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/Protocol/*.h"
     "${CMAKE_CURRENT_SOURCE_DIR}/RealTime/*.h"
+    "${CMAKE_CURRENT_SOURCE_DIR}/Format/*.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/Format/*.h"
 )
 
 add_library(Sunny.Infrastructure STATIC
@@ -51,6 +53,16 @@ if(TARGET nlohmann_json::nlohmann_json)
     get_target_property(_json_inc nlohmann_json::nlohmann_json INTERFACE_INCLUDE_DIRECTORIES)
     target_include_directories(Sunny.Infrastructure PRIVATE ${_json_inc})
 endif()
+
+# pugixml for MusicXML format support
+include(FetchContent)
+FetchContent_Declare(
+    pugixml
+    GIT_REPOSITORY https://github.com/zeux/pugixml.git
+    GIT_TAG v1.14
+)
+FetchContent_MakeAvailable(pugixml)
+target_link_libraries(Sunny.Infrastructure PRIVATE pugixml::pugixml)
 
 target_compile_features(Sunny.Infrastructure PUBLIC cxx_std_23)
 
