@@ -53,6 +53,21 @@ file(GLOB_RECURSE CONSTANTS_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/Constants/*.h"
 )
 
+file(GLOB_RECURSE POSTTONAL_SOURCES
+    "${CMAKE_CURRENT_SOURCE_DIR}/PostTonal/*.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/PostTonal/*.h"
+)
+
+file(GLOB_RECURSE TRANSFORM_SOURCES
+    "${CMAKE_CURRENT_SOURCE_DIR}/Transform/*.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/Transform/*.h"
+)
+
+file(GLOB_RECURSE MELODY_SOURCES
+    "${CMAKE_CURRENT_SOURCE_DIR}/Melody/*.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/Melody/*.h"
+)
+
 # Create static library
 add_library(Sunny.Core STATIC
     ${PITCH_SOURCES}
@@ -62,6 +77,9 @@ add_library(Sunny.Core STATIC
     ${RHYTHM_SOURCES}
     ${TENSOR_SOURCES}
     ${CONSTANTS_SOURCES}
+    ${POSTTONAL_SOURCES}
+    ${TRANSFORM_SOURCES}
+    ${MELODY_SOURCES}
 )
 
 # Include directories

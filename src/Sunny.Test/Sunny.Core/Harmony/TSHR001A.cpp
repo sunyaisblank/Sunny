@@ -80,9 +80,13 @@ TEST_CASE("HRRN001A: parse_roman_numeral with modifiers", "[harmony][core]") {
 
         auto invalid = parse_roman_numeral("X");
         REQUIRE_FALSE(invalid.has_value());
+    }
 
-        auto invalid2 = parse_roman_numeral("IIX");
-        REQUIRE_FALSE(invalid2.has_value());
+    SECTION("Numeral with suffix parses base") {
+        // "IIX" → parses "II" (degree 1), "X" is suffix
+        auto iix = parse_roman_numeral("IIX");
+        REQUIRE(iix.has_value());
+        REQUIRE(iix->first == 1);
     }
 }
 
@@ -315,6 +319,135 @@ TEST_CASE("HRRN001A: Octave parameter", "[harmony][core]") {
         REQUIRE(oct3->notes[0] == 48);  // C3
         REQUIRE(oct4->notes[0] == 60);  // C4
         REQUIRE(oct5->notes[0] == 72);  // C5
+    }
+}
+
+TEST_CASE("HRRN001A: Extended chord qualities (11th, 13th)", "[harmony][core]") {
+    SECTION("Dominant 11th chord") {
+        auto result = generate_chord(0, "11", 4);
+        REQUIRE(result.has_value());
+        REQUIRE(result->notes.size() == 6);
+        // C, E, G, Bb, D, F = 60, 64, 67, 70, 74, 77
+        REQUIRE(result->notes[0] == 60);
+        REQUIRE(result->notes[1] == 64);
+        REQUIRE(result->notes[2] == 67);
+        REQUIRE(result->notes[3] == 70);
+        REQUIRE(result->notes[4] == 74);
+        REQUIRE(result->notes[5] == 77);
+    }
+
+    SECTION("Major 11th chord") {
+        auto result = generate_chord(0, "maj11", 4);
+        REQUIRE(result.has_value());
+        REQUIRE(result->notes.size() == 6);
+        REQUIRE(result->notes[3] == 71);  // B4 (major 7th)
+    }
+
+    SECTION("Minor 11th chord") {
+        auto result = generate_chord(0, "m11", 4);
+        REQUIRE(result.has_value());
+        REQUIRE(result->notes.size() == 6);
+        REQUIRE(result->notes[1] == 63);  // Eb4 (minor 3rd)
+    }
+
+    SECTION("Dominant 13th chord") {
+        auto result = generate_chord(0, "13", 4);
+        REQUIRE(result.has_value());
+        REQUIRE(result->notes.size() == 7);
+        // C, E, G, Bb, D, F, A = 60, 64, 67, 70, 74, 77, 81
+        REQUIRE(result->notes[6] == 81);
+    }
+
+    SECTION("Major 13th chord") {
+        auto result = generate_chord(0, "maj13", 4);
+        REQUIRE(result.has_value());
+        REQUIRE(result->notes.size() == 7);
+        REQUIRE(result->notes[3] == 71);  // B (major 7th)
+        REQUIRE(result->notes[6] == 81);  // A (13th)
+    }
+
+    SECTION("Minor 13th chord") {
+        auto result = generate_chord(0, "m13", 4);
+        REQUIRE(result.has_value());
+        REQUIRE(result->notes.size() == 7);
+        REQUIRE(result->notes[1] == 63);  // Eb (minor 3rd)
+    }
+}
+
+TEST_CASE("HRRN001A: Altered extension qualities", "[harmony][core]") {
+    SECTION("dom7b9") {
+        auto result = generate_chord(0, "dom7b9", 4);
+        REQUIRE(result.has_value());
+        REQUIRE(result->notes.size() == 5);
+        // C, E, G, Bb, Db = 60, 64, 67, 70, 73
+        REQUIRE(result->notes[4] == 73);
+    }
+
+    SECTION("dom7s9") {
+        auto result = generate_chord(0, "dom7s9", 4);
+        REQUIRE(result.has_value());
+        REQUIRE(result->notes.size() == 5);
+        // C, E, G, Bb, D# = 60, 64, 67, 70, 75
+        REQUIRE(result->notes[4] == 75);
+    }
+
+    SECTION("dom7s11") {
+        auto result = generate_chord(0, "dom7s11", 4);
+        REQUIRE(result.has_value());
+        REQUIRE(result->notes.size() == 6);
+        // C, E, G, Bb, D, F# = 60, 64, 67, 70, 74, 78
+        REQUIRE(result->notes[5] == 78);
+    }
+
+    SECTION("dom7b13") {
+        auto result = generate_chord(0, "dom7b13", 4);
+        REQUIRE(result.has_value());
+        REQUIRE(result->notes.size() == 6);
+        // C, E, G, Bb, D, Ab = 60, 64, 67, 70, 74, 80
+        REQUIRE(result->notes[5] == 80);
+    }
+
+    SECTION("7alt chord") {
+        auto result = generate_chord(0, "7alt", 4);
+        REQUIRE(result.has_value());
+        REQUIRE(result->notes.size() == 8);
+        // Full altered: C, E, G, Bb, Db, D#, F#, Ab
+    }
+
+    SECTION("alt alias matches 7alt") {
+        auto alt = generate_chord(0, "alt", 4);
+        auto alt7 = generate_chord(0, "7alt", 4);
+        REQUIRE(alt.has_value());
+        REQUIRE(alt7.has_value());
+        REQUIRE(alt->notes == alt7->notes);
+    }
+}
+
+TEST_CASE("HRRN001A: Extended chords via numeral", "[harmony][core]") {
+    SECTION("V11 in C major") {
+        auto result = generate_chord_from_numeral("V11", 0, SCALE_MAJOR, 4);
+        REQUIRE(result.has_value());
+        REQUIRE(result->notes.size() == 6);
+        // G dominant 11: G, B, D, F, A, C
+        REQUIRE(result->root == 7);
+    }
+
+    SECTION("V13 in C major") {
+        auto result = generate_chord_from_numeral("V13", 0, SCALE_MAJOR, 4);
+        REQUIRE(result.has_value());
+        REQUIRE(result->notes.size() == 7);
+    }
+
+    SECTION("Vb9 in C major") {
+        auto result = generate_chord_from_numeral("Vb9", 0, SCALE_MAJOR, 4);
+        REQUIRE(result.has_value());
+        REQUIRE(result->notes.size() == 5);
+    }
+
+    SECTION("Valt in C major") {
+        auto result = generate_chord_from_numeral("Valt", 0, SCALE_MAJOR, 4);
+        REQUIRE(result.has_value());
+        REQUIRE(result->notes.size() == 8);
     }
 }
 

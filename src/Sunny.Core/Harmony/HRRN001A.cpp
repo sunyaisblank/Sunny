@@ -48,20 +48,36 @@ const std::unordered_map<std::string_view, std::vector<Interval>> QUALITY_INTERV
     {"9", {0, 4, 7, 10, 14}},
     {"maj9", {0, 4, 7, 11, 14}},
     {"m9", {0, 3, 7, 10, 14}},
+    // 11th chords
+    {"11", {0, 4, 7, 10, 14, 17}},
+    {"maj11", {0, 4, 7, 11, 14, 17}},
+    {"m11", {0, 3, 7, 10, 14, 17}},
+    // 13th chords
+    {"13", {0, 4, 7, 10, 14, 17, 21}},
+    {"maj13", {0, 4, 7, 11, 14, 17, 21}},
+    {"m13", {0, 3, 7, 10, 14, 17, 21}},
+    // Altered extensions
+    {"dom7b9", {0, 4, 7, 10, 13}},
+    {"dom7s9", {0, 4, 7, 10, 15}},
+    {"dom7s11", {0, 4, 7, 10, 14, 18}},
+    {"dom7b13", {0, 4, 7, 10, 14, 20}},
+    {"7alt", {0, 4, 7, 10, 13, 15, 18, 20}},
+    {"alt", {0, 4, 7, 10, 13, 15, 18, 20}},
 };
 
-// Parse Roman numeral base
+// Parse Roman numeral base — only consumes [IiVv] characters
 bool parse_numeral_base(std::string_view s, int& degree, bool& is_upper) {
     if (s.empty()) return false;
 
     // Check case
     is_upper = std::isupper(static_cast<unsigned char>(s[0]));
 
-    // Convert to lowercase for matching
+    // Consume only Roman numeral characters (I, i, V, v)
     std::string lower;
     for (char c : s) {
-        if (std::isalpha(static_cast<unsigned char>(c))) {
-            lower += std::tolower(static_cast<unsigned char>(c));
+        char lc = std::tolower(static_cast<unsigned char>(c));
+        if (lc == 'i' || lc == 'v') {
+            lower += lc;
         } else {
             break;
         }
@@ -129,8 +145,29 @@ Result<ChordVoicing> generate_chord_from_numeral(
     bool has_7 = numeral.find('7') != std::string_view::npos;
     bool has_half_dim = numeral.find("ø") != std::string_view::npos ||
                         numeral.find("o7") != std::string_view::npos;
+    bool has_alt = numeral.find("alt") != std::string_view::npos;
+    bool has_b9 = numeral.find("b9") != std::string_view::npos;
+    bool has_s9 = numeral.find("#9") != std::string_view::npos;
+    bool has_s11 = numeral.find("#11") != std::string_view::npos;
+    bool has_b13 = numeral.find("b13") != std::string_view::npos;
+    bool has_13 = !has_b13 && numeral.find("13") != std::string_view::npos;
+    bool has_11 = !has_s11 && !has_13 && numeral.find("11") != std::string_view::npos;
 
-    if (has_half_dim) {
+    if (has_alt) {
+        quality = "alt";
+    } else if (has_b9) {
+        quality = "dom7b9";
+    } else if (has_s9) {
+        quality = "dom7s9";
+    } else if (has_s11) {
+        quality = "dom7s11";
+    } else if (has_b13) {
+        quality = "dom7b13";
+    } else if (has_13) {
+        quality = is_upper ? "13" : "m13";
+    } else if (has_11) {
+        quality = is_upper ? "11" : "m11";
+    } else if (has_half_dim) {
         quality = "m7b5";
     } else if (has_dim) {
         quality = has_7 ? "dim7" : "diminished";
