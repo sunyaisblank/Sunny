@@ -83,6 +83,9 @@ struct ChordVoicing {
 
 /**
  * @brief Scale definition
+ *
+ * Formal Spec §15.1.7: Stores intervals from root and provides
+ * derived interval_pattern (successive step sizes).
  */
 struct ScaleDefinition {
     std::string_view name;
@@ -92,6 +95,27 @@ struct ScaleDefinition {
 
     [[nodiscard]] std::span<const Interval> get_intervals() const noexcept {
         return std::span{intervals.data(), note_count};
+    }
+
+    /**
+     * @brief Successive step sizes (interval pattern)
+     *
+     * Formal Spec §4.1: For a scale with intervals {0, i1, i2, ..., in-1},
+     * the interval pattern is (i1-0, i2-i1, ..., 12-in-1).
+     * Sum of pattern elements always equals 12 (for 12-TET scales).
+     *
+     * @return Vector of successive intervals; empty if note_count == 0
+     */
+    [[nodiscard]] std::vector<Interval> step_pattern() const {
+        if (note_count == 0) return {};
+        std::vector<Interval> steps;
+        steps.reserve(note_count);
+        for (std::uint8_t i = 1; i < note_count; ++i) {
+            steps.push_back(intervals[i] - intervals[i - 1]);
+        }
+        // Final step wrapping back to octave
+        steps.push_back(static_cast<Interval>(12 - intervals[note_count - 1]));
+        return steps;
     }
 };
 

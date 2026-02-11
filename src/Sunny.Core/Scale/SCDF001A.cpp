@@ -33,7 +33,7 @@ constexpr ScaleDefinition make_scale(
 }
 
 // Built-in scale database
-constexpr std::array<ScaleDefinition, 35> SCALE_DATABASE = {{
+constexpr std::array<ScaleDefinition, 37> SCALE_DATABASE = {{
     // Diatonic modes
     make_scale("major", SCALE_MAJOR, "Ionian mode"),
     make_scale("ionian", SCALE_MAJOR, "Major scale"),
@@ -71,6 +71,10 @@ constexpr std::array<ScaleDefinition, 35> SCALE_DATABASE = {{
                "3rd mode of melodic minor"),
     make_scale("locrian_natural2", std::array<Interval, 7>{0, 2, 3, 5, 6, 8, 10},
                "6th mode of melodic minor"),
+    make_scale("dorian_b2", std::array<Interval, 7>{0, 1, 3, 5, 7, 9, 10},
+               "2nd mode of melodic minor"),
+    make_scale("mixolydian_b6", std::array<Interval, 7>{0, 2, 4, 5, 7, 8, 10},
+               "5th mode of melodic minor"),
 
     // World scales
     make_scale("hungarian_minor", std::array<Interval, 7>{0, 2, 3, 6, 7, 8, 11},
@@ -93,8 +97,8 @@ constexpr std::array<ScaleDefinition, 35> SCALE_DATABASE = {{
                "Major with added #5"),
     make_scale("bebop_dominant", std::array<Interval, 8>{0, 2, 4, 5, 7, 9, 10, 11},
                "Mixolydian with added 7"),
-    make_scale("bebop_minor", std::array<Interval, 8>{0, 2, 3, 5, 7, 8, 9, 10},
-               "Dorian with added 3"),
+    make_scale("bebop_minor", std::array<Interval, 8>{0, 2, 3, 4, 5, 7, 9, 10},
+               "Dorian with added natural 3rd"),
 
     // Synthetic
     make_scale("prometheus", std::array<Interval, 6>{0, 2, 4, 6, 9, 10},
@@ -104,12 +108,13 @@ constexpr std::array<ScaleDefinition, 35> SCALE_DATABASE = {{
 }};
 
 // Scale name list for enumeration
-constexpr std::array<std::string_view, 35> SCALE_NAMES = {{
+constexpr std::array<std::string_view, 37> SCALE_NAMES = {{
     "major", "ionian", "minor", "aeolian", "dorian", "phrygian", "lydian",
     "mixolydian", "locrian", "harmonic_minor", "melodic_minor",
     "pentatonic_major", "pentatonic_minor", "blues", "whole_tone",
     "diminished_hw", "diminished_wh", "chromatic", "phrygian_dominant",
     "lydian_dominant", "super_locrian", "lydian_augmented", "locrian_natural2",
+    "dorian_b2", "mixolydian_b6",
     "hungarian_minor", "double_harmonic", "hirajoshi", "in_sen", "kumoi",
     "pelog", "iwato", "bebop_major", "bebop_dominant", "bebop_minor",
     "prometheus", "augmented"

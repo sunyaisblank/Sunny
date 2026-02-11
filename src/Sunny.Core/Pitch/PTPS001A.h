@@ -86,4 +86,73 @@ using PitchClassSet = std::unordered_set<PitchClass>;
  */
 [[nodiscard]] bool pcs_ti_equivalent(const PitchClassSet& a, const PitchClassSet& b);
 
+// =============================================================================
+// Forte Number Catalogue (§12.4)
+// =============================================================================
+
+/**
+ * @brief Look up the Forte number for a pitch class set
+ *
+ * Returns the standard Forte label (e.g., "3-11" for major/minor triad).
+ * Covers cardinalities 2-10 (cardinalities 7-10 via complement derivation).
+ *
+ * @param pcs Input pitch class set
+ * @return Forte number string or nullopt if not found
+ */
+[[nodiscard]] std::optional<std::string> forte_number(const PitchClassSet& pcs);
+
+// =============================================================================
+// Z-Relation (§12.5)
+// =============================================================================
+
+/**
+ * @brief Check if two pitch class sets are Z-related
+ *
+ * Z-related sets share the same interval class vector but belong
+ * to different TI-equivalence classes (different prime forms).
+ *
+ * @param a First pitch class set
+ * @param b Second pitch class set
+ * @return true if Z-related
+ */
+[[nodiscard]] bool pcs_z_related(const PitchClassSet& a, const PitchClassSet& b);
+
+// =============================================================================
+// Similarity Relations (§12.6)
+// =============================================================================
+
+/**
+ * @brief R0: Maximum dissimilarity
+ *
+ * True if A and B have the same cardinality and their ICVs
+ * differ in every entry.
+ */
+[[nodiscard]] bool similarity_R0(const PitchClassSet& a, const PitchClassSet& b);
+
+/**
+ * @brief R1: Minimum dissimilarity
+ *
+ * True if A and B have the same cardinality and their ICVs
+ * differ in exactly one entry, by exactly 1.
+ */
+[[nodiscard]] bool similarity_R1(const PitchClassSet& a, const PitchClassSet& b);
+
+/**
+ * @brief R2: Single-entry difference
+ *
+ * True if A and B have the same cardinality and their ICVs
+ * differ in exactly one entry (by any amount).
+ */
+[[nodiscard]] bool similarity_R2(const PitchClassSet& a, const PitchClassSet& b);
+
+/**
+ * @brief Rp: Subset embedding
+ *
+ * True if A and B have the same cardinality and one can be
+ * embedded in the other after transposition (inclusion relation).
+ * Formally: ∃n such that A ⊂ T_n(B) ∪ {one extra element},
+ * or equivalently they share n-1 pitch classes under some T_n.
+ */
+[[nodiscard]] bool similarity_Rp(const PitchClassSet& a, const PitchClassSet& b);
+
 }  // namespace Sunny::Core

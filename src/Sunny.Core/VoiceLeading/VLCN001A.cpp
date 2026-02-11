@@ -209,6 +209,71 @@ std::vector<ConstraintViolation> check_voice_leading(
             "Leading tone is doubled");
     }
 
+    // --- StepwiseAfterLeap ---
+    // §7.4: After a leap (> 2 semitones), stepwise motion in the opposite
+    // direction should follow. Flags leaps so that subsequent transitions
+    // can verify compensation.
+    for (std::size_t i = 0; i < voices; ++i) {
+        int motion = std::abs(static_cast<int>(next[i]) - static_cast<int>(prev[i]));
+        if (motion > 2) {
+            add_violation(violations, VLConstraintRule::StepwiseAfterLeap,
+                get_severity(config, VLConstraintRule::StepwiseAfterLeap),
+                static_cast<int>(i), -1,
+                "Leap should be followed by stepwise contrary motion");
+        }
+    }
+
+    // --- CompleteChords ---
+    // §7.4: Root, 3rd, 5th present; 5th may be omitted for 7th chords.
+    {
+        PitchClass root_pc = next_chord.root;
+        bool has_third = false;
+        bool has_fifth = false;
+
+        for (auto note : next) {
+            int above_root = (static_cast<int>(note % 12)
+                              - static_cast<int>(root_pc) + 12) % 12;
+            if (above_root == 3 || above_root == 4) has_third = true;
+            if (above_root == 6 || above_root == 7 || above_root == 8) has_fifth = true;
+        }
+
+        // 5th omissible when chord quality implies a 7th or higher extension
+        bool seventh_or_above =
+            next_chord.quality.find('7') != std::string::npos ||
+            next_chord.quality.find('9') != std::string::npos ||
+            next_chord.quality.find("11") != std::string::npos ||
+            next_chord.quality.find("13") != std::string::npos;
+
+        if (!has_third) {
+            add_violation(violations, VLConstraintRule::CompleteChords,
+                get_severity(config, VLConstraintRule::CompleteChords),
+                -1, -1,
+                "Chord is missing the third");
+        }
+        if (!has_fifth && !seventh_or_above) {
+            add_violation(violations, VLConstraintRule::CompleteChords,
+                get_severity(config, VLConstraintRule::CompleteChords),
+                -1, -1,
+                "Chord is missing the fifth");
+        }
+    }
+
+    // --- DoubleTheRoot ---
+    // §7.4: In root position with 4+ voices, prefer doubling the root.
+    if (next_chord.inversion == 0 && next.size() >= 4) {
+        PitchClass root_pc = next_chord.root;
+        int root_count = 0;
+        for (auto note : next) {
+            if (note % 12 == root_pc) root_count++;
+        }
+        if (root_count < 2) {
+            add_violation(violations, VLConstraintRule::DoubleTheRoot,
+                get_severity(config, VLConstraintRule::DoubleTheRoot),
+                -1, -1,
+                "Root position chord should double the root");
+        }
+    }
+
     return violations;
 }
 

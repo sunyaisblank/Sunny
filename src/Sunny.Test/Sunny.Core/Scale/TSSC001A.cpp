@@ -211,3 +211,160 @@ TEST_CASE("SCDF001A: Scale name listing", "[scale][core]") {
         REQUIRE(has_dorian);
     }
 }
+
+TEST_CASE("SCDF001A: Melodic minor modes completeness (§4.2.3)", "[scale][core]") {
+    SECTION("Dorian b2 (mode 2) has correct intervals") {
+        auto scale = find_scale("dorian_b2");
+        REQUIRE(scale.has_value());
+        REQUIRE(scale->note_count == 7);
+        auto span = scale->get_intervals();
+        // {0, 1, 3, 5, 7, 9, 10} — step pattern (1,2,2,2,2,1,2)
+        REQUIRE(span[0] == 0);
+        REQUIRE(span[1] == 1);   // b2
+        REQUIRE(span[2] == 3);   // m3
+        REQUIRE(span[3] == 5);   // P4
+        REQUIRE(span[4] == 7);   // P5
+        REQUIRE(span[5] == 9);   // M6
+        REQUIRE(span[6] == 10);  // m7
+    }
+
+    SECTION("Dorian b2 step pattern sums to 12") {
+        auto scale = find_scale("dorian_b2");
+        REQUIRE(scale.has_value());
+        auto steps = scale->step_pattern();
+        int sum = 0;
+        for (auto s : steps) sum += s;
+        REQUIRE(sum == 12);
+        // Verify individual steps: (1,2,2,2,2,1,2)
+        REQUIRE(steps[0] == 1);
+        REQUIRE(steps[1] == 2);
+        REQUIRE(steps[2] == 2);
+        REQUIRE(steps[3] == 2);
+        REQUIRE(steps[4] == 2);
+        REQUIRE(steps[5] == 1);
+        REQUIRE(steps[6] == 2);
+    }
+
+    SECTION("Mixolydian b6 (mode 5) has correct intervals") {
+        auto scale = find_scale("mixolydian_b6");
+        REQUIRE(scale.has_value());
+        REQUIRE(scale->note_count == 7);
+        auto span = scale->get_intervals();
+        // {0, 2, 4, 5, 7, 8, 10} — step pattern (2,2,1,2,1,2,2)
+        REQUIRE(span[0] == 0);
+        REQUIRE(span[1] == 2);   // M2
+        REQUIRE(span[2] == 4);   // M3
+        REQUIRE(span[3] == 5);   // P4
+        REQUIRE(span[4] == 7);   // P5
+        REQUIRE(span[5] == 8);   // m6 (b6)
+        REQUIRE(span[6] == 10);  // m7
+    }
+
+    SECTION("Mixolydian b6 step pattern sums to 12") {
+        auto scale = find_scale("mixolydian_b6");
+        REQUIRE(scale.has_value());
+        auto steps = scale->step_pattern();
+        int sum = 0;
+        for (auto s : steps) sum += s;
+        REQUIRE(sum == 12);
+        // Verify individual steps: (2,2,1,2,1,2,2)
+        REQUIRE(steps[0] == 2);
+        REQUIRE(steps[1] == 2);
+        REQUIRE(steps[2] == 1);
+        REQUIRE(steps[3] == 2);
+        REQUIRE(steps[4] == 1);
+        REQUIRE(steps[5] == 2);
+        REQUIRE(steps[6] == 2);
+    }
+
+    SECTION("All 7 melodic minor modes are present and derivable") {
+        // All modes of melodic minor {0,2,3,5,7,9,11}
+        REQUIRE(find_scale("melodic_minor").has_value());     // Mode 1
+        REQUIRE(find_scale("dorian_b2").has_value());         // Mode 2
+        REQUIRE(find_scale("lydian_augmented").has_value());   // Mode 3
+        REQUIRE(find_scale("lydian_dominant").has_value());    // Mode 4
+        REQUIRE(find_scale("mixolydian_b6").has_value());     // Mode 5
+        REQUIRE(find_scale("locrian_natural2").has_value());   // Mode 6
+        REQUIRE(find_scale("super_locrian").has_value());      // Mode 7
+    }
+}
+
+TEST_CASE("SCDF001A: Bebop minor intervals (§4.2.7)", "[scale][core]") {
+    SECTION("Bebop minor = Dorian + natural 3rd") {
+        auto scale = find_scale("bebop_minor");
+        REQUIRE(scale.has_value());
+        REQUIRE(scale->note_count == 8);
+        auto span = scale->get_intervals();
+        // Dorian {0,2,3,5,7,9,10} + natural 3rd (4) = {0,2,3,4,5,7,9,10}
+        REQUIRE(span[0] == 0);
+        REQUIRE(span[1] == 2);
+        REQUIRE(span[2] == 3);   // m3
+        REQUIRE(span[3] == 4);   // M3 (added passing tone)
+        REQUIRE(span[4] == 5);
+        REQUIRE(span[5] == 7);
+        REQUIRE(span[6] == 9);
+        REQUIRE(span[7] == 10);
+    }
+
+    SECTION("Bebop minor step pattern (2,1,1,1,2,2,1,2) sums to 12") {
+        auto scale = find_scale("bebop_minor");
+        REQUIRE(scale.has_value());
+        auto steps = scale->step_pattern();
+        REQUIRE(steps.size() == 8);
+        int sum = 0;
+        for (auto s : steps) sum += s;
+        REQUIRE(sum == 12);
+        // Verify: (2,1,1,1,2,2,1,2)
+        REQUIRE(steps[0] == 2);
+        REQUIRE(steps[1] == 1);
+        REQUIRE(steps[2] == 1);
+        REQUIRE(steps[3] == 1);
+        REQUIRE(steps[4] == 2);
+        REQUIRE(steps[5] == 2);
+        REQUIRE(steps[6] == 1);
+        REQUIRE(steps[7] == 2);
+    }
+}
+
+// =============================================================================
+// §16.1.4 Scale round-trip: step_pattern → reconstruct intervals → compare
+// =============================================================================
+
+TEST_CASE("SCDF001A: step_pattern round-trip (§16.1.4)", "[scale][core]") {
+    SECTION("All built-in scales: step_pattern reconstructs original intervals") {
+        auto names = list_scale_names();
+        for (auto name : names) {
+            auto scale = find_scale(name);
+            REQUIRE(scale.has_value());
+
+            auto intervals = scale->get_intervals();
+            auto steps = scale->step_pattern();
+
+            // Reconstruct intervals from step pattern
+            std::vector<Interval> reconstructed;
+            reconstructed.push_back(0);
+            Interval acc = 0;
+            for (std::size_t i = 0; i < steps.size() - 1; ++i) {
+                acc += steps[i];
+                reconstructed.push_back(acc);
+            }
+
+            REQUIRE(reconstructed.size() == intervals.size());
+            for (std::size_t i = 0; i < reconstructed.size(); ++i) {
+                REQUIRE(reconstructed[i] == intervals[i]);
+            }
+        }
+    }
+
+    SECTION("All built-in scales: step pattern sums to 12") {
+        auto names = list_scale_names();
+        for (auto name : names) {
+            auto scale = find_scale(name);
+            REQUIRE(scale.has_value());
+            auto steps = scale->step_pattern();
+            int sum = 0;
+            for (auto s : steps) sum += s;
+            REQUIRE(sum == 12);
+        }
+    }
+}

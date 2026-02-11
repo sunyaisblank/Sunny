@@ -353,6 +353,199 @@ TEST_CASE("VLCN001A: Custom config can disable rules", "[voiceleading][core]") {
     }
 }
 
+TEST_CASE("VLCN001A: StepwiseAfterLeap (§7.4)", "[voiceleading][core]") {
+    auto config = test_config();
+
+    SECTION("Stepwise motion (semitone) produces no StepwiseAfterLeap") {
+        // All voices move by step: C→Db, E→F, G→Ab, C→Db
+        auto prev = make_voicing(0, "major", {48, 64, 67, 72});
+        auto next = make_voicing(1, "major", {49, 65, 68, 73});
+
+        auto v = check_voice_leading(prev, next, config);
+        bool found = false;
+        for (const auto& viol : v) {
+            if (viol.rule == VLConstraintRule::StepwiseAfterLeap) found = true;
+        }
+        REQUIRE_FALSE(found);
+    }
+
+    SECTION("Whole-tone motion produces no StepwiseAfterLeap") {
+        // All voices move by whole step (2 semitones)
+        auto prev = make_voicing(0, "major", {48, 64, 67, 72});
+        auto next = make_voicing(2, "major", {50, 66, 69, 74});
+
+        auto v = check_voice_leading(prev, next, config);
+        bool found = false;
+        for (const auto& viol : v) {
+            if (viol.rule == VLConstraintRule::StepwiseAfterLeap) found = true;
+        }
+        REQUIRE_FALSE(found);
+    }
+
+    SECTION("Leap of a third (3 semitones) is flagged") {
+        // Voice 0 leaps m3 (48→51)
+        auto prev = make_voicing(0, "major", {48, 64, 67, 72});
+        auto next = make_voicing(3, "minor", {51, 63, 66, 72});
+
+        auto v = check_voice_leading(prev, next, config);
+        bool found = false;
+        for (const auto& viol : v) {
+            if (viol.rule == VLConstraintRule::StepwiseAfterLeap &&
+                viol.voice_index == 0) found = true;
+        }
+        REQUIRE(found);
+    }
+
+    SECTION("StepwiseAfterLeap severity is Preference") {
+        auto prev = make_voicing(0, "major", {48, 64, 67, 72});
+        auto next = make_voicing(5, "major", {53, 65, 69, 72});
+
+        auto v = check_voice_leading(prev, next, config);
+        for (const auto& viol : v) {
+            if (viol.rule == VLConstraintRule::StepwiseAfterLeap) {
+                REQUIRE(viol.severity == ConstraintSeverity::Preference);
+            }
+        }
+    }
+}
+
+TEST_CASE("VLCN001A: CompleteChords (§7.4)", "[voiceleading][core]") {
+    auto config = test_config();
+
+    SECTION("Complete major triad produces no CompleteChords violation") {
+        // C major: C, E, G, C — root, 3rd, 5th all present
+        auto prev = make_voicing(5, "major", {53, 60, 65, 69});
+        auto next = make_voicing(0, "major", {48, 60, 64, 67});
+
+        auto v = check_voice_leading(prev, next, config);
+        bool found = false;
+        for (const auto& viol : v) {
+            if (viol.rule == VLConstraintRule::CompleteChords) found = true;
+        }
+        REQUIRE_FALSE(found);
+    }
+
+    SECTION("Missing third is flagged") {
+        // Power chord C, G, C, G — no 3rd
+        auto prev = make_voicing(5, "major", {53, 60, 65, 69});
+        auto next = make_voicing(0, "5", {48, 55, 60, 67});
+
+        auto v = check_voice_leading(prev, next, config);
+        bool found_third = false;
+        for (const auto& viol : v) {
+            if (viol.rule == VLConstraintRule::CompleteChords &&
+                viol.description.find("third") != std::string::npos) {
+                found_third = true;
+            }
+        }
+        REQUIRE(found_third);
+    }
+
+    SECTION("Missing fifth is flagged for triads") {
+        // C, E, E, C — no 5th, and not a 7th chord
+        auto prev = make_voicing(5, "major", {53, 60, 65, 69});
+        auto next = make_voicing(0, "major", {48, 60, 64, 72});
+
+        auto v = check_voice_leading(prev, next, config);
+        bool found_fifth = false;
+        for (const auto& viol : v) {
+            if (viol.rule == VLConstraintRule::CompleteChords &&
+                viol.description.find("fifth") != std::string::npos) {
+                found_fifth = true;
+            }
+        }
+        REQUIRE(found_fifth);
+    }
+
+    SECTION("Missing fifth allowed for 7th chords") {
+        // G7 without 5th: G, B, F, G — 7th present, 5th omitted
+        auto prev = make_voicing(0, "major", {48, 60, 64, 67});
+        auto next = make_voicing(7, "7", {43, 59, 65, 67});
+
+        auto v = check_voice_leading(prev, next, config);
+        bool found_fifth = false;
+        for (const auto& viol : v) {
+            if (viol.rule == VLConstraintRule::CompleteChords &&
+                viol.description.find("fifth") != std::string::npos) {
+                found_fifth = true;
+            }
+        }
+        REQUIRE_FALSE(found_fifth);
+    }
+}
+
+TEST_CASE("VLCN001A: DoubleTheRoot (§7.4)", "[voiceleading][core]") {
+    auto config = test_config();
+
+    SECTION("Root doubled in root position is clean") {
+        // C, C, E, G — root doubled
+        auto prev = make_voicing(5, "major", {53, 60, 65, 69});
+        auto next = make_voicing(0, "major", {48, 60, 64, 67});
+
+        auto v = check_voice_leading(prev, next, config);
+        bool found = false;
+        for (const auto& viol : v) {
+            if (viol.rule == VLConstraintRule::DoubleTheRoot) found = true;
+        }
+        REQUIRE_FALSE(found);
+    }
+
+    SECTION("Root not doubled in root position 4-voice is flagged") {
+        // C, E, G, B — root appears once, 4 voices, root position
+        auto prev = make_voicing(5, "major", {53, 60, 65, 69});
+        auto next = make_voicing(0, "major", {48, 64, 67, 71});
+
+        auto v = check_voice_leading(prev, next, config);
+        bool found = false;
+        for (const auto& viol : v) {
+            if (viol.rule == VLConstraintRule::DoubleTheRoot) found = true;
+        }
+        REQUIRE(found);
+    }
+
+    SECTION("Inversion chords skip DoubleTheRoot check") {
+        // First inversion: E, G, C, E — root not doubled but inversion != 0
+        ChordVoicing prev_cv = make_voicing(5, "major", {53, 60, 65, 69});
+        ChordVoicing next_cv;
+        next_cv.root = 0;
+        next_cv.quality = "major";
+        next_cv.notes = {52, 55, 60, 64};  // E3, G3, C4, E4
+        next_cv.inversion = 1;
+
+        auto v = check_voice_leading(prev_cv, next_cv, config);
+        bool found = false;
+        for (const auto& viol : v) {
+            if (viol.rule == VLConstraintRule::DoubleTheRoot) found = true;
+        }
+        REQUIRE_FALSE(found);
+    }
+
+    SECTION("3-voice chords skip DoubleTheRoot check") {
+        // Only 3 voices — doubling rule applies to 4+ voices
+        auto prev = make_voicing(5, "major", {53, 60, 65});
+        auto next = make_voicing(0, "major", {48, 64, 67});
+
+        auto v = check_voice_leading(prev, next, config);
+        bool found = false;
+        for (const auto& viol : v) {
+            if (viol.rule == VLConstraintRule::DoubleTheRoot) found = true;
+        }
+        REQUIRE_FALSE(found);
+    }
+
+    SECTION("DoubleTheRoot severity is Preference") {
+        auto prev = make_voicing(5, "major", {53, 60, 65, 69});
+        auto next = make_voicing(0, "major", {48, 64, 67, 71});
+
+        auto v = check_voice_leading(prev, next, config);
+        for (const auto& viol : v) {
+            if (viol.rule == VLConstraintRule::DoubleTheRoot) {
+                REQUIRE(viol.severity == ConstraintSeverity::Preference);
+            }
+        }
+    }
+}
+
 TEST_CASE("VLCN001A: Empty chord handling", "[voiceleading][core]") {
     auto config = test_config();
 

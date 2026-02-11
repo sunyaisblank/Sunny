@@ -81,11 +81,11 @@ For 12-TET, D₁₂ has order 24 and acts on **Z/12Z**.
 **Composition law**: For all *T*ₐ, *T*ᵦ, *I*ₐ, *I*ᵦ:
 
 - *T*ₐ ∘ *T*ᵦ = *T*₍ₐ₊ᵦ₎ ₘₒ𝒹 ₙ
-- *I*ₐ ∘ *T*ᵦ = *I*₍ₐ₊ᵦ₎ ₘₒ𝒹 ₙ
+- *I*ₐ ∘ *T*ᵦ = *I*₍ₐ₋ᵦ₎ ₘₒ𝒹 ₙ
 - *T*ₐ ∘ *I*ᵦ = *I*₍ₐ₊ᵦ₎ ₘₒ𝒹 ₙ
 - *I*ₐ ∘ *I*ᵦ = *T*₍ₐ₋ᵦ₎ ₘₒ𝒹 ₙ
 
-**Status**: Partially implemented. *T*ₖ and *I*ₖ are available; the full group structure (composition, conjugacy classes, subgroup lattice) is not yet exposed as a first-class algebraic object.
+**Status**: Complete. PTDN001A: D₁₂ composition, inverse, apply, order, conjugacy classes (9), subgroup generation, named subgroups (Z₁–Z₁₂, D₁–D₁₂).
 
 ### 1.3 The Free Abelian Group of Intervals
 
@@ -888,7 +888,7 @@ When the chords have unequal cardinality, voice leading is a partial function or
 | sign(*b*₁ − *a*₁) ≠ sign(*b*₂ − *a*₂) | Contrary |
 | One voice stationary, the other moves | Oblique |
 
-**Status**: Parallel motion detection is implemented (for parallel fifths and octaves). General motion classification as a standalone operation is **[NEW]**.
+**Status**: Implemented. General motion classification (`classify_voice_motion`) returns Parallel, Similar, Contrary, Oblique, or Static. Parallel motion detection for fifths/octaves also available.
 
 ### 7.4 Common-Practice Voice-Leading Constraints
 
@@ -910,7 +910,7 @@ When the chords have unequal cardinality, voice leading is a partial function or
 
 **Implementation note**: These constraints form a weighted constraint satisfaction problem. An implementation may enforce them strictly, relax them with penalties, or disable them entirely depending on the style configuration.
 
-**Status**: Parallel fifths/octaves detection and voice crossing correction are implemented. Leading tone resolution, 7th resolution, doubling rules, and the constraint weighting system are **[NEW]**.
+**Status**: Implemented. All 11 constraint rules are checked with configurable severity (Error, Warning, Preference). Constraint weighting system supports per-rule severity overrides.
 
 ### 7.5 Voicing Generators
 
@@ -925,7 +925,7 @@ When the chords have unequal cardinality, voice leading is a partial function or
 | Drop 2+4 | Drop both 2nd and 4th voices |
 | Spread | Bass note separated by ≥ octave from upper structure |
 
-**Status**: Close, Drop 2, Drop 3 implemented. Open, Drop 2+4, and Spread are **[NEW]**.
+**Status**: Implemented. All six voicing types (Close, Open, Drop 2, Drop 3, Drop 2+4, Spread) are available.
 
 ### 7.6 Species Counterpoint [NEW]
 
@@ -1697,23 +1697,26 @@ The following table maps specification sections to their implementation status a
 
 | Section | Domain | Status | Priority | Rationale |
 |---------|--------|--------|----------|-----------|
-| §2.5 | Spelled Pitch | **[NEW]** | **Critical** | Foundation for interval quality, key signatures, MusicXML |
-| §3.2–3.4 | Diatonic Intervals | **[NEW]** | **Critical** | Required by §5, §6, §7, §15 |
-| §5.3 | Extended Chords | **[NEW]** | High | 11ths, 13ths, altered extensions |
-| §6.3 | Secondary Dominants | **[NEW]** | High | Core harmonic analysis capability |
-| §6.4 | Chromatic Harmony | **[NEW]** | High | Neapolitan, augmented sixths, tritone sub |
-| §6.6 | Cadences | **[NEW]** | High | Phrase-level analysis |
-| §7.4 | Voice-Leading Constraints | Partial | High | Leading tone, 7th resolution, doubling |
-| §9.2–9.3 | Time Signature / Metre | **[NEW]** | High | Rhythmic foundation |
-| §9.4 | Tuplets | **[NEW]** | High | Exact rational representation is ready |
-| §11.1–11.3 | Neo-Riemannian / Tonnetz | **[NEW]** | Medium | Transformational analysis |
-| §12.7–12.9 | Serialism | **[NEW]** | Medium | Complete post-tonal coverage |
-| §4.3–4.6 | Scale Relationships | **[NEW]** | Medium | Modal interchange, generated scales |
-| §8 | Melody | **[NEW]** | Medium | Contour, tendency, sequences |
-| §10 | Form | **[NEW]** | Low | Requires higher-level analysis infrastructure |
-| §13 | Tuning & Temperament | **[NEW]** | Low | Extension beyond 12-TET |
-| §14 | Acoustics | **[NEW]** | Low | Perceptual models; empirical data required |
-| §15.2 | External Formats | **[NEW]** | Medium | MusicXML, MIDI file, LilyPond |
+| §2.5 | Spelled Pitch | Complete | — | PTSP001A: SpelledPitch, SPN parsing, line-of-fifths |
+| §3.2–3.4 | Diatonic Intervals | Complete | — | PTDI001A: DiatonicInterval (Z×Z), apply, round-trip |
+| §5.3 | Extended Chords | Complete | — | HRCH001A: All 34 Appendix B chord qualities |
+| §6.3 | Secondary Dominants | Complete | — | HRSD001A: V/x, viio/x detection and generation |
+| §6.4 | Chromatic Harmony | Complete | — | HRCH001A: Neapolitan, augmented sixths, tritone sub |
+| §6.6 | Cadences | Complete | — | HRFN001A: PAC, IAC, HC, DC, PC templates |
+| §7.4 | Voice-Leading Constraints | Complete | — | VLCN001A: All 11 rules with configurable severity |
+| §9.2–9.3 | Time Signature / Metre | Complete | — | RHTS001A: TimeSignature, metrical hierarchy |
+| §9.4 | Tuplets | Complete | — | RHTU001A: Tuplet with exact rational arithmetic |
+| §11.1–11.3 | Neo-Riemannian / Tonnetz | Complete | — | NRPL001A: PLR, Tonnetz coordinate mapping |
+| §12.7–12.9 | Serialism | Complete | — | SRTW001A: Tone rows, matrix, combinatoriality |
+| §4.3–4.6 | Scale Relationships | Complete | — | SCGN001A, SCRN001A: Modal interchange, generation |
+| §8 | Melody | Complete | — | MLCT001A: Contour, statistics, sequences |
+| §10 | Form | Complete | — | FMST001A, FMMT001A: Phrase structure, sectional forms |
+| §13 | Tuning & Temperament | Complete | — | TUET, TUJI, TUHT: ET, JI, historical temperaments |
+| §14 | Acoustics | Complete | — | ACHS, ACPL, ACRG, ACVP: Harmonic series, consonance |
+| §15.2 | External Formats | Complete | — | FMSL, FMLY, FMAB, FMMI, FMMX: Scala, LilyPond, ABC, MIDI, MusicXML |
+| §1.2 | D₁₂ Group Structure | Complete | — | PTDN001A: Composition, inverse, apply, order, conjugacy classes, subgroup generation, named subgroups |
+| §7.2 | Hungarian Algorithm | Complete | — | VLNT001A: voice_lead_optimal with O(k³) Kuhn-Munkres assignment |
+| §16.1.5–6 | Chord/Numeral Round-Trip | Complete | — | HRRN001A: recognize_chord (PCS → root/quality), chord_to_numeral (reverse roman numeral generation) |
 
 ---
 

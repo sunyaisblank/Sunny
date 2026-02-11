@@ -75,7 +75,9 @@ TEST_CASE("TSTN001A: Constants correctness", "[tensor][types]") {
 
 TEST_CASE("TSTN001A: ErrorCode enum value uniqueness", "[tensor][types]") {
     std::set<int> values;
+    // Ok
     values.insert(static_cast<int>(ErrorCode::Ok));
+    // Validation errors (2xxx)
     values.insert(static_cast<int>(ErrorCode::InvalidMidiNote));
     values.insert(static_cast<int>(ErrorCode::InvalidVelocity));
     values.insert(static_cast<int>(ErrorCode::InvalidPitchClass));
@@ -85,6 +87,15 @@ TEST_CASE("TSTN001A: ErrorCode enum value uniqueness", "[tensor][types]") {
     values.insert(static_cast<int>(ErrorCode::InvalidRomanNumeral));
     values.insert(static_cast<int>(ErrorCode::InvalidNoteName));
     values.insert(static_cast<int>(ErrorCode::InvalidOctave));
+    values.insert(static_cast<int>(ErrorCode::InvalidLetterName));
+    values.insert(static_cast<int>(ErrorCode::InvalidSpelledPitch));
+    values.insert(static_cast<int>(ErrorCode::InvalidIntervalQuality));
+    values.insert(static_cast<int>(ErrorCode::InvalidTimeSignature));
+    values.insert(static_cast<int>(ErrorCode::InvalidAppliedChord));
+    values.insert(static_cast<int>(ErrorCode::InvalidToneRow));
+    values.insert(static_cast<int>(ErrorCode::InvalidTriad));
+    values.insert(static_cast<int>(ErrorCode::InvalidMelody));
+    // Theory computation errors (3xxx)
     values.insert(static_cast<int>(ErrorCode::ScaleGenerationFailed));
     values.insert(static_cast<int>(ErrorCode::ChordGenerationFailed));
     values.insert(static_cast<int>(ErrorCode::ProgressionParseFailed));
@@ -94,6 +105,8 @@ TEST_CASE("TSTN001A: ErrorCode enum value uniqueness", "[tensor][types]") {
     values.insert(static_cast<int>(ErrorCode::HarmonyAnalysisFailed));
     values.insert(static_cast<int>(ErrorCode::NegativeHarmonyFailed));
     values.insert(static_cast<int>(ErrorCode::InvalidPitchClassOp));
+    values.insert(static_cast<int>(ErrorCode::InvalidGeneratedScale));
+    // Infrastructure errors (4xxx)
     values.insert(static_cast<int>(ErrorCode::ConnectionFailed));
     values.insert(static_cast<int>(ErrorCode::ConnectionLost));
     values.insert(static_cast<int>(ErrorCode::SendFailed));
@@ -105,9 +118,15 @@ TEST_CASE("TSTN001A: ErrorCode enum value uniqueness", "[tensor][types]") {
     values.insert(static_cast<int>(ErrorCode::McpToolNotFound));
     values.insert(static_cast<int>(ErrorCode::OscEncodeError));
     values.insert(static_cast<int>(ErrorCode::OscDecodeError));
+    // Format errors (45xx)
+    values.insert(static_cast<int>(ErrorCode::FormatError));
+    values.insert(static_cast<int>(ErrorCode::InvalidScalaFile));
+    values.insert(static_cast<int>(ErrorCode::InvalidMidiFile));
+    values.insert(static_cast<int>(ErrorCode::InvalidAbcFile));
+    values.insert(static_cast<int>(ErrorCode::InvalidMusicXml));
 
-    // 30 enum values, all distinct
-    REQUIRE(values.size() == 30);
+    // 44 enum values, all distinct
+    REQUIRE(values.size() == 44);
 }
 
 // =============================================================================
@@ -181,13 +200,119 @@ TEST_CASE("TSTN001A: Beat comparison operators", "[tensor][beat]") {
 
 TEST_CASE("TSTN001A: Beat::from_float round-trip", "[tensor][beat]") {
     auto b = Beat::from_float(0.25);
-    REQUIRE_THAT(b.to_float(), Catch::Matchers::WithinAbs(0.25, 0.001));
+    REQUIRE(b.numerator == 1);
+    REQUIRE(b.denominator == 4);
+    REQUIRE(b.to_float() == 0.25);
 
     auto b2 = Beat::from_float(1.0);
-    REQUIRE_THAT(b2.to_float(), Catch::Matchers::WithinAbs(1.0, 0.001));
+    REQUIRE(b2.numerator == 1);
+    REQUIRE(b2.denominator == 1);
 
     auto b3 = Beat::from_float(0.0);
-    REQUIRE_THAT(b3.to_float(), Catch::Matchers::WithinAbs(0.0, 0.001));
+    REQUIRE(b3.numerator == 0);
+    REQUIRE(b3.denominator == 1);
+
+    // Triplet eighth: 1/3
+    auto b4 = Beat::from_float(1.0 / 3.0);
+    REQUIRE(b4.numerator == 1);
+    REQUIRE(b4.denominator == 3);
+
+    // Negative value
+    auto b5 = Beat::from_float(-0.5);
+    REQUIRE(b5.numerator == -1);
+    REQUIRE(b5.denominator == 2);
+}
+
+TEST_CASE("TSTN001A: Beat::from_float Stern-Brocot precision", "[tensor][beat]") {
+    // 2/3 (triplet swing ratio per §9.9)
+    auto swing = Beat::from_float(2.0 / 3.0);
+    REQUIRE(swing.numerator == 2);
+    REQUIRE(swing.denominator == 3);
+
+    // 3/8 (dotted quarter)
+    auto dotted = Beat::from_float(0.375);
+    REQUIRE(dotted.numerator == 3);
+    REQUIRE(dotted.denominator == 8);
+}
+
+TEST_CASE("TSTN001A: Beat normalise enforces denominator > 0", "[tensor][beat]") {
+    // Negative denominator should be normalised
+    auto b = Beat::normalise(3, -4);
+    REQUIRE(b.numerator == -3);
+    REQUIRE(b.denominator == 4);
+
+    auto b2 = Beat::normalise(-5, -7);
+    REQUIRE(b2.numerator == 5);
+    REQUIRE(b2.denominator == 7);
+}
+
+TEST_CASE("TSTN001A: Beat arithmetic auto-reduces", "[tensor][beat]") {
+    Beat a{1, 2};
+    Beat b{1, 2};
+
+    // 1/2 + 1/2 = 1/1 (not 2/2)
+    auto sum = a + b;
+    REQUIRE(sum.numerator == 1);
+    REQUIRE(sum.denominator == 1);
+
+    // 3/4 - 1/4 = 1/2 (not 2/4)
+    Beat c{3, 4};
+    Beat d{1, 4};
+    auto diff = c - d;
+    REQUIRE(diff.numerator == 1);
+    REQUIRE(diff.denominator == 2);
+}
+
+TEST_CASE("TSTN001A: Beat rational multiplication (§9.1)", "[tensor][beat]") {
+    Beat a{2, 3};
+    Beat b{3, 4};
+
+    // (2/3) * (3/4) = 6/12 = 1/2
+    auto prod = a * b;
+    REQUIRE(prod.numerator == 1);
+    REQUIRE(prod.denominator == 2);
+
+    // Tuplet duration: triplet eighth = (2/3) * (1/2) = 1/3 (§9.4)
+    Beat triplet_ratio{2, 3};
+    Beat eighth{1, 2};
+    auto triplet_eighth = triplet_ratio * eighth;
+    REQUIRE(triplet_eighth.numerator == 1);
+    REQUIRE(triplet_eighth.denominator == 3);
+
+    // Nested tuplet: (2/3) * (4/5) * d = (8/15)*d (§9.4)
+    Beat quintuplet_ratio{4, 5};
+    auto nested = triplet_ratio * quintuplet_ratio;
+    REQUIRE(nested.numerator == 8);
+    REQUIRE(nested.denominator == 15);
+}
+
+TEST_CASE("TSTN001A: Beat rational division", "[tensor][beat]") {
+    Beat a{1, 2};
+    Beat b{1, 3};
+
+    // (1/2) / (1/3) = 3/2
+    auto quot = a / b;
+    REQUIRE(quot.numerator == 3);
+    REQUIRE(quot.denominator == 2);
+
+    // Metric modulation: T2 = T1 * (p/q) — ratio via division
+    Beat span_old{3, 1};  // 3 beats
+    Beat span_new{2, 1};  // 2 beats
+    auto tempo_ratio = span_old / span_new;
+    REQUIRE(tempo_ratio.numerator == 3);
+    REQUIRE(tempo_ratio.denominator == 2);
+}
+
+TEST_CASE("TSTN001A: Beat unary negation", "[tensor][beat]") {
+    Beat a{3, 4};
+    auto neg = -a;
+    REQUIRE(neg.numerator == -3);
+    REQUIRE(neg.denominator == 4);
+
+    Beat b{-1, 2};
+    auto pos = -b;
+    REQUIRE(pos.numerator == 1);
+    REQUIRE(pos.denominator == 2);
 }
 
 TEST_CASE("TSTN001A: beat_lcm", "[tensor][beat]") {
@@ -198,6 +323,14 @@ TEST_CASE("TSTN001A: beat_lcm", "[tensor][beat]") {
     // LCM of 1/4 and 1/3: lcm(1,1)/gcd(4,3) = 1/1
     REQUIRE(lcm.numerator == 1);
     REQUIRE(lcm.denominator == 1);
+
+    // LCM of 1/2 and 1/3 = 1/1
+    auto lcm2 = beat_lcm(Beat{1, 2}, Beat{1, 3});
+    REQUIRE(lcm2 == Beat{1, 1});
+
+    // LCM of 3/4 and 2/3 = lcm(3,2)/gcd(4,3) = 6/1
+    auto lcm3 = beat_lcm(Beat{3, 4}, Beat{2, 3});
+    REQUIRE(lcm3 == Beat{6, 1});
 }
 
 // =============================================================================
@@ -295,4 +428,41 @@ TEST_CASE("TSTN001A: ScaleDefinition get_intervals span", "[tensor][event]") {
     REQUIRE(span.size() == 7);
     REQUIRE(span[0] == 0);
     REQUIRE(span[6] == 11);
+}
+
+TEST_CASE("TSTN001A: ScaleDefinition step_pattern (§4.1)", "[tensor][event]") {
+    // Major scale: intervals {0, 2, 4, 5, 7, 9, 11}
+    // Step pattern: (2, 2, 1, 2, 2, 2, 1) — sum = 12
+    ScaleDefinition major;
+    major.name = "major";
+    major.intervals = {0, 2, 4, 5, 7, 9, 11, 0, 0, 0, 0, 0};
+    major.note_count = 7;
+    major.description = "";
+
+    auto steps = major.step_pattern();
+    REQUIRE(steps.size() == 7);
+    REQUIRE(steps[0] == 2);
+    REQUIRE(steps[1] == 2);
+    REQUIRE(steps[2] == 1);
+    REQUIRE(steps[3] == 2);
+    REQUIRE(steps[4] == 2);
+    REQUIRE(steps[5] == 2);
+    REQUIRE(steps[6] == 1);
+
+    // Verify conservation: sum of steps == 12
+    int sum = 0;
+    for (auto s : steps) sum += s;
+    REQUIRE(sum == 12);
+
+    // Whole-tone scale: intervals {0, 2, 4, 6, 8, 10}
+    // Step pattern: (2, 2, 2, 2, 2, 2) — symmetric
+    ScaleDefinition wt;
+    wt.name = "whole-tone";
+    wt.intervals = {0, 2, 4, 6, 8, 10, 0, 0, 0, 0, 0, 0};
+    wt.note_count = 6;
+    wt.description = "";
+
+    auto wt_steps = wt.step_pattern();
+    REQUIRE(wt_steps.size() == 6);
+    for (auto s : wt_steps) REQUIRE(s == 2);
 }

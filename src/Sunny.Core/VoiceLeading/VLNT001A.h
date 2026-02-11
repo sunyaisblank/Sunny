@@ -91,6 +91,88 @@ struct VoiceLeadingResult {
 );
 
 /**
+ * @brief Generate open voicing (tones span > one octave)
+ *
+ * Formal Spec §7.5: Alternates voices between lower and upper registers
+ * by dropping every other voice down an octave from close position.
+ *
+ * @param close_voicing Close position voicing (ascending)
+ * @return Open voicing
+ */
+[[nodiscard]] std::vector<MidiNote> generate_open_voicing(
+    std::span<const MidiNote> close_voicing
+);
+
+/**
+ * @brief Generate drop-2+4 voicing
+ *
+ * Formal Spec §7.5: Drops both 2nd and 4th voices from the top
+ * down an octave. Requires at least 4 notes.
+ *
+ * @param close_voicing Close position voicing (ascending)
+ * @return Drop 2+4 voicing
+ */
+[[nodiscard]] std::vector<MidiNote> generate_drop24_voicing(
+    std::span<const MidiNote> close_voicing
+);
+
+/**
+ * @brief Generate spread voicing
+ *
+ * Formal Spec §7.5: Bass note separated by at least an octave
+ * from the upper structure. Upper voices remain in close position.
+ *
+ * @param close_voicing Close position voicing (ascending)
+ * @return Spread voicing
+ */
+[[nodiscard]] std::vector<MidiNote> generate_spread_voicing(
+    std::span<const MidiNote> close_voicing
+);
+
+/**
+ * @brief Voice motion type between two voices (§7.3)
+ */
+enum class VoiceMotionType {
+    Parallel,   ///< Same direction, same displacement
+    Similar,    ///< Same direction, different displacement
+    Contrary,   ///< Opposite directions
+    Oblique,    ///< One voice stationary, the other moves
+    Static      ///< Both voices stationary
+};
+
+/**
+ * @brief Classify motion type between two voice pairs (§7.3)
+ *
+ * @param a1 First voice, previous pitch
+ * @param a2 First voice, next pitch
+ * @param b1 Second voice, previous pitch
+ * @param b2 Second voice, next pitch
+ * @return VoiceMotionType classification
+ */
+[[nodiscard]] VoiceMotionType classify_voice_motion(
+    MidiNote a1, MidiNote a2,
+    MidiNote b1, MidiNote b2
+);
+
+/**
+ * @brief Compute optimal voice leading using Hungarian algorithm (§7.2)
+ *
+ * Finds the minimum-cost assignment (bijection) between source pitches
+ * and target pitch classes. Produces provably optimal total motion,
+ * unlike the greedy nearest-tone approximation.
+ *
+ * @param source_pitches Current voicing as MIDI notes
+ * @param target_pitch_classes Target chord as pitch classes
+ * @param lock_bass If true, bass takes chord root
+ * @return VoiceLeadingResult or error
+ */
+[[nodiscard]] Result<VoiceLeadingResult> voice_lead_optimal(
+    std::span<const MidiNote> source_pitches,
+    std::span<const PitchClass> target_pitch_classes,
+    bool lock_bass = false
+);
+
+/**
  * @brief Check for parallel motion between two voice pairs
  *
  * @param prev_bass Previous bass note
