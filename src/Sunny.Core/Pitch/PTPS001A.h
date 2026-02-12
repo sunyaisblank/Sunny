@@ -97,9 +97,9 @@ using PitchClassSet = std::unordered_set<PitchClass>;
  * Covers cardinalities 2-10 (cardinalities 7-10 via complement derivation).
  *
  * @param pcs Input pitch class set
- * @return Forte number string or nullopt if not found
+ * @return Forte number string or ForteNumberNotFound error
  */
-[[nodiscard]] std::optional<std::string> forte_number(const PitchClassSet& pcs);
+[[nodiscard]] Result<std::string> forte_number(const PitchClassSet& pcs);
 
 // =============================================================================
 // Z-Relation (§12.5)

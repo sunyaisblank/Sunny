@@ -588,6 +588,105 @@ SpeciesCheckResult check_fifth_species(
 }
 
 // =============================================================================
+// First Species Solver (backtracking)
+// =============================================================================
+
+namespace {
+
+bool solve_bt(
+    std::span<const MidiNote> cantus,
+    std::vector<MidiNote>& cp,
+    std::size_t idx,
+    CounterpointPosition position,
+    MidiNote lo,
+    MidiNote hi
+) {
+    const auto n = cantus.size();
+    const bool is_last = (idx == n - 1);
+
+    auto upper = [&](std::size_t i) -> MidiNote {
+        return position == CounterpointPosition::Above ? cp[i] : cantus[i];
+    };
+    auto lower = [&](std::size_t i) -> MidiNote {
+        return position == CounterpointPosition::Above ? cantus[i] : cp[i];
+    };
+
+    for (MidiNote pitch = lo; pitch <= hi; ++pitch) {
+        cp[idx] = pitch;
+
+        // Voice crossing check
+        if (position == CounterpointPosition::Above) {
+            if (pitch < cantus[idx]) continue;
+        } else {
+            if (pitch > cantus[idx]) continue;
+        }
+
+        int iv = abs_interval(lower(idx), upper(idx));
+
+        // First and last notes must be perfect consonances
+        if (idx == 0 && !is_perfect_consonance(iv)) continue;
+        if (is_last && !is_perfect_consonance(iv)) continue;
+
+        // All notes must be consonant
+        if (!is_consonant(iv)) continue;
+
+        if (idx > 0) {
+            // No parallel P5/P8
+            if (parallel_perfect(cantus[idx - 1], cp[idx - 1],
+                                 cantus[idx], cp[idx])) continue;
+
+            // No direct (hidden) P5/P8
+            if (direct_perfect(cantus[idx - 1], cp[idx - 1],
+                               cantus[idx], cp[idx])) continue;
+        }
+
+        // Last note must be approached by step
+        if (is_last && idx > 0) {
+            int motion = melodic_interval(cp[idx - 1], cp[idx]);
+            if (!is_step(motion)) continue;
+        }
+
+        // If we've placed all notes, we have a solution
+        if (is_last) return true;
+
+        // Recurse
+        if (solve_bt(cantus, cp, idx + 1, position, lo, hi)) return true;
+    }
+
+    return false;
+}
+
+}  // namespace (solver helpers)
+
+Result<CounterpointSolution> solve_first_species(
+    std::span<const MidiNote> cantus,
+    CounterpointPosition position,
+    MidiNote pitch_low,
+    MidiNote pitch_high
+) {
+    if (cantus.size() < 2) {
+        return std::unexpected(ErrorCode::VoiceLeadingFailed);
+    }
+    if (pitch_low > pitch_high) {
+        return std::unexpected(ErrorCode::VoiceLeadingFailed);
+    }
+
+    std::vector<MidiNote> cp(cantus.size(), 0);
+
+    if (!solve_bt(cantus, cp, 0, position, pitch_low, pitch_high)) {
+        return std::unexpected(ErrorCode::VoiceLeadingFailed);
+    }
+
+    // Post-condition: validate with check_first_species
+    auto check = check_first_species(cantus, cp, position);
+
+    CounterpointSolution sol;
+    sol.counterpoint = std::move(cp);
+    sol.valid = check.valid;
+    return sol;
+}
+
+// =============================================================================
 // Dispatch
 // =============================================================================
 

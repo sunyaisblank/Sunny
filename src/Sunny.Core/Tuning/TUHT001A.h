@@ -17,10 +17,10 @@
 #pragma once
 
 #include "TUET001A.h"
+#include "../Tensor/TNTP001A.h"
 
 #include <array>
 #include <cmath>
-#include <optional>
 #include <span>
 #include <string_view>
 
@@ -127,9 +127,9 @@ constexpr TuningTable TUNING_VALLOTTI = {
  * @brief Find a temperament by name
  *
  * @param name Temperament name (case-sensitive)
- * @return Temperament or nullopt
+ * @return Temperament or TemperamentNotFound error
  */
-[[nodiscard]] std::optional<Temperament> find_temperament(std::string_view name);
+[[nodiscard]] Result<Temperament> find_temperament(std::string_view name);
 
 /**
  * @brief Compute frequency under a tuning table

@@ -128,4 +128,41 @@ struct FiguredBassRealisation {
     std::span<const Interval> key_scale,
     int upper_octave = -1);
 
+// =============================================================================
+// Sequence Realisation (voice-led)
+// =============================================================================
+
+/**
+ * @brief A bass note paired with its figured bass symbol
+ */
+struct FiguredBassEvent {
+    MidiNote bass_note;
+    FiguredBassSymbol symbol;
+};
+
+/**
+ * @brief Result of figured bass sequence realisation
+ */
+struct FiguredBassSequenceResult {
+    std::vector<FiguredBassRealisation> realisations;
+};
+
+/**
+ * @brief Realise a sequence of figured bass events with voice-leading
+ *
+ * Each event is realised to produce the correct intervals above the bass.
+ * Successive upper voices are connected via optimal voice leading (VLNT001A)
+ * to minimise total voice motion across the progression.
+ *
+ * @param events Sequence of bass notes with figured bass symbols
+ * @param key_root Root pitch class of the key
+ * @param key_scale Scale intervals (e.g., SCALE_MAJOR)
+ * @return Sequence of realisations or error
+ */
+[[nodiscard]] Result<FiguredBassSequenceResult> realise_figured_bass_sequence(
+    std::span<const FiguredBassEvent> events,
+    PitchClass key_root,
+    std::span<const Interval> key_scale
+);
+
 }  // namespace Sunny::Core

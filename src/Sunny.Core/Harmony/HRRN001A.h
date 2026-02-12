@@ -113,9 +113,9 @@ struct ParsedNumeral {
  * @brief Get chord intervals for a quality
  *
  * @param quality Chord quality (major, minor, dim, aug, 7, maj7, etc.)
- * @return Intervals from root or nullopt
+ * @return Intervals from root or UnknownChordQuality error
  */
-[[nodiscard]] std::optional<std::vector<Interval>> chord_quality_intervals(
+[[nodiscard]] Result<std::vector<Interval>> chord_quality_intervals(
     std::string_view quality
 );
 
@@ -127,9 +127,9 @@ struct ParsedNumeral {
  * quality registry.
  *
  * @param pcs Pitch class set
- * @return (root, quality_name) or nullopt if unrecognised
+ * @return (root, quality_name) or ChordNotRecognised error
  */
-[[nodiscard]] std::optional<std::pair<PitchClass, std::string>> recognize_chord(
+[[nodiscard]] Result<std::pair<PitchClass, std::string>> recognize_chord(
     const PitchClassSet& pcs
 );
 

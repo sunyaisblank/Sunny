@@ -212,6 +212,42 @@ struct SpeciesCheckResult {
     CounterpointPosition position = CounterpointPosition::Above
 );
 
+// =============================================================================
+// Counterpoint Solving
+// =============================================================================
+
+/**
+ * @brief Result of counterpoint generation
+ */
+struct CounterpointSolution {
+    std::vector<MidiNote> counterpoint;  ///< Generated counterpoint voice
+    bool valid;                          ///< True if solution satisfies all constraints
+};
+
+/**
+ * @brief Solve first-species counterpoint via backtracking search
+ *
+ * Generates a counterpoint voice against a cantus firmus that satisfies
+ * all first-species constraints: consonance, no parallel P5/P8, no voice
+ * crossing, perfect consonance at start/end, stepwise approach to final note.
+ *
+ * @param cantus Cantus firmus as MIDI notes (minimum 2 notes)
+ * @param position Whether counterpoint is above or below
+ * @param pitch_low Lowest allowed MIDI note for counterpoint
+ * @param pitch_high Highest allowed MIDI note for counterpoint
+ * @return CounterpointSolution or error if no valid solution exists
+ */
+[[nodiscard]] Result<CounterpointSolution> solve_first_species(
+    std::span<const MidiNote> cantus,
+    CounterpointPosition position = CounterpointPosition::Above,
+    MidiNote pitch_low = 60,
+    MidiNote pitch_high = 79
+);
+
+// =============================================================================
+// Species Dispatch
+// =============================================================================
+
 /**
  * @brief Dispatch to the appropriate species checker
  *

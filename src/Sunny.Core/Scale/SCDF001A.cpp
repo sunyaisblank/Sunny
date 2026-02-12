@@ -134,13 +134,13 @@ bool iequals(std::string_view a, std::string_view b) {
 
 }  // namespace
 
-std::optional<ScaleDefinition> find_scale(std::string_view name) {
+Result<ScaleDefinition> find_scale(std::string_view name) {
     for (const auto& scale : SCALE_DATABASE) {
         if (iequals(scale.name, name)) {
             return scale;
         }
     }
-    return std::nullopt;
+    return std::unexpected(ErrorCode::ScaleNotFound);
 }
 
 std::span<const std::string_view> list_scale_names() {

@@ -14,7 +14,6 @@
 #include "../Tensor/TNEV001A.h"
 
 #include <array>
-#include <optional>
 #include <span>
 #include <string_view>
 
@@ -80,9 +79,9 @@ constexpr std::array<Interval, 12> SCALE_CHROMATIC = {0, 1, 2, 3, 4, 5, 6, 7, 8,
  * @brief Find a built-in scale by name
  *
  * @param name Scale name (case-insensitive)
- * @return Scale definition or nullopt
+ * @return Scale definition or ScaleNotFound error
  */
-[[nodiscard]] std::optional<ScaleDefinition> find_scale(std::string_view name);
+[[nodiscard]] Result<ScaleDefinition> find_scale(std::string_view name);
 
 /**
  * @brief Get list of all available scale names

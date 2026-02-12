@@ -512,6 +512,67 @@ TEST_CASE("VLSC001A: check_species fifth returns error (needs notes_per_measure)
 }
 
 // =============================================================================
+// First Species Solver
+// =============================================================================
+
+TEST_CASE("VLSC001A: solve_first_species Fux cantus in D", "[species][solver][core]") {
+    // Fux cantus firmus in D: D4 F4 E4 D4 G4 F4 A4 G4 F4 E4 D4
+    std::vector<MidiNote> cantus = {62, 65, 64, 62, 67, 65, 69, 67, 65, 64, 62};
+
+    auto result = solve_first_species(cantus);
+    REQUIRE(result.has_value());
+    REQUIRE(result->valid);
+    REQUIRE(result->counterpoint.size() == cantus.size());
+
+    // Validate with the checker
+    auto check = check_first_species(cantus, result->counterpoint);
+    REQUIRE(check.valid);
+    REQUIRE(check.violations.empty());
+}
+
+TEST_CASE("VLSC001A: solve_first_species pitch range respected", "[species][solver][core]") {
+    std::vector<MidiNote> cantus = {62, 65, 64, 62, 67, 65, 69, 67, 65, 64, 62};
+    MidiNote lo = 67;
+    MidiNote hi = 81;
+
+    auto result = solve_first_species(cantus, CounterpointPosition::Above, lo, hi);
+    REQUIRE(result.has_value());
+
+    for (auto note : result->counterpoint) {
+        REQUIRE(note >= lo);
+        REQUIRE(note <= hi);
+    }
+}
+
+TEST_CASE("VLSC001A: solve_first_species counterpoint below", "[species][solver][core]") {
+    // Simple cantus in C5 range, solve below
+    std::vector<MidiNote> cantus = {72, 74, 76, 74, 72};
+
+    auto result = solve_first_species(cantus, CounterpointPosition::Below, 55, 71);
+    REQUIRE(result.has_value());
+    REQUIRE(result->valid);
+
+    // All counterpoint notes should be below cantus
+    for (std::size_t i = 0; i < cantus.size(); ++i) {
+        REQUIRE(result->counterpoint[i] <= cantus[i]);
+    }
+
+    // Validate with checker
+    auto check = check_first_species(cantus, result->counterpoint, CounterpointPosition::Below);
+    REQUIRE(check.valid);
+}
+
+TEST_CASE("VLSC001A: solve_first_species impossible constraints return error", "[species][solver][core]") {
+    // Cantus at C4 (60), pitch range 61-61 — only one pitch available (C#4)
+    // C#4 vs C4 = 1 semitone (m2), never consonant → no solution
+    std::vector<MidiNote> cantus = {60, 62, 60};
+
+    auto result = solve_first_species(cantus, CounterpointPosition::Above, 61, 61);
+    REQUIRE_FALSE(result.has_value());
+    REQUIRE(result.error() == ErrorCode::VoiceLeadingFailed);
+}
+
+// =============================================================================
 // Counterpoint Below
 // =============================================================================
 

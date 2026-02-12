@@ -434,7 +434,7 @@ Result<ChordVoicing> generate_chord(
     return voicing;
 }
 
-std::optional<std::vector<Interval>> chord_quality_intervals(std::string_view quality) {
+Result<std::vector<Interval>> chord_quality_intervals(std::string_view quality) {
     auto it = QUALITY_INTERVALS.find(quality);
     if (it != QUALITY_INTERVALS.end()) {
         return it->second;
@@ -451,7 +451,7 @@ std::optional<std::vector<Interval>> chord_quality_intervals(std::string_view qu
         return it->second;
     }
 
-    return std::nullopt;
+    return std::unexpected(ErrorCode::UnknownChordQuality);
 }
 
 // =============================================================================
@@ -510,10 +510,10 @@ std::vector<QualityEntry> build_match_table() {
 
 }  // namespace
 
-std::optional<std::pair<PitchClass, std::string>> recognize_chord(
+Result<std::pair<PitchClass, std::string>> recognize_chord(
     const PitchClassSet& pcs
 ) {
-    if (pcs.size() < 2) return std::nullopt;
+    if (pcs.size() < 2) return std::unexpected(ErrorCode::ChordNotRecognised);
 
     static const auto MATCH_TABLE = build_match_table();
 
@@ -542,7 +542,7 @@ std::optional<std::pair<PitchClass, std::string>> recognize_chord(
         }
     }
 
-    if (best_match_size == 0) return std::nullopt;
+    if (best_match_size == 0) return std::unexpected(ErrorCode::ChordNotRecognised);
     return std::make_pair(best_root, best_quality);
 }
 

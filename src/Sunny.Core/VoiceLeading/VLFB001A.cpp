@@ -6,6 +6,7 @@
  */
 
 #include "VLFB001A.h"
+#include "VLNT001A.h"
 
 #include <algorithm>
 #include <cstdlib>
@@ -201,6 +202,67 @@ Result<FiguredBassRealisation> realise_figured_bass(
         result.all_notes.end(), result.upper.begin(), result.upper.end());
 
     return result;
+}
+
+// =============================================================================
+// Sequence Realisation (voice-led)
+// =============================================================================
+
+Result<FiguredBassSequenceResult> realise_figured_bass_sequence(
+    std::span<const FiguredBassEvent> events,
+    PitchClass key_root,
+    std::span<const Interval> key_scale
+) {
+    if (events.empty()) {
+        return std::unexpected(ErrorCode::VoiceLeadingFailed);
+    }
+
+    FiguredBassSequenceResult seq;
+    seq.realisations.reserve(events.size());
+
+    // First event: direct realisation
+    auto first = realise_figured_bass(
+        events[0].bass_note, events[0].symbol, key_root, key_scale);
+    if (!first) return std::unexpected(first.error());
+    seq.realisations.push_back(std::move(*first));
+
+    // Subsequent events: realise then voice-lead upper voices
+    for (std::size_t i = 1; i < events.size(); ++i) {
+        auto target = realise_figured_bass(
+            events[i].bass_note, events[i].symbol, key_root, key_scale);
+        if (!target) return std::unexpected(target.error());
+
+        const auto& prev_upper = seq.realisations[i - 1].upper;
+        const auto& new_upper = target->upper;
+
+        // If voice counts match, apply optimal voice leading
+        if (!prev_upper.empty() && prev_upper.size() == new_upper.size()) {
+            // Extract target pitch classes
+            std::vector<PitchClass> target_pcs;
+            target_pcs.reserve(new_upper.size());
+            for (auto n : new_upper) {
+                target_pcs.push_back(pitch_class(n));
+            }
+
+            auto vl = voice_lead_optimal(prev_upper, target_pcs);
+            if (vl) {
+                FiguredBassRealisation led;
+                led.bass = events[i].bass_note;
+                led.upper = vl->voiced_notes;
+                std::sort(led.upper.begin(), led.upper.end());
+                led.all_notes.push_back(led.bass);
+                led.all_notes.insert(
+                    led.all_notes.end(), led.upper.begin(), led.upper.end());
+                seq.realisations.push_back(std::move(led));
+                continue;
+            }
+        }
+
+        // Fallback: use the direct realisation
+        seq.realisations.push_back(std::move(*target));
+    }
+
+    return seq;
 }
 
 }  // namespace Sunny::Core

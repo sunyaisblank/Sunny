@@ -31,11 +31,11 @@ constexpr std::string_view TEMPERAMENT_NAMES[] = {
 
 }  // namespace
 
-std::optional<Temperament> find_temperament(std::string_view name) {
+Result<Temperament> find_temperament(std::string_view name) {
     for (const auto& t : TEMPERAMENTS) {
         if (t.name == name) return t;
     }
-    return std::nullopt;
+    return std::unexpected(ErrorCode::TemperamentNotFound);
 }
 
 std::span<const std::string_view> list_temperament_names() {

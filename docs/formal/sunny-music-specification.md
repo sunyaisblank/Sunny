@@ -97,7 +97,7 @@ For 12-TET, D₁₂ has order 24 and acts on **Z/12Z**.
 
 This group is not cyclic; it has rank 2. The chromatic component alone projects onto **Z** (or **Z/12Z** for pitch classes); the diatonic component projects onto **Z/7Z** for diatonic contexts.
 
-**Status**: **[NEW]**. The current implementation represents intervals as semitone counts only, lacking the diatonic component required for interval quality naming and enharmonic distinction.
+**Status**: Implemented. PTDI001A: DiatonicInterval as (chromatic, diatonic) pair with quality derivation, interval addition, inversion, and application on SpelledPitch.
 
 ### 1.4 Group Actions
 
@@ -126,7 +126,7 @@ The following group actions are foundational to the specification:
 3. **Transpositional-inversional equivalence** (TI-equivalence): *A* ∼_{TI} *B* iff there exists *g* ∈ D₁₂ such that *g*(*A*) = *B*.
 4. **Enharmonic equivalence**: Spelled pitches *p*₁ ∼_enh *p*₂ iff they map to the same element of **Z/12Z**.
 
-**Status**: Octave equivalence, T-equivalence, and TI-equivalence are implemented. Enharmonic equivalence is implicit (the system lacks spelled pitch representation).
+**Status**: Implemented. Octave equivalence, T-equivalence, and TI-equivalence via PTPS001A. Enharmonic equivalence via PTSP001A (SpelledPitch with pitch class realisation).
 
 ---
 
@@ -191,7 +191,7 @@ The mapping from pitch class integer to common name is *not* a function; it is a
 
 **Status**: Implemented as integer representation. The common name table is available; context-sensitive disambiguation is not.
 
-### 2.5 Spelled Pitch Space [NEW]
+### 2.5 Spelled Pitch Space
 
 **Definition 2.5.1** [C]. A *spelled pitch* is a triple (*l*, *a*, *o*) where:
 
@@ -219,7 +219,7 @@ The *absolute pitch realisation* (MIDI number) is:
 - An override mechanism for explicit enharmonic selection.
 - A context-sensitive algorithm selectable by policy (PS13, line-of-fifths, or rule-based).
 
-**Status**: **[NEW]**. The current system operates entirely in pitch class integers without letter-name or accidental information.
+**Status**: Implemented. PTSP001A: SpelledPitch (letter, accidental, octave), SPN parsing, line-of-fifths mapping, enharmonic equivalence.
 
 ### 2.6 The Line of Fifths
 
@@ -238,7 +238,7 @@ The line of fifths provides a one-dimensional representation of spelled pitch cl
 - Diatonic collections are windows [*q*, *q* + 6].
 - The distance between two spelled pitch classes on the line of fifths is a measure of their enharmonic remoteness.
 
-**Status**: **[NEW]**.
+**Status**: Implemented. PTSP001A: `line_of_fifths_position()` and `from_line_of_fifths()` constexpr functions.
 
 ### 2.7 Scientific Pitch Notation
 
@@ -250,7 +250,7 @@ where *accidental_str*(0) = "", *accidental_str*(1) = "♯", *accidental_str*(�
 
 Parsing is the inverse: given a valid SPN string, extract (*l*, *a*, *o*).
 
-**Status**: Partially implemented (note name strings exist for display, but not as a first-class invertible representation).
+**Status**: Implemented. PTSP001A: `from_spn()` and `to_spn()` provide first-class invertible SPN ↔ SpelledPitch conversion.
 
 ---
 
@@ -268,7 +268,7 @@ yielding values in {0, 1, 2, 3, 4, 5, 6}.
 
 **Status**: Implemented.
 
-### 3.2 Diatonic Intervals [NEW]
+### 3.2 Diatonic Intervals
 
 **Definition 3.2.1** [C]. A *diatonic interval* is an element of the free abelian group **Z** × **Z**, written (*c*, *d*) where *c* is the chromatic component (semitones) and *d* is the diatonic component (letter-name steps, also called the *generic interval*).
 
@@ -286,7 +286,7 @@ The diatonic component determines the interval *number* (unison, second, third, 
 
 Simple intervals have |*d*| ≤ 6; compound intervals have |*d*| ≥ 7.
 
-### 3.3 Interval Quality [NEW]
+### 3.3 Interval Quality
 
 **Definition 3.3.1** [C]. The *quality* of a diatonic interval (*c*, *d*) is determined by comparing *c* against the *default chromatic size* for generic interval *d*. The default is the number of semitones in the corresponding diatonic scale step.
 
@@ -340,7 +340,7 @@ The pattern extends indefinitely in both directions.
 
 *Proof*: δ is a total function on **Z**, deviation is the difference of two integers, and the quality tables cover all integers without overlap. The converse follows because deviation is a bijection between quality labels and integers for each family. ∎
 
-### 3.4 Interval Operations [NEW]
+### 3.4 Interval Operations
 
 **Definition 3.4.1** [C]. *Interval addition*: (*c*₁, *d*₁) + (*c*₂, *d*₂) = (*c*₁ + *c*₂, *d*₁ + *d*₂).
 
@@ -373,7 +373,7 @@ More precisely: *a*′ = *c* − (δ(*d*) − δ(0)) + *a* ... this requires car
 
 This formulation is constructive and exact. Implementation should compute *midi*(*p*′) first, then recover (*l*′, *a*′, *o*′) from the known diatonic target and the required MIDI pitch.
 
-**Status**: **[NEW]**. The current system cannot compute interval quality, interval inversion as named operations, or interval application on spelled pitches.
+**Status**: Implemented. PTDI001A: interval quality derivation, interval inversion, and interval application on SpelledPitch.
 
 ### 3.5 Interval Class Vector
 
@@ -428,7 +428,7 @@ Generated from the diatonic collection {0, 2, 4, 5, 7, 9, 11} by rotation:
 
 The classical melodic minor uses the ascending form going up and the natural minor going down. The jazz convention treats the ascending form as the sole scale. The specification models these as two distinct scale types; the ascending/descending asymmetry of the classical convention is a voice-leading rule (§8) applied over the scale, not a property of the scale type itself.
 
-#### 4.2.3 Melodic Minor Modes [PARTIAL]
+#### 4.2.3 Melodic Minor Modes
 
 | Mode | Interval Pattern | Common Name |
 |------|-----------------|-------------|
@@ -439,7 +439,7 @@ The classical melodic minor uses the ascending form going up and the natural min
 | Mode 6 | (2, 1, 2, 1, 2, 2, 2) | Locrian ♮2 / half-diminished |
 | Mode 7 | (1, 2, 1, 2, 2, 2, 2) | Super Locrian / altered |
 
-**Status**: Partially implemented. Lydian augmented, Lydian dominant, Super Locrian, Locrian ♮2, and Phrygian dominant are present. Dorian ♭2 and Mixolydian ♭6 are absent.
+**Status**: Implemented. All seven melodic minor modes present in SCDF001A (Dorian ♭2 and Mixolydian ♭6 added).
 
 #### 4.2.4 Symmetric Scales
 
@@ -500,7 +500,7 @@ Bebop scales are 8-note scales designed so that chord tones fall on strong beats
 
 **Status**: Implemented.
 
-### 4.3 Scale Degree Naming [NEW]
+### 4.3 Scale Degree Naming
 
 **Definition 4.3.1** [C]. For a 7-note scale, the *scale degrees* are:
 
@@ -518,9 +518,9 @@ For scales of other cardinalities, degrees are numbered ordinally (1 through *k*
 
 **Definition 4.3.2** [C]. *Scale degree alteration*: A chromatic alteration of a scale degree is expressed as ♭*n* or ♯*n* (e.g., ♭3, ♯4), indicating the degree is lowered or raised by one semitone relative to its position in the parent diatonic scale.
 
-**Status**: **[NEW]**.
+**Status**: Implemented. HRFN001A: scale degree names and functional classification.
 
-### 4.4 Scale Relationships [NEW]
+### 4.4 Scale Relationships
 
 **Definition 4.4.1** [C]. Two scale instances (*s*₁, *r*₁) and (*s*₂, *r*₂) are:
 
@@ -532,13 +532,15 @@ For scales of other cardinalities, degrees are numbered ordinally (1 through *k*
 
 **Definition 4.4.3** [C]. A scale *S*₁ is a *subset* of *S*₂ if every pitch class in *S*₁ is also in *S*₂. The *superset* relation is the converse. The pentatonic scale is a subset of the diatonic scale; the bebop scale is a superset.
 
-### 4.5 Modal Interchange [NEW]
+### 4.5 Modal Interchange
 
 **Definition 4.5.1** [H]. *Modal interchange* (borrowed chords) is the substitution of a chord built on a scale degree from a parallel mode for the corresponding diatonic chord. Given a primary key (*s*₁, *r*) and a parallel mode (*s*₂, *r*), a borrowed chord is any chord derived from *s*₂ that is not diatonic to *s*₁.
 
 The identification of modal interchange is heuristic because it requires contextual analysis to determine whether a non-diatonic chord functions as a borrowing or as a chromatic alteration, secondary function, or other device.
 
-### 4.6 Generated Scales [NEW]
+**Status**: Implemented. SCRN001A: `find_borrowed_chords()`. HRST001A: `is_modal_interchange()`, `TransitionType::ModalInterchange`.
+
+### 4.6 Generated Scales
 
 **Definition 4.6.1** [C]. A *generated scale* is a pitch class set obtained by iterating a fixed interval *g* (the generator) from a starting pitch class and collecting *k* distinct pitch classes:
 
@@ -549,6 +551,8 @@ then sorting the result in ascending pitch class order.
 The diatonic scale is generated by *g* = 7 (perfect fifth) with *k* = 7. The pentatonic scale is the same generator with *k* = 5. The whole-tone scale is generated by *g* = 2 with *k* = 6.
 
 **Theorem 4.6.1**: A generated scale with generator *g* and cardinality *k* has the *deep scale property* (each interval class appears a distinct number of times in the ICV) iff gcd(*g*, 12) = 1 and *k* ≤ 12 / gcd(*g*, 12). The diatonic collection satisfies this.
+
+**Status**: Implemented. SCRN001A: `generate_scale_from_generator()`, `has_deep_scale_property()`.
 
 ---
 
@@ -584,7 +588,7 @@ The fundamental tertian chord types, specified as interval sets above root:
 
 **Status**: Implemented for triads and 7th chords.
 
-### 5.3 Extended Tertian Chords [NEW]
+### 5.3 Extended Tertian Chords
 
 **Definition 5.3.1** [C]. Extended chords continue the tertian stacking through the 9th, 11th, and 13th:
 
@@ -607,9 +611,9 @@ The fundamental tertian chord types, specified as interval sets above root:
 
 **Definition 5.3.3** [C]. The *altered dominant* chord (dom7♭9♯9♯11♭13) contains all four altered extensions. Its pitch class content is identical to the Super Locrian (altered) scale built on the root.
 
-**Status**: **[NEW]**. Current implementation handles up to 9ths (add9, maj9, m9); 11ths and 13ths are absent.
+**Status**: Implemented. HRRN001A: all 34 Appendix B chord qualities including 11ths, 13ths, and altered extensions.
 
-### 5.4 Non-Tertian Chord Construction [NEW]
+### 5.4 Non-Tertian Chord Construction
 
 **Definition 5.4.1** [C]. *Quartal chords* are constructed by stacking perfect fourths (5 semitones):
 
@@ -641,7 +645,7 @@ The fundamental tertian chord types, specified as interval sets above root:
 
 **Status**: Implemented (sus2, sus4, add9, 6, m6, power).
 
-### 5.6 Chord-Scale Theory [NEW]
+### 5.6 Chord-Scale Theory
 
 **Definition 5.6.1** [H]. The *chord-scale* for a chord quality in a harmonic context is the scale whose members include all chord tones and whose remaining members are the *available tensions* (extensions that do not create a minor 9th interval against a chord tone, unless stylistically appropriate).
 
@@ -756,9 +760,9 @@ inversion ::= "6" | "64" | "65" | "43" | "42"
 
 **Parsing**: Given a Roman numeral string and a key context (*scale type*, *root*), the parser yields a chord instance (pitch class set with root).
 
-**Status**: Partially implemented (basic Roman numeral parsing without applied chords, inversion suffixes, or chromatically altered degrees).
+**Status**: Implemented. HRRN001A: full §6.2 BNF grammar including chromatic alterations, Neapolitan, extensions, and figured bass inversion suffixes.
 
-### 6.3 Secondary Dominants and Applied Chords [NEW]
+### 6.3 Secondary Dominants and Applied Chords
 
 **Definition 6.3.1** [C]. A *secondary dominant* V/*X* is the dominant chord of scale degree *X*, functioning as a local dominant resolving to *X*. It is derived by:
 
@@ -769,9 +773,9 @@ inversion ::= "6" | "64" | "65" | "43" | "42"
 
 **Constraint**: Secondary dominants are meaningful only when *X* is a major or minor triad (not diminished). In a major key, V/vii° is rarely used because vii° is diminished. The set of standard secondary dominants in a major key is: V/ii, V/iii, V/IV, V/V, V/vi.
 
-**Status**: **[NEW]**.
+**Status**: Implemented. HRSD001A: secondary dominant generation, applied chord parsing, and target validation.
 
-### 6.4 Chromatic Harmony [NEW]
+### 6.4 Chromatic Harmony
 
 #### 6.4.1 Neapolitan Sixth
 
@@ -806,9 +810,9 @@ Example: In C major, the common-tone diminished over I is C♯°7 = {C♯, E, G,
 
 The 3rd of the original becomes the 7th of the substitution, and vice versa.
 
-**Status**: **[NEW]** for all of §6.4.
+**Status**: Implemented. HRCH001A: Neapolitan sixth, augmented sixth (Italian/French/German), tritone substitution, and common-tone diminished.
 
-### 6.5 Harmonic Progression as State Transformation [NEW]
+### 6.5 Harmonic Progression as State Transformation
 
 **Definition 6.5.1** [C]. A *harmonic state* is a tuple (*K*, *C*, *F*, *H*) where:
 
@@ -825,7 +829,7 @@ The 3rd of the original becomes the 7th of the substitution, and vice versa.
 - *Modulatory*: *K* itself changes.
 - *Chromatic*: New chord is non-diatonic and non-functional (e.g., chromatic planing, common-tone motion).
 
-### 6.6 Cadences [NEW]
+### 6.6 Cadences
 
 **Definition 6.6.1** [C]. A *cadence* is a formulaic harmonic progression that articulates a phrase boundary. The principal cadence types:
 
@@ -875,7 +879,7 @@ When the chords have unequal cardinality, voice leading is a partial function or
 
 **Definition 7.2.2** [C]. The *nearest-tone algorithm* (greedy approximation): Assign each voice in *A* to its nearest unassigned pitch in *B*. This is O(*k*²) and produces optimal or near-optimal results for typical chord sizes.
 
-**Status**: Implemented (nearest-tone greedy algorithm). The Hungarian algorithm is absent.
+**Status**: Implemented. VLNT001A: nearest-tone greedy algorithm (`voice_lead_nearest_tone`) and O(k³) Hungarian algorithm (`voice_lead_optimal`).
 
 ### 7.3 Motion Classification
 
@@ -927,7 +931,7 @@ When the chords have unequal cardinality, voice leading is a partial function or
 
 **Status**: Implemented. All six voicing types (Close, Open, Drop 2, Drop 3, Drop 2+4, Spread) are available.
 
-### 7.6 Species Counterpoint [NEW]
+### 7.6 Species Counterpoint
 
 **Definition 7.6.1** [H]. *Species counterpoint* (after Fux) is a pedagogical system of constraints for composing a counterpoint voice against a given *cantus firmus*. The five species are:
 
@@ -952,7 +956,9 @@ Constraints:
 
 The specification provides these as constraint sets; an implementation may solve them as constraint satisfaction problems or use them to validate existing counterpoint.
 
-### 7.7 Figured Bass Realisation [NEW]
+**Status**: Implemented. VLSC001A: validation for all five species (`check_first_species` through `check_fifth_species`, `check_species` dispatcher) plus first-species backtracking solver (`solve_first_species`).
+
+### 7.7 Figured Bass Realisation
 
 **Definition 7.7.1** [H]. *Figured bass* is a notational system in which a bass line is annotated with numbers indicating intervals above the bass. The *realisation problem* is: given a bass note and figured bass symbols, determine a complete voicing satisfying the indicated intervals and the voice-leading constraints of §7.4.
 
@@ -970,11 +976,13 @@ Figured bass symbols and their interval meanings:
 
 Accidentals in figures: A slash through a number, or ♯/♭ before a number, raises/lowers the indicated interval. A standalone accidental applies to the 3rd.
 
+**Status**: Implemented. VLFB001A: `parse_figured_bass()`, `figured_bass_intervals()`, `realise_figured_bass()` (single-chord), `realise_figured_bass_sequence()` (voice-led progression integrating VLNT001A).
+
 ---
 
 ## 8. Melody
 
-### 8.1 Melodic Contour [NEW]
+### 8.1 Melodic Contour
 
 **Definition 8.1.1** [C]. The *contour* of a melody is the sequence of directions between successive pitches. For a pitch sequence (*p*₁, *p*₂, ..., *p*ₙ), the contour is the sequence (*c*₁, *c*₂, ..., *c*ₙ₋₁) where:
 
@@ -984,7 +992,7 @@ Accidentals in figures: A slash through a number, or ♯/♭ before a number, ra
 
 **Definition 8.1.2** [C]. *Contour reduction* (after Morris): Reduce a pitch sequence to its boundary pitches (local maxima and minima) to extract a simplified contour representation. This is recursive: reduce, then reduce again, until a fixed point.
 
-### 8.2 Melodic Motion Classification [NEW]
+### 8.2 Melodic Motion Classification
 
 **Definition 8.2.1** [C]. An interval between successive melody notes is:
 
@@ -993,7 +1001,7 @@ Accidentals in figures: A slash through a number, or ♯/♭ before a number, ra
 
 A melody is *predominantly conjunct* if the proportion of conjunct intervals exceeds a threshold (typically > 0.6, configurable).
 
-### 8.3 Melodic Statistics [NEW]
+### 8.3 Melodic Statistics
 
 **Definition 8.3.1** [C]. For a pitch sequence (*p*₁, ..., *p*ₙ):
 
@@ -1003,7 +1011,7 @@ A melody is *predominantly conjunct* if the proportion of conjunct intervals exc
 - *Interval histogram*: Frequency distribution of directed intervals between successive notes
 - *Pitch class histogram*: Frequency distribution of pitch classes
 
-### 8.4 Melodic Tendency Tones [NEW]
+### 8.4 Melodic Tendency Tones
 
 **Definition 8.4.1** [H]. Certain scale degrees carry *tendency* — a stylistic expectation of resolution direction:
 
@@ -1017,7 +1025,7 @@ A melody is *predominantly conjunct* if the proportion of conjunct intervals exc
 
 These are heuristic preferences from common-practice style, not absolute rules.
 
-### 8.5 Sequence Detection [NEW]
+### 8.5 Sequence Detection
 
 **Definition 8.5.1** [C]. A *real sequence* is a repetition of a melodic pattern transposed by a fixed chromatic interval. A *tonal sequence* (or *diatonic sequence*) is a repetition of a melodic pattern transposed by a fixed diatonic interval (the chromatic intervals vary to stay within the key).
 
@@ -1043,7 +1051,7 @@ Arithmetic operations on beats use exact rational arithmetic:
 
 **Status**: Implemented (Beat type with exact rational arithmetic).
 
-### 9.2 Time Signature [NEW]
+### 9.2 Time Signature
 
 **Definition 9.2.1** [C]. A *time signature* is a pair (*numerator*, *denominator*) specifying the number of beats per measure and the note value that receives one beat.
 
@@ -1060,7 +1068,7 @@ Arithmetic operations on beats use exact rational arithmetic:
 
 **Representation**: A time signature is stored as a tuple (*groups*, *denominator*) where *groups* is a list of integers summing to the numerator. For simple and compound metres, this is a list of identical values (e.g., 4/4 = (1, 1, 1, 1)/4 or equivalently (4)/4).
 
-### 9.3 Metrical Hierarchy [NEW]
+### 9.3 Metrical Hierarchy
 
 **Definition 9.3.1** [C]. A *metrical hierarchy* assigns a weight (accent level) to each metrical position. For a measure of *N* pulses, the hierarchy is defined recursively:
 
@@ -1077,7 +1085,7 @@ For ternary subdivisions, the recursion branches by 3 instead of 2 at the approp
 **Definition 9.3.2** [C]. *Syncopation* is rhythmic emphasis that contradicts the prevailing metrical hierarchy. A note onset at metrical position *k* is syncopated if:
 - *w*(*k*) < *w*(*k* + *d*), where *d* is the duration of the note, meaning the note sustains through a metrically stronger position than its onset.
 
-### 9.4 Tuplets [NEW]
+### 9.4 Tuplets
 
 **Definition 9.4.1** [C]. A *tuplet* divides a beat span into a number of equal parts different from the normal subdivision. An *m*:*n* tuplet places *m* notes in the span normally occupied by *n* notes of the same written value.
 
@@ -1094,7 +1102,7 @@ Since durations are represented as exact rationals (§9.1), tuplet durations are
 
 **Nested tuplets**: A tuplet within a tuplet produces a compound ratio. A triplet of quintuplets: each sub-note has duration (2/3) · (4/5) · *d* = (8/15) · *d*, where *d* is the base note duration. Exact rational arithmetic handles this without approximation.
 
-### 9.5 Polyrhythm and Polymetre [NEW]
+### 9.5 Polyrhythm and Polymetre
 
 **Definition 9.5.1** [C]. A *polyrhythm* is the simultaneous sounding of two or more rhythmic patterns whose pulse counts within the same span are co-prime (or at least distinct). An *m*-against-*n* polyrhythm places *m* equally-spaced onsets against *n* equally-spaced onsets within the same time span.
 
@@ -1115,7 +1123,7 @@ The LCM alignment point for metres of length *a* beats and *b* beats is lcm(*a*,
 
 **Status**: Implemented with presets (Tresillo, Cinquillo, Son clave, Rumba clave, Bossa nova, Gahu).
 
-### 9.7 Rhythmic Transformations [NEW]
+### 9.7 Rhythmic Transformations
 
 **Definition 9.7.1** [C]. Given a rhythmic pattern (sequence of durations and onsets):
 
@@ -1126,7 +1134,7 @@ The LCM alignment point for metres of length *a* beats and *b* beats is lcm(*a*,
 
 Since durations are exact rationals, these transformations preserve exactness.
 
-### 9.8 Metric Modulation [NEW]
+### 9.8 Metric Modulation
 
 **Definition 9.8.1** [C]. A *metric modulation* occurs when a subdivision of the old tempo becomes the new beat unit, effecting a tempo change by a rational factor.
 
@@ -1136,7 +1144,7 @@ If the old tempo is *T*₁ BPM with beat unit *b*₁, and a *p*:*q* tuplet in th
 
 where *b*₂ is the new beat unit. Since all values are rational, the tempo ratio is exact.
 
-### 9.9 Swing and Shuffle [NEW]
+### 9.9 Swing and Shuffle
 
 **Definition 9.9.1** [H]. *Swing* displaces the second note of each pair of equal subdivisions by a *swing ratio* ρ ∈ (0.5, 1.0). A straight pair divides the beat 50/50; a swing ratio of ρ places the first note at duration ρ · *d* and the second at (1 − ρ) · *d*, where *d* is the full beat duration.
 
@@ -1152,7 +1160,7 @@ The triplet swing ratio 2/3 is exactly representable as a rational.
 
 ## 10. Form and Large-Scale Structure
 
-### 10.1 Formal Units as Recursive Grammar [NEW]
+### 10.1 Formal Units as Recursive Grammar
 
 **Definition 10.1.1** [H]. Musical form is modelled as a recursive grammar over structural units. A *formal unit* is a labelled, bounded region of musical time containing harmonic and thematic content.
 
@@ -1168,7 +1176,7 @@ subphrase     ::= motif+
 
 where `label` ∈ {A, B, C, ..., Introduction, Coda, Bridge, Development, Recapitulation, ...}.
 
-### 10.2 Phrase Structure [NEW]
+### 10.2 Phrase Structure
 
 **Definition 10.2.1** [H]. A *phrase* is the smallest unit of musical form that terminates with a cadence. Common phrase structures:
 
@@ -1182,7 +1190,7 @@ where `label` ∈ {A, B, C, ..., Introduction, Coda, Bridge, Development, Recapi
 - Parallel period: consequent begins like the antecedent.
 - Contrasting period: consequent has different opening material.
 
-### 10.3 Sectional Forms [NEW]
+### 10.3 Sectional Forms
 
 | Form | Structure | Description |
 |------|-----------|-------------|
@@ -1195,7 +1203,7 @@ where `label` ∈ {A, B, C, ..., Introduction, Coda, Bridge, Development, Recapi
 | Strophic | A A A A ... | Same music, different text (vocal) |
 | Through-composed | A B C D ... | No large-scale repetition |
 
-### 10.4 Motivic Analysis [NEW]
+### 10.4 Motivic Analysis
 
 **Definition 10.4.1** [H]. A *motif* is a short melodic-rhythmic figure that serves as a building block for larger structures. Motivic transformations:
 
@@ -1218,7 +1226,7 @@ Motivic analysis is heuristic because motif identity is not a purely formal prop
 
 ## 11. Transformational Theory
 
-### 11.1 Neo-Riemannian Operations [NEW]
+### 11.1 Neo-Riemannian Operations
 
 **Definition 11.1.1** [C]. The three principal neo-Riemannian operations act on the set of 24 major and minor triads (the consonant triads). Each operation is an involution (self-inverse) and changes exactly one pitch class by a semitone:
 
@@ -1251,7 +1259,7 @@ Or equivalently in terms of pitch class sets:
 
 **Verification of involution**: *P*² = *R*² = *L*² = identity. Each exchanges two triads and maps every other triad to a definite target, so applying twice returns to the original.
 
-### 11.2 The PLR Group [NEW]
+### 11.2 The PLR Group
 
 **Definition 11.2.1** [C]. The group generated by P, L, R under composition is the *PLR group*, isomorphic to the dihedral group of order 24 acting on the set of 24 consonant triads. This group is also known as the *Schritt-Wechsel group*.
 
@@ -1264,7 +1272,7 @@ Compound operations of musical interest:
 | PLP | P ∘ L ∘ P | Hexatonic pole (e.g., C major → A♭ major) — maximally distant in the hexatonic cycle |
 | LPL = RPR | | Equivalent to transposition by tritone with quality change |
 
-### 11.3 The Tonnetz [NEW]
+### 11.3 The Tonnetz
 
 **Definition 11.3.1** [C]. The *Tonnetz* is a two-dimensional lattice in which:
 
@@ -1281,7 +1289,7 @@ The neo-Riemannian operations correspond to specific geometric moves on the Tonn
 
 **Distance on the Tonnetz**: The minimum number of PLR moves between two triads provides a measure of their transformational distance.
 
-### 11.4 Generalised Interval System (GIS) [NEW]
+### 11.4 Generalised Interval System (GIS)
 
 **Definition 11.4.1** [C]. A *Generalised Interval System* (Lewin) is a triple (*S*, IVLS, int) where:
 
@@ -1302,7 +1310,7 @@ The second condition makes the action of IVLS on *S* *simply transitive* (free a
 | Time points (**Q**) | (**Q**, +) | int(*s*, *t*) = *t* − *s* |
 | Consonant triads | Schritt-Wechsel group | neo-Riemannian transformation |
 
-### 11.5 Klumpenhouwer Networks [NEW]
+### 11.5 Klumpenhouwer Networks
 
 **Definition 11.5.1** [H]. A *Klumpenhouwer network* (K-net) is a directed graph where:
 
@@ -1345,7 +1353,7 @@ The identification and comparison of K-nets involves the notion of *isography* (
 
 **Status**: Implemented.
 
-### 12.4 Forte Number Catalogue [NEW]
+### 12.4 Forte Number Catalogue
 
 **Definition 12.4.1** [C]. The *Forte number* is a standard label for each set class (TI-equivalence class), written as *c*-*n* where *c* is the cardinality and *n* is the ordinal position in Forte's catalogue.
 
@@ -1357,7 +1365,7 @@ The complete catalogue contains 220 distinct set classes (including the empty se
 
 There are 19 Z-related pairs in the 12-TET system.
 
-### 12.6 Similarity Relations [NEW]
+### 12.6 Similarity Relations
 
 **Definition 12.6.1** [C]. Several similarity measures between pcsets:
 
@@ -1366,7 +1374,7 @@ There are 19 Z-related pairs in the 12-TET system.
 - **R₂**: *A* and *B* have the same cardinality, and their ICVs differ in exactly one entry (by any amount).
 - **Rₚ**: *A* and *B* have the same cardinality, and one can be embedded in the other after at most one transposition (the "inclusion" relation).
 
-### 12.7 Twelve-Tone Serialism [NEW]
+### 12.7 Twelve-Tone Serialism
 
 **Definition 12.7.1** [C]. A *tone row* (series) is an ordered sequence of all 12 pitch classes, each occurring exactly once: a permutation of **Z/12Z**.
 
@@ -1381,7 +1389,7 @@ A row *P*₀ = (*p*₀, *p*₁, ..., *p*₁₁) generates a family of 48 row for
 
 These are computed for all *n* ∈ {0, 1, ..., 11}, yielding (at most) 48 distinct row forms.
 
-### 12.8 Twelve-Tone Matrix [NEW]
+### 12.8 Twelve-Tone Matrix
 
 **Definition 12.8.1** [C]. The *twelve-tone matrix* (or *magic square*) for row *P*₀ is a 12×12 matrix *M* where:
 
@@ -1392,7 +1400,7 @@ These are computed for all *n* ∈ {0, 1, ..., 11}, yielding (at most) 48 distin
 - Reading any row right-to-left gives a retrograde form.
 - Reading any column bottom-to-top gives a retrograde-inversion form.
 
-### 12.9 Combinatoriality [NEW]
+### 12.9 Combinatoriality
 
 **Definition 12.9.1** [C]. A hexachord (6-element subset of a row) is *combinatorial* if its complement (the other 6 pitch classes) can be produced by one of the four row operations applied to the hexachord itself.
 
@@ -1407,7 +1415,7 @@ Types of combinatoriality:
 
 ## 13. Tuning and Temperament
 
-### 13.1 Equal Temperament Generalisation [NEW]
+### 13.1 Equal Temperament Generalisation
 
 **Definition 13.1.1** [C]. An *n*-tone equal temperament (*n*-TET or *n*-EDO) divides the octave into *n* equal steps, each of frequency ratio 2^(1/*n*). The step size in cents is 1200/*n*.
 
@@ -1427,7 +1435,7 @@ The pitch class group generalises to **Z**/*n***Z** for *n*-EDO. All operations 
 | 31 | 38.71 | Excellent thirds and fifths |
 | 53 | 22.64 | Near-just in 5-limit |
 
-### 13.2 Just Intonation [NEW]
+### 13.2 Just Intonation
 
 **Definition 13.2.1** [C]. In *just intonation* (JI), intervals are defined by integer frequency ratios. The *p*-limit of a JI system is the largest prime factor appearing in any ratio.
 
@@ -1458,7 +1466,7 @@ The pitch class group generalises to **Z**/*n***Z** for *n*-EDO. All operations 
 | Diesis | 128/125 | 41.1 | 3 major thirds vs. 1 octave |
 | Schisma | 32805/32768 | 2.0 | 8 fifths + 1 major third vs. 5 octaves |
 
-### 13.3 Historical Temperaments [NEW]
+### 13.3 Historical Temperaments
 
 **Definition 13.3.1** [H]. A *temperament* is a tuning system in which some or all just intervals are slightly adjusted (tempered) to achieve certain desirable properties (e.g., closure of the circle of fifths, acceptable consonance in multiple keys).
 
@@ -1481,7 +1489,7 @@ The frequency for pitch class *p* in octave *o* under tuning table τ is:
 
 *f*(*p*, *o*) = *f*_ref · 2^((12 · *o* + *p* − 69 + τ(*p*)/1200))
 
-### 13.4 Scala File Support [NEW]
+### 13.4 Scala File Support
 
 **Definition 13.4.1** [C]. The Scala .scl file format specifies a tuning as a list of *n* − 1 interval values (in cents or as ratios) defining the steps from the starting pitch to each subsequent degree, with the *n*-th degree implicitly being the octave (1200 cents or 2/1 ratio).
 
@@ -1496,7 +1504,7 @@ The parsed result is a tuning table.
 
 ## 14. Acoustics and Psychoacoustics
 
-### 14.1 The Harmonic Series [NEW]
+### 14.1 The Harmonic Series
 
 **Definition 14.1.1** [C]. The *harmonic series* of a fundamental frequency *f*₀ is the sequence of frequencies {*n* · *f*₀ : *n* = 1, 2, 3, ...}. The first 16 partials and their pitch approximations in 12-TET:
 
@@ -1519,7 +1527,7 @@ The parsed result is a tuning table.
 | 15 | 15:1 | 3·P8 + M7 | −11.7 |
 | 16 | 16:1 | 4·P8 | 0 |
 
-### 14.2 Consonance and Dissonance Models [NEW]
+### 14.2 Consonance and Dissonance Models
 
 **Definition 14.2.1** [E]. *Sensory consonance* is a psychoacoustic quantity related to the absence of roughness (beating between partials). Two tones are maximally rough when their frequency difference is approximately 1/4 of the critical bandwidth.
 
@@ -1539,7 +1547,7 @@ For complex tones (with harmonics), total dissonance is the sum of pairwise diss
 
 These models are empirical; parameter values derive from psychoacoustic experiments.
 
-### 14.3 Roughness Calculation [NEW]
+### 14.3 Roughness Calculation
 
 **Definition 14.3.1** [E]. *Roughness* quantifies the amplitude fluctuation perceived when two close frequencies interact. For tones with fundamental frequencies *f*₁, *f*₂ and partials at amplitudes *a*ₙ, *b*ₘ:
 
@@ -1547,7 +1555,7 @@ These models are empirical; parameter values derive from psychoacoustic experime
 
 where *g*(*a*, *b*) is an amplitude weighting (e.g., min(*a*, *b*) or *a* · *b*).
 
-### 14.4 Virtual Pitch and Missing Fundamental [NEW]
+### 14.4 Virtual Pitch and Missing Fundamental
 
 **Definition 14.4.1** [E]. *Virtual pitch* is the phenomenon whereby a listener perceives a fundamental frequency that is not physically present, inferred from the harmonic relationships among the upper partials. This is modelled by finding the fundamental frequency whose harmonic series best matches the observed partials (e.g., Terhardt's algorithm, Goldstein's optimal processor).
 
@@ -1567,7 +1575,7 @@ The following types form the core data model. Each is specified with its fields,
 
 **Invariant**: 0 ≤ value < *n*.
 
-#### 15.1.2 SpelledPitch [NEW]
+#### 15.1.2 SpelledPitch
 
 **Fields**: `letter : Z/7Z`, `accidental : Z`, `octave : Z`
 
@@ -1593,7 +1601,7 @@ The following types form the core data model. Each is specified with its fields,
 
 **Fields**: `pitch : Z (MIDI)`, `start : Beat`, `duration : Beat`, `velocity : Z ∈ [0, 127]`, `muted : bool`
 
-**Extended** [NEW]: `spelled_pitch : SpelledPitch` (optional; present when spelling context is available).
+**Extended**: `spelled_pitch : SpelledPitch` (optional; present when spelling context is available).
 
 #### 15.1.6 ChordVoicing
 
@@ -1605,31 +1613,31 @@ The following types form the core data model. Each is specified with its fields,
 
 **Fields**: `name : String`, `intervals : [bool; 12]`, `note_count : Z`, `description : String`
 
-**Extended** [NEW]: `interval_pattern : Vec<Z>` (successive step sizes), `generator : Option<(Z, Z)>` (generator interval and cardinality, if applicable).
+**Extended**: `interval_pattern : Vec<Z>` (successive step sizes), `generator : Option<(Z, Z)>` (generator interval and cardinality, if applicable).
 
-#### 15.1.8 TimeSignature [NEW]
+#### 15.1.8 TimeSignature
 
 **Fields**: `groups : Vec<Z+>`, `denominator : Z+`
 
 **Derived**: `numerator() = sum(groups)`, `metre_type() : {Simple, Compound, Asymmetric}`
 
-#### 15.1.9 TuningTable [NEW]
+#### 15.1.9 TuningTable
 
 **Fields**: `deviations : [f64; n]` (cents deviation from n-TET for each pitch class)
 
 **Derived**: `frequency(pitch_class, octave) : f64`
 
-#### 15.1.10 ToneRow [NEW]
+#### 15.1.10 ToneRow
 
 **Fields**: `elements : [PitchClass; 12]`
 
 **Invariant**: All 12 pitch classes appear exactly once.
 
-#### 15.1.11 HarmonicState [NEW]
+#### 15.1.11 HarmonicState
 
 **Fields**: `key : (ScaleDefinition, PitchClass)`, `chord : ChordVoicing`, `function : HarmonicFunction`, `history : Vec<HarmonicState>`
 
-### 15.2 External Representation Formats [NEW]
+### 15.2 External Representation Formats
 
 The specification defines interfaces for the following external formats. Parsing and serialisation for each format are separate subsystems.
 

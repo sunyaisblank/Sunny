@@ -347,24 +347,24 @@ PitchClassSet pcs_complement(const PitchClassSet& pcs) {
 
 }  // namespace
 
-std::optional<std::string> forte_number(const PitchClassSet& pcs) {
+Result<std::string> forte_number(const PitchClassSet& pcs) {
     std::size_t card = pcs.size();
 
     // Trivial cases
-    if (card == 0) return "0-1";
-    if (card == 1) return "1-1";
-    if (card == 11) return "11-1";
-    if (card == 12) return "12-1";
+    if (card == 0) return std::string("0-1");
+    if (card == 1) return std::string("1-1");
+    if (card == 11) return std::string("11-1");
+    if (card == 12) return std::string("12-1");
 
     // For cardinalities 7-10, use complement (same Forte ordinal)
     if (card >= 7 && card <= 10) {
         auto comp = pcs_complement(pcs);
         auto comp_forte = forte_number(comp);
-        if (!comp_forte) return std::nullopt;
+        if (!comp_forte) return std::unexpected(ErrorCode::ForteNumberNotFound);
 
         // Replace cardinality prefix
         auto dash = comp_forte->find('-');
-        if (dash == std::string::npos) return std::nullopt;
+        if (dash == std::string::npos) return std::unexpected(ErrorCode::ForteNumberNotFound);
         return std::to_string(card) + comp_forte->substr(dash);
     }
 
@@ -379,10 +379,10 @@ std::optional<std::string> forte_number(const PitchClassSet& pcs) {
         case 4:  ordinal = forte_lookup_in_table(mask, FORTE_C4); break;
         case 5:  ordinal = forte_lookup_in_table(mask, FORTE_C5); break;
         case 6:  ordinal = forte_lookup_in_table(mask, FORTE_C6); break;
-        default: return std::nullopt;
+        default: return std::unexpected(ErrorCode::ForteNumberNotFound);
     }
 
-    if (!ordinal) return std::nullopt;
+    if (!ordinal) return std::unexpected(ErrorCode::ForteNumberNotFound);
     std::string prefix = is_z_related_ordinal(static_cast<int>(card), *ordinal) ? "Z" : "";
     return std::to_string(card) + "-" + prefix + std::to_string(*ordinal);
 }

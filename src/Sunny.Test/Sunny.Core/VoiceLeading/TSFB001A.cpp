@@ -10,7 +10,9 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include "VoiceLeading/VLFB001A.h"
+#include "VoiceLeading/VLNT001A.h"
 #include "Scale/SCDF001A.h"
+#include "Pitch/PTPC001A.h"
 
 using namespace Sunny::Core;
 
@@ -210,4 +212,134 @@ TEST_CASE("VLFB001A: second inversion 6/4", "[figured-bass][core]") {
     }
     REQUIRE(std::count(upper_pcs.begin(), upper_pcs.end(), 0) == 1);  // C
     REQUIRE(std::count(upper_pcs.begin(), upper_pcs.end(), 4) == 1);  // E
+}
+
+// =============================================================================
+// realise_figured_bass_sequence
+// =============================================================================
+
+TEST_CASE("VLFB001A: single-event sequence matches direct realisation", "[figured-bass][sequence][core]") {
+    auto symbol = parse_figured_bass("5/3");
+    REQUIRE(symbol.has_value());
+
+    FiguredBassEvent event{48, *symbol};  // C3, root position
+
+    auto seq = realise_figured_bass_sequence(
+        std::span<const FiguredBassEvent>(&event, 1), 0, SCALE_MAJOR);
+    REQUIRE(seq.has_value());
+    REQUIRE(seq->realisations.size() == 1);
+
+    auto direct = realise_figured_bass(48, *symbol, 0, SCALE_MAJOR);
+    REQUIRE(direct.has_value());
+
+    // Should produce same bass and pitch classes
+    REQUIRE(seq->realisations[0].bass == direct->bass);
+    REQUIRE(seq->realisations[0].upper.size() == direct->upper.size());
+    for (std::size_t i = 0; i < direct->upper.size(); ++i) {
+        REQUIRE(pitch_class(seq->realisations[0].upper[i]) ==
+                pitch_class(direct->upper[i]));
+    }
+}
+
+TEST_CASE("VLFB001A: two-chord I-V sequence in C major", "[figured-bass][sequence][core]") {
+    // I: bass C3 (48), root position → E, G
+    // V: bass G2 (43), root position → B, D
+    auto sym_root = parse_figured_bass("5/3");
+    REQUIRE(sym_root.has_value());
+
+    std::vector<FiguredBassEvent> events = {
+        {48, *sym_root},  // I
+        {43, *sym_root},  // V
+    };
+
+    auto seq = realise_figured_bass_sequence(events, 0, SCALE_MAJOR);
+    REQUIRE(seq.has_value());
+    REQUIRE(seq->realisations.size() == 2);
+
+    // First chord: bass C3, upper voices E and G
+    REQUIRE(seq->realisations[0].bass == 48);
+
+    // Second chord: bass G2, upper voices should contain B and D pitch classes
+    REQUIRE(seq->realisations[1].bass == 43);
+    std::vector<PitchClass> v_pcs;
+    for (auto n : seq->realisations[1].upper) {
+        v_pcs.push_back(pitch_class(n));
+    }
+    REQUIRE(std::count(v_pcs.begin(), v_pcs.end(), 11) == 1);  // B
+    REQUIRE(std::count(v_pcs.begin(), v_pcs.end(), 2) == 1);   // D
+}
+
+TEST_CASE("VLFB001A: four-chord I-IV-V-I sequence", "[figured-bass][sequence][core]") {
+    auto sym = parse_figured_bass("5/3");
+    REQUIRE(sym.has_value());
+
+    // I(C3) → IV(F2) → V(G2) → I(C3)
+    std::vector<FiguredBassEvent> events = {
+        {48, *sym},  // I:  C3
+        {41, *sym},  // IV: F2
+        {43, *sym},  // V:  G2
+        {48, *sym},  // I:  C3
+    };
+
+    auto seq = realise_figured_bass_sequence(events, 0, SCALE_MAJOR);
+    REQUIRE(seq.has_value());
+    REQUIRE(seq->realisations.size() == 4);
+
+    // Verify bass notes
+    REQUIRE(seq->realisations[0].bass == 48);
+    REQUIRE(seq->realisations[1].bass == 41);
+    REQUIRE(seq->realisations[2].bass == 43);
+    REQUIRE(seq->realisations[3].bass == 48);
+
+    // Verify each realisation has correct number of upper voices
+    for (auto& r : seq->realisations) {
+        REQUIRE(r.upper.size() == 2);
+        REQUIRE(r.all_notes.size() == 3);
+        REQUIRE(r.all_notes.front() == r.bass);
+    }
+
+    // Verify pitch classes of final I chord
+    std::vector<PitchClass> final_pcs;
+    for (auto n : seq->realisations[3].upper) {
+        final_pcs.push_back(pitch_class(n));
+    }
+    REQUIRE(std::count(final_pcs.begin(), final_pcs.end(), 4) == 1);  // E
+    REQUIRE(std::count(final_pcs.begin(), final_pcs.end(), 7) == 1);  // G
+}
+
+TEST_CASE("VLFB001A: sequence with inversions I-V65-I6", "[figured-bass][sequence][core]") {
+    auto sym_root = parse_figured_bass("5/3");
+    auto sym_65 = parse_figured_bass("6/5");
+    auto sym_6 = parse_figured_bass("6");
+    REQUIRE(sym_root.has_value());
+    REQUIRE(sym_65.has_value());
+    REQUIRE(sym_6.has_value());
+
+    // I(C3) → V6/5(B2) → I6(E3)
+    std::vector<FiguredBassEvent> events = {
+        {48, *sym_root},  // I:    C3, 5/3
+        {47, *sym_65},    // V6/5: B2, 6/5
+        {52, *sym_6},     // I6:   E3, 6
+    };
+
+    auto seq = realise_figured_bass_sequence(events, 0, SCALE_MAJOR);
+    REQUIRE(seq.has_value());
+    REQUIRE(seq->realisations.size() == 3);
+
+    // V6/5 on B: 3rd=D, 5th=F, 6th=G → pitch classes 2, 5, 7
+    std::vector<PitchClass> v65_pcs;
+    for (auto n : seq->realisations[1].upper) {
+        v65_pcs.push_back(pitch_class(n));
+    }
+    REQUIRE(std::count(v65_pcs.begin(), v65_pcs.end(), 2) == 1);   // D
+    REQUIRE(std::count(v65_pcs.begin(), v65_pcs.end(), 5) == 1);   // F
+    REQUIRE(std::count(v65_pcs.begin(), v65_pcs.end(), 7) == 1);   // G
+
+    // I6 on E: 3rd=G, 6th=C → pitch classes 7, 0
+    std::vector<PitchClass> i6_pcs;
+    for (auto n : seq->realisations[2].upper) {
+        i6_pcs.push_back(pitch_class(n));
+    }
+    REQUIRE(std::count(i6_pcs.begin(), i6_pcs.end(), 7) == 1);   // G
+    REQUIRE(std::count(i6_pcs.begin(), i6_pcs.end(), 0) == 1);   // C
 }

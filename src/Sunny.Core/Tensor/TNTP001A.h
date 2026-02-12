@@ -107,6 +107,11 @@ enum class ErrorCode : int {
     NegativeHarmonyFailed = 3151,
     InvalidPitchClassOp = 3170,
     InvalidGeneratedScale = 3180,
+    ScaleNotFound         = 3010,
+    TemperamentNotFound   = 3011,
+    ChordNotRecognised    = 3012,
+    UnknownChordQuality   = 3013,
+    ForteNumberNotFound   = 3014,
 
     // Infrastructure errors (4xxx)
     ConnectionFailed = 4100,

@@ -884,3 +884,34 @@ TEST_CASE("HRRN001A: chord_to_numeral (§16.1.6)", "[harmony][core]") {
         REQUIRE(*result == "bVII");
     }
 }
+
+// =============================================================================
+// §16.1.5 Comprehensive chord recognition round-trip (all 12 roots)
+// =============================================================================
+
+TEST_CASE("HRRN001A: chord recognition round-trip all roots (§16.1.5)", "[harmony][core]") {
+    // Unambiguous qualities: exclude augmented (symmetric, root ambiguous),
+    // dim7 (symmetric), 6/m6 (enharmonic with m7/mM7 of different root),
+    // sus2/sus4 (Csus4 PCS == Fsus2 PCS — inversional ambiguity)
+    std::string_view qualities[] = {
+        "major", "minor", "diminished",
+        "7", "maj7", "m7", "m7b5", "mM7",
+    };
+
+    for (auto quality : qualities) {
+        for (PitchClass root = 0; root < 12; ++root) {
+            auto chord = generate_chord(root, quality, 4);
+            REQUIRE(chord.has_value());
+
+            PitchClassSet pcs;
+            for (auto note : chord->notes) {
+                pcs.insert(note % 12);
+            }
+
+            auto recognized = recognize_chord(pcs);
+            REQUIRE(recognized.has_value());
+            REQUIRE(recognized->first == root);
+            REQUIRE(recognized->second == quality);
+        }
+    }
+}

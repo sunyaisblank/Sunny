@@ -160,3 +160,27 @@ TEST_CASE("TUET001A: 12-EDO major third error ~13.7 cents", "[tuning][core]") {
     double error = edo_approximation_error(5.0 / 4.0, 12);
     REQUIRE_THAT(error, WithinAbs(13.686, 0.01));
 }
+
+// =============================================================================
+// §16.2 Conservation Laws: edo_frequency octave doubling
+// =============================================================================
+
+TEST_CASE("TUET001A: edo_frequency octave invariant (§16.2)", "[tuning][core]") {
+    SECTION("12-TET: frequency doubles per octave") {
+        for (int midi = 21; midi <= 108; ++midi) {
+            double f = edo_frequency(midi, 12);
+            double f_up = edo_frequency(midi + 12, 12);
+            REQUIRE_THAT(f_up / f, WithinAbs(2.0, 1e-10));
+        }
+    }
+
+    SECTION("12-TET: A4 (MIDI 69) = 440 Hz") {
+        REQUIRE_THAT(edo_frequency(69, 12), WithinAbs(440.0, 1e-10));
+    }
+
+    SECTION("12-TET: equal step ratio") {
+        double ratio = edo_frequency(1, 12) / edo_frequency(0, 12);
+        double expected = std::pow(2.0, 1.0 / 12.0);
+        REQUIRE_THAT(ratio, WithinAbs(expected, 1e-12));
+    }
+}
