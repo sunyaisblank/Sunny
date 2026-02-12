@@ -132,6 +132,12 @@ enum class ErrorCode : int {
     InvalidMidiFile   = 4502,
     InvalidAbcFile    = 4503,
     InvalidMusicXml   = 4504,
+
+    // Score IR errors (5xxx)
+    InvalidScoreTime  = 5200,
+    InvalidMutation   = 5400,
+    InvariantViolation = 5401,
+    EmptyVoice        = 5003,
 };
 
 /**

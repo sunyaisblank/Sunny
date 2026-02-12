@@ -44,6 +44,12 @@ if(CORE_TEST_SOURCES)
     )
     target_compile_features(Sunny.Test.Core PRIVATE cxx_std_23)
 
+    # nlohmann/json headers needed for Score IR serialisation tests
+    if(TARGET nlohmann_json::nlohmann_json)
+        get_target_property(_json_inc nlohmann_json::nlohmann_json INTERFACE_INCLUDE_DIRECTORIES)
+        target_include_directories(Sunny.Test.Core PRIVATE ${_json_inc})
+    endif()
+
     catch_discover_tests(Sunny.Test.Core
         TEST_PREFIX "Core."
         EXTRA_ARGS --reporter=console

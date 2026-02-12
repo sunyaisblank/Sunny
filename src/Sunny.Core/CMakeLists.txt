@@ -83,6 +83,11 @@ file(GLOB_RECURSE FORM_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/Form/*.h"
 )
 
+file(GLOB_RECURSE SCORE_SOURCES
+    "${CMAKE_CURRENT_SOURCE_DIR}/Score/*.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/Score/*.h"
+)
+
 # Create static library
 add_library(Sunny.Core STATIC
     ${PITCH_SOURCES}
@@ -98,6 +103,7 @@ add_library(Sunny.Core STATIC
     ${TUNING_SOURCES}
     ${ACOUSTICS_SOURCES}
     ${FORM_SOURCES}
+    ${SCORE_SOURCES}
 )
 
 # Include directories
@@ -106,6 +112,12 @@ target_include_directories(Sunny.Core
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
         $<INSTALL_INTERFACE:include/Sunny.Core>
 )
+
+# nlohmann/json — used by Score IR serialisation (SISZ001A)
+if(TARGET nlohmann_json::nlohmann_json)
+    get_target_property(_json_inc nlohmann_json::nlohmann_json INTERFACE_INCLUDE_DIRECTORIES)
+    target_include_directories(Sunny.Core PRIVATE ${_json_inc})
+endif()
 
 # C++20 required
 target_compile_features(Sunny.Core PUBLIC cxx_std_23)
