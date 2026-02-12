@@ -1,8 +1,8 @@
 # Sunny Score IR — Formal Specification
 
-**Version:** 0.1.0-draft  
-**Date:** 2026-02-08  
-**Status:** Initial specification; subject to iterative refinement  
+**Version:** 0.2.0-draft
+**Date:** 2026-02-12
+**Status:** Revised specification; misspecifications corrected, missing types defined, invariants expanded
 **Dependency:** Sunny Engine Formal Specification v0.1.0 (the "Theory Spec")
 
 ---
@@ -153,9 +153,11 @@ Every node in the hierarchy is addressable by a structural path. Two addressing 
 | Field | Type | Description |
 |-------|------|-------------|
 | `position` | `ScoreTime` | Where this tempo event takes effect |
-| `bpm` | `Beat` | Tempo in beats per minute (exact rational) |
+| `bpm` | `PositiveRational` | Tempo in beats per minute (exact rational; distinct from Beat, which represents duration) |
 | `beat_unit` | `BeatUnit` | Which note value receives the beat (quarter, dotted quarter, half, etc.) |
 | `transition` | `TempoTransition` | How the previous tempo changes to this one |
+
+*Note*: `PositiveRational` is a strictly positive rational number (p/q where p, q ∈ ℤ⁺). It shares the same arithmetic as Beat but carries different semantics: Beat measures duration in quarter notes; PositiveRational measures a rate (beats per minute). This distinction prevents accidental composition of rates with durations.
 
 **TempoTransition** variants:
 
@@ -217,6 +219,12 @@ The time signature persists until the next entry. Every bar between two consecut
 
 Example: 6/8 → Beat(6, 8) × 4 = Beat(3, 1) quarter notes. 3/4 → Beat(3, 4) × 4 = Beat(3, 1) quarter notes. Both are 3 quarter-note durations, which is correct.
 
+**Compound vs simple metre**: The normalisation to quarter-note beats is purely a *duration* normalisation for the purpose of temporal arithmetic. The *metrical feel* (simple vs compound) is preserved in the time signature itself: if the numerator is divisible by 3 and the denominator is 8 or smaller, the metre is compound (beat unit = dotted quarter). This distinction affects:
+- Default beam grouping (§4.10): simple metres beam by quarter-note beats; compound metres beam by dotted-quarter-note beats.
+- Tempo interpretation: "♩ = 120" in 3/4 differs from "♩. = 120" in 6/8, even though both measures have the same duration in quarter notes.
+
+The TempoMap's `beat_unit` field (§2.3) resolves this ambiguity by explicitly specifying which note value carries the beat.
+
 **Invariant**: At least one entry at bar 1.
 
 ### 2.6 SectionMap
@@ -276,6 +284,7 @@ Example: 6/8 → Beat(6, 8) × 4 = Beat(3, 1) quarter notes. 3/4 → Beat(3, 4) 
 | `definition` | `PartDefinition` | Instrument and playback configuration |
 | `measures` | `Vec<Measure>` | Ordered sequence of measures |
 | `part_directives` | `Vec<PartDirective>` | Part-scoped performance instructions |
+| `hairpins` | `Vec<Hairpin>` | Gradual dynamic changes spanning multiple events (§4.5.3) |
 
 **Invariant**: `measures.len() == score.metadata.total_bars`. Every part has exactly one Measure for every bar in the score, even if that measure contains only rests.
 
@@ -290,7 +299,7 @@ Example: 6/8 → Beat(6, 8) × 4 = Beat(3, 1) quarter notes. 3/4 → Beat(3, 4) 
 | `name` | `String` | Display name (e.g., "Violin I", "Alto Saxophone", "Pad Synth") |
 | `abbreviation` | `String` | Abbreviated name for condensed scores (e.g., "Vln. I", "A. Sax.") |
 | `instrument_class` | `InstrumentClass` | Classification for orchestration logic |
-| `transposition` | `Interval` | Concert-to-written transposition interval |
+| `transposition` | `Interval` | Written-to-sounding transposition interval (see §3.2.4) |
 | `clef` | `Clef` | Default clef |
 | `range` | `PitchRange` | Playable range (soft limits) and comfortable range (hard limits) |
 | `articulation_vocabulary` | `Vec<ArticulationType>` | Articulations this instrument supports |
@@ -463,6 +472,8 @@ All event types carry a common header:
 | `id` | `Id<Event>` | Unique event identifier |
 | `offset` | `Beat` | Start time relative to measure start (Beat(0,1) = downbeat) |
 
+**Invariant**: For any event in a measure with active time signature producing measure duration *D* (in quarter notes, per §2.5): offset ∈ [Beat(0,1), *D*). An event's span (offset + duration for NoteGroup/Rest) must not exceed *D*.
+
 ### 4.4 NoteGroup
 
 **Definition 4.4.1**. A *NoteGroup* represents one or more simultaneous notes sounding at the same onset and sharing the same rhythmic value. A single melodic note is a NoteGroup of size 1. A chord played by a single instrument (e.g., a piano chord) is a NoteGroup of size > 1.
@@ -526,7 +537,7 @@ The numeric value is resolved during compilation by applying the current dynamic
 
 **Technique-specific**:
 - `Fermata` — held beyond written duration (duration multiplied by a configurable factor, default 1.5–2.0)
-- `Trill { interval: Interval }` — rapid alternation with a note at the given interval
+- `Trill { interval: Interval }` — rapid alternation with a note at the given interval. *Note*: Trill also appears in the Ornament type (§4.5.5). When both an Articulation.Trill and an Ornament.Trill are present, the Ornament takes precedence for notation rendering (it carries richer detail including accidental specification). The Articulation.Trill form is retained for instruments that map trills to keyswitches or CC via ArticulationMapping, where the ornamental detail is not required
 - `Mordent { inverted: bool }` — single alternation
 - `Turn { inverted: bool }` — four-note figure
 - `Tremolo { strokes: u8 }` — unmeasured repetition (1 = eighth-note, 2 = sixteenth, 3 = thirty-second)
@@ -551,7 +562,7 @@ Each articulation has a default rendering behaviour (§9) that can be overridden
 | `pppp` | Pianississimo | 8–15 |
 | `ppp` | Pianissimo | 16–31 |
 | `pp` | Piano | 32–47 |
-| `p` | MezzoPiano | 48–63 |
+| `p` | Piano | 48–63 |
 | `mp` | MezzoPiano | 64–79 |
 | `mf` | MezzoForte | 80–95 |
 | `f` | Forte | 96–111 |
@@ -655,6 +666,56 @@ The total span of the tuplet is `normal × normal_type`. Each event within the t
 
 **Example**: A quarter-note triplet in 4/4. actual = 3, normal = 2, normal_type = Beat(1, 1) quarter note. Total span = 2 quarter notes. Each note's sounding duration = (2/3) × quarter note.
 
+### 4.10 BeamGroup
+
+**Definition 4.10.1**. A *BeamGroup* identifies a set of events that share a beam in notation. Beam groups are computed automatically from the time signature's beat structure but may be overridden by the agent.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | `Id<BeamGroup>` | Unique beam group identifier |
+| `event_ids` | `Vec<Id<Event>>` | Ordered events under this beam |
+| `beam_breaks` | `Vec<u8>` | Indices within `event_ids` where secondary beams break |
+
+**Default beam grouping**: In simple metres (2/4, 3/4, 4/4), events are grouped by beat. In compound metres (6/8, 9/8, 12/8), events are grouped by dotted-quarter-note beats. Events with durations of a quarter note or longer do not participate in beaming.
+
+**Invariant**: Every event referenced by a BeamGroup must be a NoteGroup or Rest with duration shorter than a quarter note, and all events must belong to the same voice within the same measure.
+
+### 4.11 NoteHead
+
+**Definition 4.11.1**. Non-standard notehead shapes for special notation.
+
+| Variant | Description | Common Usage |
+|---------|-------------|--------------|
+| `Normal` | Standard filled or open notehead | Default |
+| `Diamond` | Diamond-shaped | Natural harmonics (strings) |
+| `Cross` | X-shaped | Ghost notes (percussion), dead notes (guitar) |
+| `Slash` | Slash through stem | Rhythmic notation, strumming patterns |
+| `Triangle` | Triangle-shaped | Special percussion notation |
+| `CircleX` | Circled X | Specific extended techniques |
+| `Square` | Square-shaped | Early music notation, spoken text |
+
+### 4.12 TechnicalDirection
+
+**Definition 4.12.1**. Instrument-specific performance instructions that affect rendering but are not articulations in the traditional sense.
+
+| Variant | Applicable Instruments | Description |
+|---------|----------------------|-------------|
+| `Fingering(Vec<u8>)` | Keyboard, strings, woodwinds | Suggested fingering numbers |
+| `StringNumber(u8)` | Strings | Which string to play on (I–IV for violin) |
+| `Position(u8)` | Strings | Left-hand position |
+| `BowingPattern(String)` | Bowed strings | Specific bowing notation |
+| `BreathMark` | Wind, voice | Breath or phrasing mark |
+| `Slide { direction: SlideDirection }` | Guitar, trombone | Slide into or out of a note |
+| `HammerOn` | Guitar | Left-hand tap onto higher fret |
+| `PullOff` | Guitar | Left-hand release to lower fret |
+| `Bend { cents: i16 }` | Guitar | String bend by specified interval |
+| `Vibrato { speed: VibratoSpeed }` | Strings, wind, voice | Vibrato intensity indication |
+| `Caesura` | All | Full stop / grand pause |
+
+**SlideDirection**: `Into`, `OutOf`, `Ascending`, `Descending`.
+
+**VibratoSpeed**: `Slow`, `Normal`, `Fast`, `None`.
+
 ---
 
 ## 5. Temporal Coordinate System
@@ -684,7 +745,15 @@ This is a monotonically increasing function of ScoreTime and provides a single-a
 
 RealTime(*t*) = ∫₀^{AbsoluteBeat(*t*)} (60 / BPM(τ)) dτ
 
-For piecewise-constant tempos, this is a sum of linear segments. For linear tempo transitions (accelerando/ritardando), the integral has a closed-form solution.
+For piecewise-constant tempos, this is a sum of linear segments. For linear tempo transitions (accelerando/ritardando), the integral has the following closed-form solution.
+
+**Closed form for linear tempo interpolation**: If BPM varies linearly from *B*₁ to *B*₂ over a span of *d* beats (where *B*₁ ≠ *B*₂), the real-time duration of that span is:
+
+Δt = 60 · *d* · ln(*B*₂ / *B*₁) / (*B*₂ − *B*₁)
+
+This follows from integrating 60 / BPM(τ) where BPM(τ) = *B*₁ + (*B*₂ − *B*₁) · τ/*d* over τ ∈ [0, *d*]. The substitution u = *B*₁ + (*B*₂ − *B*₁) · τ/*d* yields the logarithmic form. In the degenerate case *B*₁ = *B*₂ (constant tempo), the formula reduces to Δt = 60 · *d* / *B*₁ by L'Hôpital's rule.
+
+**Implementation note**: The natural logarithm and division introduce floating-point arithmetic into an otherwise exact-rational pipeline. Implementations should compute RealTime in double precision (IEEE 754 binary64) and accept the resulting representation error, which is bounded by machine epsilon (≈ 2.22 × 10⁻¹⁶) per segment. Accumulated error across *n* segments is bounded by *n* · ε · max(Δt), which remains negligible for practical scores (fewer than 10⁴ segments).
 
 RealTime is used for DAW compilation (MIDI event timestamps, automation curve timing) but is not used for internal Score IR operations, which operate in ScoreTime.
 
@@ -696,7 +765,16 @@ TickTime(*t*) = AbsoluteBeat(*t*) × *R*
 
 Since AbsoluteBeat is an exact rational, TickTime is also an exact rational. However, MIDI files require integer ticks; the Score IR compiler rounds to the nearest integer tick and tracks the accumulated rounding error to prevent drift.
 
-**Invariant**: Cumulative rounding error in tick conversion never exceeds 0.5 ticks over any bar boundary. This is enforced by the compiler distributing rounding corrections across beats within each measure.
+**Invariant**: Cumulative rounding error in tick conversion never exceeds 0.5 ticks over any bar boundary.
+
+**Rounding algorithm**: For each measure, the compiler computes the exact rational tick count for the measure duration and rounds it to the nearest integer. Individual event ticks within the measure are computed by distributing the rounding residual using Bresenham-style error accumulation:
+
+1. Compute the exact tick position for each event: *t*_exact = AbsoluteBeat(event) × *R*.
+2. Round to the nearest integer: *t*_rounded = round(*t*_exact).
+3. At each bar boundary, compute the cumulative error *e* = *t*_rounded − *t*_exact.
+4. If |*e*| > 0.5, adjust the final event in the measure by ±1 tick to bring the bar boundary error within tolerance.
+
+This ensures that bar boundaries align exactly (or within 0.5 ticks) with their theoretical positions, preventing drift over long scores.
 
 ---
 
@@ -719,11 +797,22 @@ The layer is *derived* (computable from the note content plus the key signature 
 | `chord` | `ChordVoicing` | The chord (from Theory Spec) |
 | `key_context` | `KeySignature` | The local key for Roman numeral analysis |
 | `roman_numeral` | `String` | Roman numeral analysis in `key_context` |
-| `function` | `HarmonicFunction` | T, PD, D classification |
+| `function` | `HarmonicFunction` | Functional classification (see below) |
 | `secondary_function` | `Option<String>` | e.g., "V/V", "viio/vi" |
 | `non_chord_tones` | `Vec<NonChordToneAnnotation>` | Identified passing tones, suspensions, etc. |
 | `cadence` | `Option<CadenceType>` | If this annotation participates in a cadence |
 | `confidence` | `f32` | Confidence of the analysis (1.0 = certain, < 1.0 = heuristic) |
+
+**HarmonicFunction** enumeration (from Theory Spec §6.1):
+
+| Value | Abbreviation | Description |
+|-------|-------------|-------------|
+| `Tonic` | T | Stability and rest; includes I, vi, iii |
+| `Predominant` | PD | Departure from tonic, preparation for dominant; includes IV, ii, vi (contextual) |
+| `Dominant` | D | Tension seeking resolution to tonic; includes V, vii° |
+| `Ambiguous` | — | Function cannot be determined with confidence (e.g., chromatic or non-functional harmony) |
+
+The `Ambiguous` value is used when the harmonic context is insufficient to assign a clear function — common in chromatic passages, modal interchange, and non-functional harmony. The `confidence` field provides a continuous measure alongside this discrete classification.
 
 ### 6.3 NonChordToneAnnotation
 
@@ -756,6 +845,8 @@ From the Theory Spec (§6.6): `PerfectAuthentic`, `ImperfectAuthentic`, `Half`, 
 ### 6.5 Consistency with Note Content
 
 **Invariant**: The harmonic annotation layer is *consistent* with the note content if, for each annotation entry, the pitch classes present in all parts at that time position are explainable as chord tones or classified non-chord tones. When note content is edited, the annotation layer is marked *stale* for the affected region. Re-analysis of stale regions is an explicit operation (not automatic), preserving agent control over interpretation.
+
+**Stale region tracking**: The Score IR maintains a set of *stale intervals* — a list of non-overlapping `(ScoreTime, ScoreTime)` pairs representing regions where the harmonic annotation may no longer match the note content. When a mutation affects notes in a region [*a*, *b*), the interval [*a*, *b*) is added to the stale set (merging with any overlapping existing intervals). When the agent explicitly re-analyses a region, the corresponding interval is removed from the stale set. The same mechanism applies to the OrchestrationLayer. The stale set is persisted in serialisation and survives round-trip save/load.
 
 ---
 
@@ -880,7 +971,7 @@ Score IR ──┬──→ AbletonCompiler ──→ Ableton Live Session (via 
            ├──→ MidiCompiler ──→ Standard MIDI File (.mid)
            ├──→ MusicXmlCompiler ──→ MusicXML (.musicxml)
            ├──→ LilyPondCompiler ──→ LilyPond (.ly)
-           └──→ AudioCompiler ──→ (future: audio rendering)
+           └──→ AudioCompiler ──→ Audio rendering (requires Timbre IR + Mix IR; see those specifications)
 ```
 
 ### 9.2 AbletonCompiler
@@ -974,6 +1065,14 @@ These factors are defaults. The RenderingConfig may override them per instrument
    - Background: velocity × 0.70.
 
 5. **Clamp**: Result is clamped to [1, 127].
+
+**Order of operations**: Steps 1–4 are applied sequentially in the order listed. This ordering is significant: the hairpin interpolates over the *base* velocity (not the articulation-adjusted velocity), and the dynamic balance scales the *final* velocity (including articulation). The rationale is that articulation accents are compositional intent (written in the score) while dynamic balance is an orchestration concern (adjustable without altering the composition).
+
+**Formal expression**: Let *v*₀ be the base velocity from step 1. Let *h*(*t*) be the hairpin interpolation factor at time *t* (a value in [0, 1] representing position within the hairpin). Let *a* be the articulation adjustment (additive). Let *b* be the dynamic balance factor (multiplicative). Then:
+
+*v* = clamp((*v*₀ + *h*(*t*) · (*v*_target − *v*₀) + *a*) · *b*, 1, 127)
+
+where *v*_target is the velocity at the hairpin's end dynamic.
 
 ### 9.6 MusicXmlCompiler
 
@@ -1134,7 +1233,7 @@ Mutations are the primary interface through which an agent or user modifies the 
 | `DeleteRegion` | region | Replaces all content in the region with rests |
 | `SetDynamicRegion` | region, dynamic_level | Applies a dynamic to all parts in the region |
 | `ScaleVelocityRegion` | region, factor | Multiplies all velocities in the region by a factor |
-| `RetrogadeRegion` | region | Reverses the temporal order of events in the region |
+| `RetrogradeRegion` | region | Reverses the temporal order of events in the region |
 | `InvertRegion` | region, axis_pitch | Inverts all pitches about a given axis |
 | `AugmentRegion` | region, factor | Multiplies all durations by a rational factor |
 | `DiminuteRegion` | region, factor | Divides all durations by a rational factor |
@@ -1153,6 +1252,14 @@ Mutations are the primary interface through which an agent or user modifies the 
 Every mutation records its inverse. The undo stack is a sequence of inverse operations. Undo pops the stack and applies the inverse; redo re-applies the original. The stack depth is unbounded (limited only by memory).
 
 **Group operations**: A sequence of mutations can be grouped as a single undoable unit (e.g., "reorchestrate bars 33–48" might involve dozens of individual mutations, but undoing it reverts all of them at once).
+
+**Version counter under undo/redo**: Undo and redo are themselves mutations: they modify the document state and therefore *increment* the version counter. The version counter records the total number of state transitions, not the logical edit distance from the initial document. This means:
+
+- After edit A (version 1 → 2), undo (version 2 → 3), redo (version 3 → 4): the version is 4, not 2.
+- The version counter is strictly monotonically increasing and is never reused, even across undo/redo cycles.
+- Two documents with the same version number are guaranteed to represent the same state only if they share a common lineage (same document identity). The version counter is a Lamport timestamp: it provides a total order on state transitions but not a content hash.
+
+**Undo stack capacity**: The undo stack depth is unbounded (limited only by available memory). Implementations may optionally offer a configurable maximum depth, discarding the oldest entries when exceeded. The spec does not mandate a specific limit.
 
 ---
 
@@ -1284,7 +1391,7 @@ The Score IR is serialised as a single JSON document (for human readability and 
 
 **JSON schema**: Follows the type definitions in this specification directly. Field names are snake_case. Enumerations are serialised as strings. Beat values are serialised as `{"n": numerator, "d": denominator}`. SpelledPitch is serialised as `{"letter": "C", "accidental": 0, "octave": 4}`. Ids are serialised as strings.
 
-**Binary format**: A custom compact binary encoding (specification TBD) for scores exceeding 10,000 events, where JSON parsing overhead becomes measurable.
+**Binary format**: For scores exceeding 10,000 events where JSON parsing overhead becomes measurable, a compact binary encoding is available. The binary format uses a fixed header (magic bytes `SNSC`, schema version as u32, total byte count as u64) followed by a sequence of type-length-value (TLV) records mirroring the JSON structure. Beat values are stored as two varint-encoded integers (numerator, denominator). SpelledPitch is stored as three bytes (letter index 0–6, accidental as signed byte, octave as unsigned byte). Ids are stored as 64-bit unsigned integers. The binary format is canonical: the same logical document always produces the same byte sequence, enabling content-addressable storage and integrity verification via cryptographic hash.
 
 ### 13.2 Versioning
 
@@ -1300,26 +1407,101 @@ When a Score IR document is deserialised, full validation (§10) runs before the
 
 ---
 
-## 14. Cross-Document References
+## 14. Document Lifecycle
 
-### 14.1 Dependencies on Theory Spec
+### 14.1 State Machine
+
+A Score IR document transitions through the following states:
+
+```
+            create_score()
+                 ↓
+  ┌──────── Initialising ────────┐
+  │              ↓               │
+  │          Validating          │  (initial validation)
+  │              ↓               │
+  │      ┌── Active ──┐         │
+  │      │     ↕      │         │
+  │      │  Mutating   │         │  (normal operation: mutations, queries, compilation)
+  │      │     ↕      │         │
+  │      │  Compiling  │         │
+  │      └────────────┘         │
+  │              ↓               │
+  │          Serialising ───→ On-disk (JSON/binary)
+  │              ↓               │
+  └──────── Closed ──────────────┘
+```
+
+**Initialising**: The document is being constructed from `create_score` parameters or deserialised from disk. No queries or mutations are permitted.
+
+**Active**: The document is ready for queries, mutations, and compilation. This is the steady-state.
+
+**Closed**: The document has been explicitly closed or the owning process has terminated. References to a closed document are invalid.
+
+### 14.2 Concurrency Model
+
+The Score IR is a **single-writer, multiple-reader** document. At any instant, at most one mutation may be in progress; concurrent reads (queries, view computation, compilation) are permitted while no mutation is active.
+
+**Rationale**: Musical documents are authored sequentially — a composer (human or agent) makes one change at a time. Concurrent writes introduce merge conflicts whose resolution in a musical context is underdetermined (two agents inserting different notes at the same position have no automatic reconciliation). The single-writer model avoids this class of problems entirely.
+
+**Implementation guidance**: Implementations may enforce single-writer semantics through:
+- A read-write lock (shared for reads, exclusive for writes).
+- A message queue that serialises all mutations through a single thread while dispatching queries to a thread pool.
+- A copy-on-write strategy where mutations produce new document versions and readers hold immutable references to prior versions.
+
+The spec does not mandate a specific mechanism; it mandates the observable semantics: no mutation is visible to concurrent readers until it completes, and no two mutations overlap.
+
+### 14.3 Error Codes
+
+The Score IR extends the Sunny error code system (TNTP001A §ErrorCode) with the following ranges:
+
+| Range | Category | Description |
+|-------|----------|-------------|
+| 5000–5099 | Document structure | Invalid hierarchy, missing parts, measure count mismatch |
+| 5100–5199 | Event validation | Invalid offset, overlapping events, tie mismatch |
+| 5200–5299 | Temporal | Invalid ScoreTime, TempoMap gaps, tick conversion error |
+| 5300–5399 | Annotation | Stale harmonic layer, inconsistent orchestration |
+| 5400–5499 | Mutation | Invalid mutation parameters, invariant violation |
+| 5500–5599 | Compilation | Compiler-specific errors (missing preset, unmapped articulation) |
+| 5600–5699 | Serialisation | Schema version mismatch, corruption, validation failure on load |
+
+Each diagnostic produced by validation (§10) carries an error code from this range, enabling programmatic error handling without string parsing.
+
+### 14.4 ChordSymbol and HarmonicAnnotation Relationship
+
+ChordSymbol events (§4.8) and HarmonicAnnotation entries (§6.2) both represent harmonic information, but at different levels of the hierarchy and for different purposes:
+
+- **ChordSymbol** is a *notational element*: it appears in a voice within a measure and is rendered in the printed score (lead-sheet chord symbols above the staff). It is part of the document's content.
+- **HarmonicAnnotation** is an *analytical element*: it resides in the global HarmonicAnnotationLayer and represents a harmonic analysis that may or may not align with explicit ChordSymbol events. It is part of the document's metadata.
+
+When both are present at the same time position, the HarmonicAnnotation's `chord` field should be consistent with the ChordSymbol's root and quality. Inconsistency is reported as a validation warning (M8) but is not an error — the annotation may represent a different analytical interpretation (e.g., a passing chord symbol over a sustained harmony, or a reinterpretation in a different key context).
+
+**Derivation**: When no explicit ChordSymbols exist, the HarmonicAnnotationLayer can be populated by running harmonic analysis on the pitch content. When ChordSymbols do exist, they serve as strong hints for the analysis. The relationship is advisory, not enforced.
+
+---
+
+## 15. Cross-Document References
+
+### 15.1 Dependencies on Theory Spec
 
 The Score IR depends on the Theory Spec for all musical primitives. Changes to the Theory Spec that affect the types listed in §0.4 require corresponding updates to the Score IR.
 
 The dependency is one-directional: the Theory Spec does not depend on or reference the Score IR. The Theory Spec defines *what music is*; the Score IR defines *what a specific piece of music contains*.
 
-### 14.2 Dependencies on Infrastructure
+### 15.2 Dependencies on Infrastructure
 
-The Score IR depends on the existing Sunny infrastructure for:
+The Score IR depends on the existing Sunny infrastructure through abstract interface contracts. The Score IR does not depend on concrete implementations; it depends on the following behavioural interfaces:
 
-| Component | Usage |
-|-----------|-------|
-| LOM Bridge | AbletonCompiler sends commands via the LOM bridge |
-| OSC Transport | Real-time parameter updates during playback |
-| MCP Server | Agent-facing tool interface |
-| Transport | Playback scheduling (the Transport reads TickTime events) |
+| Interface | Contract | Provided By |
+|-----------|----------|-------------|
+| `CompilationTarget` | **Pre**: valid Score IR document (full validation passes). **Post**: rendering target is produced deterministically. **Invariant**: Score IR is not modified. | AbletonCompiler, MidiCompiler, MusicXmlCompiler, LilyPondCompiler |
+| `BridgeTransport` | **Pre**: connection is established (ConnectionState::Connected). **Post**: command is delivered and acknowledged, or an error is returned within the configured timeout. | LOM Bridge (INBR001A) |
+| `RealtimeTransport` | **Pre**: connection is established. **Post**: event is dispatched with best-effort delivery (UDP semantics). **Invariant**: no event reordering within a single channel. | OSC Transport |
+| `ToolRegistry` | **Pre**: tool function signature matches MCP schema. **Post**: tool is invocable by MCP clients. | MCP Server |
 
-### 14.3 Compilation Pipeline
+These contracts are structural (required for compilation and type resolution) except for `RealtimeTransport`, which is behavioural (required only for live playback). Implementations may be injected at construction time, enabling isolated testing of the Score IR without a running DAW or MCP server.
+
+### 15.3 Compilation Pipeline
 
 The full pipeline from agent intent to sounding music:
 
@@ -1339,9 +1521,9 @@ The Score IR is the single point of truth throughout this cycle. The agent never
 
 ---
 
-## 15. Invariant Summary
+## 16. Invariant Summary
 
-### 15.1 Structural Invariants
+### 16.1 Structural Invariants
 
 1. The Score has at least one Part.
 2. Every Part has exactly `total_bars` Measures.
@@ -1353,26 +1535,29 @@ The Score IR is the single point of truth throughout this cycle. The agent never
 8. Child sections are contained within parent sections.
 9. Tied notes have matching pitch at adjacent temporal positions.
 10. Tuplet events sum to their declared span.
+11. Event offsets are within [0, measure_duration) and event spans do not exceed the measure boundary.
+12. BeamGroup events belong to the same voice and measure, with durations shorter than a quarter note.
 
-### 15.2 Compilation Invariants
+### 16.2 Compilation Invariants
 
-11. ScoreTime → AbsoluteBeat is monotonically increasing.
-12. AbsoluteBeat → TickTime is monotonically increasing.
-13. TickTime rounding error does not exceed 0.5 ticks per bar.
-14. For every valid Score IR, each compiler produces exactly one output.
-15. Concert pitch storage: all Note pitches are sounding pitch, never written pitch.
+13. ScoreTime → AbsoluteBeat is monotonically increasing.
+14. AbsoluteBeat → TickTime is monotonically increasing.
+15. TickTime rounding error does not exceed 0.5 ticks per bar.
+16. For every valid Score IR, each compiler produces exactly one output.
+17. Concert pitch storage: all Note pitches are sounding pitch, never written pitch.
 
-### 15.3 Annotation Layer Invariants
+### 16.3 Annotation Layer Invariants
 
-16. HarmonicAnnotation entries are non-overlapping and cover the score duration.
-17. OrchestrationAnnotation entries for a single part are non-overlapping within that part.
-18. Stale annotation regions are tracked and reported by validation.
+18. HarmonicAnnotation entries are non-overlapping and cover the score duration.
+19. OrchestrationAnnotation entries for a single part are non-overlapping within that part.
+20. Stale annotation regions are tracked and reported by validation.
 
-### 15.4 Mutation Invariants
+### 16.4 Mutation Invariants
 
-19. Every mutation has a computable inverse.
-20. Applying a mutation followed by its inverse restores the previous document state exactly.
-21. The version counter increases monotonically and is never reused.
+21. Every mutation has a computable inverse.
+22. Applying a mutation followed by its inverse restores the previous document state exactly.
+23. The version counter increases monotonically and is never reused (including across undo/redo).
+24. At most one mutation is in progress at any instant (single-writer semantics).
 
 ---
 
@@ -1382,7 +1567,7 @@ Reference definitions for common orchestral instruments.
 
 | Instrument | Class | Transposition | Range (absolute) | Range (comfortable) | Clef | Staves |
 |-----------|-------|---------------|-----------------|--------------------|----|--------|
-| Piccolo | Woodwinds.Piccolo | +P8 (sounds octave higher) | D4–C8 (written D5–C9) | D5–A7 | Treble | 1 |
+| Piccolo | Woodwinds.Piccolo | +P8 (sounds octave higher) | D5–C8 (written D4–C7) | D5–A7 | Treble | 1 |
 | Flute | Woodwinds.Flute | Concert | C4–D7 | C4–C7 | Treble | 1 |
 | Oboe | Woodwinds.Oboe | Concert | B♭3–A6 | C4–G6 | Treble | 1 |
 | English Horn | Woodwinds.EnglishHorn | −P5 | E3–C6 (written B3–G6) | B3–A5 | Treble | 1 |
@@ -1410,17 +1595,21 @@ Reference definitions for common orchestral instruments.
 | Term | Definition |
 |------|-----------|
 | **AbsoluteBeat** | Cumulative beat position from the start of the score |
+| **BeamGroup** | A set of events sharing a beam in notation (§4.10) |
 | **Compilation** | Deterministic transformation of Score IR to a rendering target |
 | **Direction** | A zero-duration annotation attached to a time point |
 | **Event** | The atomic unit of musical content (note, rest, chord symbol, or direction) |
 | **Hairpin** | A gradual dynamic change (crescendo or diminuendo) |
 | **HarmonicAnnotation** | A chord analysis entry in the harmonic layer |
+| **HarmonicFunction** | Functional classification of a chord: Tonic, Predominant, Dominant, or Ambiguous (§6.2) |
 | **Measure** | A single bar within a part |
 | **MCP** | Model Context Protocol; the JSON-RPC interface for agent interaction |
 | **NoteGroup** | One or more simultaneous notes sharing onset and duration |
+| **NoteHead** | Non-standard notehead shape for special notation (§4.11) |
 | **OrchestrationLayer** | Annotations describing the textural role of each part |
 | **Part** | A single instrumental line in the score |
 | **PartDirective** | A scoped performance instruction for an entire part |
+| **PositiveRational** | A strictly positive rational number; used for BPM (§2.3) |
 | **RealTime** | Clock time in seconds, derived from AbsoluteBeat and TempoMap |
 | **Region** | A bounded span of score time, optionally restricted to a subset of parts |
 | **RenderingConfig** | DAW-specific configuration for compiling a part |
@@ -1429,6 +1618,7 @@ Reference definitions for common orchestral instruments.
 | **Section** | A labelled formal unit in the score's structure |
 | **SpelledPitch** | A pitch with explicit letter name, accidental, and octave |
 | **Stale** | An annotation region whose backing note content has changed since the annotation was computed |
+| **TechnicalDirection** | Instrument-specific performance instruction (§4.12) |
 | **TempoMap** | A piecewise function from score time to tempo |
 | **TexturalRole** | The function a part serves in the texture (melody, bass, harmonic fill, etc.) |
 | **TickTime** | Discretised time in MIDI pulses |
