@@ -16,6 +16,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include "Score/SIMT001A.h"
+#include "Score/SIHA001A.h"
 
 using namespace Sunny::Core;
 
@@ -601,4 +602,164 @@ TEST_CASE("SIMT001A: version monotonically increases through undo-redo cycle",
     REQUIRE(ur2.has_value());
     auto v4 = score.version;
     CHECK(v4 > v3);
+}
+
+// =============================================================================
+// apply_voice_leading (§11.6)
+// =============================================================================
+
+namespace {
+
+/// Create a score with harmonic annotations suitable for voice leading tests
+Score make_voice_leading_score() {
+    auto score = make_valid_score(2);
+
+    // Bar 1: C major triad (C4, E4, G4)
+    auto& voice = score.parts[0].measures[0].voices[0];
+    NoteGroup ng1;
+    ng1.notes.push_back(Note{SpelledPitch{0, 0, 4}, VelocityValue{{}, 80}});  // C4
+    ng1.notes.push_back(Note{SpelledPitch{2, 0, 4}, VelocityValue{{}, 80}});  // E4
+    ng1.notes.push_back(Note{SpelledPitch{4, 0, 4}, VelocityValue{{}, 80}});  // G4
+    ng1.duration = Beat{1, 1};
+    voice.events[0].payload = ng1;
+
+    // Bar 2: G major triad (G4, B4, D5) — to be voice-led
+    auto& voice2 = score.parts[0].measures[1].voices[0];
+    NoteGroup ng2;
+    ng2.notes.push_back(Note{SpelledPitch{4, 0, 4}, VelocityValue{{}, 80}});  // G4
+    ng2.notes.push_back(Note{SpelledPitch{6, 0, 4}, VelocityValue{{}, 80}});  // B4
+    ng2.notes.push_back(Note{SpelledPitch{1, 0, 5}, VelocityValue{{}, 80}});  // D5
+    ng2.duration = Beat{1, 1};
+    voice2.events[0].payload = ng2;
+
+    // Add harmonic annotations for both bars
+    HarmonicAnnotation ha1;
+    ha1.position = SCORE_START;
+    ha1.duration = Beat{1, 1};
+    ha1.roman_numeral = "I";
+    ha1.function = ScoreHarmonicFunction::Tonic;
+    ha1.chord.root = 0;
+    ha1.chord.quality = "major";
+    ha1.chord.notes = {60, 64, 67};  // C4, E4, G4
+    score.harmonic_annotations.push_back(ha1);
+
+    HarmonicAnnotation ha2;
+    ha2.position = ScoreTime{2, Beat::zero()};
+    ha2.duration = Beat{1, 1};
+    ha2.roman_numeral = "V";
+    ha2.function = ScoreHarmonicFunction::Dominant;
+    ha2.chord.root = 7;
+    ha2.chord.quality = "major";
+    ha2.chord.notes = {55, 59, 62};  // G3, B3, D4
+    score.harmonic_annotations.push_back(ha2);
+
+    return score;
+}
+
+}  // anonymous namespace
+
+TEST_CASE("SIMT001A: apply_voice_leading NearestTone redistributes pitches",
+          "[score-ir][voice-leading]") {
+    auto score = make_voice_leading_score();
+
+    ScoreRegion region;
+    region.start = SCORE_START;
+    region.end = ScoreTime{3, Beat::zero()};
+
+    auto result = apply_voice_leading(
+        score, region, VoiceLeadingStyle::NearestTone);
+    REQUIRE(result.has_value());
+
+    // Bar 2 notes should now target G major pitch classes {7, 11, 2}
+    auto* ng = score.parts[0].measures[1].voices[0].events[0].as_note_group();
+    REQUIRE(ng != nullptr);
+    REQUIRE(ng->notes.size() == 3);
+
+    // Each note's MIDI value should be a G major chord tone (mod 12)
+    for (const auto& note : ng->notes) {
+        int pc = midi_value(note.pitch) % 12;
+        bool is_g_major_tone = (pc == 7 || pc == 11 || pc == 2);
+        CHECK(is_g_major_tone);
+    }
+}
+
+TEST_CASE("SIMT001A: apply_voice_leading undo restores original pitches",
+          "[score-ir][voice-leading]") {
+    auto score = make_voice_leading_score();
+    UndoStack stack;
+
+    // Capture original pitches
+    auto* ng_before = score.parts[0].measures[1].voices[0].events[0].as_note_group();
+    REQUIRE(ng_before != nullptr);
+    std::vector<SpelledPitch> original_pitches;
+    for (const auto& note : ng_before->notes) {
+        original_pitches.push_back(note.pitch);
+    }
+
+    ScoreRegion region;
+    region.start = SCORE_START;
+    region.end = ScoreTime{3, Beat::zero()};
+
+    auto result = apply_voice_leading(
+        score, region, VoiceLeadingStyle::NearestTone, &stack);
+    REQUIRE(result.has_value());
+    CHECK(stack.can_undo());
+
+    // Undo
+    auto ur = undo(score, stack);
+    REQUIRE(ur.has_value());
+
+    // Pitches should be restored
+    auto* ng_after = score.parts[0].measures[1].voices[0].events[0].as_note_group();
+    REQUIRE(ng_after != nullptr);
+    REQUIRE(ng_after->notes.size() == original_pitches.size());
+    for (std::size_t i = 0; i < original_pitches.size(); ++i) {
+        CHECK(ng_after->notes[i].pitch == original_pitches[i]);
+    }
+}
+
+TEST_CASE("SIMT001A: apply_voice_leading fails without harmonic annotations",
+          "[score-ir][voice-leading]") {
+    auto score = make_valid_score(2);
+
+    // Place notes but no harmonic annotations
+    auto& voice = score.parts[0].measures[0].voices[0];
+    NoteGroup ng;
+    ng.notes.push_back(Note{SpelledPitch{0, 0, 4}, VelocityValue{{}, 80}});
+    ng.duration = Beat{1, 1};
+    voice.events[0].payload = ng;
+
+    ScoreRegion region;
+    region.start = SCORE_START;
+    region.end = ScoreTime{3, Beat::zero()};
+
+    auto result = apply_voice_leading(
+        score, region, VoiceLeadingStyle::NearestTone);
+    CHECK_FALSE(result.has_value());
+}
+
+TEST_CASE("SIMT001A: apply_voice_leading SmoothBach locks bass",
+          "[score-ir][voice-leading]") {
+    auto score = make_voice_leading_score();
+
+    ScoreRegion region;
+    region.start = SCORE_START;
+    region.end = ScoreTime{3, Beat::zero()};
+
+    auto result = apply_voice_leading(
+        score, region, VoiceLeadingStyle::SmoothBach);
+    REQUIRE(result.has_value());
+
+    // Bar 2 notes should target G major pitch classes
+    auto* ng = score.parts[0].measures[1].voices[0].events[0].as_note_group();
+    REQUIRE(ng != nullptr);
+    REQUIRE(!ng->notes.empty());
+
+    // With lock_bass, the lowest note should be the chord root (G, pc 7)
+    int lowest_midi = 127;
+    for (const auto& note : ng->notes) {
+        int mv = midi_value(note.pitch);
+        if (mv < lowest_midi) lowest_midi = mv;
+    }
+    CHECK(lowest_midi % 12 == 7);  // G
 }

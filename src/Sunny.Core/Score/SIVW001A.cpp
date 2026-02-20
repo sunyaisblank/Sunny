@@ -10,6 +10,7 @@
 #include "SITM001A.h"
 
 #include <algorithm>
+#include <map>
 #include <set>
 
 namespace Sunny::Core {
@@ -70,6 +71,83 @@ EventId next_view_id() {
     return EventId{g_view_event_id++};
 }
 
+/// Build a Voice from collected notes, grouping simultaneous notes into chords
+/// and filling gaps with rests. The notes vector is sorted by offset internally.
+Voice build_voice_from_collected(
+    std::vector<CollectedNote>& notes,
+    Beat measure_dur,
+    std::uint8_t voice_index
+) {
+    Voice voice{voice_index, {}, {}};
+
+    if (notes.empty()) {
+        voice.events.push_back(
+            Event{next_view_id(), Beat::zero(), RestEvent{measure_dur, true}});
+        return voice;
+    }
+
+    std::sort(notes.begin(), notes.end(),
+        [](const CollectedNote& a, const CollectedNote& b) {
+            return a.offset < b.offset;
+        });
+
+    Beat current = Beat::zero();
+    std::size_t i = 0;
+    while (i < notes.size()) {
+        Beat off = notes[i].offset;
+        if (current < off) {
+            voice.events.push_back(
+                Event{next_view_id(), current,
+                      RestEvent{off - current, true}});
+            current = off;
+        }
+        NoteGroup ng;
+        Beat dur = notes[i].duration;
+        while (i < notes.size() && notes[i].offset == off) {
+            ng.notes.push_back(notes[i].note);
+            dur = notes[i].duration;
+            ++i;
+        }
+        ng.duration = dur;
+        voice.events.push_back(
+            Event{next_view_id(), current, std::move(ng)});
+        current = current + dur;
+    }
+    if (current < measure_dur) {
+        voice.events.push_back(
+            Event{next_view_id(), current,
+                  RestEvent{measure_dur - current, true}});
+    }
+
+    return voice;
+}
+
+/// Display name for an InstrumentFamily.
+std::string family_display_name(InstrumentFamily f) {
+    switch (f) {
+        case InstrumentFamily::Strings:    return "Strings";
+        case InstrumentFamily::Woodwinds:  return "Woodwinds";
+        case InstrumentFamily::Brass:      return "Brass";
+        case InstrumentFamily::Percussion: return "Percussion";
+        case InstrumentFamily::Keyboard:   return "Keyboard";
+        case InstrumentFamily::Voice:      return "Voices";
+        case InstrumentFamily::Electronic: return "Electronic";
+    }
+    return "Other";
+}
+
+/// Check if any measure in a part contains note events.
+bool part_has_notes(const Part& part) {
+    for (const auto& m : part.measures) {
+        for (const auto& v : m.voices) {
+            for (const auto& e : v.events) {
+                if (e.is_note_group()) return true;
+            }
+        }
+    }
+    return false;
+}
+
 }  // anonymous namespace
 
 // =============================================================================
@@ -114,86 +192,8 @@ Score piano_reduction(const Score& score) {
             }
         }
 
-        // Build treble voice (index 0)
-        Voice treble_voice{0, {}, {}};
-        if (treble_notes.empty()) {
-            treble_voice.events.push_back(
-                Event{next_view_id(), Beat::zero(), RestEvent{measure_dur, true}});
-        } else {
-            // Group notes by offset
-            std::sort(treble_notes.begin(), treble_notes.end(),
-                [](const CollectedNote& a, const CollectedNote& b) {
-                    return a.offset < b.offset;
-                });
-
-            Beat current = Beat::zero();
-            std::size_t i = 0;
-            while (i < treble_notes.size()) {
-                Beat off = treble_notes[i].offset;
-                if (current < off) {
-                    treble_voice.events.push_back(
-                        Event{next_view_id(), current,
-                              RestEvent{off - current, true}});
-                    current = off;
-                }
-                NoteGroup ng;
-                Beat dur = treble_notes[i].duration;
-                while (i < treble_notes.size() && treble_notes[i].offset == off) {
-                    ng.notes.push_back(treble_notes[i].note);
-                    dur = treble_notes[i].duration;
-                    ++i;
-                }
-                ng.duration = dur;
-                treble_voice.events.push_back(
-                    Event{next_view_id(), current, std::move(ng)});
-                current = current + dur;
-            }
-            if (current < measure_dur) {
-                treble_voice.events.push_back(
-                    Event{next_view_id(), current,
-                          RestEvent{measure_dur - current, true}});
-            }
-        }
-
-        // Build bass voice (index 1)
-        Voice bass_voice{1, {}, {}};
-        if (bass_notes.empty()) {
-            bass_voice.events.push_back(
-                Event{next_view_id(), Beat::zero(), RestEvent{measure_dur, true}});
-        } else {
-            std::sort(bass_notes.begin(), bass_notes.end(),
-                [](const CollectedNote& a, const CollectedNote& b) {
-                    return a.offset < b.offset;
-                });
-
-            Beat current = Beat::zero();
-            std::size_t i = 0;
-            while (i < bass_notes.size()) {
-                Beat off = bass_notes[i].offset;
-                if (current < off) {
-                    bass_voice.events.push_back(
-                        Event{next_view_id(), current,
-                              RestEvent{off - current, true}});
-                    current = off;
-                }
-                NoteGroup ng;
-                Beat dur = bass_notes[i].duration;
-                while (i < bass_notes.size() && bass_notes[i].offset == off) {
-                    ng.notes.push_back(bass_notes[i].note);
-                    dur = bass_notes[i].duration;
-                    ++i;
-                }
-                ng.duration = dur;
-                bass_voice.events.push_back(
-                    Event{next_view_id(), current, std::move(ng)});
-                current = current + dur;
-            }
-            if (current < measure_dur) {
-                bass_voice.events.push_back(
-                    Event{next_view_id(), current,
-                          RestEvent{measure_dur - current, true}});
-            }
-        }
+        Voice treble_voice = build_voice_from_collected(treble_notes, measure_dur, 0);
+        Voice bass_voice = build_voice_from_collected(bass_notes, measure_dur, 1);
 
         Measure measure{bar, {treble_voice, bass_voice},
                         std::nullopt, std::nullopt};
@@ -211,90 +211,86 @@ Score piano_reduction(const Score& score) {
 Score short_score(const Score& score) {
     Score result = copy_score_skeleton(score);
 
-    Part satb;
-    satb.id = PartId{900001};
-    satb.definition.name = "SATB";
-    satb.definition.abbreviation = "SATB";
-    satb.definition.instrument_type = InstrumentType::SopranoVoice;
-    satb.definition.staff_count = 2;
-    satb.definition.range = PitchRange{
-        SpelledPitch{0, 0, 2}, SpelledPitch{0, 0, 6},
-        SpelledPitch{0, 0, 3}, SpelledPitch{0, 0, 5}
-    };
-
-    for (std::uint32_t bar = 1; bar <= score.metadata.total_bars; ++bar) {
-        const auto* ts_entry = find_time_sig(score.time_map, bar);
-        Beat measure_dur = ts_entry
-            ? ts_entry->time_signature.measure_duration()
-            : Beat{1, 1};
-
-        // Collect all notes
-        std::vector<CollectedNote> all_notes;
-        for (const auto& part : score.parts) {
-            if (bar - 1 >= part.measures.size()) continue;
-            auto collected = collect_notes_from_measure(part.measures[bar - 1]);
-            all_notes.insert(all_notes.end(), collected.begin(), collected.end());
-        }
-
-        // Sort by pitch descending for voice assignment
-        std::sort(all_notes.begin(), all_notes.end(),
-            [](const CollectedNote& a, const CollectedNote& b) {
-                return midi_value(a.note.pitch) > midi_value(b.note.pitch);
-            });
-
-        // Distribute to 4 voices: S(0), A(1), T(2), B(3)
-        std::array<std::vector<CollectedNote>, 4> voice_notes;
-        for (std::size_t i = 0; i < all_notes.size(); ++i) {
-            voice_notes[i % 4].push_back(all_notes[i]);
-        }
-
-        std::vector<Voice> voices;
-        for (std::uint8_t vi = 0; vi < 4; ++vi) {
-            Voice voice{vi, {}, {}};
-            if (voice_notes[vi].empty()) {
-                voice.events.push_back(
-                    Event{next_view_id(), Beat::zero(),
-                          RestEvent{measure_dur, true}});
-            } else {
-                // Sort by offset for event creation
-                auto& vn = voice_notes[vi];
-                std::sort(vn.begin(), vn.end(),
-                    [](const CollectedNote& a, const CollectedNote& b) {
-                        return a.offset < b.offset;
-                    });
-
-                Beat current = Beat::zero();
-                std::size_t j = 0;
-                while (j < vn.size()) {
-                    Beat off = vn[j].offset;
-                    if (current < off) {
-                        voice.events.push_back(
-                            Event{next_view_id(), current,
-                                  RestEvent{off - current, true}});
-                        current = off;
-                    }
-                    NoteGroup ng;
-                    ng.duration = vn[j].duration;
-                    ng.notes.push_back(vn[j].note);
-                    ++j;
-                    voice.events.push_back(
-                        Event{next_view_id(), current, std::move(ng)});
-                    current = current + ng.duration;
-                }
-                if (current < measure_dur) {
-                    voice.events.push_back(
-                        Event{next_view_id(), current,
-                              RestEvent{measure_dur - current, true}});
-                }
-            }
-            voices.push_back(std::move(voice));
-        }
-
-        Measure measure{bar, std::move(voices), std::nullopt, std::nullopt};
-        satb.measures.push_back(std::move(measure));
+    // Group parts by instrument family
+    std::map<InstrumentFamily, std::vector<const Part*>> family_groups;
+    for (const auto& part : score.parts) {
+        auto family = instrument_family(part.definition.instrument_type);
+        family_groups[family].push_back(&part);
     }
 
-    result.parts.push_back(std::move(satb));
+    std::uint64_t part_id_counter = 900001;
+
+    for (auto& [family, parts] : family_groups) {
+        // Skip families with no note content
+        bool has_notes = false;
+        for (const auto* part : parts) {
+            if (part_has_notes(*part)) { has_notes = true; break; }
+        }
+        if (!has_notes) continue;
+
+        Part family_part;
+        family_part.id = PartId{part_id_counter++};
+        family_part.definition.name = family_display_name(family);
+        family_part.definition.abbreviation =
+            family_display_name(family).substr(0, 4) + ".";
+        family_part.definition.instrument_type = parts[0]->definition.instrument_type;
+        family_part.definition.staff_count = 2;
+
+        for (std::uint32_t bar = 1; bar <= score.metadata.total_bars; ++bar) {
+            const auto* ts_entry = find_time_sig(score.time_map, bar);
+            Beat measure_dur = ts_entry
+                ? ts_entry->time_signature.measure_duration()
+                : Beat{1, 1};
+
+            std::vector<CollectedNote> treble_notes;
+            std::vector<CollectedNote> bass_notes;
+
+            for (const auto* part : parts) {
+                if (bar - 1 >= part->measures.size()) continue;
+                auto collected = collect_notes_from_measure(part->measures[bar - 1]);
+                for (const auto& cn : collected) {
+                    int mv = midi_value(cn.note.pitch);
+                    if (mv >= 60) {
+                        treble_notes.push_back(cn);
+                    } else {
+                        bass_notes.push_back(cn);
+                    }
+                }
+            }
+
+            Voice treble = build_voice_from_collected(treble_notes, measure_dur, 0);
+            Voice bass = build_voice_from_collected(bass_notes, measure_dur, 1);
+
+            Measure measure{bar, {treble, bass}, std::nullopt, std::nullopt};
+            family_part.measures.push_back(std::move(measure));
+        }
+
+        result.parts.push_back(std::move(family_part));
+    }
+
+    // Score invariant: at least one Part
+    if (result.parts.empty()) {
+        Part empty;
+        empty.id = PartId{part_id_counter};
+        empty.definition.name = "Empty";
+        empty.definition.abbreviation = "Emp.";
+        empty.definition.instrument_type = InstrumentType::Custom;
+
+        for (std::uint32_t bar = 1; bar <= score.metadata.total_bars; ++bar) {
+            const auto* ts_entry = find_time_sig(score.time_map, bar);
+            Beat measure_dur = ts_entry
+                ? ts_entry->time_signature.measure_duration()
+                : Beat{1, 1};
+
+            RestEvent rest{measure_dur, true};
+            Event event{next_view_id(), Beat::zero(), rest};
+            Voice voice{0, {event}, {}};
+            Measure measure{bar, {voice}, std::nullopt, std::nullopt};
+            empty.measures.push_back(measure);
+        }
+        result.parts.push_back(std::move(empty));
+    }
+
     return result;
 }
 

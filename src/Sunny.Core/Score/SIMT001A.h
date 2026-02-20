@@ -477,9 +477,13 @@ struct UndoStack {
 );
 
 /**
- * @brief Apply a voice leading style to a region (placeholder — bumps version)
+ * @brief Apply a voice leading style to notes in a region
  *
- * Full implementation requires harmonic analysis context.
+ * Reads harmonic annotations in the region and voice-leads notes at
+ * each chord boundary using the nearest-tone algorithm, subject to
+ * constraints determined by the style parameter.
+ *
+ * Precondition: harmonic annotations must exist in the region.
  */
 [[nodiscard]] Result<MutationResult> apply_voice_leading(
     Score& score,

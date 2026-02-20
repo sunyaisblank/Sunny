@@ -39,13 +39,15 @@ namespace Sunny::Core {
 [[nodiscard]] Score piano_reduction(const Score& score);
 
 /**
- * @brief Reduce to four SATB voices
+ * @brief Collapse parts by instrument family into two-staff condensed score
  *
- * Assigns notes to Soprano, Alto, Tenor, Bass voices by register.
- * Soprano/Alto share treble staff; Tenor/Bass share bass staff.
+ * Groups parts by InstrumentFamily (Strings, Woodwinds, Brass, etc.)
+ * and produces one two-voice Part per family. Notes at or above MIDI 60
+ * go to voice 0 (treble); notes below go to voice 1 (bass). Families
+ * containing only rests are omitted.
  *
  * @param score Source score
- * @return New score with one part and up to four voices per measure
+ * @return New score with one part per active instrument family
  */
 [[nodiscard]] Score short_score(const Score& score);
 

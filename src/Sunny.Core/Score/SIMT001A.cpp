@@ -8,6 +8,8 @@
 
 #include "SIMT001A.h"
 #include "SIVD001A.h"
+#include "SIQR001A.h"
+#include "../VoiceLeading/VLNT001A.h"
 
 #include <algorithm>
 
@@ -2221,17 +2223,125 @@ Result<MutationResult> set_texture_role(
 Result<MutationResult> apply_voice_leading(
     Score& score,
     const ScoreRegion& region,
-    VoiceLeadingStyle /*style*/,
+    VoiceLeadingStyle style,
     UndoStack* undo
 ) {
-    // Placeholder: full implementation requires harmonic analysis context
+    // Require harmonic annotations in the region
+    auto annotations = query_harmony_range(
+        score, region.start, region.end);
+    if (annotations.empty()) {
+        return std::unexpected(ErrorCode::InvalidMutation);
+    }
+
+    // Determine voice leading constraints from style
+    bool lock_bass = (style == VoiceLeadingStyle::SmoothBach);
+    bool allow_par_fifths = (style == VoiceLeadingStyle::NearestTone ||
+                             style == VoiceLeadingStyle::ParallelMotion);
+    bool allow_par_octaves = (style == VoiceLeadingStyle::NearestTone ||
+                              style == VoiceLeadingStyle::ParallelMotion);
+
+    // Capture pre-mutation pitches for undo
+    struct SavedPitch {
+        EventId event_id;
+        std::uint8_t note_index;
+        SpelledPitch old_pitch;
+    };
+    std::vector<SavedPitch> saved;
+
+    // Process consecutive annotation pairs: for each transition from
+    // one chord to the next, voice-lead the notes at the boundary.
+    for (std::size_t ai = 1; ai < annotations.size(); ++ai) {
+        const auto& target_ann = annotations[ai];
+        auto target_pcs = target_ann.chord.pitch_classes();
+        if (target_pcs.empty()) continue;
+
+        // Deduplicate pitch classes, placing chord root first when lock_bass
+        // is active so voice_lead_nearest_tone assigns the bass voice to it.
+        std::sort(target_pcs.begin(), target_pcs.end());
+        target_pcs.erase(
+            std::unique(target_pcs.begin(), target_pcs.end()),
+            target_pcs.end());
+
+        if (lock_bass) {
+            PitchClass root = target_ann.chord.root;
+            auto root_it = std::find(target_pcs.begin(), target_pcs.end(), root);
+            if (root_it != target_pcs.end() && root_it != target_pcs.begin()) {
+                std::rotate(target_pcs.begin(), root_it, root_it + 1);
+            }
+        }
+
+        // Collect current notes at the target annotation position
+        for_each_event_in_region(score, ScoreRegion{
+            target_ann.position,
+            ScoreTime{target_ann.position.bar,
+                      target_ann.position.beat + target_ann.duration},
+            region.parts
+        }, [&](Part&, Measure&, Voice&, Event& event) {
+            auto* ng = std::get_if<NoteGroup>(&event.payload);
+            if (!ng || ng->notes.empty()) return;
+
+            // Gather source MIDI pitches
+            std::vector<MidiNote> source;
+            source.reserve(ng->notes.size());
+            for (const auto& note : ng->notes) {
+                int mv = midi_value(note.pitch);
+                if (mv >= 0 && mv <= 127) {
+                    source.push_back(static_cast<MidiNote>(mv));
+                }
+            }
+            if (source.empty()) return;
+
+            auto vl_result = voice_lead_nearest_tone(
+                source, target_pcs,
+                lock_bass, allow_par_fifths, allow_par_octaves);
+            if (!vl_result) return;
+
+            const auto& voiced = vl_result->voiced_notes;
+            std::size_t count = std::min(voiced.size(), ng->notes.size());
+            for (std::size_t ni = 0; ni < count; ++ni) {
+                int new_midi = voiced[ni];
+                int old_midi = midi_value(ng->notes[ni].pitch);
+                if (new_midi == old_midi) continue;
+
+                saved.push_back({event.id,
+                                 static_cast<std::uint8_t>(ni),
+                                 ng->notes[ni].pitch});
+
+                // Reconstruct SpelledPitch from MIDI value
+                // Preserve the letter name; adjust octave and accidental
+                auto& note = ng->notes[ni];
+                int base_midi_no_acc = midi_value(SpelledPitch{
+                    note.pitch.letter, 0,
+                    static_cast<std::int8_t>((new_midi / 12) - 1)});
+                std::int8_t new_acc = static_cast<std::int8_t>(
+                    new_midi - base_midi_no_acc);
+                // Clamp accidental range and adjust octave if needed
+                while (new_acc > 2) { new_acc -= 12; }
+                while (new_acc < -2) { new_acc += 12; }
+                note.pitch = SpelledPitch{
+                    note.pitch.letter,
+                    new_acc,
+                    static_cast<std::int8_t>((new_midi / 12) - 1)};
+            }
+        });
+    }
+
     bump_version(score);
+
     push_undo(undo, score, "apply_voice_leading",
-        [&score]() -> VoidResult {
-            bump_version(score);
+        [&score, region, style]() -> VoidResult {
+            auto result = apply_voice_leading(score, region, style);
+            if (!result) return std::unexpected(result.error());
             return {};
         },
-        [&score]() -> VoidResult {
+        [&score, saved]() -> VoidResult {
+            for (const auto& s : saved) {
+                auto loc = find_event(score, s.event_id);
+                if (!loc.event) continue;
+                auto* ng = std::get_if<NoteGroup>(&loc.event->payload);
+                if (!ng || s.note_index >= ng->notes.size()) continue;
+                ng->notes[s.note_index].pitch = s.old_pitch;
+            }
             bump_version(score);
             return {};
         }

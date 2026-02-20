@@ -657,6 +657,172 @@ TEST_CASE("SIQR001A: query_form_summary produces correct entries",
     CHECK(summary[1].start == ScoreTime{5, Beat::zero()});
 }
 
+// =============================================================================
+// SIVW001A: short_score family collapsing (§8.2.2)
+// =============================================================================
+
+TEST_CASE("SIVW001A: short_score groups three families into three parts",
+          "[score-ir][view]") {
+    auto score = make_valid_score(1);
+
+    // Add Violin (Strings family)
+    PartDefinition violin_def;
+    violin_def.name = "Violin";
+    violin_def.abbreviation = "Vln.";
+    violin_def.instrument_type = InstrumentType::Violin;
+    (void)add_part(score, violin_def, 1);
+
+    // Add Flute (Woodwinds family)
+    PartDefinition flute_def;
+    flute_def.name = "Flute";
+    flute_def.abbreviation = "Fl.";
+    flute_def.instrument_type = InstrumentType::Flute;
+    (void)add_part(score, flute_def, 2);
+
+    // Add Trumpet (Brass family)
+    PartDefinition trumpet_def;
+    trumpet_def.name = "Trumpet";
+    trumpet_def.abbreviation = "Tpt.";
+    trumpet_def.instrument_type = InstrumentType::Trumpet;
+    (void)add_part(score, trumpet_def, 3);
+
+    // Place a note in each non-piano part
+    for (std::size_t i = 1; i < score.parts.size(); ++i) {
+        auto& voice = score.parts[i].measures[0].voices[0];
+        NoteGroup ng;
+        ng.notes.push_back(Note{SpelledPitch{0, 0, 5}, VelocityValue{{}, 80}});
+        ng.duration = Beat{1, 1};
+        voice.events[0].payload = ng;
+    }
+
+    // Piano part has no notes — Keyboard family should be omitted
+    auto result = short_score(score);
+
+    // Should have 3 parts: Strings, Woodwinds, Brass
+    CHECK(result.parts.size() == 3);
+
+    bool found_strings = false, found_woodwinds = false, found_brass = false;
+    for (const auto& part : result.parts) {
+        if (part.definition.name == "Strings") found_strings = true;
+        if (part.definition.name == "Woodwinds") found_woodwinds = true;
+        if (part.definition.name == "Brass") found_brass = true;
+    }
+    CHECK(found_strings);
+    CHECK(found_woodwinds);
+    CHECK(found_brass);
+}
+
+TEST_CASE("SIVW001A: short_score merges two instruments in same family",
+          "[score-ir][view]") {
+    auto score = make_valid_score(1);
+
+    // Remove the default piano
+    score.parts.clear();
+
+    // Add Violin and Viola (both Strings)
+    PartDefinition violin_def;
+    violin_def.name = "Violin";
+    violin_def.abbreviation = "Vln.";
+    violin_def.instrument_type = InstrumentType::Violin;
+    (void)add_part(score, violin_def, 0);
+
+    PartDefinition viola_def;
+    viola_def.name = "Viola";
+    viola_def.abbreviation = "Vla.";
+    viola_def.instrument_type = InstrumentType::Viola;
+    (void)add_part(score, viola_def, 1);
+
+    // Place high note in Violin, low note in Viola
+    auto& vln_voice = score.parts[0].measures[0].voices[0];
+    NoteGroup ng1;
+    ng1.notes.push_back(Note{SpelledPitch{4, 0, 5}, VelocityValue{{}, 80}});  // G5 (MIDI 79)
+    ng1.duration = Beat{1, 1};
+    vln_voice.events[0].payload = ng1;
+
+    auto& vla_voice = score.parts[1].measures[0].voices[0];
+    NoteGroup ng2;
+    ng2.notes.push_back(Note{SpelledPitch{0, 0, 3}, VelocityValue{{}, 80}});  // C3 (MIDI 48)
+    ng2.duration = Beat{1, 1};
+    vla_voice.events[0].payload = ng2;
+
+    auto result = short_score(score);
+
+    // Should merge into a single "Strings" part
+    REQUIRE(result.parts.size() == 1);
+    CHECK(result.parts[0].definition.name == "Strings");
+
+    // Two voices: treble (G5) and bass (C3)
+    REQUIRE(result.parts[0].measures[0].voices.size() == 2);
+}
+
+TEST_CASE("SIVW001A: short_score splits notes at C4 boundary",
+          "[score-ir][view]") {
+    auto score = make_valid_score(1);
+
+    // Place notes spanning the C4 boundary in the Piano part
+    auto& voice = score.parts[0].measures[0].voices[0];
+    voice.events.clear();
+
+    // G5 (MIDI 79) → treble, B3 (MIDI 59) → bass
+    NoteGroup ng;
+    ng.notes.push_back(Note{SpelledPitch{4, 0, 5}, VelocityValue{{}, 80}});  // G5
+    ng.notes.push_back(Note{SpelledPitch{6, 0, 3}, VelocityValue{{}, 80}});  // B3
+    ng.duration = Beat{1, 1};
+    voice.events.push_back(Event{EventId{9001}, Beat::zero(), ng});
+
+    auto result = short_score(score);
+
+    REQUIRE(result.parts.size() == 1);
+    auto& treble = result.parts[0].measures[0].voices[0];
+    auto& bass = result.parts[0].measures[0].voices[1];
+
+    // Treble should have G5
+    auto* treble_ng = treble.events[0].as_note_group();
+    if (treble_ng) {
+        CHECK(midi_value(treble_ng->notes[0].pitch) >= 60);
+    }
+
+    // Bass should have B3
+    bool bass_has_note = false;
+    for (const auto& ev : bass.events) {
+        auto* bng = ev.as_note_group();
+        if (bng) {
+            CHECK(midi_value(bng->notes[0].pitch) < 60);
+            bass_has_note = true;
+        }
+    }
+    CHECK(bass_has_note);
+}
+
+TEST_CASE("SIVW001A: short_score omits families with only rests",
+          "[score-ir][view]") {
+    auto score = make_valid_score(1);
+
+    // Add a Trumpet part with no notes
+    PartDefinition trumpet_def;
+    trumpet_def.name = "Trumpet";
+    trumpet_def.abbreviation = "Tpt.";
+    trumpet_def.instrument_type = InstrumentType::Trumpet;
+    (void)add_part(score, trumpet_def, 1);
+
+    // Place a note in the Piano (Keyboard family) only
+    auto& voice = score.parts[0].measures[0].voices[0];
+    NoteGroup ng;
+    ng.notes.push_back(Note{SpelledPitch{0, 0, 4}, VelocityValue{{}, 80}});
+    ng.duration = Beat{1, 1};
+    voice.events[0].payload = ng;
+
+    auto result = short_score(score);
+
+    // Only the Keyboard family should appear; Brass family omitted
+    REQUIRE(result.parts.size() == 1);
+    CHECK(result.parts[0].definition.name == "Keyboard");
+}
+
+// =============================================================================
+// SIQR001A: Extended Queries (§12.1, continued)
+// =============================================================================
+
 TEST_CASE("SIQR001A: query_find_motif locates pitch class pattern",
           "[score-ir][query]") {
     auto score = make_valid_score(4);
