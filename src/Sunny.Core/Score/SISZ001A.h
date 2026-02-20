@@ -31,7 +31,7 @@ namespace Sunny::Core {
 // =============================================================================
 
 /// Current schema version for serialised Score IR documents
-constexpr int SCORE_IR_SCHEMA_VERSION = 1;
+constexpr int SCORE_IR_SCHEMA_VERSION = 2;
 
 /**
  * @brief Serialise a Score to JSON

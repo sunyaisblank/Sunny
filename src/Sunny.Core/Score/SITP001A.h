@@ -370,6 +370,14 @@ enum class ValidationSeverity : std::uint8_t {
     Info
 };
 
+/// Document lifecycle state (§2.1)
+enum class DocumentState : std::uint8_t {
+    Draft,
+    Valid,
+    Compiled,
+    Locked
+};
+
 /// Slide direction for TechnicalDirection (§4.12)
 enum class SlideDirection : std::uint8_t {
     Into,

@@ -221,4 +221,41 @@ constexpr int DEFAULT_PPQ = 480;
     return bpm * unit_in_quarters;
 }
 
+// =============================================================================
+// Bresenham Tick Quantisation (SS-IR §5.4)
+// =============================================================================
+
+/**
+ * @brief Quantise a sequence of beat durations to ticks with evenly
+ *        distributed rounding error (Bresenham-style)
+ *
+ * For a sequence of beat values, returns the tick representation where
+ * cumulative rounding error never exceeds 0.5 ticks. Each output tick
+ * value is the quantised duration of the corresponding input beat.
+ *
+ * @param beats Sequence of durations to quantise
+ * @param ppq Pulses per quarter note
+ * @return Quantised tick durations
+ */
+[[nodiscard]] inline std::vector<std::int64_t> bresenham_quantise(
+    std::span<const Beat> beats,
+    int ppq = DEFAULT_PPQ
+) {
+    std::vector<std::int64_t> ticks;
+    ticks.reserve(beats.size());
+
+    std::int64_t cumulative_ticks = 0;
+    Beat cumulative_beats = Beat::zero();
+
+    for (const auto& b : beats) {
+        cumulative_beats = cumulative_beats + b;
+        std::int64_t target_tick = absolute_beat_to_tick(cumulative_beats, ppq);
+        std::int64_t this_tick = target_tick - cumulative_ticks;
+        ticks.push_back(this_tick);
+        cumulative_ticks = target_tick;
+    }
+
+    return ticks;
+}
+
 }  // namespace Sunny::Core

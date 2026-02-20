@@ -8,8 +8,12 @@
 
 #include "SIVD001A.h"
 #include "SITM001A.h"
+#include "../VoiceLeading/VLNT001A.h"
+#include "../PostTonal/SRTW001A.h"
 
 #include <algorithm>
+#include <cstdlib>
+#include <map>
 #include <set>
 
 namespace Sunny::Core {
@@ -333,15 +337,15 @@ void validate_s10(const Score& score, std::vector<Diagnostic>& out) {
 }
 
 // =============================================================================
-// S11: Voices non-empty in every measure
+// S0b: Voices non-empty in every measure (relabelled from S11)
 // =============================================================================
 
-void validate_s11(const Score& score, std::vector<Diagnostic>& out) {
+void validate_s0b(const Score& score, std::vector<Diagnostic>& out) {
     for (const auto& part : score.parts) {
         for (const auto& measure : part.measures) {
             if (measure.voices.empty()) {
                 out.push_back(make_diagnostic(
-                    ValidationSeverity::Error, "S11",
+                    ValidationSeverity::Error, "S0b",
                     "Measure " + std::to_string(measure.bar_number) +
                     " has no voices",
                     ScoreError::EmptyVoice,
@@ -349,6 +353,47 @@ void validate_s11(const Score& score, std::vector<Diagnostic>& out) {
                 ));
             }
         }
+    }
+}
+
+// =============================================================================
+// S11: Tone row completeness — every NoteGroup uses all 12 pitch classes
+// =============================================================================
+
+void validate_s11(const Score& score, std::vector<Diagnostic>& out) {
+    if (!score.tone_row) return;
+
+    // Collect all pitch classes used across note groups in the score
+    std::set<PitchClass> used_pcs;
+    for (const auto& part : score.parts) {
+        for (const auto& measure : part.measures) {
+            for (const auto& voice : measure.voices) {
+                for (const auto& event : voice.events) {
+                    const auto* ng = event.as_note_group();
+                    if (!ng) continue;
+                    for (const auto& note : ng->notes) {
+                        PitchClass pc = static_cast<PitchClass>(
+                            midi_value(note.pitch) % 12);
+                        used_pcs.insert(pc);
+                    }
+                }
+            }
+        }
+    }
+
+    if (used_pcs.size() < 12) {
+        std::string missing;
+        for (int pc = 0; pc < 12; ++pc) {
+            if (!used_pcs.contains(static_cast<PitchClass>(pc))) {
+                if (!missing.empty()) missing += ", ";
+                missing += std::to_string(pc);
+            }
+        }
+        out.push_back(make_diagnostic(
+            ValidationSeverity::Error, "S11",
+            "Tone row set: score is missing pitch classes: " + missing,
+            ScoreError::InvariantViolation
+        ));
     }
 }
 
@@ -539,6 +584,543 @@ void validate_r3(const Score& score, std::vector<Diagnostic>& out) {
 }
 
 // =============================================================================
+// M3: Parallel fifths/octaves (Warning)
+// =============================================================================
+
+void validate_m3(const Score& score, std::vector<Diagnostic>& out) {
+    for (const auto& part : score.parts) {
+        for (const auto& measure : part.measures) {
+            for (const auto& voice : measure.voices) {
+                // Collect consecutive NoteGroups in this voice
+                std::vector<std::pair<const NoteGroup*, Beat>> note_groups;
+                for (const auto& event : voice.events) {
+                    const auto* ng = event.as_note_group();
+                    if (ng) note_groups.push_back({ng, event.offset});
+                }
+
+                for (std::size_t idx = 1; idx < note_groups.size(); ++idx) {
+                    const auto& [prev_ng, prev_off] = note_groups[idx - 1];
+                    const auto& [curr_ng, curr_off] = note_groups[idx];
+
+                    // Check each pair of voice indices (i, j) within the NoteGroups
+                    std::size_t min_notes = std::min(
+                        prev_ng->notes.size(), curr_ng->notes.size());
+
+                    for (std::size_t i = 0; i < min_notes; ++i) {
+                        for (std::size_t j = i + 1; j < min_notes; ++j) {
+                            MidiNote prev_lo = static_cast<MidiNote>(
+                                midi_value(prev_ng->notes[i].pitch));
+                            MidiNote prev_hi = static_cast<MidiNote>(
+                                midi_value(prev_ng->notes[j].pitch));
+                            MidiNote curr_lo = static_cast<MidiNote>(
+                                midi_value(curr_ng->notes[i].pitch));
+                            MidiNote curr_hi = static_cast<MidiNote>(
+                                midi_value(curr_ng->notes[j].pitch));
+
+                            // Check parallel fifths (interval class 7)
+                            if (has_parallel_motion(
+                                    prev_lo, prev_hi, curr_lo, curr_hi, 7)) {
+                                out.push_back(make_diagnostic(
+                                    ValidationSeverity::Warning, "M3",
+                                    "Parallel fifth detected in voice " +
+                                    std::to_string(voice.voice_index) +
+                                    ", bar " + std::to_string(measure.bar_number),
+                                    ScoreError::InvariantViolation,
+                                    ScoreTime{measure.bar_number, curr_off},
+                                    part.id
+                                ));
+                            }
+
+                            // Check parallel octaves (interval class 0)
+                            if (has_parallel_motion(
+                                    prev_lo, prev_hi, curr_lo, curr_hi, 0)) {
+                                out.push_back(make_diagnostic(
+                                    ValidationSeverity::Warning, "M3",
+                                    "Parallel octave detected in voice " +
+                                    std::to_string(voice.voice_index) +
+                                    ", bar " + std::to_string(measure.bar_number),
+                                    ScoreError::InvariantViolation,
+                                    ScoreTime{measure.bar_number, curr_off},
+                                    part.id
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// =============================================================================
+// M4: Voice crossing (Warning)
+// =============================================================================
+
+void validate_m4(const Score& score, std::vector<Diagnostic>& out) {
+    for (const auto& part : score.parts) {
+        for (const auto& measure : part.measures) {
+            // Voices are ordered by voice_index; consecutive indices should
+            // maintain pitch ordering at each event offset.
+            if (measure.voices.size() < 2) continue;
+
+            // Build per-voice map: offset -> (min_midi, max_midi) for NoteGroups
+            struct VoiceRange {
+                int lo;
+                int hi;
+            };
+            using OffsetMap = std::map<double, VoiceRange>;
+
+            std::vector<OffsetMap> voice_maps(measure.voices.size());
+            for (std::size_t vi = 0; vi < measure.voices.size(); ++vi) {
+                for (const auto& event : measure.voices[vi].events) {
+                    const auto* ng = event.as_note_group();
+                    if (!ng) continue;
+                    int lo = 127, hi = 0;
+                    for (const auto& note : ng->notes) {
+                        int mv = midi_value(note.pitch);
+                        if (mv < lo) lo = mv;
+                        if (mv > hi) hi = mv;
+                    }
+                    double off_key = event.offset.to_float();
+                    voice_maps[vi][off_key] = {lo, hi};
+                }
+            }
+
+            // For consecutive voice pairs, check that voice N's highest midi
+            // stays below voice N+1's lowest midi at shared offsets
+            for (std::size_t vi = 0; vi + 1 < measure.voices.size(); ++vi) {
+                for (const auto& [off_key, range_n] : voice_maps[vi]) {
+                    auto it = voice_maps[vi + 1].find(off_key);
+                    if (it == voice_maps[vi + 1].end()) continue;
+                    const auto& range_n1 = it->second;
+
+                    if (range_n.hi >= range_n1.lo) {
+                        out.push_back(make_diagnostic(
+                            ValidationSeverity::Warning, "M4",
+                            "Voice crossing between voice " +
+                            std::to_string(measure.voices[vi].voice_index) +
+                            " and voice " +
+                            std::to_string(measure.voices[vi + 1].voice_index) +
+                            " in bar " + std::to_string(measure.bar_number),
+                            ScoreError::InvariantViolation,
+                            ScoreTime{measure.bar_number, Beat::zero()},
+                            part.id
+                        ));
+                        break;  // One diagnostic per voice pair per measure
+                    }
+                }
+            }
+        }
+    }
+}
+
+// =============================================================================
+// M5: Large leaps > octave without recovery (Warning)
+// =============================================================================
+
+void validate_m5(const Score& score, std::vector<Diagnostic>& out) {
+    for (const auto& part : score.parts) {
+        for (const auto& measure : part.measures) {
+            for (const auto& voice : measure.voices) {
+                // Collect consecutive NoteGroups
+                struct NgInfo {
+                    int midi;
+                    Beat offset;
+                };
+                std::vector<NgInfo> pitches;
+                for (const auto& event : voice.events) {
+                    const auto* ng = event.as_note_group();
+                    if (!ng || ng->notes.empty()) continue;
+                    // Use the first note as the representative pitch
+                    pitches.push_back({
+                        midi_value(ng->notes[0].pitch),
+                        event.offset
+                    });
+                }
+
+                for (std::size_t i = 1; i < pitches.size(); ++i) {
+                    int leap = pitches[i].midi - pitches[i - 1].midi;
+                    if (std::abs(leap) > 12) {
+                        // Check if next interval recovers (opposite direction, step)
+                        bool recovered = false;
+                        if (i + 1 < pitches.size()) {
+                            int recovery = pitches[i + 1].midi - pitches[i].midi;
+                            // Opposite direction and step (<=2 semitones)
+                            if (leap > 0 && recovery < 0 &&
+                                std::abs(recovery) <= 2) {
+                                recovered = true;
+                            } else if (leap < 0 && recovery > 0 &&
+                                       std::abs(recovery) <= 2) {
+                                recovered = true;
+                            }
+                        }
+
+                        if (!recovered) {
+                            out.push_back(make_diagnostic(
+                                ValidationSeverity::Warning, "M5",
+                                "Large leap (" + std::to_string(std::abs(leap)) +
+                                " semitones) without step recovery in voice " +
+                                std::to_string(voice.voice_index) +
+                                ", bar " + std::to_string(measure.bar_number),
+                                ScoreError::InvariantViolation,
+                                ScoreTime{measure.bar_number, pitches[i].offset},
+                                part.id
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// =============================================================================
+// M6: Unresolved leading tone (Info)
+// =============================================================================
+
+void validate_m6(const Score& score, std::vector<Diagnostic>& out) {
+    for (const auto& part : score.parts) {
+        for (const auto& measure : part.measures) {
+            // Find the applicable key for this measure
+            const KeySignatureEntry* key_entry = nullptr;
+            for (const auto& ke : score.key_map) {
+                if (ke.position.bar <= measure.bar_number) key_entry = &ke;
+                else break;
+            }
+            if (!key_entry) continue;
+
+            int key_root_pc = midi_value(key_entry->key.root) % 12;
+            if (key_root_pc < 0) key_root_pc += 12;
+            int leading_tone_pc = (key_root_pc + 11) % 12;
+
+            for (const auto& voice : measure.voices) {
+                for (std::size_t ei = 0; ei < voice.events.size(); ++ei) {
+                    const auto* ng = voice.events[ei].as_note_group();
+                    if (!ng) continue;
+
+                    for (const auto& note : ng->notes) {
+                        int note_pc = midi_value(note.pitch) % 12;
+                        if (note_pc < 0) note_pc += 12;
+                        if (note_pc != leading_tone_pc) continue;
+
+                        int note_midi = midi_value(note.pitch);
+
+                        // Find the next note in this voice
+                        const NoteGroup* next_ng = nullptr;
+                        if (ei + 1 < voice.events.size()) {
+                            next_ng = voice.events[ei + 1].as_note_group();
+                        }
+
+                        if (next_ng && !next_ng->notes.empty()) {
+                            int next_midi = midi_value(next_ng->notes[0].pitch);
+                            int interval = next_midi - note_midi;
+                            // Should resolve upward by 1 or 2 semitones to tonic
+                            int next_pc = next_midi % 12;
+                            if (next_pc < 0) next_pc += 12;
+                            if (interval > 0 && interval <= 2 &&
+                                next_pc == key_root_pc) {
+                                continue;  // Properly resolved
+                            }
+                        }
+
+                        out.push_back(make_diagnostic(
+                            ValidationSeverity::Info, "M6",
+                            "Unresolved leading tone in voice " +
+                            std::to_string(voice.voice_index) +
+                            ", bar " + std::to_string(measure.bar_number),
+                            ScoreError::InvariantViolation,
+                            ScoreTime{measure.bar_number,
+                                voice.events[ei].offset},
+                            part.id
+                        ));
+                    }
+                }
+            }
+        }
+    }
+}
+
+// =============================================================================
+// M7: Unresolved chordal seventh (Info)
+// =============================================================================
+
+void validate_m7(const Score& score, std::vector<Diagnostic>& out) {
+    for (const auto& part : score.parts) {
+        for (const auto& measure : part.measures) {
+            for (const auto& voice : measure.voices) {
+                for (std::size_t ei = 0; ei < voice.events.size(); ++ei) {
+                    const auto* ng = voice.events[ei].as_note_group();
+                    if (!ng) continue;
+
+                    // Find the applicable harmonic annotation at this position
+                    ScoreTime event_time{measure.bar_number,
+                        voice.events[ei].offset};
+                    const HarmonicAnnotation* ha = nullptr;
+                    for (const auto& ann : score.harmonic_annotations) {
+                        if (ann.position <= event_time) {
+                            // Check if event_time is within the annotation span
+                            ha = &ann;
+                        } else {
+                            break;
+                        }
+                    }
+                    if (!ha || ha->chord.empty()) continue;
+
+                    PitchClass chord_root = ha->chord.root;
+
+                    for (const auto& note : ng->notes) {
+                        int note_pc = midi_value(note.pitch) % 12;
+                        if (note_pc < 0) note_pc += 12;
+
+                        // Check if this note forms a seventh above the chord root
+                        // (10 or 11 semitones above root = minor 7th or major 7th)
+                        int interval_from_root = (note_pc - chord_root + 12) % 12;
+                        if (interval_from_root != 10 && interval_from_root != 11)
+                            continue;
+
+                        int note_midi = midi_value(note.pitch);
+
+                        // Find next note in this voice
+                        const NoteGroup* next_ng = nullptr;
+                        if (ei + 1 < voice.events.size()) {
+                            next_ng = voice.events[ei + 1].as_note_group();
+                        }
+
+                        if (next_ng && !next_ng->notes.empty()) {
+                            int next_midi = midi_value(next_ng->notes[0].pitch);
+                            int motion = next_midi - note_midi;
+                            // Should resolve downward by step (1 or 2 semitones)
+                            if (motion < 0 && std::abs(motion) <= 2) {
+                                continue;  // Properly resolved
+                            }
+                        }
+
+                        out.push_back(make_diagnostic(
+                            ValidationSeverity::Info, "M7",
+                            "Unresolved chordal seventh in voice " +
+                            std::to_string(voice.voice_index) +
+                            ", bar " + std::to_string(measure.bar_number),
+                            ScoreError::InvariantViolation,
+                            ScoreTime{measure.bar_number,
+                                voice.events[ei].offset},
+                            part.id
+                        ));
+                    }
+                }
+            }
+        }
+    }
+}
+
+// =============================================================================
+// M9: Missing orchestration annotation (Info)
+// =============================================================================
+
+void validate_m9(const Score& score, std::vector<Diagnostic>& out) {
+    for (const auto& part : score.parts) {
+        // Check if this part has any orchestration annotations at all
+        bool has_any_orch = false;
+        for (const auto& ann : score.orchestration_annotations) {
+            if (ann.part_id == part.id) {
+                has_any_orch = true;
+                break;
+            }
+        }
+        if (!has_any_orch) continue;
+
+        // Build a set of bars covered by orchestration annotations
+        std::set<std::uint32_t> covered_bars;
+        for (const auto& ann : score.orchestration_annotations) {
+            if (ann.part_id != part.id) continue;
+            for (std::uint32_t b = ann.start.bar; b < ann.end.bar; ++b) {
+                covered_bars.insert(b);
+            }
+            // Include end bar if beat > 0
+            if (ann.end.beat > Beat::zero()) {
+                covered_bars.insert(ann.end.bar);
+            }
+        }
+
+        // Scan for gaps of > 8 consecutive bars
+        std::uint32_t gap_start = 0;
+        std::uint32_t gap_count = 0;
+        for (std::uint32_t b = 1; b <= score.metadata.total_bars; ++b) {
+            if (!covered_bars.contains(b)) {
+                if (gap_count == 0) gap_start = b;
+                ++gap_count;
+            } else {
+                if (gap_count > 8) {
+                    out.push_back(make_diagnostic(
+                        ValidationSeverity::Info, "M9",
+                        "Part '" + part.definition.name +
+                        "' has " + std::to_string(gap_count) +
+                        " consecutive bars without orchestration annotation"
+                        " starting at bar " + std::to_string(gap_start),
+                        ScoreError::InconsistentOrch,
+                        ScoreTime{gap_start, Beat::zero()}, part.id
+                    ));
+                }
+                gap_count = 0;
+            }
+        }
+        // Check trailing gap
+        if (gap_count > 8) {
+            out.push_back(make_diagnostic(
+                ValidationSeverity::Info, "M9",
+                "Part '" + part.definition.name +
+                "' has " + std::to_string(gap_count) +
+                " consecutive bars without orchestration annotation"
+                " starting at bar " + std::to_string(gap_start),
+                ScoreError::InconsistentOrch,
+                ScoreTime{gap_start, Beat::zero()}, part.id
+            ));
+        }
+    }
+}
+
+// =============================================================================
+// M10: Dynamic absent > 16 bars (Warning)
+// =============================================================================
+
+void validate_m10(const Score& score, std::vector<Diagnostic>& out) {
+    for (const auto& part : score.parts) {
+        // Collect bars that have a dynamic marking (note.dynamic) or hairpin
+        std::set<std::uint32_t> dynamic_bars;
+
+        for (const auto& measure : part.measures) {
+            for (const auto& voice : measure.voices) {
+                for (const auto& event : voice.events) {
+                    const auto* ng = event.as_note_group();
+                    if (!ng) continue;
+                    for (const auto& note : ng->notes) {
+                        if (note.dynamic) {
+                            dynamic_bars.insert(measure.bar_number);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Also include bars covered by hairpins
+        for (const auto& hairpin : part.hairpins) {
+            for (std::uint32_t b = hairpin.start.bar; b <= hairpin.end.bar; ++b) {
+                dynamic_bars.insert(b);
+            }
+        }
+
+        // Scan for gaps > 16 consecutive bars without dynamics
+        std::uint32_t gap_start = 0;
+        std::uint32_t gap_count = 0;
+        for (std::uint32_t b = 1; b <= score.metadata.total_bars; ++b) {
+            if (!dynamic_bars.contains(b)) {
+                if (gap_count == 0) gap_start = b;
+                ++gap_count;
+            } else {
+                if (gap_count > 16) {
+                    out.push_back(make_diagnostic(
+                        ValidationSeverity::Warning, "M10",
+                        "Part '" + part.definition.name +
+                        "' has " + std::to_string(gap_count) +
+                        " consecutive bars without dynamic marking"
+                        " starting at bar " + std::to_string(gap_start),
+                        ScoreError::InconsistentOrch,
+                        ScoreTime{gap_start, Beat::zero()}, part.id
+                    ));
+                }
+                gap_count = 0;
+            }
+        }
+        // Check trailing gap
+        if (gap_count > 16) {
+            out.push_back(make_diagnostic(
+                ValidationSeverity::Info, "M10",
+                "Part '" + part.definition.name +
+                "' has " + std::to_string(gap_count) +
+                " consecutive bars without dynamic marking"
+                " starting at bar " + std::to_string(gap_start),
+                ScoreError::InconsistentOrch,
+                ScoreTime{gap_start, Beat::zero()}, part.id
+            ));
+        }
+    }
+}
+
+// =============================================================================
+// R4: Grace note duration (Info)
+// =============================================================================
+
+void validate_r4(const Score& score, std::vector<Diagnostic>& out) {
+    Beat max_grace_dur{1, 16};
+    for (const auto& part : score.parts) {
+        for (const auto& measure : part.measures) {
+            for (const auto& voice : measure.voices) {
+                for (const auto& event : voice.events) {
+                    const auto* ng = event.as_note_group();
+                    if (!ng) continue;
+
+                    bool has_grace = false;
+                    for (const auto& note : ng->notes) {
+                        if (note.grace) {
+                            has_grace = true;
+                            break;
+                        }
+                    }
+
+                    if (has_grace && ng->duration > max_grace_dur) {
+                        out.push_back(make_diagnostic(
+                            ValidationSeverity::Info, "R4",
+                            "Grace note group duration exceeds 1/16 in bar " +
+                            std::to_string(measure.bar_number),
+                            ScoreError::InvariantViolation,
+                            ScoreTime{measure.bar_number, event.offset},
+                            part.id
+                        ));
+                    }
+                }
+            }
+        }
+    }
+}
+
+// =============================================================================
+// R5: Tick rounding error (Warning)
+// =============================================================================
+
+void validate_r5(const Score& score, std::vector<Diagnostic>& out) {
+    for (const auto& part : score.parts) {
+        for (const auto& measure : part.measures) {
+            for (const auto& voice : measure.voices) {
+                for (const auto& event : voice.events) {
+                    if (!event.is_note_group() && !event.is_rest()) continue;
+
+                    ScoreTime st{measure.bar_number, event.offset};
+                    auto abs_result = score_time_to_absolute_beat(
+                        st, score.time_map);
+                    if (!abs_result) continue;
+
+                    Beat absolute = *abs_result;
+                    std::int64_t tick = absolute_beat_to_tick(absolute);
+                    Beat round_trip = tick_to_absolute_beat(tick);
+                    std::int64_t tick2 = absolute_beat_to_tick(round_trip);
+
+                    if (tick != tick2) {
+                        out.push_back(make_diagnostic(
+                            ValidationSeverity::Warning, "R5",
+                            "Tick rounding residual in bar " +
+                            std::to_string(measure.bar_number) +
+                            " at offset " +
+                            std::to_string(event.offset.to_float()),
+                            ScoreError::TickConversionError,
+                            st, part.id
+                        ));
+                    }
+                }
+            }
+        }
+    }
+}
+
+// =============================================================================
 // Sorting helper
 // =============================================================================
 
@@ -572,6 +1154,7 @@ std::vector<Diagnostic> validate_structural(const Score& score) {
         return diags;
     }
 
+    validate_s0b(score, diags);
     validate_s1(score, diags);
     validate_s2(score, diags);
     validate_s3(score, diags);
@@ -593,7 +1176,14 @@ std::vector<Diagnostic> validate_musical(const Score& score) {
 
     validate_m1(score, diags);
     validate_m2(score, diags);
+    validate_m3(score, diags);
+    validate_m4(score, diags);
+    validate_m5(score, diags);
+    validate_m6(score, diags);
+    validate_m7(score, diags);
     validate_m8(score, diags);
+    validate_m9(score, diags);
+    validate_m10(score, diags);
 
     sort_diagnostics(diags);
     return diags;
@@ -605,6 +1195,8 @@ std::vector<Diagnostic> validate_rendering(const Score& score) {
     validate_r1(score, diags);
     validate_r2(score, diags);
     validate_r3(score, diags);
+    validate_r4(score, diags);
+    validate_r5(score, diags);
 
     sort_diagnostics(diags);
     return diags;

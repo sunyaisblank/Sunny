@@ -7,6 +7,7 @@
  */
 
 #include "SISZ001A.h"
+#include "SIVD001A.h"
 
 namespace Sunny::Core {
 
@@ -71,6 +72,62 @@ VelocityValue velocity_value_from_json(const json& j) {
 }
 
 // =============================================================================
+// Ornament serialisation
+// =============================================================================
+
+json ornament_to_json(const Ornament& o) {
+    json j;
+    j["type"] = static_cast<int>(o.type);
+    j["trill_interval"] = o.trill_interval;
+    if (o.accidental) j["accidental"] = *o.accidental;
+    j["arpeggio_direction"] = static_cast<int>(o.arpeggio_direction);
+    return j;
+}
+
+Ornament ornament_from_json(const json& j) {
+    Ornament o;
+    o.type = static_cast<OrnamentType>(j.at("type").get<int>());
+    o.trill_interval = j.value("trill_interval", static_cast<Interval>(0));
+    if (j.contains("accidental"))
+        o.accidental = j.at("accidental").get<std::int8_t>();
+    o.arpeggio_direction = static_cast<ArpeggioDirection>(
+        j.value("arpeggio_direction", 2));  // None
+    return o;
+}
+
+// =============================================================================
+// TechnicalDirection serialisation
+// =============================================================================
+
+json technical_to_json(const TechnicalDirection& td) {
+    json j;
+    j["type"] = static_cast<int>(td.type);
+    if (!td.fingering.empty()) j["fingering"] = td.fingering;
+    if (td.number != 0) j["number"] = td.number;
+    if (!td.pattern.empty()) j["pattern"] = td.pattern;
+    j["slide_direction"] = static_cast<int>(td.slide_direction);
+    if (td.bend_cents != 0) j["bend_cents"] = td.bend_cents;
+    j["vibrato_speed"] = static_cast<int>(td.vibrato_speed);
+    return j;
+}
+
+TechnicalDirection technical_from_json(const json& j) {
+    TechnicalDirection td;
+    td.type = static_cast<TechnicalDirection::Type>(j.at("type").get<int>());
+    if (j.contains("fingering"))
+        td.fingering = j.at("fingering").get<std::vector<std::uint8_t>>();
+    td.number = j.value("number", static_cast<std::uint8_t>(0));
+    if (j.contains("pattern"))
+        td.pattern = j.at("pattern").get<std::string>();
+    td.slide_direction = static_cast<SlideDirection>(
+        j.value("slide_direction", 0));
+    td.bend_cents = j.value("bend_cents", static_cast<std::int16_t>(0));
+    td.vibrato_speed = static_cast<VibratoSpeed>(
+        j.value("vibrato_speed", 1));  // Normal
+    return td;
+}
+
+// =============================================================================
 // Note serialisation
 // =============================================================================
 
@@ -80,8 +137,16 @@ json note_to_json(const Note& note) {
     j["velocity"] = velocity_value_to_json(note.velocity);
     if (note.articulation) j["articulation"] = static_cast<int>(*note.articulation);
     if (note.dynamic) j["dynamic"] = static_cast<int>(*note.dynamic);
+    if (note.ornament) j["ornament"] = ornament_to_json(*note.ornament);
     if (note.tie_forward) j["tie_forward"] = true;
     if (note.grace) j["grace"] = static_cast<int>(*note.grace);
+    if (!note.technical.empty()) {
+        json techs = json::array();
+        for (const auto& td : note.technical) {
+            techs.push_back(technical_to_json(td));
+        }
+        j["technical"] = techs;
+    }
     if (note.lyric) j["lyric"] = *note.lyric;
     if (note.notation_head) j["notation_head"] = static_cast<int>(*note.notation_head);
     return j;
@@ -95,14 +160,46 @@ Note note_from_json(const json& j) {
         note.articulation = static_cast<ArticulationType>(j.at("articulation").get<int>());
     if (j.contains("dynamic"))
         note.dynamic = static_cast<DynamicLevel>(j.at("dynamic").get<int>());
+    if (j.contains("ornament"))
+        note.ornament = ornament_from_json(j.at("ornament"));
     note.tie_forward = j.value("tie_forward", false);
     if (j.contains("grace"))
         note.grace = static_cast<GraceType>(j.at("grace").get<int>());
+    if (j.contains("technical")) {
+        for (const auto& tj : j.at("technical")) {
+            note.technical.push_back(technical_from_json(tj));
+        }
+    }
     if (j.contains("lyric"))
         note.lyric = j.at("lyric").get<std::string>();
     if (j.contains("notation_head"))
         note.notation_head = static_cast<NoteHeadType>(j.at("notation_head").get<int>());
     return note;
+}
+
+// =============================================================================
+// TupletContext serialisation
+// =============================================================================
+
+json tuplet_context_to_json(const TupletContext& tc) {
+    json j;
+    j["id"] = tc.id.value;
+    j["actual"] = tc.actual;
+    j["normal"] = tc.normal;
+    j["normal_type"] = beat_to_json(tc.normal_type);
+    if (tc.nested_in) j["nested_in"] = tc.nested_in->value;
+    return j;
+}
+
+TupletContext tuplet_context_from_json(const json& j) {
+    TupletContext tc;
+    tc.id = TupletId{j.at("id").get<std::uint64_t>()};
+    tc.actual = j.at("actual").get<std::uint8_t>();
+    tc.normal = j.at("normal").get<std::uint8_t>();
+    tc.normal_type = beat_from_json(j.at("normal_type"));
+    if (j.contains("nested_in"))
+        tc.nested_in = TupletId{j.at("nested_in").get<std::uint64_t>()};
+    return tc;
 }
 
 // =============================================================================
@@ -122,6 +219,8 @@ json event_to_json(const Event& event) {
         }
         j["notes"] = notes;
         j["duration"] = beat_to_json(ng->duration);
+        if (ng->tuplet_context)
+            j["tuplet_context"] = tuplet_context_to_json(*ng->tuplet_context);
         if (ng->beam_group) j["beam_group"] = ng->beam_group->value;
         if (ng->slur_start) j["slur_start"] = true;
         if (ng->slur_end) j["slur_end"] = true;
@@ -160,6 +259,8 @@ Event event_from_json(const json& j) {
             ng.notes.push_back(note_from_json(nj));
         }
         ng.duration = beat_from_json(j.at("duration"));
+        if (j.contains("tuplet_context"))
+            ng.tuplet_context = tuplet_context_from_json(j.at("tuplet_context"));
         if (j.contains("beam_group"))
             ng.beam_group = BeamGroupId{j.at("beam_group").get<std::uint64_t>()};
         ng.slur_start = j.value("slur_start", false);
@@ -199,6 +300,27 @@ Event event_from_json(const json& j) {
 // Voice / Measure / Part serialisation
 // =============================================================================
 
+json beam_group_to_json(const BeamGroup& bg) {
+    json j;
+    j["id"] = bg.id.value;
+    json ids = json::array();
+    for (const auto& eid : bg.event_ids) ids.push_back(eid.value);
+    j["event_ids"] = ids;
+    if (!bg.beam_breaks.empty()) j["beam_breaks"] = bg.beam_breaks;
+    return j;
+}
+
+BeamGroup beam_group_from_json(const json& j) {
+    BeamGroup bg;
+    bg.id = BeamGroupId{j.at("id").get<std::uint64_t>()};
+    for (const auto& ej : j.at("event_ids")) {
+        bg.event_ids.push_back(EventId{ej.get<std::uint64_t>()});
+    }
+    if (j.contains("beam_breaks"))
+        bg.beam_breaks = j.at("beam_breaks").get<std::vector<std::uint8_t>>();
+    return bg;
+}
+
 json voice_to_json(const Voice& voice) {
     json j;
     j["voice_index"] = voice.voice_index;
@@ -207,6 +329,13 @@ json voice_to_json(const Voice& voice) {
         events.push_back(event_to_json(event));
     }
     j["events"] = events;
+    if (!voice.beam_groups.empty()) {
+        json bgs = json::array();
+        for (const auto& bg : voice.beam_groups) {
+            bgs.push_back(beam_group_to_json(bg));
+        }
+        j["beam_groups"] = bgs;
+    }
     return j;
 }
 
@@ -216,27 +345,12 @@ Voice voice_from_json(const json& j) {
     for (const auto& ej : j.at("events")) {
         voice.events.push_back(event_from_json(ej));
     }
+    if (j.contains("beam_groups")) {
+        for (const auto& bj : j.at("beam_groups")) {
+            voice.beam_groups.push_back(beam_group_from_json(bj));
+        }
+    }
     return voice;
-}
-
-json measure_to_json(const Measure& measure) {
-    json j;
-    j["bar_number"] = measure.bar_number;
-    json voices = json::array();
-    for (const auto& voice : measure.voices) {
-        voices.push_back(voice_to_json(voice));
-    }
-    j["voices"] = voices;
-    return j;
-}
-
-Measure measure_from_json(const json& j) {
-    Measure measure;
-    measure.bar_number = j.at("bar_number").get<std::uint32_t>();
-    for (const auto& vj : j.at("voices")) {
-        measure.voices.push_back(voice_from_json(vj));
-    }
-    return measure;
 }
 
 json key_signature_to_json(const KeySignature& ks) {
@@ -251,6 +365,29 @@ KeySignature key_signature_from_json(const json& j) {
     ks.root = spelled_pitch_from_json(j.at("root"));
     ks.accidentals = j.at("accidentals").get<std::int8_t>();
     return ks;
+}
+
+json measure_to_json(const Measure& measure) {
+    json j;
+    j["bar_number"] = measure.bar_number;
+    json voices = json::array();
+    for (const auto& voice : measure.voices) {
+        voices.push_back(voice_to_json(voice));
+    }
+    j["voices"] = voices;
+    if (measure.local_key) j["local_key"] = key_signature_to_json(*measure.local_key);
+    return j;
+}
+
+Measure measure_from_json(const json& j) {
+    Measure measure;
+    measure.bar_number = j.at("bar_number").get<std::uint32_t>();
+    for (const auto& vj : j.at("voices")) {
+        measure.voices.push_back(voice_from_json(vj));
+    }
+    if (j.contains("local_key"))
+        measure.local_key = key_signature_from_json(j.at("local_key"));
+    return measure;
 }
 
 json part_definition_to_json(const PartDefinition& def) {
@@ -284,6 +421,51 @@ PartDefinition part_definition_from_json(const json& j) {
     return def;
 }
 
+// =============================================================================
+// Hairpin / PartDirective serialisation
+// =============================================================================
+
+json hairpin_to_json(const Hairpin& hp) {
+    json j;
+    j["start"] = score_time_to_json(hp.start);
+    j["end"] = score_time_to_json(hp.end);
+    j["type"] = static_cast<int>(hp.type);
+    if (hp.target) j["target"] = static_cast<int>(*hp.target);
+    return j;
+}
+
+Hairpin hairpin_from_json(const json& j) {
+    Hairpin hp;
+    hp.start = score_time_from_json(j.at("start"));
+    hp.end = score_time_from_json(j.at("end"));
+    hp.type = static_cast<HairpinType>(j.at("type").get<int>());
+    if (j.contains("target"))
+        hp.target = static_cast<DynamicLevel>(j.at("target").get<int>());
+    return hp;
+}
+
+json part_directive_to_json(const PartDirective& pd) {
+    json j;
+    j["start"] = score_time_to_json(pd.start);
+    j["end"] = score_time_to_json(pd.end);
+    j["directive"] = static_cast<int>(pd.directive);
+    if (pd.divisi_count > 0) j["divisi_count"] = pd.divisi_count;
+    return j;
+}
+
+PartDirective part_directive_from_json(const json& j) {
+    PartDirective pd;
+    pd.start = score_time_from_json(j.at("start"));
+    pd.end = score_time_from_json(j.at("end"));
+    pd.directive = static_cast<DirectiveType>(j.at("directive").get<int>());
+    pd.divisi_count = j.value("divisi_count", static_cast<std::uint8_t>(0));
+    return pd;
+}
+
+// =============================================================================
+// Part serialisation
+// =============================================================================
+
 json part_to_json(const Part& part) {
     json j;
     j["id"] = part.id.value;
@@ -293,6 +475,20 @@ json part_to_json(const Part& part) {
         measures.push_back(measure_to_json(m));
     }
     j["measures"] = measures;
+    if (!part.part_directives.empty()) {
+        json pds = json::array();
+        for (const auto& pd : part.part_directives) {
+            pds.push_back(part_directive_to_json(pd));
+        }
+        j["part_directives"] = pds;
+    }
+    if (!part.hairpins.empty()) {
+        json hps = json::array();
+        for (const auto& hp : part.hairpins) {
+            hps.push_back(hairpin_to_json(hp));
+        }
+        j["hairpins"] = hps;
+    }
     return j;
 }
 
@@ -303,7 +499,148 @@ Part part_from_json(const json& j) {
     for (const auto& mj : j.at("measures")) {
         part.measures.push_back(measure_from_json(mj));
     }
+    if (j.contains("part_directives")) {
+        for (const auto& pdj : j.at("part_directives")) {
+            part.part_directives.push_back(part_directive_from_json(pdj));
+        }
+    }
+    if (j.contains("hairpins")) {
+        for (const auto& hj : j.at("hairpins")) {
+            part.hairpins.push_back(hairpin_from_json(hj));
+        }
+    }
     return part;
+}
+
+// =============================================================================
+// Annotation layer serialisation
+// =============================================================================
+
+json harmonic_annotation_to_json(const HarmonicAnnotation& ha) {
+    json j;
+    j["position"] = score_time_to_json(ha.position);
+    j["duration"] = beat_to_json(ha.duration);
+    j["roman_numeral"] = ha.roman_numeral;
+    j["function"] = static_cast<int>(ha.function);
+    if (ha.secondary_function) j["secondary_function"] = *ha.secondary_function;
+    j["key_context"] = key_signature_to_json(ha.key_context);
+    if (ha.cadence) j["cadence"] = static_cast<int>(*ha.cadence);
+    j["confidence"] = ha.confidence;
+    if (!ha.non_chord_tones.empty()) {
+        json ncts = json::array();
+        for (const auto& nct : ha.non_chord_tones) {
+            json nj;
+            nj["event_id"] = nct.event_id.value;
+            nj["note_index"] = nct.note_index;
+            nj["type"] = static_cast<int>(nct.type);
+            ncts.push_back(nj);
+        }
+        j["non_chord_tones"] = ncts;
+    }
+    return j;
+}
+
+HarmonicAnnotation harmonic_annotation_from_json(const json& j) {
+    HarmonicAnnotation ha;
+    ha.position = score_time_from_json(j.at("position"));
+    ha.duration = beat_from_json(j.at("duration"));
+    ha.roman_numeral = j.at("roman_numeral").get<std::string>();
+    ha.function = static_cast<ScoreHarmonicFunction>(j.at("function").get<int>());
+    if (j.contains("secondary_function"))
+        ha.secondary_function = j.at("secondary_function").get<std::string>();
+    ha.key_context = key_signature_from_json(j.at("key_context"));
+    if (j.contains("cadence"))
+        ha.cadence = static_cast<CadenceType>(j.at("cadence").get<int>());
+    ha.confidence = j.value("confidence", 1.0f);
+    if (j.contains("non_chord_tones")) {
+        for (const auto& nj : j.at("non_chord_tones")) {
+            NonChordToneAnnotation nct;
+            nct.event_id = EventId{nj.at("event_id").get<std::uint64_t>()};
+            nct.note_index = nj.at("note_index").get<std::uint8_t>();
+            nct.type = static_cast<NonChordToneType>(nj.at("type").get<int>());
+            ha.non_chord_tones.push_back(nct);
+        }
+    }
+    return ha;
+}
+
+json orchestration_to_json(const OrchestrationAnnotation& oa) {
+    json j;
+    j["part_id"] = oa.part_id.value;
+    j["start"] = score_time_to_json(oa.start);
+    j["end"] = score_time_to_json(oa.end);
+    j["role"] = static_cast<int>(oa.role);
+    if (oa.texture) j["texture"] = static_cast<int>(*oa.texture);
+    if (oa.dynamic_balance) j["dynamic_balance"] = static_cast<int>(*oa.dynamic_balance);
+    if (oa.doubled_part) j["doubled_part"] = oa.doubled_part->value;
+    if (oa.pedal_pitch) j["pedal_pitch"] = spelled_pitch_to_json(*oa.pedal_pitch);
+    if (oa.dialogue_partner) j["dialogue_partner"] = oa.dialogue_partner->value;
+    return j;
+}
+
+OrchestrationAnnotation orchestration_from_json(const json& j) {
+    OrchestrationAnnotation oa;
+    oa.part_id = PartId{j.at("part_id").get<std::uint64_t>()};
+    oa.start = score_time_from_json(j.at("start"));
+    oa.end = score_time_from_json(j.at("end"));
+    oa.role = static_cast<TexturalRole>(j.at("role").get<int>());
+    if (j.contains("texture"))
+        oa.texture = static_cast<TextureType>(j.at("texture").get<int>());
+    if (j.contains("dynamic_balance"))
+        oa.dynamic_balance = static_cast<DynamicBalance>(j.at("dynamic_balance").get<int>());
+    if (j.contains("doubled_part"))
+        oa.doubled_part = PartId{j.at("doubled_part").get<std::uint64_t>()};
+    if (j.contains("pedal_pitch"))
+        oa.pedal_pitch = spelled_pitch_from_json(j.at("pedal_pitch"));
+    if (j.contains("dialogue_partner"))
+        oa.dialogue_partner = PartId{j.at("dialogue_partner").get<std::uint64_t>()};
+    return oa;
+}
+
+// =============================================================================
+// ScoreRegion serialisation
+// =============================================================================
+
+json score_region_to_json(const ScoreRegion& sr) {
+    json j;
+    j["start"] = score_time_to_json(sr.start);
+    j["end"] = score_time_to_json(sr.end);
+    if (!sr.parts.empty()) {
+        json pids = json::array();
+        for (const auto& pid : sr.parts) pids.push_back(pid.value);
+        j["parts"] = pids;
+    }
+    return j;
+}
+
+ScoreRegion score_region_from_json(const json& j) {
+    ScoreRegion sr;
+    sr.start = score_time_from_json(j.at("start"));
+    sr.end = score_time_from_json(j.at("end"));
+    if (j.contains("parts")) {
+        for (const auto& pj : j.at("parts")) {
+            sr.parts.push_back(PartId{pj.get<std::uint64_t>()});
+        }
+    }
+    return sr;
+}
+
+// =============================================================================
+// ToneRow serialisation
+// =============================================================================
+
+json tone_row_to_json(const ToneRow& tr) {
+    json arr = json::array();
+    for (const auto& pc : tr.elements) arr.push_back(pc);
+    return arr;
+}
+
+ToneRow tone_row_from_json(const json& arr) {
+    ToneRow tr;
+    for (std::size_t i = 0; i < 12 && i < arr.size(); ++i) {
+        tr.elements[i] = arr[i].get<PitchClass>();
+    }
+    return tr;
 }
 
 // =============================================================================
@@ -428,6 +765,20 @@ ScoreSection section_from_json(const json& j) {
     return section;
 }
 
+json rehearsal_mark_to_json(const RehearsalMark& rm) {
+    json j;
+    j["position"] = score_time_to_json(rm.position);
+    j["label"] = rm.label;
+    return j;
+}
+
+RehearsalMark rehearsal_mark_from_json(const json& j) {
+    RehearsalMark rm;
+    rm.position = score_time_from_json(j.at("position"));
+    rm.label = j.at("label").get<std::string>();
+    return rm;
+}
+
 }  // anonymous namespace
 
 // =============================================================================
@@ -439,6 +790,7 @@ nlohmann::json score_to_json(const Score& score) {
     j["schema_version"] = SCORE_IR_SCHEMA_VERSION;
     j["id"] = score.id.value;
     j["version"] = score.version;
+    j["state"] = static_cast<int>(score.state);
 
     // Metadata
     json meta;
@@ -465,6 +817,15 @@ nlohmann::json score_to_json(const Score& score) {
     }
     j["section_map"] = sections;
 
+    // Rehearsal marks
+    if (!score.rehearsal_marks.empty()) {
+        json rms = json::array();
+        for (const auto& rm : score.rehearsal_marks) {
+            rms.push_back(rehearsal_mark_to_json(rm));
+        }
+        j["rehearsal_marks"] = rms;
+    }
+
     // Parts
     json parts = json::array();
     for (const auto& part : score.parts) {
@@ -472,19 +833,59 @@ nlohmann::json score_to_json(const Score& score) {
     }
     j["parts"] = parts;
 
+    // Harmonic annotations
+    if (!score.harmonic_annotations.empty()) {
+        json has = json::array();
+        for (const auto& ha : score.harmonic_annotations) {
+            has.push_back(harmonic_annotation_to_json(ha));
+        }
+        j["harmonic_annotations"] = has;
+    }
+
+    // Orchestration annotations
+    if (!score.orchestration_annotations.empty()) {
+        json oas = json::array();
+        for (const auto& oa : score.orchestration_annotations) {
+            oas.push_back(orchestration_to_json(oa));
+        }
+        j["orchestration_annotations"] = oas;
+    }
+
+    // Tone row
+    if (score.tone_row) {
+        j["tone_row"] = tone_row_to_json(*score.tone_row);
+    }
+
+    // Stale regions
+    if (!score.stale_harmonic_regions.empty()) {
+        json srs = json::array();
+        for (const auto& sr : score.stale_harmonic_regions) {
+            srs.push_back(score_region_to_json(sr));
+        }
+        j["stale_harmonic_regions"] = srs;
+    }
+    if (!score.stale_orchestration_regions.empty()) {
+        json srs = json::array();
+        for (const auto& sr : score.stale_orchestration_regions) {
+            srs.push_back(score_region_to_json(sr));
+        }
+        j["stale_orchestration_regions"] = srs;
+    }
+
     return j;
 }
 
 Result<Score> score_from_json(const nlohmann::json& j) {
     // Schema version check
     int version = j.value("schema_version", 0);
-    if (version != SCORE_IR_SCHEMA_VERSION) {
+    if (version < 1 || version > SCORE_IR_SCHEMA_VERSION) {
         return std::unexpected(ErrorCode::FormatError);
     }
 
     Score score;
     score.id = ScoreId{j.at("id").get<std::uint64_t>()};
     score.version = j.value("version", static_cast<std::uint64_t>(1));
+    score.state = static_cast<DocumentState>(j.value("state", 0));
 
     // Metadata
     const auto& meta = j.at("metadata");
@@ -515,9 +916,55 @@ Result<Score> score_from_json(const nlohmann::json& j) {
         }
     }
 
+    // Rehearsal marks
+    if (j.contains("rehearsal_marks")) {
+        for (const auto& rj : j.at("rehearsal_marks")) {
+            score.rehearsal_marks.push_back(rehearsal_mark_from_json(rj));
+        }
+    }
+
     // Parts
     for (const auto& pj : j.at("parts")) {
         score.parts.push_back(part_from_json(pj));
+    }
+
+    // Harmonic annotations
+    if (j.contains("harmonic_annotations")) {
+        for (const auto& hj : j.at("harmonic_annotations")) {
+            score.harmonic_annotations.push_back(harmonic_annotation_from_json(hj));
+        }
+    }
+
+    // Orchestration annotations
+    if (j.contains("orchestration_annotations")) {
+        for (const auto& oj : j.at("orchestration_annotations")) {
+            score.orchestration_annotations.push_back(orchestration_from_json(oj));
+        }
+    }
+
+    // Tone row
+    if (j.contains("tone_row")) {
+        score.tone_row = tone_row_from_json(j.at("tone_row"));
+    }
+
+    // Stale regions
+    if (j.contains("stale_harmonic_regions")) {
+        for (const auto& sj : j.at("stale_harmonic_regions")) {
+            score.stale_harmonic_regions.push_back(score_region_from_json(sj));
+        }
+    }
+    if (j.contains("stale_orchestration_regions")) {
+        for (const auto& sj : j.at("stale_orchestration_regions")) {
+            score.stale_orchestration_regions.push_back(score_region_from_json(sj));
+        }
+    }
+
+    // Re-validation on load (§13.3)
+    auto structural_diags = validate_structural(score);
+    for (const auto& diag : structural_diags) {
+        if (diag.severity == ValidationSeverity::Error) {
+            return std::unexpected(ErrorCode::FormatError);
+        }
     }
 
     return score;

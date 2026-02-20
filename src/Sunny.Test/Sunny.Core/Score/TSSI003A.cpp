@@ -166,16 +166,16 @@ TEST_CASE("SIVD001A: S6 — missing key sig at bar 1", "[score-ir][validation]")
     CHECK(found_s6);
 }
 
-TEST_CASE("SIVD001A: S11 — empty voices", "[score-ir][validation]") {
+TEST_CASE("SIVD001A: S0b — empty voices", "[score-ir][validation]") {
     auto score = make_valid_score(1);
     score.parts[0].measures[0].voices.clear();
 
     auto diags = validate_structural(score);
-    bool found_s11 = false;
+    bool found_s0b = false;
     for (const auto& d : diags) {
-        if (d.rule == "S11") { found_s11 = true; break; }
+        if (d.rule == "S0b") { found_s0b = true; break; }
     }
-    CHECK(found_s11);
+    CHECK(found_s0b);
 }
 
 // =============================================================================
@@ -375,7 +375,7 @@ TEST_CASE("SIMT001A: remove_part", "[score-ir][mutation]") {
     violin_def.name = "Violin I";
     violin_def.abbreviation = "Vln. I";
     violin_def.instrument_type = InstrumentType::Violin;
-    add_part(score, violin_def, 1);
+    (void)add_part(score, violin_def, 1);
 
     CHECK(score.parts.size() == 2);
     PartId to_remove = score.parts[1].id;

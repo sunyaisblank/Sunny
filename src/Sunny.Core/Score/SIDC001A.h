@@ -27,6 +27,7 @@
 #include "SITP001A.h"
 #include "../Tensor/TNEV001A.h"
 #include "../Harmony/HRCD001A.h"
+#include "../PostTonal/SRTW001A.h"
 
 #include <map>
 #include <optional>
@@ -163,6 +164,136 @@ enum class InstrumentType : std::uint8_t {
             return InstrumentFamily::Electronic;
     }
     return InstrumentFamily::Electronic;
+}
+
+// =============================================================================
+// Instrument Subfamily (SS-IR §2.2)
+// =============================================================================
+
+/**
+ * @brief Finer classification within InstrumentFamily
+ *
+ * Provides subcategories for orchestrational analysis (e.g., distinguishing
+ * double reeds from single reeds within woodwinds, or high brass from low).
+ */
+enum class InstrumentSubfamily : std::uint8_t {
+    BowedStrings,
+    PluckedStrings,
+    DoubleReed,
+    SingleReed,
+    Flute,
+    Saxophone,
+    HighBrass,
+    LowBrass,
+    PitchedPercussion,
+    UnpitchedPercussion,
+    Keyboard,
+    HighVoice,
+    LowVoice,
+    Electronic,
+    Custom
+};
+
+/**
+ * @brief Map specific instrument to its subfamily
+ */
+[[nodiscard]] constexpr InstrumentSubfamily instrument_subfamily(
+    InstrumentType t
+) noexcept {
+    switch (t) {
+        case InstrumentType::Violin:
+        case InstrumentType::Viola:
+        case InstrumentType::Cello:
+        case InstrumentType::DoubleBass:
+            return InstrumentSubfamily::BowedStrings;
+
+        case InstrumentType::Harp:
+        case InstrumentType::Guitar:
+        case InstrumentType::Lute:
+        case InstrumentType::Banjo:
+        case InstrumentType::Mandolin:
+            return InstrumentSubfamily::PluckedStrings;
+
+        case InstrumentType::Oboe:
+        case InstrumentType::EnglishHorn:
+        case InstrumentType::BassOboe:
+        case InstrumentType::Bassoon:
+        case InstrumentType::Contrabassoon:
+            return InstrumentSubfamily::DoubleReed;
+
+        case InstrumentType::Clarinet:
+        case InstrumentType::BassClarinet:
+        case InstrumentType::EbClarinet:
+            return InstrumentSubfamily::SingleReed;
+
+        case InstrumentType::Flute:
+        case InstrumentType::Piccolo:
+        case InstrumentType::AltoFlute:
+        case InstrumentType::BassFlute:
+            return InstrumentSubfamily::Flute;
+
+        case InstrumentType::SopranoSax:
+        case InstrumentType::AltoSax:
+        case InstrumentType::TenorSax:
+        case InstrumentType::BaritoneSax:
+            return InstrumentSubfamily::Saxophone;
+
+        case InstrumentType::FrenchHorn:
+        case InstrumentType::Trumpet:
+        case InstrumentType::Cornet:
+            return InstrumentSubfamily::HighBrass;
+
+        case InstrumentType::Trombone:
+        case InstrumentType::BassTrombone:
+        case InstrumentType::Tuba:
+        case InstrumentType::Euphonium:
+            return InstrumentSubfamily::LowBrass;
+
+        case InstrumentType::Timpani:
+        case InstrumentType::Xylophone:
+        case InstrumentType::Marimba:
+        case InstrumentType::Vibraphone:
+        case InstrumentType::Glockenspiel:
+        case InstrumentType::TubularBells:
+        case InstrumentType::Celesta:
+            return InstrumentSubfamily::PitchedPercussion;
+
+        case InstrumentType::SnareDrum:
+        case InstrumentType::BassDrum:
+        case InstrumentType::Cymbals:
+        case InstrumentType::TrianglePerc:
+        case InstrumentType::Tambourine:
+        case InstrumentType::TamTam:
+        case InstrumentType::Castanets:
+        case InstrumentType::WoodBlock:
+            return InstrumentSubfamily::UnpitchedPercussion;
+
+        case InstrumentType::Piano:
+        case InstrumentType::Harpsichord:
+        case InstrumentType::Organ:
+        case InstrumentType::Accordion:
+            return InstrumentSubfamily::Keyboard;
+
+        case InstrumentType::SopranoVoice:
+        case InstrumentType::MezzoSoprano:
+        case InstrumentType::AltoVoice:
+            return InstrumentSubfamily::HighVoice;
+
+        case InstrumentType::TenorVoice:
+        case InstrumentType::BaritoneVoice:
+        case InstrumentType::BassVoice:
+            return InstrumentSubfamily::LowVoice;
+
+        case InstrumentType::Synthesiser:
+        case InstrumentType::Sampler:
+        case InstrumentType::DrumMachine:
+        case InstrumentType::Effect:
+            return InstrumentSubfamily::Electronic;
+
+        case InstrumentType::Custom:
+            return InstrumentSubfamily::Custom;
+    }
+    return InstrumentSubfamily::Custom;
 }
 
 // =============================================================================
@@ -531,6 +662,9 @@ struct OrchestrationAnnotation {
     TexturalRole role;
     std::optional<TextureType> texture;
     std::optional<DynamicBalance> dynamic_balance;
+    std::optional<PartId> doubled_part;            ///< For Doubling role
+    std::optional<SpelledPitch> pedal_pitch;       ///< For PedalTone role
+    std::optional<PartId> dialogue_partner;        ///< For Dialogue role
 };
 
 /// Orchestration layer: ordered by start position
@@ -573,6 +707,36 @@ struct ScoreMetadata {
 };
 
 // =============================================================================
+// Score Region (SS-IR §11.5)
+// =============================================================================
+
+/**
+ * @brief A rectangular region of the score defined by time range and parts
+ *
+ * Used for region-level mutations and stale-region tracking.
+ * Empty parts vector means all parts.
+ */
+struct ScoreRegion {
+    ScoreTime start;
+    ScoreTime end;
+    std::vector<PartId> parts;  ///< Empty = all parts
+};
+
+// =============================================================================
+// Voice Leading Style (SS-IR §11.6)
+// =============================================================================
+
+/**
+ * @brief Voice leading algorithm to apply when rewriting a region
+ */
+enum class VoiceLeadingStyle : std::uint8_t {
+    NearestTone,
+    SmoothBach,
+    ParallelMotion,
+    ContraryMotion
+};
+
+// =============================================================================
 // Score — top-level document (SS-IR §2.1)
 // =============================================================================
 
@@ -599,6 +763,10 @@ struct Score {
     std::vector<Part> parts;
     HarmonicAnnotationLayer harmonic_annotations;
     OrchestrationLayer orchestration_annotations;
+    std::optional<ToneRow> tone_row;     ///< For serial works (§11)
+    std::vector<ScoreRegion> stale_harmonic_regions;      ///< Invalidated by mutations (§14.1)
+    std::vector<ScoreRegion> stale_orchestration_regions;  ///< Invalidated by mutations (§14.1)
+    DocumentState state = DocumentState::Draft;            ///< Document lifecycle (§2.1)
     std::uint64_t version = 1;           ///< Monotonically increasing edit counter
 };
 

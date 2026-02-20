@@ -6,7 +6,9 @@
  * Domain: TS (Test) | Category: SI (Score IR)
  *
  * Tests: SISZ001A
- * Coverage: score_to_json, score_from_json, round-trip, schema version
+ * Coverage: score_to_json, score_from_json, round-trip, schema version,
+ *           stale regions, document state, orchestration extended fields,
+ *           backward compatibility (v1 → v2)
  */
 
 #include <catch2/catch_test_macros.hpp>
@@ -210,4 +212,106 @@ TEST_CASE("SISZ001A: part definition round-trip", "[score-ir][serialisation]") {
     CHECK(part.definition.name == "Piano");
     CHECK(part.definition.abbreviation == "Pno.");
     CHECK(part.definition.instrument_type == InstrumentType::Piano);
+}
+
+// =============================================================================
+// SISZ001A: Stale regions round-trip
+// =============================================================================
+
+TEST_CASE("SISZ001A: stale regions survive round-trip",
+          "[score-ir][serialisation]") {
+    auto original = make_serialisation_score();
+
+    ScoreRegion sr;
+    sr.start = SCORE_START;
+    sr.end = ScoreTime{2, Beat::zero()};
+    original.stale_harmonic_regions.push_back(sr);
+
+    ScoreRegion sr2;
+    sr2.start = ScoreTime{2, Beat::zero()};
+    sr2.end = ScoreTime{3, Beat::zero()};
+    original.stale_orchestration_regions.push_back(sr2);
+
+    auto json = score_to_json(original);
+    auto restored = score_from_json(json);
+    REQUIRE(restored.has_value());
+    CHECK(restored->stale_harmonic_regions.size() == 1);
+    CHECK(restored->stale_harmonic_regions[0].start == SCORE_START);
+    CHECK(restored->stale_orchestration_regions.size() == 1);
+    CHECK(restored->stale_orchestration_regions[0].start == ScoreTime{2, Beat::zero()});
+}
+
+// =============================================================================
+// SISZ001A: DocumentState round-trip
+// =============================================================================
+
+TEST_CASE("SISZ001A: document state survives round-trip",
+          "[score-ir][serialisation]") {
+    auto original = make_serialisation_score();
+    original.state = DocumentState::Valid;
+
+    auto json = score_to_json(original);
+    auto restored = score_from_json(json);
+    REQUIRE(restored.has_value());
+    CHECK(restored->state == DocumentState::Valid);
+}
+
+// =============================================================================
+// SISZ001A: OrchestrationAnnotation extended fields round-trip
+// =============================================================================
+
+TEST_CASE("SISZ001A: orchestration extended fields survive round-trip",
+          "[score-ir][serialisation]") {
+    auto original = make_serialisation_score();
+
+    OrchestrationAnnotation oa;
+    oa.part_id = PartId{100};
+    oa.start = SCORE_START;
+    oa.end = ScoreTime{3, Beat::zero()};
+    oa.role = TexturalRole::Melody;
+    oa.texture = TextureType::Polyphonic;
+    oa.dynamic_balance = DynamicBalance::Foreground;
+    oa.doubled_part = PartId{200};
+    oa.pedal_pitch = SpelledPitch{0, 0, 3};  // C3
+    oa.dialogue_partner = PartId{300};
+    original.orchestration_annotations.push_back(oa);
+
+    auto json = score_to_json(original);
+    auto restored = score_from_json(json);
+    REQUIRE(restored.has_value());
+    REQUIRE(restored->orchestration_annotations.size() == 1);
+
+    const auto& r = restored->orchestration_annotations[0];
+    CHECK(r.part_id == PartId{100});
+    CHECK(r.role == TexturalRole::Melody);
+    REQUIRE(r.texture.has_value());
+    CHECK(*r.texture == TextureType::Polyphonic);
+    REQUIRE(r.dynamic_balance.has_value());
+    CHECK(*r.dynamic_balance == DynamicBalance::Foreground);
+    REQUIRE(r.doubled_part.has_value());
+    CHECK(r.doubled_part->value == 200);
+    REQUIRE(r.pedal_pitch.has_value());
+    CHECK(r.pedal_pitch->letter == 0);
+    CHECK(r.pedal_pitch->octave == 3);
+    REQUIRE(r.dialogue_partner.has_value());
+    CHECK(r.dialogue_partner->value == 300);
+}
+
+// =============================================================================
+// SISZ001A: Backward compatibility (v1 schema loads as v2)
+// =============================================================================
+
+TEST_CASE("SISZ001A: v1 schema document loads successfully",
+          "[score-ir][serialisation]") {
+    auto original = make_serialisation_score();
+    auto json = score_to_json(original);
+
+    // Downgrade schema version to 1 to simulate a v1 document
+    json["schema_version"] = 1;
+
+    auto restored = score_from_json(json);
+    REQUIRE(restored.has_value());
+    CHECK(restored->metadata.title == "Serialisation Test");
+    // v1 document will have default values for fields added in v2
+    CHECK(restored->state == DocumentState::Draft);
 }
