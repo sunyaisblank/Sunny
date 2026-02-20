@@ -80,4 +80,19 @@ struct CompiledMidi {
     int ppq = 480
 );
 
+/**
+ * @brief Flatten a Score to a sequence of NoteEvents
+ *
+ * Walks all parts, measures, voices, and events; converts each NoteGroup
+ * note to a NoteEvent with absolute beat timing via score_time_to_absolute_beat
+ * and pitch via midi_value. Grace notes are omitted; tied notes are not merged
+ * (consumers handle ties). Rest-only bars produce zero NoteEvents.
+ *
+ * @param score Source score
+ * @return Sorted vector of NoteEvents, or error if temporal conversion fails
+ */
+[[nodiscard]] Result<std::vector<NoteEvent>> compile_to_note_events(
+    const Score& score
+);
+
 }  // namespace Sunny::Core

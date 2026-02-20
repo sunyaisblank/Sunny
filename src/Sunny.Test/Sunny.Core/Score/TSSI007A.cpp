@@ -763,3 +763,140 @@ TEST_CASE("SIMT001A: apply_voice_leading SmoothBach locks bass",
     }
     CHECK(lowest_midi % 12 == 7);  // G
 }
+
+// =============================================================================
+// Undo Grouping (SS-IR §11.7)
+// =============================================================================
+
+TEST_CASE("SIMT001A: group of 3 mutations undoes as one",
+          "[score-ir][undo][group]") {
+    auto score = make_valid_score(1);
+    UndoStack stack;
+
+    auto& voice = score.parts[0].measures[0].voices[0];
+    NoteGroup ng;
+    ng.notes.push_back(Note{SpelledPitch{0, 0, 4}, VelocityValue{{}, 80}});
+    ng.notes.push_back(Note{SpelledPitch{2, 0, 4}, VelocityValue{{}, 80}});
+    ng.notes.push_back(Note{SpelledPitch{4, 0, 4}, VelocityValue{{}, 80}});
+    ng.duration = Beat{1, 1};
+    voice.events[0].payload = ng;
+    EventId target = voice.events[0].id;
+
+    SpelledPitch p0{0, 0, 4}, p1{2, 0, 4}, p2{4, 0, 4};
+    SpelledPitch q0{1, 0, 4}, q1{3, 0, 4}, q2{5, 0, 4};
+
+    stack.begin_group("test group");
+    (void)modify_pitch(score, target, 0, q0, &stack);
+    (void)modify_pitch(score, target, 1, q1, &stack);
+    (void)modify_pitch(score, target, 2, q2, &stack);
+    stack.end_group();
+
+    CHECK(stack.undo_entries.size() == 1);
+
+    auto ur = undo(score, stack);
+    REQUIRE(ur.has_value());
+
+    auto* restored = voice.events[0].as_note_group();
+    REQUIRE(restored != nullptr);
+    CHECK(restored->notes[0].pitch == p0);
+    CHECK(restored->notes[1].pitch == p1);
+    CHECK(restored->notes[2].pitch == p2);
+}
+
+TEST_CASE("SIMT001A: group of 3 mutations redoes as one",
+          "[score-ir][undo][group]") {
+    auto score = make_valid_score(1);
+    UndoStack stack;
+
+    auto& voice = score.parts[0].measures[0].voices[0];
+    NoteGroup ng;
+    ng.notes.push_back(Note{SpelledPitch{0, 0, 4}, VelocityValue{{}, 80}});
+    ng.notes.push_back(Note{SpelledPitch{2, 0, 4}, VelocityValue{{}, 80}});
+    ng.notes.push_back(Note{SpelledPitch{4, 0, 4}, VelocityValue{{}, 80}});
+    ng.duration = Beat{1, 1};
+    voice.events[0].payload = ng;
+    EventId target = voice.events[0].id;
+
+    SpelledPitch q0{1, 0, 4}, q1{3, 0, 4}, q2{5, 0, 4};
+
+    stack.begin_group("test group");
+    (void)modify_pitch(score, target, 0, q0, &stack);
+    (void)modify_pitch(score, target, 1, q1, &stack);
+    (void)modify_pitch(score, target, 2, q2, &stack);
+    stack.end_group();
+
+    auto ur = undo(score, stack);
+    REQUIRE(ur.has_value());
+
+    auto rr = redo(score, stack);
+    REQUIRE(rr.has_value());
+
+    auto* restored = voice.events[0].as_note_group();
+    REQUIRE(restored != nullptr);
+    CHECK(restored->notes[0].pitch == q0);
+    CHECK(restored->notes[1].pitch == q1);
+    CHECK(restored->notes[2].pitch == q2);
+}
+
+TEST_CASE("SIMT001A: nested groups collapse into single undo entry",
+          "[score-ir][undo][group]") {
+    auto score = make_valid_score(1);
+    UndoStack stack;
+
+    auto& voice = score.parts[0].measures[0].voices[0];
+    NoteGroup ng;
+    ng.notes.push_back(Note{SpelledPitch{0, 0, 4}, VelocityValue{{}, 80}});
+    ng.duration = Beat{1, 1};
+    voice.events[0].payload = ng;
+    EventId target = voice.events[0].id;
+
+    stack.begin_group("outer");
+    (void)modify_pitch(score, target, 0, SpelledPitch{1, 0, 4}, &stack);
+    stack.begin_group("inner");
+    (void)modify_pitch(score, target, 0, SpelledPitch{2, 0, 4}, &stack);
+    stack.end_group();
+    stack.end_group();
+
+    CHECK(stack.undo_entries.size() == 1);
+
+    auto ur = undo(score, stack);
+    REQUIRE(ur.has_value());
+
+    auto* restored = voice.events[0].as_note_group();
+    REQUIRE(restored != nullptr);
+    CHECK(restored->notes[0].pitch == SpelledPitch{0, 0, 4});
+}
+
+TEST_CASE("SIMT001A: empty group is no-op",
+          "[score-ir][undo][group]") {
+    UndoStack stack;
+    auto before = stack.undo_entries.size();
+
+    stack.begin_group("empty");
+    stack.end_group();
+
+    CHECK(stack.undo_entries.size() == before);
+}
+
+TEST_CASE("SIMT001A: UndoGroup RAII produces single entry after scope exit",
+          "[score-ir][undo][group]") {
+    auto score = make_valid_score(1);
+    UndoStack stack;
+
+    auto& voice = score.parts[0].measures[0].voices[0];
+    NoteGroup ng;
+    ng.notes.push_back(Note{SpelledPitch{0, 0, 4}, VelocityValue{{}, 80}});
+    ng.notes.push_back(Note{SpelledPitch{2, 0, 4}, VelocityValue{{}, 80}});
+    ng.duration = Beat{1, 1};
+    voice.events[0].payload = ng;
+    EventId target = voice.events[0].id;
+
+    {
+        UndoGroup guard(stack, "RAII test");
+        (void)modify_pitch(score, target, 0, SpelledPitch{1, 0, 4}, &stack);
+        (void)modify_pitch(score, target, 1, SpelledPitch{3, 0, 4}, &stack);
+    }
+
+    CHECK(stack.undo_entries.size() == 1);
+    CHECK(stack.undo_entries[0].description == "RAII test");
+}

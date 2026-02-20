@@ -54,13 +54,17 @@ namespace Sunny::Core {
 /**
  * @brief Extract a single part as a standalone score
  *
- * Copies global maps, metadata, and the specified part.
+ * Copies global maps, metadata, and the specified part. When rest_threshold
+ * is non-zero, inserts cue notes from other parts after runs of consecutive
+ * all-rest bars meeting or exceeding the threshold.
  *
  * @param score Source score
  * @param part_id Part to extract
+ * @param rest_threshold Minimum consecutive rest bars before inserting a cue note (0 disables)
  * @return New score with one part, or empty score if part_id not found
  */
-[[nodiscard]] Score part_extract(const Score& score, PartId part_id);
+[[nodiscard]] Score part_extract(const Score& score, PartId part_id,
+                                 std::uint32_t rest_threshold = 4);
 
 /**
  * @brief Strip ornamentation, keep chord tones

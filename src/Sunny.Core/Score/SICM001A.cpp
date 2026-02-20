@@ -312,4 +312,52 @@ Result<CompiledMidi> compile_to_midi(const Score& score, int ppq) {
     return midi;
 }
 
+// =============================================================================
+// compile_to_note_events
+// =============================================================================
+
+Result<std::vector<NoteEvent>> compile_to_note_events(const Score& score) {
+    std::vector<NoteEvent> events;
+
+    for (const auto& part : score.parts) {
+        for (const auto& measure : part.measures) {
+            for (const auto& voice : measure.voices) {
+                for (const auto& event : voice.events) {
+                    const auto* ng = event.as_note_group();
+                    if (!ng) continue;
+
+                    ScoreTime position{measure.bar_number, event.offset};
+                    auto abs_beat = score_time_to_absolute_beat(position, score.time_map);
+                    if (!abs_beat) continue;
+
+                    for (const auto& note : ng->notes) {
+                        // Skip grace notes
+                        if (note.grace) continue;
+
+                        int mv = midi_value(note.pitch);
+                        if (mv < 0 || mv > 127) continue;
+
+                        NoteEvent ne;
+                        ne.pitch = static_cast<MidiNote>(mv);
+                        ne.start_time = *abs_beat;
+                        ne.duration = ng->duration;
+                        ne.velocity = note.velocity.value;
+                        ne.muted = false;
+
+                        events.push_back(ne);
+                    }
+                }
+            }
+        }
+    }
+
+    // Sort by start time
+    std::sort(events.begin(), events.end(),
+        [](const NoteEvent& a, const NoteEvent& b) {
+            return a.start_time < b.start_time;
+        });
+
+    return events;
+}
+
 }  // namespace Sunny::Core

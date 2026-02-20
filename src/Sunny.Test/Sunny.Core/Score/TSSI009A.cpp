@@ -331,3 +331,58 @@ TEST_CASE("compile_to_midi: key signature meta event", "[score][midi]") {
     CHECK(midi.key_signatures[0].accidentals == 0);
     CHECK(midi.key_signatures[0].minor == false);
 }
+
+// =============================================================================
+// compile_to_note_events (§9)
+// =============================================================================
+
+TEST_CASE("compile_to_note_events: 2-bar score with one note per bar produces 2 events",
+          "[score][note-events]") {
+    auto score = make_compilable_score(2);
+    place_whole_note(score, 0, 0, C4);
+    place_whole_note(score, 0, 1, E4);
+
+    auto result = compile_to_note_events(score);
+    REQUIRE(result.has_value());
+    CHECK(result->size() == 2);
+}
+
+TEST_CASE("compile_to_note_events: pitch equals midi_value of source SpelledPitch",
+          "[score][note-events]") {
+    auto score = make_compilable_score(1);
+    place_whole_note(score, 0, 0, C4);
+
+    auto result = compile_to_note_events(score);
+    REQUIRE(result.has_value());
+    REQUIRE(result->size() == 1);
+
+    CHECK((*result)[0].pitch == static_cast<MidiNote>(midi_value(C4)));
+    CHECK((*result)[0].pitch == 60);
+}
+
+TEST_CASE("compile_to_note_events: start times monotonically increase across bars",
+          "[score][note-events]") {
+    auto score = make_compilable_score(4);
+    place_whole_note(score, 0, 0, C4);
+    place_whole_note(score, 0, 1, C4);
+    place_whole_note(score, 0, 2, C4);
+    place_whole_note(score, 0, 3, C4);
+
+    auto result = compile_to_note_events(score);
+    REQUIRE(result.has_value());
+    REQUIRE(result->size() == 4);
+
+    for (std::size_t i = 1; i < result->size(); ++i) {
+        CHECK((*result)[i].start_time > (*result)[i - 1].start_time);
+    }
+}
+
+TEST_CASE("compile_to_note_events: rest-only bars produce zero events",
+          "[score][note-events]") {
+    auto score = make_compilable_score(4);
+    // All bars are rests by default
+
+    auto result = compile_to_note_events(score);
+    REQUIRE(result.has_value());
+    CHECK(result->empty());
+}

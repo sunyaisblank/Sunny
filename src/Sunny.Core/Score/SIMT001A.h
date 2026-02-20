@@ -69,12 +69,35 @@ struct UndoStack {
     std::vector<UndoEntry> undo_entries;
     std::vector<UndoEntry> redo_entries;
 
+    std::uint32_t group_depth = 0;
+    std::vector<UndoEntry> pending_group;
+    std::string group_description;
+
     [[nodiscard]] bool can_undo() const noexcept {
         return !undo_entries.empty();
     }
     [[nodiscard]] bool can_redo() const noexcept {
         return !redo_entries.empty();
     }
+
+    void begin_group(std::string description);
+    void end_group();
+};
+
+/**
+ * @brief RAII guard for undo grouping
+ *
+ * Calls begin_group on construction and end_group on destruction,
+ * ensuring the group closes even if an exception unwinds the stack.
+ */
+struct UndoGroup {
+    UndoStack& stack;
+    explicit UndoGroup(UndoStack& s, std::string desc) : stack(s) {
+        stack.begin_group(std::move(desc));
+    }
+    ~UndoGroup() { stack.end_group(); }
+    UndoGroup(const UndoGroup&) = delete;
+    UndoGroup& operator=(const UndoGroup&) = delete;
 };
 
 // =============================================================================

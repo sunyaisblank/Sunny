@@ -820,8 +820,549 @@ TEST_CASE("SIVW001A: short_score omits families with only rests",
 }
 
 // =============================================================================
+// SIVW001A: short_score inner-voice marking (§8.2.2)
+// =============================================================================
+
+TEST_CASE("SIVW001A: short_score 3-note chord marks middle as Cue",
+          "[score-ir][view][short-score]") {
+    auto score = make_valid_score(1);
+    score.parts.clear();
+
+    // Violin with 3-note chord spanning the treble register
+    PartDefinition violin_def;
+    violin_def.name = "Violin";
+    violin_def.abbreviation = "Vln.";
+    violin_def.instrument_type = InstrumentType::Violin;
+    (void)add_part(score, violin_def, 0);
+
+    auto& voice = score.parts[0].measures[0].voices[0];
+    voice.events.clear();
+    NoteGroup ng;
+    ng.notes.push_back(Note{SpelledPitch{0, 0, 5}, VelocityValue{{}, 80}});  // C5 (MIDI 72)
+    ng.notes.push_back(Note{SpelledPitch{2, 0, 5}, VelocityValue{{}, 80}});  // E5 (MIDI 76)
+    ng.notes.push_back(Note{SpelledPitch{4, 0, 5}, VelocityValue{{}, 80}});  // G5 (MIDI 79)
+    ng.duration = Beat{1, 1};
+    voice.events.push_back(Event{EventId{12001}, Beat::zero(), ng});
+
+    auto result = short_score(score);
+    REQUIRE(result.parts.size() == 1);
+
+    // Treble voice should have the 3 notes; middle one (E5) should be Cue
+    auto& treble = result.parts[0].measures[0].voices[0];
+    int cue_count = 0;
+    int normal_count = 0;
+    for (const auto& ev : treble.events) {
+        const auto* ng_ptr = ev.as_note_group();
+        if (!ng_ptr) continue;
+        for (const auto& note : ng_ptr->notes) {
+            if (note.notation_head == NoteHeadType::Cue) ++cue_count;
+            else ++normal_count;
+        }
+    }
+    CHECK(cue_count == 1);    // E5 is the inner voice
+    CHECK(normal_count == 2); // C5 (lowest) and G5 (highest)
+}
+
+TEST_CASE("SIVW001A: short_score inner note has NoteHeadType::Cue",
+          "[score-ir][view][short-score]") {
+    auto score = make_valid_score(1);
+    score.parts.clear();
+
+    PartDefinition violin_def;
+    violin_def.name = "Violin";
+    violin_def.abbreviation = "Vln.";
+    violin_def.instrument_type = InstrumentType::Violin;
+    (void)add_part(score, violin_def, 0);
+
+    auto& voice = score.parts[0].measures[0].voices[0];
+    voice.events.clear();
+    NoteGroup ng;
+    ng.notes.push_back(Note{SpelledPitch{0, 0, 5}, VelocityValue{{}, 80}});  // C5 (low)
+    ng.notes.push_back(Note{SpelledPitch{1, 0, 5}, VelocityValue{{}, 80}});  // D5 (inner)
+    ng.notes.push_back(Note{SpelledPitch{4, 0, 5}, VelocityValue{{}, 80}});  // G5 (high)
+    ng.duration = Beat{1, 1};
+    voice.events.push_back(Event{EventId{12010}, Beat::zero(), ng});
+
+    auto result = short_score(score);
+    auto& treble = result.parts[0].measures[0].voices[0];
+    for (const auto& ev : treble.events) {
+        const auto* ng_ptr = ev.as_note_group();
+        if (!ng_ptr) continue;
+        for (const auto& note : ng_ptr->notes) {
+            int mv = midi_value(note.pitch);
+            if (mv == midi_value(SpelledPitch{1, 0, 5})) {
+                CHECK(note.notation_head == NoteHeadType::Cue);
+            }
+        }
+    }
+}
+
+TEST_CASE("SIVW001A: short_score single note retains Normal notehead",
+          "[score-ir][view][short-score]") {
+    auto score = make_valid_score(1);
+    score.parts.clear();
+
+    PartDefinition violin_def;
+    violin_def.name = "Violin";
+    violin_def.abbreviation = "Vln.";
+    violin_def.instrument_type = InstrumentType::Violin;
+    (void)add_part(score, violin_def, 0);
+
+    auto& voice = score.parts[0].measures[0].voices[0];
+    voice.events.clear();
+    NoteGroup ng;
+    ng.notes.push_back(Note{SpelledPitch{0, 0, 5}, VelocityValue{{}, 80}});
+    ng.duration = Beat{1, 1};
+    voice.events.push_back(Event{EventId{12020}, Beat::zero(), ng});
+
+    auto result = short_score(score);
+    auto& treble = result.parts[0].measures[0].voices[0];
+    for (const auto& ev : treble.events) {
+        const auto* ng_ptr = ev.as_note_group();
+        if (!ng_ptr) continue;
+        for (const auto& note : ng_ptr->notes) {
+            CHECK(note.notation_head != NoteHeadType::Cue);
+        }
+    }
+}
+
+TEST_CASE("SIVW001A: short_score two notes at offset both Normal",
+          "[score-ir][view][short-score]") {
+    auto score = make_valid_score(1);
+    score.parts.clear();
+
+    PartDefinition violin_def;
+    violin_def.name = "Violin";
+    violin_def.abbreviation = "Vln.";
+    violin_def.instrument_type = InstrumentType::Violin;
+    (void)add_part(score, violin_def, 0);
+
+    auto& voice = score.parts[0].measures[0].voices[0];
+    voice.events.clear();
+    NoteGroup ng;
+    ng.notes.push_back(Note{SpelledPitch{0, 0, 5}, VelocityValue{{}, 80}});  // C5
+    ng.notes.push_back(Note{SpelledPitch{4, 0, 5}, VelocityValue{{}, 80}});  // G5
+    ng.duration = Beat{1, 1};
+    voice.events.push_back(Event{EventId{12030}, Beat::zero(), ng});
+
+    auto result = short_score(score);
+    auto& treble = result.parts[0].measures[0].voices[0];
+    for (const auto& ev : treble.events) {
+        const auto* ng_ptr = ev.as_note_group();
+        if (!ng_ptr) continue;
+        for (const auto& note : ng_ptr->notes) {
+            CHECK(note.notation_head != NoteHeadType::Cue);
+        }
+    }
+}
+
+// =============================================================================
+// SIVW001A: piano_reduction fidelity (§8.2.1)
+// =============================================================================
+
+TEST_CASE("SIVW001A: piano_reduction melody note preserved as top voice with orchestration",
+          "[score-ir][view][reduction]") {
+    auto score = make_two_part_score();
+
+    // Annotate violin as Melody role
+    OrchestrationAnnotation oa;
+    oa.part_id = score.parts[1].id;  // Violin
+    oa.start = SCORE_START;
+    oa.end = ScoreTime{5, Beat::zero()};
+    oa.role = TexturalRole::Melody;
+    score.orchestration_annotations.push_back(oa);
+
+    auto reduced = piano_reduction(score);
+    REQUIRE(reduced.parts.size() == 1);
+
+    // Bar 1 treble voice should contain the violin's E5 melody note
+    auto& treble = reduced.parts[0].measures[0].voices[0];
+    bool found_e5 = false;
+    for (const auto& ev : treble.events) {
+        const auto* ng = ev.as_note_group();
+        if (!ng) continue;
+        for (const auto& note : ng->notes) {
+            // E5 = letter 2, octave 5 (MIDI 76)
+            if (note.pitch.letter == 2 && note.pitch.octave == 5)
+                found_e5 = true;
+        }
+    }
+    CHECK(found_e5);
+}
+
+TEST_CASE("SIVW001A: piano_reduction removes octave doublings",
+          "[score-ir][view][reduction]") {
+    auto score = make_valid_score(1);
+
+    // Add a second part with an octave doubling
+    PartDefinition violin_def;
+    violin_def.name = "Violin";
+    violin_def.abbreviation = "Vln.";
+    violin_def.instrument_type = InstrumentType::Violin;
+    (void)add_part(score, violin_def, 1);
+
+    // Piano: C4 (MIDI 60)
+    auto& piano_voice = score.parts[0].measures[0].voices[0];
+    NoteGroup ng1;
+    ng1.notes.push_back(Note{SpelledPitch{0, 0, 4}, VelocityValue{{}, 80}});
+    ng1.duration = Beat{1, 1};
+    piano_voice.events[0].payload = ng1;
+
+    // Violin: C5 (MIDI 72) — same pitch class, different octave
+    auto& vln_voice = score.parts[1].measures[0].voices[0];
+    NoteGroup ng2;
+    ng2.notes.push_back(Note{SpelledPitch{0, 0, 5}, VelocityValue{{}, 80}});
+    ng2.duration = Beat{1, 1};
+    vln_voice.events[0].payload = ng2;
+
+    // Add orchestration annotations to trigger post-processing
+    OrchestrationAnnotation oa;
+    oa.part_id = score.parts[1].id;
+    oa.start = SCORE_START;
+    oa.end = ScoreTime{2, Beat::zero()};
+    oa.role = TexturalRole::Melody;
+    score.orchestration_annotations.push_back(oa);
+
+    auto reduced = piano_reduction(score);
+
+    // Treble voice: C4 and C5 are same PC. After dedup, only one should remain.
+    auto& treble = reduced.parts[0].measures[0].voices[0];
+    int c_count = 0;
+    for (const auto& ev : treble.events) {
+        const auto* ng = ev.as_note_group();
+        if (!ng) continue;
+        for (const auto& note : ng->notes) {
+            if (midi_value(note.pitch) % 12 == 0) ++c_count;
+        }
+    }
+    CHECK(c_count == 1);
+}
+
+TEST_CASE("SIVW001A: piano_reduction limits to 4 voices per staff",
+          "[score-ir][view][reduction]") {
+    auto score = make_valid_score(1);
+
+    // Create 6 notes above MIDI 60 from multiple parts
+    auto& piano_voice = score.parts[0].measures[0].voices[0];
+    piano_voice.events.clear();
+    NoteGroup ng;
+    ng.notes.push_back(Note{SpelledPitch{0, 0, 5}, VelocityValue{{}, 80}});  // C5
+    ng.notes.push_back(Note{SpelledPitch{1, 0, 5}, VelocityValue{{}, 80}});  // D5
+    ng.notes.push_back(Note{SpelledPitch{2, 0, 5}, VelocityValue{{}, 80}});  // E5
+    ng.notes.push_back(Note{SpelledPitch{3, 0, 5}, VelocityValue{{}, 80}});  // F5
+    ng.notes.push_back(Note{SpelledPitch{4, 0, 5}, VelocityValue{{}, 80}});  // G5
+    ng.notes.push_back(Note{SpelledPitch{5, 0, 5}, VelocityValue{{}, 80}});  // A5
+    ng.duration = Beat{1, 1};
+    piano_voice.events.push_back(Event{EventId{11001}, Beat::zero(), ng});
+
+    // Add orchestration to trigger post-processing
+    OrchestrationAnnotation oa;
+    oa.part_id = PartId{100};
+    oa.start = SCORE_START;
+    oa.end = ScoreTime{2, Beat::zero()};
+    oa.role = TexturalRole::HarmonicFill;
+    score.orchestration_annotations.push_back(oa);
+
+    auto reduced = piano_reduction(score);
+
+    // Count notes in treble voice at offset 0
+    auto& treble = reduced.parts[0].measures[0].voices[0];
+    int note_count = 0;
+    for (const auto& ev : treble.events) {
+        const auto* ng_ptr = ev.as_note_group();
+        if (ng_ptr) note_count += static_cast<int>(ng_ptr->notes.size());
+    }
+    CHECK(note_count <= 4);
+}
+
+TEST_CASE("SIVW001A: piano_reduction bass line preserved as bottom voice",
+          "[score-ir][view][reduction]") {
+    auto score = make_two_part_score();
+
+    // Annotate piano as BassLine role
+    OrchestrationAnnotation oa;
+    oa.part_id = PartId{100};  // Piano — has C4 (MIDI 60)
+    oa.start = SCORE_START;
+    oa.end = ScoreTime{5, Beat::zero()};
+    oa.role = TexturalRole::BassLine;
+    score.orchestration_annotations.push_back(oa);
+
+    // Add a low note to piano for the bass staff
+    auto& piano_voice = score.parts[0].measures[0].voices[0];
+    NoteGroup ng;
+    ng.notes.push_back(Note{SpelledPitch{0, 0, 3}, VelocityValue{{}, 80}});  // C3 (MIDI 48)
+    ng.duration = Beat{1, 1};
+    piano_voice.events[0].payload = ng;
+
+    auto reduced = piano_reduction(score);
+
+    // Bass voice should contain C3
+    auto& bass = reduced.parts[0].measures[0].voices[1];
+    bool found_c3 = false;
+    for (const auto& ev : bass.events) {
+        const auto* ng_ptr = ev.as_note_group();
+        if (!ng_ptr) continue;
+        for (const auto& note : ng_ptr->notes) {
+            if (note.pitch.letter == 0 && note.pitch.octave == 3) found_c3 = true;
+        }
+    }
+    CHECK(found_c3);
+}
+
+TEST_CASE("SIVW001A: piano_reduction fallback without orchestration retains all notes",
+          "[score-ir][view][reduction]") {
+    auto score = make_two_part_score();
+
+    // No orchestration annotations — should behave as before (no filtering)
+    auto reduced = piano_reduction(score);
+    REQUIRE(reduced.parts.size() == 1);
+
+    // Both C4 (Piano) and E5 (Violin) should appear
+    bool found_c4 = false;
+    bool found_e5 = false;
+    for (const auto& m : reduced.parts[0].measures) {
+        for (const auto& v : m.voices) {
+            for (const auto& ev : v.events) {
+                const auto* ng = ev.as_note_group();
+                if (!ng) continue;
+                for (const auto& note : ng->notes) {
+                    int mv = midi_value(note.pitch);
+                    if (mv == 60) found_c4 = true;
+                    if (note.pitch.letter == 2 && note.pitch.octave == 5) found_e5 = true;
+                }
+            }
+        }
+    }
+    CHECK(found_c4);
+    CHECK(found_e5);
+}
+
+// =============================================================================
 // SIQR001A: Extended Queries (§12.1, continued)
 // =============================================================================
+
+// =============================================================================
+// SIVW001A: part_extract cue notes (§8.2.3)
+// =============================================================================
+
+namespace {
+
+/// Build a two-part score where the second part has long rest runs.
+/// Part 0 (Flute) has notes in every bar; Part 1 (Clarinet) has rests.
+Score make_cue_note_test_score(std::uint32_t total_bars = 8) {
+    Score score;
+    score.id = ScoreId{50};
+    score.metadata.title = "Cue Test";
+    score.metadata.total_bars = total_bars;
+
+    TempoEvent tempo;
+    tempo.position = SCORE_START;
+    tempo.bpm = make_bpm(120);
+    tempo.beat_unit = BeatUnit::Quarter;
+    tempo.transition_type = TempoTransitionType::Immediate;
+    tempo.linear_duration = Beat::zero();
+    tempo.old_unit = BeatUnit::Quarter;
+    tempo.new_unit = BeatUnit::Quarter;
+    score.tempo_map.push_back(tempo);
+
+    KeySignatureEntry key_entry;
+    key_entry.position = SCORE_START;
+    key_entry.key.root = SpelledPitch{0, 0, 4};
+    key_entry.key.accidentals = 0;
+    score.key_map.push_back(key_entry);
+
+    auto ts = make_time_signature(4, 4);
+    TimeSignatureEntry time_entry;
+    time_entry.bar = 1;
+    time_entry.time_signature = *ts;
+    score.time_map.push_back(time_entry);
+
+    // Part 0: Flute with E5 in every bar
+    Part flute;
+    flute.id = PartId{200};
+    flute.definition.name = "Flute";
+    flute.definition.abbreviation = "Fl.";
+    flute.definition.instrument_type = InstrumentType::Flute;
+    for (std::uint32_t bar = 1; bar <= total_bars; ++bar) {
+        NoteGroup ng;
+        ng.notes.push_back(Note{SpelledPitch{2, 0, 5}, VelocityValue{{}, 80}});  // E5
+        ng.duration = Beat{1, 1};
+        Event ev{EventId{bar * 100}, Beat::zero(), ng};
+        Voice voice{0, {ev}, {}};
+        Measure measure{bar, {voice}, std::nullopt, std::nullopt};
+        flute.measures.push_back(measure);
+    }
+    score.parts.push_back(flute);
+
+    // Part 1: Clarinet with all rests
+    Part clarinet;
+    clarinet.id = PartId{201};
+    clarinet.definition.name = "Clarinet";
+    clarinet.definition.abbreviation = "Cl.";
+    clarinet.definition.instrument_type = InstrumentType::Clarinet;
+    for (std::uint32_t bar = 1; bar <= total_bars; ++bar) {
+        RestEvent rest{ts->measure_duration(), true};
+        Event ev{EventId{bar * 100 + 50}, Beat::zero(), rest};
+        Voice voice{0, {ev}, {}};
+        Measure measure{bar, {voice}, std::nullopt, std::nullopt};
+        clarinet.measures.push_back(measure);
+    }
+    score.parts.push_back(clarinet);
+
+    return score;
+}
+
+}  // anonymous namespace
+
+TEST_CASE("SIVW001A: part_extract inserts cue note after 4-bar rest (default threshold)",
+          "[score-ir][view][cue]") {
+    auto score = make_cue_note_test_score(8);
+
+    // Clarinet has 8 bars of rest; flute has notes in every bar.
+    // With threshold 4, a cue note should appear in the last rest bar
+    // before the run breaks (here, entire score is rests so cue goes in bar 8).
+    auto extracted = part_extract(score, PartId{201});
+
+    REQUIRE(extracted.parts.size() == 1);
+    auto& cl = extracted.parts[0];
+
+    // The last bar (bar 8) should have a cue note inserted
+    auto& last_voice = cl.measures[7].voices[0];
+    bool found_cue = false;
+    for (const auto& ev : last_voice.events) {
+        const auto* ng = ev.as_note_group();
+        if (ng && !ng->notes.empty() &&
+            ng->notes[0].notation_head == NoteHeadType::Cue) {
+            found_cue = true;
+        }
+    }
+    CHECK(found_cue);
+}
+
+TEST_CASE("SIVW001A: part_extract no cue note for 3-bar rest (below threshold)",
+          "[score-ir][view][cue]") {
+    auto score = make_cue_note_test_score(8);
+
+    // Put a note in clarinet bar 1, so bars 2-4 are only 3 rests before bar 5 note
+    auto& cl_voice_b1 = score.parts[1].measures[0].voices[0];
+    NoteGroup ng;
+    ng.notes.push_back(Note{SpelledPitch{0, 0, 4}, VelocityValue{{}, 80}});
+    ng.duration = Beat{1, 1};
+    cl_voice_b1.events[0].payload = ng;
+
+    // Also put a note in clarinet bar 5
+    auto& cl_voice_b5 = score.parts[1].measures[4].voices[0];
+    NoteGroup ng2;
+    ng2.notes.push_back(Note{SpelledPitch{1, 0, 4}, VelocityValue{{}, 80}});
+    ng2.duration = Beat{1, 1};
+    cl_voice_b5.events[0].payload = ng2;
+
+    auto extracted = part_extract(score, PartId{201});
+    auto& cl = extracted.parts[0];
+
+    // Bars 2-4 are 3 rests (below threshold of 4). No cue note expected there.
+    for (std::uint32_t bar = 2; bar <= 4; ++bar) {
+        auto& voice = cl.measures[bar - 1].voices[0];
+        for (const auto& ev : voice.events) {
+            const auto* ng_ptr = ev.as_note_group();
+            if (ng_ptr && !ng_ptr->notes.empty()) {
+                CHECK(ng_ptr->notes[0].notation_head != NoteHeadType::Cue);
+            }
+        }
+    }
+}
+
+TEST_CASE("SIVW001A: part_extract custom threshold of 2 triggers cue insertion",
+          "[score-ir][view][cue]") {
+    auto score = make_cue_note_test_score(8);
+
+    // Place a note in clarinet bar 1 and bar 4, leaving bars 2-3 as 2-bar rest run
+    auto& cl_b1 = score.parts[1].measures[0].voices[0];
+    NoteGroup ng1;
+    ng1.notes.push_back(Note{SpelledPitch{0, 0, 4}, VelocityValue{{}, 80}});
+    ng1.duration = Beat{1, 1};
+    cl_b1.events[0].payload = ng1;
+
+    auto& cl_b4 = score.parts[1].measures[3].voices[0];
+    NoteGroup ng2;
+    ng2.notes.push_back(Note{SpelledPitch{1, 0, 4}, VelocityValue{{}, 80}});
+    ng2.duration = Beat{1, 1};
+    cl_b4.events[0].payload = ng2;
+
+    // Threshold of 2: bars 2-3 form a 2-bar rest run, which meets the threshold
+    auto extracted = part_extract(score, PartId{201}, 2);
+    auto& cl = extracted.parts[0];
+
+    // Cue note should be in bar 3 (last rest bar before bar 4's note)
+    auto& cue_voice = cl.measures[2].voices[0];
+    bool found_cue = false;
+    for (const auto& ev : cue_voice.events) {
+        const auto* ng_ptr = ev.as_note_group();
+        if (ng_ptr && !ng_ptr->notes.empty() &&
+            ng_ptr->notes[0].notation_head == NoteHeadType::Cue) {
+            found_cue = true;
+        }
+    }
+    CHECK(found_cue);
+}
+
+TEST_CASE("SIVW001A: part_extract cue note has NoteHeadType::Cue",
+          "[score-ir][view][cue]") {
+    auto score = make_cue_note_test_score(8);
+
+    auto extracted = part_extract(score, PartId{201});
+    auto& cl = extracted.parts[0];
+
+    // Find any cue note and verify its notation_head
+    bool found = false;
+    for (const auto& m : cl.measures) {
+        for (const auto& v : m.voices) {
+            for (const auto& ev : v.events) {
+                const auto* ng = ev.as_note_group();
+                if (!ng) continue;
+                for (const auto& note : ng->notes) {
+                    if (note.notation_head == NoteHeadType::Cue) {
+                        found = true;
+                    }
+                }
+            }
+        }
+    }
+    CHECK(found);
+}
+
+TEST_CASE("SIVW001A: part_extract cue pitch matches melody part with orchestration",
+          "[score-ir][view][cue]") {
+    auto score = make_cue_note_test_score(8);
+
+    // Annotate flute as Melody role across the entire score
+    OrchestrationAnnotation oa;
+    oa.part_id = PartId{200};  // Flute
+    oa.start = SCORE_START;
+    oa.end = ScoreTime{9, Beat::zero()};
+    oa.role = TexturalRole::Melody;
+    score.orchestration_annotations.push_back(oa);
+
+    auto extracted = part_extract(score, PartId{201});
+    auto& cl = extracted.parts[0];
+
+    // The cue note pitch should come from the flute melody (E5)
+    for (const auto& m : cl.measures) {
+        for (const auto& v : m.voices) {
+            for (const auto& ev : v.events) {
+                const auto* ng = ev.as_note_group();
+                if (!ng) continue;
+                for (const auto& note : ng->notes) {
+                    if (note.notation_head == NoteHeadType::Cue) {
+                        // Flute plays E5 (letter=2, octave=5)
+                        CHECK(note.pitch.letter == 2);
+                        CHECK(note.pitch.octave == 5);
+                    }
+                }
+            }
+        }
+    }
+}
 
 TEST_CASE("SIQR001A: query_find_motif locates pitch class pattern",
           "[score-ir][query]") {

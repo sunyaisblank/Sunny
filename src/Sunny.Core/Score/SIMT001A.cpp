@@ -111,15 +111,21 @@ void for_each_event_in_region(Score& score, const ScoreRegion& region, Fn&& fn) 
     }
 }
 
-/// Push an undo entry onto the stack (if provided), clearing redo
+/// Push an undo entry onto the stack (if provided), clearing redo.
+/// When group_depth > 0, entries accumulate in pending_group instead.
 void push_undo(UndoStack* undo, Score& score, std::string desc,
                std::function<VoidResult()> forward,
                std::function<VoidResult()> inverse) {
     if (!undo) return;
-    undo->undo_entries.push_back(UndoEntry{
+    UndoEntry entry{
         score.version, std::move(forward), std::move(inverse), std::move(desc)
-    });
-    undo->redo_entries.clear();
+    };
+    if (undo->group_depth > 0) {
+        undo->pending_group.push_back(std::move(entry));
+    } else {
+        undo->undo_entries.push_back(std::move(entry));
+        undo->redo_entries.clear();
+    }
 }
 
 /// Mark a region as stale for harmonic re-analysis
@@ -2350,6 +2356,65 @@ Result<MutationResult> apply_voice_leading(
     mark_orchestration_stale(score, region);
 
     return MutationResult{{}};
+}
+
+// =============================================================================
+// Undo Grouping
+// =============================================================================
+
+void UndoStack::begin_group(std::string description) {
+    if (group_depth == 0) {
+        pending_group.clear();
+        group_description = std::move(description);
+    }
+    ++group_depth;
+}
+
+void UndoStack::end_group() {
+    if (group_depth == 0) return;
+    --group_depth;
+    if (group_depth > 0) return;
+
+    if (pending_group.empty()) return;
+
+    // Capture pending entries by value for the composite lambdas
+    auto forwards = std::move(pending_group);
+    pending_group.clear();
+
+    std::uint64_t version = forwards.front().version;
+    std::string desc = std::move(group_description);
+
+    // Build copies of forward/inverse function lists for capture
+    std::vector<std::function<VoidResult()>> fwd_fns;
+    std::vector<std::function<VoidResult()>> inv_fns;
+    fwd_fns.reserve(forwards.size());
+    inv_fns.reserve(forwards.size());
+    for (auto& entry : forwards) {
+        fwd_fns.push_back(std::move(entry.forward));
+        inv_fns.push_back(std::move(entry.inverse));
+    }
+
+    UndoEntry composite;
+    composite.version = version;
+    composite.description = std::move(desc);
+    composite.forward = [fwd_fns]() -> VoidResult {
+        for (const auto& fn : fwd_fns) {
+            auto r = fn();
+            if (!r) return r;
+        }
+        return {};
+    };
+    // Inverse replays in reverse order
+    composite.inverse = [inv_fns]() -> VoidResult {
+        for (auto it = inv_fns.rbegin(); it != inv_fns.rend(); ++it) {
+            auto r = (*it)();
+            if (!r) return r;
+        }
+        return {};
+    };
+
+    undo_entries.push_back(std::move(composite));
+    redo_entries.clear();
 }
 
 // =============================================================================

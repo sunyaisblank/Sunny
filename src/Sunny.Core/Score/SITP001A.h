@@ -340,7 +340,8 @@ enum class NoteHeadType : std::uint8_t {
     Slash,
     Triangle,
     CircleX,
-    Square
+    Square,
+    Cue
 };
 
 /// Part directive types (§3.3)
