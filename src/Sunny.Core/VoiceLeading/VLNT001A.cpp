@@ -59,14 +59,14 @@ Result<VoiceLeadingResult> voice_lead_nearest_tone(
         return std::unexpected(ErrorCode::VoiceLeadingFailed);
     }
 
+    if (source_pitches.size() != target_pitch_classes.size()) {
+        return std::unexpected(ErrorCode::VoiceLeadingFailed);
+    }
+
     std::size_t num_voices = source_pitches.size();
 
-    // Extend target PCs if needed
     std::vector<PitchClass> targets(target_pitch_classes.begin(),
                                      target_pitch_classes.end());
-    while (targets.size() < num_voices) {
-        targets.push_back(targets[targets.size() % target_pitch_classes.size()]);
-    }
 
     VoiceLeadingResult result;
     result.voiced_notes.reserve(num_voices);
@@ -186,9 +186,9 @@ std::vector<MidiNote> generate_close_voicing(
     return voicing;
 }
 
-std::vector<MidiNote> generate_drop2_voicing(std::span<const MidiNote> close_voicing) {
+Result<std::vector<MidiNote>> generate_drop2_voicing(std::span<const MidiNote> close_voicing) {
     if (close_voicing.size() < 4) {
-        return std::vector<MidiNote>(close_voicing.begin(), close_voicing.end());
+        return std::unexpected(ErrorCode::VoiceLeadingFailed);
     }
 
     std::vector<MidiNote> result(close_voicing.begin(), close_voicing.end());
@@ -205,9 +205,9 @@ std::vector<MidiNote> generate_drop2_voicing(std::span<const MidiNote> close_voi
     return result;
 }
 
-std::vector<MidiNote> generate_drop3_voicing(std::span<const MidiNote> close_voicing) {
+Result<std::vector<MidiNote>> generate_drop3_voicing(std::span<const MidiNote> close_voicing) {
     if (close_voicing.size() < 4) {
-        return std::vector<MidiNote>(close_voicing.begin(), close_voicing.end());
+        return std::unexpected(ErrorCode::VoiceLeadingFailed);
     }
 
     std::vector<MidiNote> result(close_voicing.begin(), close_voicing.end());
@@ -242,9 +242,9 @@ std::vector<MidiNote> generate_open_voicing(std::span<const MidiNote> close_voic
     return result;
 }
 
-std::vector<MidiNote> generate_drop24_voicing(std::span<const MidiNote> close_voicing) {
+Result<std::vector<MidiNote>> generate_drop24_voicing(std::span<const MidiNote> close_voicing) {
     if (close_voicing.size() < 4) {
-        return std::vector<MidiNote>(close_voicing.begin(), close_voicing.end());
+        return std::unexpected(ErrorCode::VoiceLeadingFailed);
     }
 
     std::vector<MidiNote> result(close_voicing.begin(), close_voicing.end());
@@ -265,14 +265,14 @@ std::vector<MidiNote> generate_drop24_voicing(std::span<const MidiNote> close_vo
     return result;
 }
 
-std::vector<MidiNote> generate_spread_voicing(std::span<const MidiNote> close_voicing) {
-    if (close_voicing.size() < 2) {
-        return std::vector<MidiNote>(close_voicing.begin(), close_voicing.end());
+Result<std::vector<MidiNote>> generate_spread_voicing(std::span<const MidiNote> close_voicing) {
+    if (close_voicing.size() < 3) {
+        return std::unexpected(ErrorCode::VoiceLeadingFailed);
     }
 
     std::vector<MidiNote> result(close_voicing.begin(), close_voicing.end());
 
-    // Bass note must be ≥ octave below the next voice.
+    // Bass note must be >= octave below the next voice.
     // Drop bass until the gap is at least 12 semitones.
     while (result.size() >= 2 && (result[1] - result[0]) < 12) {
         if (result[0] >= 12) {
@@ -386,14 +386,14 @@ Result<VoiceLeadingResult> voice_lead_optimal(
         return std::unexpected(ErrorCode::VoiceLeadingFailed);
     }
 
+    if (source_pitches.size() != target_pitch_classes.size()) {
+        return std::unexpected(ErrorCode::VoiceLeadingFailed);
+    }
+
     std::size_t num_voices = source_pitches.size();
 
-    // Extend target PCs if needed (same strategy as nearest-tone)
     std::vector<PitchClass> targets(target_pitch_classes.begin(),
                                      target_pitch_classes.end());
-    while (targets.size() < num_voices) {
-        targets.push_back(targets[targets.size() % target_pitch_classes.size()]);
-    }
 
     // For each (source_voice, target_slot), compute cost as the minimum
     // semitone distance to a MIDI note with the target pitch class.

@@ -39,12 +39,13 @@ struct VoiceLeadingResult {
  * For each voice, finds the closest pitch with the target pitch class,
  * minimizing total voice movement.
  *
+ * @pre source_pitches.size() == target_pitch_classes.size()
  * @param source_pitches Current voicing as MIDI notes
  * @param target_pitch_classes Target chord as pitch classes
  * @param lock_bass If true, bass takes chord root
  * @param allow_parallel_fifths If true, don't avoid parallel P5
  * @param allow_parallel_octaves If true, don't avoid parallel P8
- * @return VoiceLeadingResult or error
+ * @return VoiceLeadingResult or error (VoiceLeadingFailed if sizes differ)
  */
 [[nodiscard]] Result<VoiceLeadingResult> voice_lead_nearest_tone(
     std::span<const MidiNote> source_pitches,
@@ -71,10 +72,11 @@ struct VoiceLeadingResult {
  *
  * Drops the second voice from the top down an octave.
  *
+ * @pre close_voicing.size() >= 4
  * @param close_voicing Close position voicing (ascending)
- * @return Drop-2 voicing
+ * @return Drop-2 voicing or error (VoiceLeadingFailed if fewer than 4 notes)
  */
-[[nodiscard]] std::vector<MidiNote> generate_drop2_voicing(
+[[nodiscard]] Result<std::vector<MidiNote>> generate_drop2_voicing(
     std::span<const MidiNote> close_voicing
 );
 
@@ -83,10 +85,11 @@ struct VoiceLeadingResult {
  *
  * Drops the third voice from the top down an octave.
  *
+ * @pre close_voicing.size() >= 4
  * @param close_voicing Close position voicing (ascending)
- * @return Drop-3 voicing
+ * @return Drop-3 voicing or error (VoiceLeadingFailed if fewer than 4 notes)
  */
-[[nodiscard]] std::vector<MidiNote> generate_drop3_voicing(
+[[nodiscard]] Result<std::vector<MidiNote>> generate_drop3_voicing(
     std::span<const MidiNote> close_voicing
 );
 
@@ -109,10 +112,11 @@ struct VoiceLeadingResult {
  * Formal Spec §7.5: Drops both 2nd and 4th voices from the top
  * down an octave. Requires at least 4 notes.
  *
+ * @pre close_voicing.size() >= 4
  * @param close_voicing Close position voicing (ascending)
- * @return Drop 2+4 voicing
+ * @return Drop 2+4 voicing or error (VoiceLeadingFailed if fewer than 4 notes)
  */
-[[nodiscard]] std::vector<MidiNote> generate_drop24_voicing(
+[[nodiscard]] Result<std::vector<MidiNote>> generate_drop24_voicing(
     std::span<const MidiNote> close_voicing
 );
 
@@ -122,10 +126,11 @@ struct VoiceLeadingResult {
  * Formal Spec §7.5: Bass note separated by at least an octave
  * from the upper structure. Upper voices remain in close position.
  *
+ * @pre close_voicing.size() >= 3
  * @param close_voicing Close position voicing (ascending)
- * @return Spread voicing
+ * @return Spread voicing or error (VoiceLeadingFailed if fewer than 3 notes)
  */
-[[nodiscard]] std::vector<MidiNote> generate_spread_voicing(
+[[nodiscard]] Result<std::vector<MidiNote>> generate_spread_voicing(
     std::span<const MidiNote> close_voicing
 );
 
@@ -161,10 +166,11 @@ enum class VoiceMotionType {
  * and target pitch classes. Produces provably optimal total motion,
  * unlike the greedy nearest-tone approximation.
  *
+ * @pre source_pitches.size() == target_pitch_classes.size()
  * @param source_pitches Current voicing as MIDI notes
  * @param target_pitch_classes Target chord as pitch classes
  * @param lock_bass If true, bass takes chord root
- * @return VoiceLeadingResult or error
+ * @return VoiceLeadingResult or error (VoiceLeadingFailed if sizes differ)
  */
 [[nodiscard]] Result<VoiceLeadingResult> voice_lead_optimal(
     std::span<const MidiNote> source_pitches,

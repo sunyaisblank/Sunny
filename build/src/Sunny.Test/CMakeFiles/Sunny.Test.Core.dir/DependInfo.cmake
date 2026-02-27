@@ -1,0 +1,70 @@
+
+# Consider dependencies only in project.
+set(CMAKE_DEPENDS_IN_PROJECT_ONLY OFF)
+
+# The set of languages for which implicit dependencies are needed:
+set(CMAKE_DEPENDS_LANGUAGES
+  )
+
+# The set of dependency files which are needed:
+set(CMAKE_DEPENDS_DEPENDENCY_FILES
+  "/home/sunny/.project/Sunny/.claude/worktrees/agent-a555f056/src/Sunny.Test/Sunny.Core/Acoustics/TSAC001A.cpp" "src/Sunny.Test/CMakeFiles/Sunny.Test.Core.dir/Sunny.Core/Acoustics/TSAC001A.cpp.o" "gcc" "src/Sunny.Test/CMakeFiles/Sunny.Test.Core.dir/Sunny.Core/Acoustics/TSAC001A.cpp.o.d"
+  "/home/sunny/.project/Sunny/.claude/worktrees/agent-a555f056/src/Sunny.Test/Sunny.Core/Form/TSFM001A.cpp" "src/Sunny.Test/CMakeFiles/Sunny.Test.Core.dir/Sunny.Core/Form/TSFM001A.cpp.o" "gcc" "src/Sunny.Test/CMakeFiles/Sunny.Test.Core.dir/Sunny.Core/Form/TSFM001A.cpp.o.d"
+  "/home/sunny/.project/Sunny/.claude/worktrees/agent-a555f056/src/Sunny.Test/Sunny.Core/Harmony/TSCD001A.cpp" "src/Sunny.Test/CMakeFiles/Sunny.Test.Core.dir/Sunny.Core/Harmony/TSCD001A.cpp.o" "gcc" "src/Sunny.Test/CMakeFiles/Sunny.Test.Core.dir/Sunny.Core/Harmony/TSCD001A.cpp.o.d"
+  "/home/sunny/.project/Sunny/.claude/worktrees/agent-a555f056/src/Sunny.Test/Sunny.Core/Harmony/TSCH001A.cpp" "src/Sunny.Test/CMakeFiles/Sunny.Test.Core.dir/Sunny.Core/Harmony/TSCH001A.cpp.o" "gcc" "src/Sunny.Test/CMakeFiles/Sunny.Test.Core.dir/Sunny.Core/Harmony/TSCH001A.cpp.o.d"
+  "/home/sunny/.project/Sunny/.claude/worktrees/agent-a555f056/src/Sunny.Test/Sunny.Core/Harmony/TSCS001A.cpp" "src/Sunny.Test/CMakeFiles/Sunny.Test.Core.dir/Sunny.Core/Harmony/TSCS001A.cpp.o" "gcc" "src/Sunny.Test/CMakeFiles/Sunny.Test.Core.dir/Sunny.Core/Harmony/TSCS001A.cpp.o.d"
+  "/home/sunny/.project/Sunny/.claude/worktrees/agent-a555f056/src/Sunny.Test/Sunny.Core/Harmony/TSHF001A.cpp" "src/Sunny.Test/CMakeFiles/Sunny.Test.Core.dir/Sunny.Core/Harmony/TSHF001A.cpp.o" "gcc" "src/Sunny.Test/CMakeFiles/Sunny.Test.Core.dir/Sunny.Core/Harmony/TSHF001A.cpp.o.d"
+  "/home/sunny/.project/Sunny/.claude/worktrees/agent-a555f056/src/Sunny.Test/Sunny.Core/Harmony/TSHN001A.cpp" "src/Sunny.Test/CMakeFiles/Sunny.Test.Core.dir/Sunny.Core/Harmony/TSHN001A.cpp.o" "gcc" "src/Sunny.Test/CMakeFiles/Sunny.Test.Core.dir/Sunny.Core/Harmony/TSHN001A.cpp.o.d"
+  "/home/sunny/.project/Sunny/.claude/worktrees/agent-a555f056/src/Sunny.Test/Sunny.Core/Harmony/TSHR001A.cpp" "src/Sunny.Test/CMakeFiles/Sunny.Test.Core.dir/Sunny.Core/Harmony/TSHR001A.cpp.o" "gcc" "src/Sunny.Test/CMakeFiles/Sunny.Test.Core.dir/Sunny.Core/Harmony/TSHR001A.cpp.o.d"
+  "/home/sunny/.project/Sunny/.claude/worktrees/agent-a555f056/src/Sunny.Test/Sunny.Core/Harmony/TSNT001A.cpp" "src/Sunny.Test/CMakeFiles/Sunny.Test.Core.dir/Sunny.Core/Harmony/TSNT001A.cpp.o" "gcc" "src/Sunny.Test/CMakeFiles/Sunny.Test.Core.dir/Sunny.Core/Harmony/TSNT001A.cpp.o.d"
+  "/home/sunny/.project/Sunny/.claude/worktrees/agent-a555f056/src/Sunny.Test/Sunny.Core/Harmony/TSSD001A.cpp" "src/Sunny.Test/CMakeFiles/Sunny.Test.Core.dir/Sunny.Core/Harmony/TSSD001A.cpp.o" "gcc" "src/Sunny.Test/CMakeFiles/Sunny.Test.Core.dir/Sunny.Core/Harmony/TSSD001A.cpp.o.d"
+  "/home/sunny/.project/Sunny/.claude/worktrees/agent-a555f056/src/Sunny.Test/Sunny.Core/Harmony/TSST001A.cpp" "src/Sunny.Test/CMakeFiles/Sunny.Test.Core.dir/Sunny.Core/Harmony/TSST001A.cpp.o" "gcc" "src/Sunny.Test/CMakeFiles/Sunny.Test.Core.dir/Sunny.Core/Harmony/TSST001A.cpp.o.d"
+  "/home/sunny/.project/Sunny/.claude/worktrees/agent-a555f056/src/Sunny.Test/Sunny.Core/Melody/TSML001A.cpp" "src/Sunny.Test/CMakeFiles/Sunny.Test.Core.dir/Sunny.Core/Melody/TSML001A.cpp.o" "gcc" "src/Sunny.Test/CMakeFiles/Sunny.Test.Core.dir/Sunny.Core/Melody/TSML001A.cpp.o.d"
+  "/home/sunny/.project/Sunny/.claude/worktrees/agent-a555f056/src/Sunny.Test/Sunny.Core/Pitch/TSDG001A.cpp" "src/Sunny.Test/CMakeFiles/Sunny.Test.Core.dir/Sunny.Core/Pitch/TSDG001A.cpp.o" "gcc" "src/Sunny.Test/CMakeFiles/Sunny.Test.Core.dir/Sunny.Core/Pitch/TSDG001A.cpp.o.d"
+  "/home/sunny/.project/Sunny/.claude/worktrees/agent-a555f056/src/Sunny.Test/Sunny.Core/Pitch/TSDI001A.cpp" "src/Sunny.Test/CMakeFiles/Sunny.Test.Core.dir/Sunny.Core/Pitch/TSDI001A.cpp.o" "gcc" "src/Sunny.Test/CMakeFiles/Sunny.Test.Core.dir/Sunny.Core/Pitch/TSDI001A.cpp.o.d"
+  "/home/sunny/.project/Sunny/.claude/worktrees/agent-a555f056/src/Sunny.Test/Sunny.Core/Pitch/TSDN001A.cpp" "src/Sunny.Test/CMakeFiles/Sunny.Test.Core.dir/Sunny.Core/Pitch/TSDN001A.cpp.o" "gcc" "src/Sunny.Test/CMakeFiles/Sunny.Test.Core.dir/Sunny.Core/Pitch/TSDN001A.cpp.o.d"
+  "/home/sunny/.project/Sunny/.claude/worktrees/agent-a555f056/src/Sunny.Test/Sunny.Core/Pitch/TSMN001A.cpp" "src/Sunny.Test/CMakeFiles/Sunny.Test.Core.dir/Sunny.Core/Pitch/TSMN001A.cpp.o" "gcc" "src/Sunny.Test/CMakeFiles/Sunny.Test.Core.dir/Sunny.Core/Pitch/TSMN001A.cpp.o.d"
+  "/home/sunny/.project/Sunny/.claude/worktrees/agent-a555f056/src/Sunny.Test/Sunny.Core/Pitch/TSPS001A.cpp" "src/Sunny.Test/CMakeFiles/Sunny.Test.Core.dir/Sunny.Core/Pitch/TSPS001A.cpp.o" "gcc" "src/Sunny.Test/CMakeFiles/Sunny.Test.Core.dir/Sunny.Core/Pitch/TSPS001A.cpp.o.d"
+  "/home/sunny/.project/Sunny/.claude/worktrees/agent-a555f056/src/Sunny.Test/Sunny.Core/Pitch/TSPT001A.cpp" "src/Sunny.Test/CMakeFiles/Sunny.Test.Core.dir/Sunny.Core/Pitch/TSPT001A.cpp.o" "gcc" "src/Sunny.Test/CMakeFiles/Sunny.Test.Core.dir/Sunny.Core/Pitch/TSPT001A.cpp.o.d"
+  "/home/sunny/.project/Sunny/.claude/worktrees/agent-a555f056/src/Sunny.Test/Sunny.Core/Pitch/TSSP001A.cpp" "src/Sunny.Test/CMakeFiles/Sunny.Test.Core.dir/Sunny.Core/Pitch/TSSP001A.cpp.o" "gcc" "src/Sunny.Test/CMakeFiles/Sunny.Test.Core.dir/Sunny.Core/Pitch/TSSP001A.cpp.o.d"
+  "/home/sunny/.project/Sunny/.claude/worktrees/agent-a555f056/src/Sunny.Test/Sunny.Core/PostTonal/TSTW001A.cpp" "src/Sunny.Test/CMakeFiles/Sunny.Test.Core.dir/Sunny.Core/PostTonal/TSTW001A.cpp.o" "gcc" "src/Sunny.Test/CMakeFiles/Sunny.Test.Core.dir/Sunny.Core/PostTonal/TSTW001A.cpp.o.d"
+  "/home/sunny/.project/Sunny/.claude/worktrees/agent-a555f056/src/Sunny.Test/Sunny.Core/Rhythm/TSRH001A.cpp" "src/Sunny.Test/CMakeFiles/Sunny.Test.Core.dir/Sunny.Core/Rhythm/TSRH001A.cpp.o" "gcc" "src/Sunny.Test/CMakeFiles/Sunny.Test.Core.dir/Sunny.Core/Rhythm/TSRH001A.cpp.o.d"
+  "/home/sunny/.project/Sunny/.claude/worktrees/agent-a555f056/src/Sunny.Test/Sunny.Core/Rhythm/TSTS001A.cpp" "src/Sunny.Test/CMakeFiles/Sunny.Test.Core.dir/Sunny.Core/Rhythm/TSTS001A.cpp.o" "gcc" "src/Sunny.Test/CMakeFiles/Sunny.Test.Core.dir/Sunny.Core/Rhythm/TSTS001A.cpp.o.d"
+  "/home/sunny/.project/Sunny/.claude/worktrees/agent-a555f056/src/Sunny.Test/Sunny.Core/Rhythm/TSTU001A.cpp" "src/Sunny.Test/CMakeFiles/Sunny.Test.Core.dir/Sunny.Core/Rhythm/TSTU001A.cpp.o" "gcc" "src/Sunny.Test/CMakeFiles/Sunny.Test.Core.dir/Sunny.Core/Rhythm/TSTU001A.cpp.o.d"
+  "/home/sunny/.project/Sunny/.claude/worktrees/agent-a555f056/src/Sunny.Test/Sunny.Core/Scale/TSSC001A.cpp" "src/Sunny.Test/CMakeFiles/Sunny.Test.Core.dir/Sunny.Core/Scale/TSSC001A.cpp.o" "gcc" "src/Sunny.Test/CMakeFiles/Sunny.Test.Core.dir/Sunny.Core/Scale/TSSC001A.cpp.o.d"
+  "/home/sunny/.project/Sunny/.claude/worktrees/agent-a555f056/src/Sunny.Test/Sunny.Core/Scale/TSSG001A.cpp" "src/Sunny.Test/CMakeFiles/Sunny.Test.Core.dir/Sunny.Core/Scale/TSSG001A.cpp.o" "gcc" "src/Sunny.Test/CMakeFiles/Sunny.Test.Core.dir/Sunny.Core/Scale/TSSG001A.cpp.o.d"
+  "/home/sunny/.project/Sunny/.claude/worktrees/agent-a555f056/src/Sunny.Test/Sunny.Core/Scale/TSSR001A.cpp" "src/Sunny.Test/CMakeFiles/Sunny.Test.Core.dir/Sunny.Core/Scale/TSSR001A.cpp.o" "gcc" "src/Sunny.Test/CMakeFiles/Sunny.Test.Core.dir/Sunny.Core/Scale/TSSR001A.cpp.o.d"
+  "/home/sunny/.project/Sunny/.claude/worktrees/agent-a555f056/src/Sunny.Test/Sunny.Core/Score/TSSI001A.cpp" "src/Sunny.Test/CMakeFiles/Sunny.Test.Core.dir/Sunny.Core/Score/TSSI001A.cpp.o" "gcc" "src/Sunny.Test/CMakeFiles/Sunny.Test.Core.dir/Sunny.Core/Score/TSSI001A.cpp.o.d"
+  "/home/sunny/.project/Sunny/.claude/worktrees/agent-a555f056/src/Sunny.Test/Sunny.Core/Score/TSSI002A.cpp" "src/Sunny.Test/CMakeFiles/Sunny.Test.Core.dir/Sunny.Core/Score/TSSI002A.cpp.o" "gcc" "src/Sunny.Test/CMakeFiles/Sunny.Test.Core.dir/Sunny.Core/Score/TSSI002A.cpp.o.d"
+  "/home/sunny/.project/Sunny/.claude/worktrees/agent-a555f056/src/Sunny.Test/Sunny.Core/Score/TSSI003A.cpp" "src/Sunny.Test/CMakeFiles/Sunny.Test.Core.dir/Sunny.Core/Score/TSSI003A.cpp.o" "gcc" "src/Sunny.Test/CMakeFiles/Sunny.Test.Core.dir/Sunny.Core/Score/TSSI003A.cpp.o.d"
+  "/home/sunny/.project/Sunny/.claude/worktrees/agent-a555f056/src/Sunny.Test/Sunny.Core/Score/TSSI004A.cpp" "src/Sunny.Test/CMakeFiles/Sunny.Test.Core.dir/Sunny.Core/Score/TSSI004A.cpp.o" "gcc" "src/Sunny.Test/CMakeFiles/Sunny.Test.Core.dir/Sunny.Core/Score/TSSI004A.cpp.o.d"
+  "/home/sunny/.project/Sunny/.claude/worktrees/agent-a555f056/src/Sunny.Test/Sunny.Core/Score/TSSI005A.cpp" "src/Sunny.Test/CMakeFiles/Sunny.Test.Core.dir/Sunny.Core/Score/TSSI005A.cpp.o" "gcc" "src/Sunny.Test/CMakeFiles/Sunny.Test.Core.dir/Sunny.Core/Score/TSSI005A.cpp.o.d"
+  "/home/sunny/.project/Sunny/.claude/worktrees/agent-a555f056/src/Sunny.Test/Sunny.Core/Score/TSSI006A.cpp" "src/Sunny.Test/CMakeFiles/Sunny.Test.Core.dir/Sunny.Core/Score/TSSI006A.cpp.o" "gcc" "src/Sunny.Test/CMakeFiles/Sunny.Test.Core.dir/Sunny.Core/Score/TSSI006A.cpp.o.d"
+  "/home/sunny/.project/Sunny/.claude/worktrees/agent-a555f056/src/Sunny.Test/Sunny.Core/Score/TSSI007A.cpp" "src/Sunny.Test/CMakeFiles/Sunny.Test.Core.dir/Sunny.Core/Score/TSSI007A.cpp.o" "gcc" "src/Sunny.Test/CMakeFiles/Sunny.Test.Core.dir/Sunny.Core/Score/TSSI007A.cpp.o.d"
+  "/home/sunny/.project/Sunny/.claude/worktrees/agent-a555f056/src/Sunny.Test/Sunny.Core/Score/TSSI008A.cpp" "src/Sunny.Test/CMakeFiles/Sunny.Test.Core.dir/Sunny.Core/Score/TSSI008A.cpp.o" "gcc" "src/Sunny.Test/CMakeFiles/Sunny.Test.Core.dir/Sunny.Core/Score/TSSI008A.cpp.o.d"
+  "/home/sunny/.project/Sunny/.claude/worktrees/agent-a555f056/src/Sunny.Test/Sunny.Core/Score/TSSI009A.cpp" "src/Sunny.Test/CMakeFiles/Sunny.Test.Core.dir/Sunny.Core/Score/TSSI009A.cpp.o" "gcc" "src/Sunny.Test/CMakeFiles/Sunny.Test.Core.dir/Sunny.Core/Score/TSSI009A.cpp.o.d"
+  "/home/sunny/.project/Sunny/.claude/worktrees/agent-a555f056/src/Sunny.Test/Sunny.Core/Score/TSSI010A.cpp" "src/Sunny.Test/CMakeFiles/Sunny.Test.Core.dir/Sunny.Core/Score/TSSI010A.cpp.o" "gcc" "src/Sunny.Test/CMakeFiles/Sunny.Test.Core.dir/Sunny.Core/Score/TSSI010A.cpp.o.d"
+  "/home/sunny/.project/Sunny/.claude/worktrees/agent-a555f056/src/Sunny.Test/Sunny.Core/Score/TSSI011A.cpp" "src/Sunny.Test/CMakeFiles/Sunny.Test.Core.dir/Sunny.Core/Score/TSSI011A.cpp.o" "gcc" "src/Sunny.Test/CMakeFiles/Sunny.Test.Core.dir/Sunny.Core/Score/TSSI011A.cpp.o.d"
+  "/home/sunny/.project/Sunny/.claude/worktrees/agent-a555f056/src/Sunny.Test/Sunny.Core/Tensor/TSTN001A.cpp" "src/Sunny.Test/CMakeFiles/Sunny.Test.Core.dir/Sunny.Core/Tensor/TSTN001A.cpp.o" "gcc" "src/Sunny.Test/CMakeFiles/Sunny.Test.Core.dir/Sunny.Core/Tensor/TSTN001A.cpp.o.d"
+  "/home/sunny/.project/Sunny/.claude/worktrees/agent-a555f056/src/Sunny.Test/Sunny.Core/Transform/TSGI001A.cpp" "src/Sunny.Test/CMakeFiles/Sunny.Test.Core.dir/Sunny.Core/Transform/TSGI001A.cpp.o" "gcc" "src/Sunny.Test/CMakeFiles/Sunny.Test.Core.dir/Sunny.Core/Transform/TSGI001A.cpp.o.d"
+  "/home/sunny/.project/Sunny/.claude/worktrees/agent-a555f056/src/Sunny.Test/Sunny.Core/Transform/TSKN001A.cpp" "src/Sunny.Test/CMakeFiles/Sunny.Test.Core.dir/Sunny.Core/Transform/TSKN001A.cpp.o" "gcc" "src/Sunny.Test/CMakeFiles/Sunny.Test.Core.dir/Sunny.Core/Transform/TSKN001A.cpp.o.d"
+  "/home/sunny/.project/Sunny/.claude/worktrees/agent-a555f056/src/Sunny.Test/Sunny.Core/Transform/TSNR001A.cpp" "src/Sunny.Test/CMakeFiles/Sunny.Test.Core.dir/Sunny.Core/Transform/TSNR001A.cpp.o" "gcc" "src/Sunny.Test/CMakeFiles/Sunny.Test.Core.dir/Sunny.Core/Transform/TSNR001A.cpp.o.d"
+  "/home/sunny/.project/Sunny/.claude/worktrees/agent-a555f056/src/Sunny.Test/Sunny.Core/Tuning/TSET001A.cpp" "src/Sunny.Test/CMakeFiles/Sunny.Test.Core.dir/Sunny.Core/Tuning/TSET001A.cpp.o" "gcc" "src/Sunny.Test/CMakeFiles/Sunny.Test.Core.dir/Sunny.Core/Tuning/TSET001A.cpp.o.d"
+  "/home/sunny/.project/Sunny/.claude/worktrees/agent-a555f056/src/Sunny.Test/Sunny.Core/Tuning/TSHT001A.cpp" "src/Sunny.Test/CMakeFiles/Sunny.Test.Core.dir/Sunny.Core/Tuning/TSHT001A.cpp.o" "gcc" "src/Sunny.Test/CMakeFiles/Sunny.Test.Core.dir/Sunny.Core/Tuning/TSHT001A.cpp.o.d"
+  "/home/sunny/.project/Sunny/.claude/worktrees/agent-a555f056/src/Sunny.Test/Sunny.Core/Tuning/TSJI001A.cpp" "src/Sunny.Test/CMakeFiles/Sunny.Test.Core.dir/Sunny.Core/Tuning/TSJI001A.cpp.o" "gcc" "src/Sunny.Test/CMakeFiles/Sunny.Test.Core.dir/Sunny.Core/Tuning/TSJI001A.cpp.o.d"
+  "/home/sunny/.project/Sunny/.claude/worktrees/agent-a555f056/src/Sunny.Test/Sunny.Core/VoiceLeading/TSCN001A.cpp" "src/Sunny.Test/CMakeFiles/Sunny.Test.Core.dir/Sunny.Core/VoiceLeading/TSCN001A.cpp.o" "gcc" "src/Sunny.Test/CMakeFiles/Sunny.Test.Core.dir/Sunny.Core/VoiceLeading/TSCN001A.cpp.o.d"
+  "/home/sunny/.project/Sunny/.claude/worktrees/agent-a555f056/src/Sunny.Test/Sunny.Core/VoiceLeading/TSFB001A.cpp" "src/Sunny.Test/CMakeFiles/Sunny.Test.Core.dir/Sunny.Core/VoiceLeading/TSFB001A.cpp.o" "gcc" "src/Sunny.Test/CMakeFiles/Sunny.Test.Core.dir/Sunny.Core/VoiceLeading/TSFB001A.cpp.o.d"
+  "/home/sunny/.project/Sunny/.claude/worktrees/agent-a555f056/src/Sunny.Test/Sunny.Core/VoiceLeading/TSSC001A.cpp" "src/Sunny.Test/CMakeFiles/Sunny.Test.Core.dir/Sunny.Core/VoiceLeading/TSSC001A.cpp.o" "gcc" "src/Sunny.Test/CMakeFiles/Sunny.Test.Core.dir/Sunny.Core/VoiceLeading/TSSC001A.cpp.o.d"
+  "/home/sunny/.project/Sunny/.claude/worktrees/agent-a555f056/src/Sunny.Test/Sunny.Core/VoiceLeading/TSVL001A.cpp" "src/Sunny.Test/CMakeFiles/Sunny.Test.Core.dir/Sunny.Core/VoiceLeading/TSVL001A.cpp.o" "gcc" "src/Sunny.Test/CMakeFiles/Sunny.Test.Core.dir/Sunny.Core/VoiceLeading/TSVL001A.cpp.o.d"
+  )
+
+# Targets to which this target links which contain Fortran sources.
+set(CMAKE_Fortran_TARGET_LINKED_INFO_FILES
+  )
+
+# Targets to which this target links which contain Fortran sources.
+set(CMAKE_Fortran_TARGET_FORWARD_LINKED_INFO_FILES
+  )
+
+# Fortran module output directory.
+set(CMAKE_Fortran_TARGET_MODULE_DIR "")

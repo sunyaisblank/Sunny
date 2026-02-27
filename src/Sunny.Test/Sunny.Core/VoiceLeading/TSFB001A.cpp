@@ -343,3 +343,34 @@ TEST_CASE("VLFB001A: sequence with inversions I-V65-I6", "[figured-bass][sequenc
     REQUIRE(std::count(i6_pcs.begin(), i6_pcs.end(), 7) == 1);   // G
     REQUIRE(std::count(i6_pcs.begin(), i6_pcs.end(), 0) == 1);   // C
 }
+
+// =============================================================================
+// diatonic_above edge cases (audit RC-F remediation)
+// =============================================================================
+
+TEST_CASE("VLFB001A: diatonic_above handles generic_interval=0 without OOB", "[figured-bass][core]") {
+    // generic_interval < 1 is out of domain (1 = unison, 2 = 2nd, etc.).
+    // The function should return a safe fallback rather than accessing a
+    // negative array index. We test indirectly through realise_figured_bass
+    // with a hand-crafted symbol containing interval=0.
+    FiguredBassSymbol sym;
+    sym.figures.push_back({0, FigureAccidental::Natural});
+
+    auto result = realise_figured_bass(48, sym, 0, SCALE_MAJOR);
+    // Should not crash; the exact pitch class returned for interval=0
+    // is the key root (safe fallback), so just verify no undefined behaviour.
+    REQUIRE(result.has_value());
+}
+
+TEST_CASE("VLFB001A: diatonic_above negative modulo safety", "[figured-bass][core]") {
+    // Test with a large generic interval to exercise the modulo path.
+    // interval=8 on a 7-note scale wraps around: (bass_degree + 7) % 7.
+    // This should produce the same pitch class as interval=1 (unison).
+    FiguredBassSymbol sym;
+    sym.figures.push_back({8, FigureAccidental::Natural});
+
+    auto result = realise_figured_bass(48, sym, 0, SCALE_MAJOR);
+    REQUIRE(result.has_value());
+    // 8th above C in C major wraps to C (one octave up diatonically)
+    REQUIRE(pitch_class(result->upper[0]) == 0);
+}

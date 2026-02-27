@@ -1,0 +1,5 @@
+if(EXISTS "/home/sunny/.project/Sunny/.claude/worktrees/agent-a555f056/build/src/Sunny.Test/Sunny.Test.Render_tests-50c2418.cmake")
+  include("/home/sunny/.project/Sunny/.claude/worktrees/agent-a555f056/build/src/Sunny.Test/Sunny.Test.Render_tests-50c2418.cmake")
+else()
+  add_test(Sunny.Test.Render_NOT_BUILT-50c2418 Sunny.Test.Render_NOT_BUILT-50c2418)
+endif()
