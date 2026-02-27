@@ -12,9 +12,11 @@
  */
 
 #include <catch2/catch_test_macros.hpp>
+#include <nlohmann/json.hpp>
 
 #include "Score/SISZ001A.h"
 #include "Score/SIMT001A.h"
+#include "Score/SIVD001A.h"
 
 using namespace Sunny::Core;
 
@@ -298,7 +300,7 @@ TEST_CASE("SISZ001A: orchestration extended fields survive round-trip",
 }
 
 // =============================================================================
-// SISZ001A: Backward compatibility (v1 schema loads as v2)
+// SISZ001A: Backward compatibility (v1/v2 schema loads as v3)
 // =============================================================================
 
 TEST_CASE("SISZ001A: v1 schema document loads successfully",
@@ -312,6 +314,254 @@ TEST_CASE("SISZ001A: v1 schema document loads successfully",
     auto restored = score_from_json(json);
     REQUIRE(restored.has_value());
     CHECK(restored->metadata.title == "Serialisation Test");
-    // v1 document will have default values for fields added in v2
+    // v1 document will have default values for fields added in v2/v3
     CHECK(restored->state == DocumentState::Draft);
+}
+
+TEST_CASE("SISZ001A: v2 schema document loads successfully",
+          "[score-ir][serialisation]") {
+    auto original = make_serialisation_score();
+    auto json = score_to_json(original);
+
+    json["schema_version"] = 2;
+
+    auto restored = score_from_json(json);
+    REQUIRE(restored.has_value());
+    CHECK(restored->metadata.title == "Serialisation Test");
+}
+
+// =============================================================================
+// SISZ001A: Deserialisation trust boundary — input validation
+// =============================================================================
+
+TEST_CASE("SISZ001A: beat_from_json rejects denominator zero",
+          "[score-ir][serialisation][trust-boundary]") {
+    auto original = make_serialisation_score();
+    auto json_str = score_to_json_string(original);
+
+    // Corrupt a Beat denominator to 0 in the JSON
+    auto j = nlohmann::json::parse(json_str);
+    // Corrupt the tempo map's first entry position beat den
+    j["tempo_map"][0]["position"]["beat"]["den"] = 0;
+
+    auto result = score_from_json(j);
+    CHECK_FALSE(result.has_value());
+}
+
+TEST_CASE("SISZ001A: beat_from_json rejects negative denominator",
+          "[score-ir][serialisation][trust-boundary]") {
+    auto original = make_serialisation_score();
+    auto j = score_to_json(original);
+
+    j["tempo_map"][0]["position"]["beat"]["den"] = -1;
+
+    auto result = score_from_json(j);
+    CHECK_FALSE(result.has_value());
+}
+
+TEST_CASE("SISZ001A: spelled_pitch_from_json rejects letter 200",
+          "[score-ir][serialisation][trust-boundary]") {
+    auto original = make_serialisation_score();
+    auto j = score_to_json(original);
+
+    // Corrupt the key map root letter to 200
+    j["key_map"][0]["key"]["root"]["letter"] = 200;
+
+    auto result = score_from_json(j);
+    CHECK_FALSE(result.has_value());
+}
+
+TEST_CASE("SISZ001A: HarmonicAnnotation.chord survives round-trip",
+          "[score-ir][serialisation][trust-boundary]") {
+    auto original = make_serialisation_score();
+
+    HarmonicAnnotation ha;
+    ha.position = SCORE_START;
+    ha.duration = Beat{1, 1};
+    ha.chord.notes = {60, 64, 67};  // C major triad
+    ha.chord.root = 0;              // C
+    ha.chord.quality = "major";
+    ha.chord.inversion = 0;
+    ha.roman_numeral = "I";
+    ha.function = ScoreHarmonicFunction::Tonic;
+    ha.key_context.root = SpelledPitch{0, 0, 4};
+    ha.key_context.accidentals = 0;
+    ha.confidence = 1.0f;
+    original.harmonic_annotations.push_back(ha);
+
+    auto j = score_to_json(original);
+    auto restored = score_from_json(j);
+    REQUIRE(restored.has_value());
+    REQUIRE(restored->harmonic_annotations.size() == 1);
+
+    const auto& rc = restored->harmonic_annotations[0].chord;
+    CHECK(rc.notes.size() == 3);
+    CHECK(rc.notes[0] == 60);
+    CHECK(rc.notes[1] == 64);
+    CHECK(rc.notes[2] == 67);
+    CHECK(rc.root == 0);
+    CHECK(rc.quality == "major");
+    CHECK(rc.inversion == 0);
+}
+
+TEST_CASE("SISZ001A: TempoEvent transition fields survive round-trip",
+          "[score-ir][serialisation][trust-boundary]") {
+    auto original = make_serialisation_score();
+
+    // Add a second tempo event with non-default transition fields
+    TempoEvent te;
+    te.position = ScoreTime{2, Beat::zero()};
+    te.bpm = make_bpm(80);
+    te.beat_unit = BeatUnit::Half;
+    te.transition_type = TempoTransitionType::Linear;
+    te.linear_duration = Beat{2, 1};
+    te.old_unit = BeatUnit::Quarter;
+    te.new_unit = BeatUnit::Half;
+    original.tempo_map.push_back(te);
+
+    auto j = score_to_json(original);
+    auto restored = score_from_json(j);
+    REQUIRE(restored.has_value());
+    REQUIRE(restored->tempo_map.size() == 2);
+
+    const auto& rt = restored->tempo_map[1];
+    CHECK(rt.transition_type == TempoTransitionType::Linear);
+    CHECK(rt.linear_duration == Beat{2, 1});
+    CHECK(rt.old_unit == BeatUnit::Quarter);
+    CHECK(rt.new_unit == BeatUnit::Half);
+}
+
+TEST_CASE("SISZ001A: KeySignature.mode survives round-trip",
+          "[score-ir][serialisation][trust-boundary]") {
+    auto original = make_serialisation_score();
+
+    // Set mode to major scale on the key map entry
+    ScaleDefinition major_mode;
+    major_mode.intervals = {0, 2, 4, 5, 7, 9, 11, 0, 0, 0, 0, 0};
+    major_mode.note_count = 7;
+    major_mode.name = "";
+    major_mode.description = "";
+    original.key_map[0].key.mode = major_mode;
+
+    auto j = score_to_json(original);
+    auto restored = score_from_json(j);
+    REQUIRE(restored.has_value());
+    REQUIRE(restored->key_map.size() == 1);
+
+    const auto& rm = restored->key_map[0].key.mode;
+    CHECK(rm.note_count == 7);
+    auto ivs = rm.get_intervals();
+    REQUIRE(ivs.size() == 7);
+    CHECK(ivs[0] == 0);
+    CHECK(ivs[1] == 2);
+    CHECK(ivs[2] == 4);
+    CHECK(ivs[3] == 5);
+    CHECK(ivs[4] == 7);
+    CHECK(ivs[5] == 9);
+    CHECK(ivs[6] == 11);
+}
+
+TEST_CASE("SISZ001A: Measure.local_time survives round-trip",
+          "[score-ir][serialisation][trust-boundary]") {
+    auto original = make_serialisation_score();
+
+    // Set local_time on bar 1
+    TimeSignature local_ts;
+    local_ts.groups = {3, 3, 2};
+    local_ts.denominator = 8;
+    original.parts[0].measures[0].local_time = local_ts;
+
+    // Adjust event durations to match 8/8 = Beat{8,8} = Beat{1,1}
+    // The measure duration for 3+3+2 / 8 is 8/8 = 1 whole note
+    auto& ev = original.parts[0].measures[0].voices[0].events[0];
+    if (auto* ng = std::get_if<NoteGroup>(&ev.payload)) {
+        ng->duration = Beat{8, 8};  // 8/8 = 1 whole note
+    }
+
+    auto j = score_to_json(original);
+    auto restored = score_from_json(j);
+    REQUIRE(restored.has_value());
+
+    const auto& lt = restored->parts[0].measures[0].local_time;
+    REQUIRE(lt.has_value());
+    CHECK(lt->groups == std::vector<int>{3, 3, 2});
+    CHECK(lt->denominator == 8);
+}
+
+TEST_CASE("SISZ001A: score_from_json rejects duplicate EventIds",
+          "[score-ir][serialisation][trust-boundary]") {
+    auto original = make_serialisation_score();
+    auto j = score_to_json(original);
+
+    // Corrupt: set bar 2's event id to same as bar 1's (1001)
+    j["parts"][0]["measures"][1]["voices"][0]["events"][0]["id"] = 1001;
+
+    auto result = score_from_json(j);
+    CHECK_FALSE(result.has_value());
+}
+
+TEST_CASE("SISZ001A: score_from_json runs full validation on load",
+          "[score-ir][serialisation][trust-boundary]") {
+    auto original = make_serialisation_score();
+    auto j = score_to_json(original);
+
+    // Corrupt total_bars to be wrong: say 3 bars but only 2 measures per part
+    j["metadata"]["total_bars"] = 3;
+
+    auto result = score_from_json(j);
+    // S1 validation should detect measure count mismatch
+    CHECK_FALSE(result.has_value());
+}
+
+TEST_CASE("SISZ001A: score_from_json rejects unrecognised event type",
+          "[score-ir][serialisation][trust-boundary]") {
+    auto original = make_serialisation_score();
+    auto j = score_to_json(original);
+
+    // Corrupt event type
+    j["parts"][0]["measures"][0]["voices"][0]["events"][0]["type"] = "nonexistent";
+
+    auto result = score_from_json(j);
+    CHECK_FALSE(result.has_value());
+}
+
+TEST_CASE("SISZ001A: PartDefinition.range survives round-trip",
+          "[score-ir][serialisation][trust-boundary]") {
+    auto original = make_serialisation_score();
+
+    original.parts[0].definition.range.absolute_low = SpelledPitch{0, 0, 1};
+    original.parts[0].definition.range.absolute_high = SpelledPitch{0, 0, 8};
+    original.parts[0].definition.range.comfortable_low = SpelledPitch{0, 0, 2};
+    original.parts[0].definition.range.comfortable_high = SpelledPitch{0, 0, 7};
+
+    auto j = score_to_json(original);
+    auto restored = score_from_json(j);
+    REQUIRE(restored.has_value());
+
+    const auto& r = restored->parts[0].definition.range;
+    CHECK(r.absolute_low.octave == 1);
+    CHECK(r.absolute_high.octave == 8);
+    CHECK(r.comfortable_low.octave == 2);
+    CHECK(r.comfortable_high.octave == 7);
+}
+
+TEST_CASE("SISZ001A: articulation_vocabulary survives round-trip",
+          "[score-ir][serialisation][trust-boundary]") {
+    auto original = make_serialisation_score();
+
+    original.parts[0].definition.articulation_vocabulary = {
+        ArticulationType::Staccato,
+        ArticulationType::Tenuto,
+        ArticulationType::Accent
+    };
+
+    auto j = score_to_json(original);
+    auto restored = score_from_json(j);
+    REQUIRE(restored.has_value());
+
+    const auto& vocab = restored->parts[0].definition.articulation_vocabulary;
+    REQUIRE(vocab.size() == 3);
+    CHECK(vocab[0] == ArticulationType::Staccato);
+    CHECK(vocab[1] == ArticulationType::Tenuto);
+    CHECK(vocab[2] == ArticulationType::Accent);
 }
