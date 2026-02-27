@@ -147,18 +147,27 @@ struct FlatNote {
 // compile_to_midi
 // =============================================================================
 
-Result<CompiledMidi> compile_to_midi(const Score& score, int ppq) {
+Result<CompiledMidiResult> compile_to_midi(const Score& score, int ppq) {
     if (!is_compilable(score)) {
         return std::unexpected(ErrorCode::InvariantViolation);
     }
 
     CompiledMidi midi;
+    CompilationReport report;
     midi.ppq = static_cast<std::uint16_t>(ppq);
 
     // --- Tempo meta events ---
     for (const auto& te : score.tempo_map) {
         auto abs_beat = score_time_to_absolute_beat(te.position, score.time_map);
-        if (!abs_beat) continue;
+        if (!abs_beat) {
+            report.dropped_tempo_events++;
+            report.diagnostics.push_back({
+                "Tempo event dropped: temporal conversion failed",
+                te.position,
+                std::nullopt
+            });
+            continue;
+        }
 
         std::int64_t tick = absolute_beat_to_tick(*abs_beat, ppq);
         double qbpm = effective_quarter_bpm(te);
@@ -171,7 +180,15 @@ Result<CompiledMidi> compile_to_midi(const Score& score, int ppq) {
     for (const auto& tse : score.time_map) {
         auto abs_beat = score_time_to_absolute_beat(
             ScoreTime{tse.bar, Beat::zero()}, score.time_map);
-        if (!abs_beat) continue;
+        if (!abs_beat) {
+            report.dropped_time_sig_events++;
+            report.diagnostics.push_back({
+                "Time signature event dropped: temporal conversion failed",
+                ScoreTime{tse.bar, Beat::zero()},
+                std::nullopt
+            });
+            continue;
+        }
 
         std::int64_t tick = absolute_beat_to_tick(*abs_beat, ppq);
         auto num = static_cast<std::uint8_t>(tse.time_signature.numerator());
@@ -183,7 +200,14 @@ Result<CompiledMidi> compile_to_midi(const Score& score, int ppq) {
     // --- Key signature meta events ---
     for (const auto& ke : score.key_map) {
         auto abs_beat = score_time_to_absolute_beat(ke.position, score.time_map);
-        if (!abs_beat) continue;
+        if (!abs_beat) {
+            report.diagnostics.push_back({
+                "Key signature event dropped: temporal conversion failed",
+                ke.position,
+                std::nullopt
+            });
+            continue;
+        }
 
         std::int64_t tick = absolute_beat_to_tick(*abs_beat, ppq);
         bool minor = is_minor_key(ke.key);
@@ -242,7 +266,16 @@ Result<CompiledMidi> compile_to_midi(const Score& score, int ppq) {
                         note, current_dynamic, part, score, fn.position);
 
                     int midi_note = midi_value(note.pitch);
-                    if (midi_note < 0 || midi_note > 127) continue;
+                    if (midi_note < 0 || midi_note > 127) {
+                        report.dropped_notes++;
+                        report.diagnostics.push_back({
+                            "Note dropped: MIDI note " + std::to_string(midi_note)
+                                + " out of range [0, 127]",
+                            fn.position,
+                            part.id
+                        });
+                        continue;
+                    }
 
                     // Accumulate duration through tie chain
                     Beat total_duration = ng.duration;
@@ -282,7 +315,15 @@ Result<CompiledMidi> compile_to_midi(const Score& score, int ppq) {
                     // Convert to ticks
                     auto abs_start = score_time_to_absolute_beat(
                         fn.position, score.time_map);
-                    if (!abs_start) continue;
+                    if (!abs_start) {
+                        report.dropped_notes++;
+                        report.diagnostics.push_back({
+                            "Note dropped: temporal conversion failed",
+                            fn.position,
+                            part.id
+                        });
+                        continue;
+                    }
 
                     std::int64_t start_tick = absolute_beat_to_tick(*abs_start, ppq);
                     std::int64_t dur_ticks = absolute_beat_to_tick(total_duration, ppq);
@@ -309,15 +350,16 @@ Result<CompiledMidi> compile_to_midi(const Score& score, int ppq) {
             return a.tick < b.tick;
         });
 
-    return midi;
+    return CompiledMidiResult{std::move(midi), std::move(report)};
 }
 
 // =============================================================================
 // compile_to_note_events
 // =============================================================================
 
-Result<std::vector<NoteEvent>> compile_to_note_events(const Score& score) {
+Result<NoteEventResult> compile_to_note_events(const Score& score) {
     std::vector<NoteEvent> events;
+    CompilationReport report;
 
     for (const auto& part : score.parts) {
         for (const auto& measure : part.measures) {
@@ -328,14 +370,31 @@ Result<std::vector<NoteEvent>> compile_to_note_events(const Score& score) {
 
                     ScoreTime position{measure.bar_number, event.offset};
                     auto abs_beat = score_time_to_absolute_beat(position, score.time_map);
-                    if (!abs_beat) continue;
+                    if (!abs_beat) {
+                        report.dropped_notes++;
+                        report.diagnostics.push_back({
+                            "Note event dropped: temporal conversion failed",
+                            position,
+                            part.id
+                        });
+                        continue;
+                    }
 
                     for (const auto& note : ng->notes) {
                         // Skip grace notes
                         if (note.grace) continue;
 
                         int mv = midi_value(note.pitch);
-                        if (mv < 0 || mv > 127) continue;
+                        if (mv < 0 || mv > 127) {
+                            report.dropped_notes++;
+                            report.diagnostics.push_back({
+                                "Note dropped: MIDI note " + std::to_string(mv)
+                                    + " out of range [0, 127]",
+                                position,
+                                part.id
+                            });
+                            continue;
+                        }
 
                         NoteEvent ne;
                         ne.pitch = static_cast<MidiNote>(mv);
@@ -357,7 +416,7 @@ Result<std::vector<NoteEvent>> compile_to_note_events(const Score& score) {
             return a.start_time < b.start_time;
         });
 
-    return events;
+    return NoteEventResult{std::move(events), std::move(report)};
 }
 
 }  // namespace Sunny::Core

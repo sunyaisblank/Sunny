@@ -51,8 +51,13 @@ struct TempoSegment {
 
 /**
  * @brief Compute AbsoluteBeat for each TempoMap entry position
+ *
+ * Returns an error if any tempo event position fails conversion rather
+ * than silently relocating it to the score origin. A failed conversion
+ * indicates a structural inconsistency between the tempo map and the
+ * time signature map that callers must handle.
  */
-std::vector<Beat> compute_tempo_beats(
+Result<std::vector<Beat>> compute_tempo_beats(
     const TempoMap& tempo_map,
     const TimeSignatureMap& time_map
 ) {
@@ -60,7 +65,8 @@ std::vector<Beat> compute_tempo_beats(
     beats.reserve(tempo_map.size());
     for (const auto& event : tempo_map) {
         auto result = score_time_to_absolute_beat(event.position, time_map);
-        beats.push_back(result.value_or(Beat::zero()));
+        if (!result) return std::unexpected(result.error());
+        beats.push_back(*result);
     }
     return beats;
 }
@@ -147,7 +153,9 @@ Result<double> absolute_beat_to_real_time(
     }
 
     // Compute AbsoluteBeat for each tempo event
-    auto tempo_beats = compute_tempo_beats(tempo_map, time_map);
+    auto tempo_beats_result = compute_tempo_beats(tempo_map, time_map);
+    if (!tempo_beats_result) return std::unexpected(tempo_beats_result.error());
+    auto tempo_beats = std::move(*tempo_beats_result);
 
     double total_seconds = 0.0;
     Beat current_pos = Beat::zero();

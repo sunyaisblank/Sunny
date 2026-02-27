@@ -136,6 +136,30 @@ void validate_s4(const Score& score, std::vector<Diagnostic>& out) {
             ScoreError::TempoMapGap
         ));
     }
+    for (std::size_t i = 0; i < score.tempo_map.size(); ++i) {
+        if (score.tempo_map[i].position.bar < 1) {
+            out.push_back(make_diagnostic(
+                ValidationSeverity::Error, "S4",
+                "TempoMap entry has bar < 1 at index " + std::to_string(i),
+                ScoreError::TempoMapGap,
+                score.tempo_map[i].position
+            ));
+        }
+        if (i > 0) {
+            const auto& prev = score.tempo_map[i - 1].position;
+            const auto& curr = score.tempo_map[i].position;
+            if (curr.bar < prev.bar ||
+                (curr.bar == prev.bar && curr.beat <= prev.beat)) {
+                out.push_back(make_diagnostic(
+                    ValidationSeverity::Error, "S4",
+                    "TempoMap entries not in ascending order at index "
+                        + std::to_string(i),
+                    ScoreError::TempoMapGap,
+                    curr
+                ));
+            }
+        }
+    }
 }
 
 // =============================================================================
@@ -150,6 +174,25 @@ void validate_s5(const Score& score, std::vector<Diagnostic>& out) {
             ScoreError::TimeMapGap
         ));
     }
+    for (std::size_t i = 0; i < score.time_map.size(); ++i) {
+        if (score.time_map[i].bar < 1) {
+            out.push_back(make_diagnostic(
+                ValidationSeverity::Error, "S5",
+                "TimeSignatureMap entry has bar < 1 at index " + std::to_string(i),
+                ScoreError::TimeMapGap,
+                ScoreTime{score.time_map[i].bar, Beat::zero()}
+            ));
+        }
+        if (i > 0 && score.time_map[i].bar <= score.time_map[i - 1].bar) {
+            out.push_back(make_diagnostic(
+                ValidationSeverity::Error, "S5",
+                "TimeSignatureMap entries not in ascending order at index "
+                    + std::to_string(i),
+                ScoreError::TimeMapGap,
+                ScoreTime{score.time_map[i].bar, Beat::zero()}
+            ));
+        }
+    }
 }
 
 // =============================================================================
@@ -163,6 +206,30 @@ void validate_s6(const Score& score, std::vector<Diagnostic>& out) {
             "KeySignatureMap must have an entry at bar 1",
             ScoreError::KeyMapGap
         ));
+    }
+    for (std::size_t i = 0; i < score.key_map.size(); ++i) {
+        if (score.key_map[i].position.bar < 1) {
+            out.push_back(make_diagnostic(
+                ValidationSeverity::Error, "S6",
+                "KeySignatureMap entry has bar < 1 at index " + std::to_string(i),
+                ScoreError::KeyMapGap,
+                score.key_map[i].position
+            ));
+        }
+        if (i > 0) {
+            const auto& prev = score.key_map[i - 1].position;
+            const auto& curr = score.key_map[i].position;
+            if (curr.bar < prev.bar ||
+                (curr.bar == prev.bar && curr.beat <= prev.beat)) {
+                out.push_back(make_diagnostic(
+                    ValidationSeverity::Error, "S6",
+                    "KeySignatureMap entries not in ascending order at index "
+                        + std::to_string(i),
+                    ScoreError::KeyMapGap,
+                    curr
+                ));
+            }
+        }
     }
 }
 
