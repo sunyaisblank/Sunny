@@ -93,7 +93,15 @@ std::vector<ConstraintViolation> check_voice_leading(
 
     if (prev.empty() || next.empty()) return violations;
 
-    std::size_t voices = std::min(prev.size(), next.size());
+    if (prev.size() != next.size()) {
+        add_violation(violations, VLConstraintRule::CardinalityMismatch,
+            ConstraintSeverity::Error, -1, -1,
+            "Voice counts differ: " + std::to_string(prev.size()) +
+            " vs " + std::to_string(next.size()));
+        return violations;
+    }
+
+    std::size_t voices = prev.size();
 
     // --- NoParallelFifths / NoParallelOctaves ---
     for (std::size_t i = 0; i < voices; ++i) {

@@ -563,3 +563,64 @@ TEST_CASE("VLCN001A: Empty chord handling", "[voiceleading][core]") {
         REQUIRE(v.empty());
     }
 }
+
+// =============================================================================
+// Cardinality mismatch detection (audit RC-F remediation)
+// =============================================================================
+
+TEST_CASE("VLCN001A: check_voice_leading reports mismatched voice counts", "[voiceleading][core]") {
+    auto config = test_config();
+
+    SECTION("3-voice to 4-voice transition reports CardinalityMismatch") {
+        auto prev = make_voicing(0, "major", {48, 64, 67});       // 3 notes
+        auto next = make_voicing(5, "major", {53, 60, 65, 69});   // 4 notes
+
+        auto v = check_voice_leading(prev, next, config);
+        REQUIRE_FALSE(v.empty());
+
+        bool found = false;
+        for (const auto& viol : v) {
+            if (viol.rule == VLConstraintRule::CardinalityMismatch) {
+                found = true;
+                REQUIRE(viol.severity == ConstraintSeverity::Error);
+                REQUIRE(viol.description.find("3") != std::string::npos);
+                REQUIRE(viol.description.find("4") != std::string::npos);
+            }
+        }
+        REQUIRE(found);
+    }
+
+    SECTION("4-voice to 3-voice transition reports CardinalityMismatch") {
+        auto prev = make_voicing(0, "major", {48, 60, 64, 67});  // 4 notes
+        auto next = make_voicing(5, "major", {53, 65, 69});       // 3 notes
+
+        auto v = check_voice_leading(prev, next, config);
+        bool found = false;
+        for (const auto& viol : v) {
+            if (viol.rule == VLConstraintRule::CardinalityMismatch) found = true;
+        }
+        REQUIRE(found);
+    }
+
+    SECTION("CardinalityMismatch is the only violation reported") {
+        auto prev = make_voicing(0, "major", {48, 64, 67});
+        auto next = make_voicing(5, "major", {53, 60, 65, 69});
+
+        auto v = check_voice_leading(prev, next, config);
+        // Early return means no other rules are checked
+        REQUIRE(v.size() == 1);
+        REQUIRE(v[0].rule == VLConstraintRule::CardinalityMismatch);
+    }
+
+    SECTION("Equal cardinalities produce no CardinalityMismatch") {
+        auto prev = make_voicing(0, "major", {48, 60, 64, 67});
+        auto next = make_voicing(5, "major", {53, 60, 65, 69});
+
+        auto v = check_voice_leading(prev, next, config);
+        bool found = false;
+        for (const auto& viol : v) {
+            if (viol.rule == VLConstraintRule::CardinalityMismatch) found = true;
+        }
+        REQUIRE_FALSE(found);
+    }
+}

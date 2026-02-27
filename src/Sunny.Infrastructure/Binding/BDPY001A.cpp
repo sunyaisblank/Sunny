@@ -297,7 +297,8 @@ PYBIND11_MODULE(sunny_native, m) {
         std::vector<MidiNote> cpp_close;
         for (int n : close) cpp_close.push_back(static_cast<MidiNote>(n));
         auto result = generate_drop2_voicing(cpp_close);
-        return std::vector<int>(result.begin(), result.end());
+        if (!result) throw std::runtime_error("Drop-2 voicing requires >= 4 notes");
+        return std::vector<int>(result->begin(), result->end());
     }, py::arg("close_voicing"), "Generate drop-2 voicing");
 
     // =========================================================================

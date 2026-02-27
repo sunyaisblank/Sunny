@@ -109,6 +109,9 @@ namespace {
  * above bass_pc in the given scale.
  *
  * Generic interval 1 = unison, 2 = 2nd, 3 = 3rd, etc.
+ *
+ * @pre generic_interval >= 1
+ * @pre scale is non-empty
  */
 PitchClass diatonic_above(
     PitchClass bass_pc,
@@ -116,6 +119,12 @@ PitchClass diatonic_above(
     PitchClass key_root,
     std::span<const Interval> scale
 ) {
+    // generic_interval < 1 is a precondition violation: 1 = unison, 2 = 2nd, etc.
+    // Callers must validate; return key_root as a safe fallback.
+    if (generic_interval < 1 || scale.empty()) {
+        return key_root;
+    }
+
     // Find the scale degree of the bass note
     int bass_offset = ((static_cast<int>(bass_pc) - static_cast<int>(key_root)) % 12 + 12) % 12;
 
@@ -139,8 +148,12 @@ PitchClass diatonic_above(
         if (bass_degree < 0) bass_degree = 0;
     }
 
-    // Move up by (generic_interval - 1) scale degrees
-    int target_degree = (bass_degree + generic_interval - 1) % scale_size;
+    // Move up by (generic_interval - 1) scale degrees.
+    // Safe positive modulo to prevent negative index when bass_degree
+    // + generic_interval - 1 is negative (cannot happen with guard above,
+    // but protects against future callers).
+    int raw = bass_degree + generic_interval - 1;
+    int target_degree = ((raw % scale_size) + scale_size) % scale_size;
     int target_offset = scale[target_degree];
     return static_cast<PitchClass>((static_cast<int>(key_root) + target_offset) % 12);
 }
@@ -235,7 +248,12 @@ Result<FiguredBassSequenceResult> realise_figured_bass_sequence(
         const auto& prev_upper = seq.realisations[i - 1].upper;
         const auto& new_upper = target->upper;
 
-        // If voice counts match, apply optimal voice leading
+        // Voice-led connection requires matching cardinality between successive
+        // upper-voice sets. When figured bass symbols produce different numbers of
+        // upper voices (e.g., "5/3" yields 2 upper voices, "7" yields 3), the
+        // cardinalities differ and optimal voice leading cannot establish a bijection.
+        // In that case, fall back to direct realisation for the current chord,
+        // accepting the positional discontinuity as unavoidable.
         if (!prev_upper.empty() && prev_upper.size() == new_upper.size()) {
             // Extract target pitch classes
             std::vector<PitchClass> target_pcs;

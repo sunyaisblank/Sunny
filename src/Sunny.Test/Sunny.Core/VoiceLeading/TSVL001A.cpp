@@ -154,33 +154,31 @@ TEST_CASE("VLNT001A: generate_drop2_voicing", "[voiceleading][core]") {
     SECTION("Drops second from top") {
         std::vector<MidiNote> close = {60, 64, 67, 71};  // C, E, G, B
         auto result = generate_drop2_voicing(close);
-
-        REQUIRE(result.size() == 4);
+        REQUIRE(result.has_value());
+        REQUIRE(result->size() == 4);
 
         // Second from top (G=67) should drop an octave (to 55)
         // Result should be sorted: {55, 60, 64, 71}
-        REQUIRE(result[0] == 55);  // G (dropped)
-        REQUIRE(result[1] == 60);  // C
-        REQUIRE(result[2] == 64);  // E
-        REQUIRE(result[3] == 71);  // B
+        REQUIRE((*result)[0] == 55);  // G (dropped)
+        REQUIRE((*result)[1] == 60);  // C
+        REQUIRE((*result)[2] == 64);  // E
+        REQUIRE((*result)[3] == 71);  // B
     }
 
-    SECTION("Returns unchanged for < 4 notes") {
+    SECTION("Returns error for < 4 notes") {
         std::vector<MidiNote> triad = {60, 64, 67};
         auto result = generate_drop2_voicing(triad);
-
-        REQUIRE(result.size() == 3);
-        REQUIRE(result[0] == 60);
-        REQUIRE(result[1] == 64);
-        REQUIRE(result[2] == 67);
+        REQUIRE_FALSE(result.has_value());
+        REQUIRE(result.error() == ErrorCode::VoiceLeadingFailed);
     }
 
     SECTION("Result is sorted ascending") {
         std::vector<MidiNote> close = {60, 64, 67, 71};
         auto result = generate_drop2_voicing(close);
+        REQUIRE(result.has_value());
 
-        for (std::size_t i = 1; i < result.size(); ++i) {
-            REQUIRE(result[i] > result[i-1]);
+        for (std::size_t i = 1; i < result->size(); ++i) {
+            REQUIRE((*result)[i] > (*result)[i-1]);
         }
     }
 }
@@ -189,22 +187,22 @@ TEST_CASE("VLNT001A: generate_drop3_voicing", "[voiceleading][core]") {
     SECTION("Drops third from top") {
         std::vector<MidiNote> close = {60, 64, 67, 71};  // C, E, G, B
         auto result = generate_drop3_voicing(close);
-
-        REQUIRE(result.size() == 4);
+        REQUIRE(result.has_value());
+        REQUIRE(result->size() == 4);
 
         // Third from top (E=64) should drop an octave (to 52)
         // Result should be sorted: {52, 60, 67, 71}
-        REQUIRE(result[0] == 52);  // E (dropped)
-        REQUIRE(result[1] == 60);  // C
-        REQUIRE(result[2] == 67);  // G
-        REQUIRE(result[3] == 71);  // B
+        REQUIRE((*result)[0] == 52);  // E (dropped)
+        REQUIRE((*result)[1] == 60);  // C
+        REQUIRE((*result)[2] == 67);  // G
+        REQUIRE((*result)[3] == 71);  // B
     }
 
-    SECTION("Returns unchanged for < 4 notes") {
+    SECTION("Returns error for < 4 notes") {
         std::vector<MidiNote> triad = {60, 64, 67};
         auto result = generate_drop3_voicing(triad);
-
-        REQUIRE(result.size() == 3);
+        REQUIRE_FALSE(result.has_value());
+        REQUIRE(result.error() == ErrorCode::VoiceLeadingFailed);
     }
 }
 
@@ -262,13 +260,13 @@ TEST_CASE("VLNT001A: Edge cases", "[voiceleading][core]") {
         REQUIRE(pitch_class(result->voiced_notes[0]) == 5);
     }
 
-    SECTION("More voices than target PCs extends targets") {
+    SECTION("Mismatched cardinalities return error") {
         std::vector<MidiNote> source = {60, 64, 67, 72};  // 4 voices
         std::vector<PitchClass> target = {0, 4, 7};       // 3 PCs
 
         auto result = voice_lead_nearest_tone(source, target);
-        REQUIRE(result.has_value());
-        REQUIRE(result->voiced_notes.size() == 4);
+        REQUIRE_FALSE(result.has_value());
+        REQUIRE(result.error() == ErrorCode::VoiceLeadingFailed);
     }
 }
 
@@ -352,60 +350,59 @@ TEST_CASE("VLNT001A: generate_drop24_voicing", "[voiceleading][core]") {
     SECTION("Drops 2nd and 4th from top") {
         std::vector<MidiNote> close = {60, 64, 67, 71};  // C, E, G, B
         auto result = generate_drop24_voicing(close);
-
-        REQUIRE(result.size() == 4);
+        REQUIRE(result.has_value());
+        REQUIRE(result->size() == 4);
 
         // 2nd from top: G=67 -> 55
         // 4th from top: C=60 -> 48
         // Sorted: {48, 55, 64, 71}
-        REQUIRE(result[0] == 48);  // C (dropped)
-        REQUIRE(result[1] == 55);  // G (dropped)
-        REQUIRE(result[2] == 64);  // E (unchanged)
-        REQUIRE(result[3] == 71);  // B (unchanged)
+        REQUIRE((*result)[0] == 48);  // C (dropped)
+        REQUIRE((*result)[1] == 55);  // G (dropped)
+        REQUIRE((*result)[2] == 64);  // E (unchanged)
+        REQUIRE((*result)[3] == 71);  // B (unchanged)
     }
 
-    SECTION("Returns unchanged for < 4 notes") {
+    SECTION("Returns error for < 4 notes") {
         std::vector<MidiNote> triad = {60, 64, 67};
         auto result = generate_drop24_voicing(triad);
-
-        REQUIRE(result.size() == 3);
-        REQUIRE(result[0] == 60);
-        REQUIRE(result[1] == 64);
-        REQUIRE(result[2] == 67);
+        REQUIRE_FALSE(result.has_value());
+        REQUIRE(result.error() == ErrorCode::VoiceLeadingFailed);
     }
 
     SECTION("Result is sorted ascending") {
         std::vector<MidiNote> close = {60, 64, 67, 71};
         auto result = generate_drop24_voicing(close);
+        REQUIRE(result.has_value());
 
-        for (std::size_t i = 1; i < result.size(); ++i) {
-            REQUIRE(result[i] > result[i - 1]);
+        for (std::size_t i = 1; i < result->size(); ++i) {
+            REQUIRE((*result)[i] > (*result)[i - 1]);
         }
     }
 
     SECTION("5-note voicing") {
         std::vector<MidiNote> close = {60, 64, 67, 70, 74};  // C, E, G, Bb, D
         auto result = generate_drop24_voicing(close);
-
-        REQUIRE(result.size() == 5);
+        REQUIRE(result.has_value());
+        REQUIRE(result->size() == 5);
 
         // 2nd from top: Bb=70 -> 58
         // 4th from top: E=64 -> 52
         // Sorted: {52, 58, 60, 67, 74}
-        REQUIRE(result[0] == 52);  // E (dropped)
-        REQUIRE(result[1] == 58);  // Bb (dropped)
-        REQUIRE(result[2] == 60);  // C (unchanged)
-        REQUIRE(result[3] == 67);  // G (unchanged)
-        REQUIRE(result[4] == 74);  // D (unchanged)
+        REQUIRE((*result)[0] == 52);  // E (dropped)
+        REQUIRE((*result)[1] == 58);  // Bb (dropped)
+        REQUIRE((*result)[2] == 60);  // C (unchanged)
+        REQUIRE((*result)[3] == 67);  // G (unchanged)
+        REQUIRE((*result)[4] == 74);  // D (unchanged)
     }
 
     SECTION("Pitch classes preserved") {
         std::vector<MidiNote> close = {60, 64, 67, 71};
         auto result = generate_drop24_voicing(close);
+        REQUIRE(result.has_value());
 
         std::set<PitchClass> close_pcs, drop24_pcs;
         for (auto n : close) close_pcs.insert(pitch_class(n));
-        for (auto n : result) drop24_pcs.insert(pitch_class(n));
+        for (auto n : *result) drop24_pcs.insert(pitch_class(n));
         REQUIRE(close_pcs == drop24_pcs);
     }
 }
@@ -414,53 +411,61 @@ TEST_CASE("VLNT001A: generate_spread_voicing", "[voiceleading][core]") {
     SECTION("Bass separated by >= octave from upper voices") {
         std::vector<MidiNote> close = {60, 64, 67, 71};  // C, E, G, B
         auto result = generate_spread_voicing(close);
-
-        REQUIRE(result.size() == 4);
+        REQUIRE(result.has_value());
+        REQUIRE(result->size() == 4);
 
         // Bass must be >= 12 below next voice
-        REQUIRE((result[1] - result[0]) >= 12);
+        REQUIRE(((*result)[1] - (*result)[0]) >= 12);
     }
 
     SECTION("Upper voices remain in close position") {
         std::vector<MidiNote> close = {60, 64, 67, 71};
         auto result = generate_spread_voicing(close);
+        REQUIRE(result.has_value());
 
         // Upper voices (indices 1..n) should be unchanged
-        REQUIRE(result[1] == 64);
-        REQUIRE(result[2] == 67);
-        REQUIRE(result[3] == 71);
+        REQUIRE((*result)[1] == 64);
+        REQUIRE((*result)[2] == 67);
+        REQUIRE((*result)[3] == 71);
     }
 
     SECTION("Bass drops an octave") {
         std::vector<MidiNote> close = {60, 64, 67, 71};
         auto result = generate_spread_voicing(close);
+        REQUIRE(result.has_value());
 
         // C=60 needs to drop: 64-60=4 < 12, so drop to 48. 64-48=16 >= 12.
-        REQUIRE(result[0] == 48);
+        REQUIRE((*result)[0] == 48);
     }
 
-    SECTION("Returns unchanged for single note") {
+    SECTION("Returns error for fewer than 3 notes") {
+        std::vector<MidiNote> pair = {60, 64};
+        auto result = generate_spread_voicing(pair);
+        REQUIRE_FALSE(result.has_value());
+        REQUIRE(result.error() == ErrorCode::VoiceLeadingFailed);
+
         std::vector<MidiNote> single = {60};
-        auto result = generate_spread_voicing(single);
-        REQUIRE(result.size() == 1);
-        REQUIRE(result[0] == 60);
+        auto result2 = generate_spread_voicing(single);
+        REQUIRE_FALSE(result2.has_value());
     }
 
     SECTION("Already spread voicing unchanged") {
         std::vector<MidiNote> already_spread = {36, 60, 64, 67};  // gap = 24
         auto result = generate_spread_voicing(already_spread);
+        REQUIRE(result.has_value());
 
-        REQUIRE(result[0] == 36);
-        REQUIRE(result[1] == 60);
+        REQUIRE((*result)[0] == 36);
+        REQUIRE((*result)[1] == 60);
     }
 
     SECTION("Pitch classes preserved") {
         std::vector<MidiNote> close = {60, 64, 67, 71};
         auto result = generate_spread_voicing(close);
+        REQUIRE(result.has_value());
 
         std::set<PitchClass> close_pcs, spread_pcs;
         for (auto n : close) close_pcs.insert(pitch_class(n));
-        for (auto n : result) spread_pcs.insert(pitch_class(n));
+        for (auto n : *result) spread_pcs.insert(pitch_class(n));
         REQUIRE(close_pcs == spread_pcs);
     }
 }
@@ -617,6 +622,61 @@ TEST_CASE("VLNT001A: voice_lead_optimal (§7.2)", "[voiceleading][core]") {
         auto result = voice_lead_optimal(source, target);
         REQUIRE(result.has_value());
         // Check if parallel fifths are flagged
-        // (The optimal assignment C→D, G→A is parallel fifths)
+        // (The optimal assignment C->D, G->A is parallel fifths)
     }
+
+    SECTION("Rejects mismatched cardinalities") {
+        std::vector<MidiNote> source = {60, 64, 67};
+        std::vector<PitchClass> target = {5, 9, 0, 5};  // 4 targets, 3 sources
+        auto result = voice_lead_optimal(source, target);
+        REQUIRE_FALSE(result.has_value());
+        REQUIRE(result.error() == ErrorCode::VoiceLeadingFailed);
+    }
+}
+
+// =============================================================================
+// Cardinality mismatch tests (audit RC-F remediation)
+// =============================================================================
+
+TEST_CASE("VLNT001A: voice_lead_nearest_tone rejects mismatched cardinalities", "[voiceleading][core]") {
+    SECTION("More sources than targets") {
+        std::vector<MidiNote> source = {60, 64, 67, 72};
+        std::vector<PitchClass> target = {5, 9};
+        auto result = voice_lead_nearest_tone(source, target);
+        REQUIRE_FALSE(result.has_value());
+        REQUIRE(result.error() == ErrorCode::VoiceLeadingFailed);
+    }
+
+    SECTION("More targets than sources") {
+        std::vector<MidiNote> source = {60, 64};
+        std::vector<PitchClass> target = {5, 9, 0};
+        auto result = voice_lead_nearest_tone(source, target);
+        REQUIRE_FALSE(result.has_value());
+        REQUIRE(result.error() == ErrorCode::VoiceLeadingFailed);
+    }
+}
+
+TEST_CASE("VLNT001A: voice_lead_optimal rejects mismatched cardinalities", "[voiceleading][core]") {
+    SECTION("More sources than targets") {
+        std::vector<MidiNote> source = {60, 64, 67, 72};
+        std::vector<PitchClass> target = {5, 9};
+        auto result = voice_lead_optimal(source, target);
+        REQUIRE_FALSE(result.has_value());
+        REQUIRE(result.error() == ErrorCode::VoiceLeadingFailed);
+    }
+
+    SECTION("More targets than sources") {
+        std::vector<MidiNote> source = {60};
+        std::vector<PitchClass> target = {5, 9, 0};
+        auto result = voice_lead_optimal(source, target);
+        REQUIRE_FALSE(result.has_value());
+        REQUIRE(result.error() == ErrorCode::VoiceLeadingFailed);
+    }
+}
+
+TEST_CASE("VLNT001A: generate_drop2_voicing returns error for 3-note input", "[voiceleading][core]") {
+    std::vector<MidiNote> triad = {60, 64, 67};
+    auto result = generate_drop2_voicing(triad);
+    REQUIRE_FALSE(result.has_value());
+    REQUIRE(result.error() == ErrorCode::VoiceLeadingFailed);
 }

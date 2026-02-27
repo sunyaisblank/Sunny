@@ -2297,8 +2297,20 @@ Result<MutationResult> apply_voice_leading(
             }
             if (source.empty()) return;
 
+            // voice_lead_nearest_tone requires equal cardinalities.
+            // Pad target pitch classes by cycling when source is larger,
+            // or truncate when target is larger, to match source size.
+            std::vector<PitchClass> matched_pcs = target_pcs;
+            while (matched_pcs.size() < source.size() && !target_pcs.empty()) {
+                matched_pcs.push_back(
+                    target_pcs[matched_pcs.size() % target_pcs.size()]);
+            }
+            if (matched_pcs.size() > source.size()) {
+                matched_pcs.resize(source.size());
+            }
+
             auto vl_result = voice_lead_nearest_tone(
-                source, target_pcs,
+                source, matched_pcs,
                 lock_bass, allow_par_fifths, allow_par_octaves);
             if (!vl_result) return;
 

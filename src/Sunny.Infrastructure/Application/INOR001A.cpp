@@ -62,15 +62,24 @@ OrchestratorResult Orchestrator::create_progression_clip(
         return {false, "", "No valid chords generated"};
     }
 
-    // Apply voice leading
+    // Apply voice leading. Pad or trim target pitch classes to match
+    // source cardinality, since successive chords may differ in size.
     for (std::size_t i = 1; i < chords.size(); ++i) {
         std::vector<Core::PitchClass> target_pcs;
         for (auto note : chords[i].notes) {
             target_pcs.push_back(Core::pitch_class(note));
         }
 
+        auto& source = chords[i - 1].notes;
+        while (target_pcs.size() < source.size() && !target_pcs.empty()) {
+            target_pcs.push_back(target_pcs[target_pcs.size() % chords[i].notes.size()]);
+        }
+        if (target_pcs.size() > source.size()) {
+            target_pcs.resize(source.size());
+        }
+
         auto vl_result = Core::voice_lead_nearest_tone(
-            chords[i - 1].notes, target_pcs, true
+            source, target_pcs, true
         );
         if (vl_result) {
             chords[i].notes = vl_result->voiced_notes;

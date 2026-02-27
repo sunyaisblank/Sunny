@@ -49,7 +49,8 @@ enum class VLConstraintRule {
     StepwiseAfterLeap,
     CompleteChords,
     DoubleTheRoot,
-    NoDoubleLeadingTone
+    NoDoubleLeadingTone,
+    CardinalityMismatch
 };
 
 /**
