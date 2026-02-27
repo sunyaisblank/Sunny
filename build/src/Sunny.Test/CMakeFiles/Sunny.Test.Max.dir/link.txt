@@ -1,1 +1,0 @@
-/usr/bin/c++ -O3 -DNDEBUG CMakeFiles/Sunny.Test.Max.dir/Sunny.Max/External/TSMXEU001A.cpp.o CMakeFiles/Sunny.Test.Max.dir/Sunny.Max/External/TSMXPR001A.cpp.o CMakeFiles/Sunny.Test.Max.dir/Sunny.Max/External/TSMXVL001A.cpp.o -o Sunny.Test.Max  ../Sunny.Core/libSunny.Core.a ../../_deps/catch2-build/src/libCatch2Main.a ../../_deps/catch2-build/src/libCatch2.a 

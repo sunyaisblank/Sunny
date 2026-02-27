@@ -1,2 +1,0 @@
-/usr/bin/ar qc libSunny.Render.a CMakeFiles/Sunny.Render.dir/Arpeggio/RDAP001A.cpp.o CMakeFiles/Sunny.Render.dir/Modulation/RDMD001A.cpp.o CMakeFiles/Sunny.Render.dir/Transport/RDTR001A.cpp.o
-/usr/bin/ranlib libSunny.Render.a

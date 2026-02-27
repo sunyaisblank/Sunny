@@ -1,1 +1,0 @@
-/usr/bin/c++ -fPIC -O3 -DNDEBUG -flto -shared  -o sunny_native.cpython-312-x86_64-linux-gnu.so CMakeFiles/sunny_native.dir/Binding/BDPY001A.cpp.o  libSunny.Infrastructure.a ../Sunny.Render/libSunny.Render.a ../Sunny.Core/libSunny.Core.a ../../_deps/pugixml-build/libpugixml.a 
