@@ -116,7 +116,7 @@ TEST_CASE("compile_to_midi: single C4 whole note at 120 BPM", "[score][midi]") {
     auto result = compile_to_midi(score, 480);
     REQUIRE(result.has_value());
 
-    const auto& midi = *result;
+    const auto& midi = result->midi;
     CHECK(midi.ppq == 480);
     REQUIRE(midi.notes.size() == 1);
 
@@ -135,7 +135,7 @@ TEST_CASE("compile_to_midi: ff dynamic with staccato halves duration", "[score][
     auto result = compile_to_midi(score, 480);
     REQUIRE(result.has_value());
 
-    const auto& midi = *result;
+    const auto& midi = result->midi;
     REQUIRE(midi.notes.size() == 1);
 
     const auto& n = midi.notes[0];
@@ -161,7 +161,7 @@ TEST_CASE("compile_to_midi: hairpin interpolation p to f", "[score][midi]") {
     auto result = compile_to_midi(score, 480);
     REQUIRE(result.has_value());
 
-    const auto& midi = *result;
+    const auto& midi = result->midi;
     REQUIRE(midi.notes.size() == 4);
 
     CHECK(midi.notes[0].velocity < midi.notes[1].velocity);
@@ -181,7 +181,7 @@ TEST_CASE("compile_to_midi: tied notes merge into single event", "[score][midi]"
     auto result = compile_to_midi(score, 480);
     REQUIRE(result.has_value());
 
-    const auto& midi = *result;
+    const auto& midi = result->midi;
     REQUIRE(midi.notes.size() == 1);
     CHECK(midi.notes[0].tick == 0);
     CHECK(midi.notes[0].duration_ticks == 3840);
@@ -204,7 +204,7 @@ TEST_CASE("compile_to_midi: tempo meta events at correct ticks", "[score][midi]"
     auto result = compile_to_midi(score, 480);
     REQUIRE(result.has_value());
 
-    const auto& midi = *result;
+    const auto& midi = result->midi;
     REQUIRE(midi.tempos.size() == 2);
 
     CHECK(midi.tempos[0].tick == 0);
@@ -235,7 +235,7 @@ TEST_CASE("compile_to_midi: time signature meta events", "[score][midi]") {
     auto result = compile_to_midi(score, 480);
     REQUIRE(result.has_value());
 
-    const auto& midi = *result;
+    const auto& midi = result->midi;
     REQUIRE(midi.time_signatures.size() == 2);
 
     CHECK(midi.time_signatures[0].tick == 0);
@@ -273,7 +273,7 @@ TEST_CASE("compile_to_midi: multi-part multi-channel", "[score][midi]") {
     auto result = compile_to_midi(score, 480);
     REQUIRE(result.has_value());
 
-    const auto& midi = *result;
+    const auto& midi = result->midi;
     REQUIRE(midi.notes.size() == 2);
 
     bool found_ch1 = false, found_ch2 = false;
@@ -291,7 +291,7 @@ TEST_CASE("compile_to_midi: empty score produces no notes", "[score][midi]") {
     auto result = compile_to_midi(score, 480);
     REQUIRE(result.has_value());
 
-    const auto& midi = *result;
+    const auto& midi = result->midi;
     CHECK(midi.notes.empty());
     CHECK(!midi.tempos.empty());
     CHECK(!midi.time_signatures.empty());
@@ -304,7 +304,7 @@ TEST_CASE("compile_to_midi: accent increases velocity by 20", "[score][midi]") {
     auto result = compile_to_midi(score, 480);
     REQUIRE(result.has_value());
 
-    const auto& midi = *result;
+    const auto& midi = result->midi;
     REQUIRE(midi.notes.size() == 1);
     CHECK(midi.notes[0].velocity == 108);
     CHECK(midi.notes[0].duration_ticks == 1920);
@@ -325,7 +325,7 @@ TEST_CASE("compile_to_midi: key signature meta event", "[score][midi]") {
     auto result = compile_to_midi(score, 480);
     REQUIRE(result.has_value());
 
-    const auto& midi = *result;
+    const auto& midi = result->midi;
     REQUIRE(midi.key_signatures.size() == 1);
     CHECK(midi.key_signatures[0].tick == 0);
     CHECK(midi.key_signatures[0].accidentals == 0);
@@ -344,7 +344,7 @@ TEST_CASE("compile_to_note_events: 2-bar score with one note per bar produces 2 
 
     auto result = compile_to_note_events(score);
     REQUIRE(result.has_value());
-    CHECK(result->size() == 2);
+    CHECK(result->events.size() == 2);
 }
 
 TEST_CASE("compile_to_note_events: pitch equals midi_value of source SpelledPitch",
@@ -354,10 +354,10 @@ TEST_CASE("compile_to_note_events: pitch equals midi_value of source SpelledPitc
 
     auto result = compile_to_note_events(score);
     REQUIRE(result.has_value());
-    REQUIRE(result->size() == 1);
+    REQUIRE(result->events.size() == 1);
 
-    CHECK((*result)[0].pitch == static_cast<MidiNote>(midi_value(C4)));
-    CHECK((*result)[0].pitch == 60);
+    CHECK(result->events[0].pitch == static_cast<MidiNote>(midi_value(C4)));
+    CHECK(result->events[0].pitch == 60);
 }
 
 TEST_CASE("compile_to_note_events: start times monotonically increase across bars",
@@ -370,10 +370,10 @@ TEST_CASE("compile_to_note_events: start times monotonically increase across bar
 
     auto result = compile_to_note_events(score);
     REQUIRE(result.has_value());
-    REQUIRE(result->size() == 4);
+    REQUIRE(result->events.size() == 4);
 
-    for (std::size_t i = 1; i < result->size(); ++i) {
-        CHECK((*result)[i].start_time > (*result)[i - 1].start_time);
+    for (std::size_t i = 1; i < result->events.size(); ++i) {
+        CHECK(result->events[i].start_time > result->events[i - 1].start_time);
     }
 }
 
@@ -384,5 +384,5 @@ TEST_CASE("compile_to_note_events: rest-only bars produce zero events",
 
     auto result = compile_to_note_events(score);
     REQUIRE(result.has_value());
-    CHECK(result->empty());
+    CHECK(result->events.empty());
 }

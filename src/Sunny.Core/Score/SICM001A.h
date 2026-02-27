@@ -18,9 +18,44 @@
 #include "SIDC001A.h"
 
 #include <cstdint>
+#include <string>
 #include <vector>
 
 namespace Sunny::Core {
+
+// =============================================================================
+// Compilation diagnostics and report
+// =============================================================================
+
+/**
+ * @brief Diagnostic from compilation pipeline
+ *
+ * Records a single dropped or degraded event with location context.
+ */
+struct CompilationDiagnostic {
+    std::string message;
+    std::optional<ScoreTime> location;
+    std::optional<PartId> part;
+};
+
+/**
+ * @brief Report of dropped or degraded events during compilation
+ *
+ * Replaces the silent continues that previously absorbed errors in the
+ * compilation pipeline. Each counter corresponds to a category of drop;
+ * the diagnostics vector provides per-event detail.
+ */
+struct CompilationReport {
+    std::uint32_t dropped_notes = 0;
+    std::uint32_t dropped_tempo_events = 0;
+    std::uint32_t dropped_time_sig_events = 0;
+    std::vector<CompilationDiagnostic> diagnostics;
+
+    [[nodiscard]] bool has_drops() const noexcept {
+        return dropped_notes > 0 || dropped_tempo_events > 0
+            || dropped_time_sig_events > 0;
+    }
+};
 
 // =============================================================================
 // Compiled MIDI data types
@@ -59,6 +94,22 @@ struct CompiledMidi {
     std::vector<MidiKeySigData> key_signatures;
 };
 
+/**
+ * @brief Result of MIDI compilation, including both data and report
+ */
+struct CompiledMidiResult {
+    CompiledMidi midi;
+    CompilationReport report;
+};
+
+/**
+ * @brief Result of NoteEvent compilation
+ */
+struct NoteEventResult {
+    std::vector<NoteEvent> events;
+    CompilationReport report;
+};
+
 // =============================================================================
 // Compilation API
 // =============================================================================
@@ -75,7 +126,7 @@ struct CompiledMidi {
  * @param ppq Pulses per quarter note (default 480)
  * @return CompiledMidi or error if score has Error-level diagnostics
  */
-[[nodiscard]] Result<CompiledMidi> compile_to_midi(
+[[nodiscard]] Result<CompiledMidiResult> compile_to_midi(
     const Score& score,
     int ppq = 480
 );
@@ -91,7 +142,7 @@ struct CompiledMidi {
  * @param score Source score
  * @return Sorted vector of NoteEvents, or error if temporal conversion fails
  */
-[[nodiscard]] Result<std::vector<NoteEvent>> compile_to_note_events(
+[[nodiscard]] Result<NoteEventResult> compile_to_note_events(
     const Score& score
 );
 
