@@ -466,3 +466,18 @@ TEST_CASE("TSTN001A: ScaleDefinition step_pattern (§4.1)", "[tensor][event]") {
     REQUIRE(wt_steps.size() == 6);
     for (auto s : wt_steps) REQUIRE(s == 2);
 }
+
+// =============================================================================
+// TNTP001A - mod12_positive
+// =============================================================================
+
+TEST_CASE("TSTN001A: mod12_positive handles negative operands", "[tensor][types]") {
+    REQUIRE(mod12_positive(-3) == 9);
+    REQUIRE(mod12_positive(-12) == 0);
+    REQUIRE(mod12_positive(15) == 3);
+    REQUIRE(mod12_positive(0) == 0);
+    REQUIRE(mod12_positive(11) == 11);
+    REQUIRE(mod12_positive(12) == 0);
+    REQUIRE(mod12_positive(-1) == 11);
+    REQUIRE(mod12_positive(-13) == 11);
+}

@@ -348,7 +348,7 @@ TEST_CASE("PTDI001A: round-trip apply/interval invariant", "[interval][diatonic]
         for (int j = 0; j < n; ++j) {
             auto di = interval_from_spelled_pitches(pitches[i], pitches[j]);
             auto result = apply_interval(pitches[i], di);
-            INFO("from=" << to_spn(pitches[i]) << " to=" << to_spn(pitches[j])
+            INFO("from=" << to_spn(pitches[i]).value() << " to=" << to_spn(pitches[j]).value()
                  << " interval=(" << di.chromatic << "," << di.diatonic << ")");
             CHECK(result == pitches[j]);
         }

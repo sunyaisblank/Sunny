@@ -17,6 +17,7 @@
 #include "../Tensor/TNTP001A.h"
 #include "PTPC001A.h"
 
+#include <cassert>
 #include <optional>
 #include <utility>
 
@@ -85,6 +86,7 @@ namespace Sunny::Core {
     MidiNote reference,
     PitchClass target_pc
 ) noexcept {
+    assert(target_pc <= 11 && "closest_pitch_class_midi: target_pc must be in [0, 11]");
     int ref_octave = reference / 12;
 
     int candidates[3] = {

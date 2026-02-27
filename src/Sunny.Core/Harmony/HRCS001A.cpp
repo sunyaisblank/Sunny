@@ -40,7 +40,7 @@ ChordScaleAnalysis analyze_chord_scale(
 
     // Iterate over scale tones
     for (Interval iv : scale_intervals) {
-        PitchClass pc = (static_cast<int>(scale_root) + iv) % 12;
+        PitchClass pc = mod12_positive(static_cast<int>(scale_root) + iv);
 
         if (is_chord[pc]) {
             result.chord_tones.push_back(pc);

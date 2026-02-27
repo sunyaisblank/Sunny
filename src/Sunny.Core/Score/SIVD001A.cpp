@@ -372,9 +372,7 @@ void validate_s11(const Score& score, std::vector<Diagnostic>& out) {
                     const auto* ng = event.as_note_group();
                     if (!ng) continue;
                     for (const auto& note : ng->notes) {
-                        PitchClass pc = static_cast<PitchClass>(
-                            midi_value(note.pitch) % 12);
-                        used_pcs.insert(pc);
+                        used_pcs.insert(pc(note.pitch));
                     }
                 }
             }
@@ -789,8 +787,7 @@ void validate_m6(const Score& score, std::vector<Diagnostic>& out) {
             }
             if (!key_entry) continue;
 
-            int key_root_pc = midi_value(key_entry->key.root) % 12;
-            if (key_root_pc < 0) key_root_pc += 12;
+            int key_root_pc = pc(key_entry->key.root);
             int leading_tone_pc = (key_root_pc + 11) % 12;
 
             for (const auto& voice : measure.voices) {
@@ -799,8 +796,7 @@ void validate_m6(const Score& score, std::vector<Diagnostic>& out) {
                     if (!ng) continue;
 
                     for (const auto& note : ng->notes) {
-                        int note_pc = midi_value(note.pitch) % 12;
-                        if (note_pc < 0) note_pc += 12;
+                        int note_pc = pc(note.pitch);
                         if (note_pc != leading_tone_pc) continue;
 
                         int note_midi = midi_value(note.pitch);
@@ -815,8 +811,7 @@ void validate_m6(const Score& score, std::vector<Diagnostic>& out) {
                             int next_midi = midi_value(next_ng->notes[0].pitch);
                             int interval = next_midi - note_midi;
                             // Should resolve upward by 1 or 2 semitones to tonic
-                            int next_pc = next_midi % 12;
-                            if (next_pc < 0) next_pc += 12;
+                            int next_pc = pc(next_ng->notes[0].pitch);
                             if (interval > 0 && interval <= 2 &&
                                 next_pc == key_root_pc) {
                                 continue;  // Properly resolved
@@ -869,8 +864,7 @@ void validate_m7(const Score& score, std::vector<Diagnostic>& out) {
                     PitchClass chord_root = ha->chord.root;
 
                     for (const auto& note : ng->notes) {
-                        int note_pc = midi_value(note.pitch) % 12;
-                        if (note_pc < 0) note_pc += 12;
+                        int note_pc = pc(note.pitch);
 
                         // Check if this note forms a seventh above the chord root
                         // (10 or 11 semitones above root = minor 7th or major 7th)

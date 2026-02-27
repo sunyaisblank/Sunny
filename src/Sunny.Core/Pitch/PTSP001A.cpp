@@ -11,7 +11,11 @@
 
 namespace Sunny::Core {
 
-std::string to_spn(SpelledPitch sp) {
+Result<std::string> to_spn(SpelledPitch sp) {
+    if (sp.letter >= 7) {
+        return std::unexpected(ErrorCode::InvalidLetterName);
+    }
+
     constexpr std::array<char, 7> LETTER_CHAR = {'C', 'D', 'E', 'F', 'G', 'A', 'B'};
 
     std::string result;
@@ -51,22 +55,26 @@ Result<SpelledPitch> from_spn(std::string_view s) {
     }
 
     // Parse accidentals
-    int8_t accidental = 0;
+    int accidental_acc = 0;
     std::size_t pos = 1;
     while (pos < s.size()) {
         if (s[pos] == '#') {
-            accidental += 1;
+            accidental_acc += 1;
             ++pos;
         } else if (s[pos] == 'b') {
-            accidental -= 1;
+            accidental_acc -= 1;
             ++pos;
         } else if (s[pos] == 'x') {
-            accidental += 2;
+            accidental_acc += 2;
             ++pos;
         } else {
             break;
         }
+        if (accidental_acc < -127 || accidental_acc > 127) {
+            return std::unexpected(ErrorCode::InvalidSpelledPitch);
+        }
     }
+    int8_t accidental = static_cast<int8_t>(accidental_acc);
 
     // Parse octave (remaining characters must form an integer)
     if (pos >= s.size()) {

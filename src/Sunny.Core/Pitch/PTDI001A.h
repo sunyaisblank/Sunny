@@ -20,6 +20,7 @@
 #include "PTSP001A.h"
 
 #include <array>
+#include <cassert>
 #include <string>
 #include <string_view>
 
@@ -229,9 +230,13 @@ constexpr DiatonicInterval PERFECT_OCTAVE   = {12, 7};
         new_letter = ((letter_sum % 7) + 7) % 7;
     }
 
+    assert(sp.octave + octave_offset >= -128 && sp.octave + octave_offset <= 127
+        && "apply_interval: octave overflow");
     int8_t new_octave = static_cast<int8_t>(sp.octave + octave_offset);
     int target_midi = midi_value(sp) + di.chromatic;
     int natural_midi = 12 * (new_octave + 1) + static_cast<int>(nat(static_cast<uint8_t>(new_letter)));
+    assert(target_midi - natural_midi >= -128 && target_midi - natural_midi <= 127
+        && "apply_interval: accidental overflow");
     int8_t new_acc = static_cast<int8_t>(target_midi - natural_midi);
 
     return SpelledPitch{
