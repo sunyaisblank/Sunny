@@ -44,7 +44,10 @@ constexpr std::array<int, 7> MAJOR_DEGREES = {0, 2, 4, 5, 7, 9, 11};
 // Natural minor scale degrees
 constexpr std::array<int, 7> MINOR_DEGREES = {0, 2, 3, 5, 7, 8, 10};
 
-// Find scale degree from pitch class
+// Find scale degree from pitch class.
+// For chromatic notes, prefer the diatonic degree with smallest accidental
+// distance. When equidistant, prefer the degree that yields a sharp for
+// degrees 0,1,3,4 (I, II, IV, V) and a flat for degrees 2,5,6 (III, VI, VII).
 int find_degree(PitchClass pc, PitchClass root, const std::array<int, 7>& degrees) {
     int interval = (pc - root + 12) % 12;
     for (int i = 0; i < 7; ++i) {
@@ -52,9 +55,13 @@ int find_degree(PitchClass pc, PitchClass root, const std::array<int, 7>& degree
             return i;
         }
     }
-    // Chromatic note - find closest
+    // Chromatic note: find both the lower neighbour (raised → sharp)
+    // and upper neighbour (lowered → flat).
+    int sharp_deg = -1;  // degree whose diatonic pitch is one semitone below
+    int flat_deg = -1;   // degree whose diatonic pitch is one semitone above
     int best_deg = 0;
     int best_dist = 12;
+
     for (int i = 0; i < 7; ++i) {
         int dist = std::abs(degrees[i] - interval);
         dist = std::min(dist, 12 - dist);
@@ -62,7 +69,19 @@ int find_degree(PitchClass pc, PitchClass root, const std::array<int, 7>& degree
             best_dist = dist;
             best_deg = i;
         }
+        if (degrees[i] == interval - 1) sharp_deg = i;
+        if (degrees[i] == interval + 1) flat_deg = i;
     }
+
+    // When both neighbours are equidistant (distance 1), apply the
+    // conventional spelling preference.
+    if (best_dist == 1 && sharp_deg >= 0 && flat_deg >= 0) {
+        static constexpr bool PREFER_SHARP[7] = {
+            true, true, false, true, true, false, false
+        };
+        return PREFER_SHARP[sharp_deg] ? sharp_deg : flat_deg;
+    }
+
     return best_deg;
 }
 

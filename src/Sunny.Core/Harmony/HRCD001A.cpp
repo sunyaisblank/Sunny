@@ -26,13 +26,24 @@ int find_scale_degree(PitchClass root, PitchClass key_root, bool is_minor) {
     for (int i = 0; i < 7; ++i) {
         if (scale[i] == interval) return i;
     }
-    // Chromatic: find nearest
+    // Chromatic: find nearest degree and prefer conventional spelling.
+    // When equidistant, prefer sharp for degrees 0,1,3,4 and flat for 2,5,6.
+    int sharp_deg = -1;
+    int flat_deg = -1;
     int best = 0;
     int best_dist = 12;
     for (int i = 0; i < 7; ++i) {
         int d = std::abs(scale[i] - interval);
         d = std::min(d, 12 - d);
         if (d < best_dist) { best_dist = d; best = i; }
+        if (scale[i] == interval - 1) sharp_deg = i;
+        if (scale[i] == interval + 1) flat_deg = i;
+    }
+    if (best_dist == 1 && sharp_deg >= 0 && flat_deg >= 0) {
+        static constexpr bool PREFER_SHARP[7] = {
+            true, true, false, true, true, false, false
+        };
+        return PREFER_SHARP[sharp_deg] ? sharp_deg : flat_deg;
     }
     return best;
 }

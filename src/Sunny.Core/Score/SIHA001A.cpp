@@ -196,14 +196,35 @@ HarmonicAnnotationLayer derive_for_range(
                     root, quality, key_root, scale_ints, minor);
                 ann.roman_numeral = numeral ? *numeral : "?";
 
-                auto analysis = analyze_chord_function(pcs, key_root, minor);
-                ann.function = map_function(analysis.function);
+                // Derive function from the recognized root's degree
+                // rather than calling analyze_chord_function, which
+                // would re-derive the root independently and risk
+                // divergence between numeral and function.
+                if (numeral) {
+                    auto parsed = parse_roman_numeral_full(*numeral);
+                    if (parsed && parsed->degree >= 0 && parsed->degree < 7) {
+                        static constexpr HarmonicFunction DEGREE_FN[7] = {
+                            HarmonicFunction::Tonic,
+                            HarmonicFunction::Subdominant,
+                            HarmonicFunction::Tonic,
+                            HarmonicFunction::Subdominant,
+                            HarmonicFunction::Dominant,
+                            HarmonicFunction::Tonic,
+                            HarmonicFunction::Dominant,
+                        };
+                        ann.function = map_function(DEGREE_FN[parsed->degree]);
+                    } else {
+                        ann.function = ScoreHarmonicFunction::Ambiguous;
+                    }
+                } else {
+                    ann.function = ScoreHarmonicFunction::Ambiguous;
+                }
                 ann.confidence = 1.0f;
             } else {
                 ann.chord.notes = midi_notes;
                 ann.roman_numeral = "?";
                 ann.function = ScoreHarmonicFunction::Ambiguous;
-                ann.confidence = 0.5f;
+                ann.confidence = 0.3f;
             }
 
             layer.push_back(ann);

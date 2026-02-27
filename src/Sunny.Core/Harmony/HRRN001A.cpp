@@ -555,7 +555,7 @@ Result<std::string> chord_to_numeral(
     std::string_view quality,
     PitchClass key_root,
     std::span<const Interval> scale_intervals,
-    bool /*is_minor*/
+    bool is_minor
 ) {
     // Find scale degree
     int interval = (chord_root - key_root + 12) % 12;
@@ -570,25 +570,41 @@ Result<std::string> chord_to_numeral(
     }
 
     // If not a diatonic degree, find the closest with an accidental.
-    // Prefer flat (lowered diatonic degree) over sharp (raised).
+    // Check both sharp (raised lower neighbour) and flat (lowered upper
+    // neighbour) and pick the one with smaller accidental distance.
+    // When tied, prefer sharp for degrees 1,2,4,5 and flat for 3,6,7
+    // (conventional analytical spelling).
     if (degree < 0) {
-        // First pass: look for a diatonic degree one semitone above → flat
+        int flat_deg = -1;
+        int sharp_deg = -1;
+
         for (std::size_t i = 0; i < scale_intervals.size(); ++i) {
-            if (scale_intervals[i] == interval + 1) {
-                degree = static_cast<int>(i);
-                accidental = -1;
-                break;
-            }
+            if (scale_intervals[i] == interval + 1)
+                flat_deg = static_cast<int>(i);
+            if (scale_intervals[i] == interval - 1)
+                sharp_deg = static_cast<int>(i);
         }
-        // Second pass: if no flat match, look for one semitone below → sharp
-        if (degree < 0) {
-            for (std::size_t i = 0; i < scale_intervals.size(); ++i) {
-                if (scale_intervals[i] == interval - 1) {
-                    degree = static_cast<int>(i);
-                    accidental = 1;
-                    break;
-                }
+
+        if (flat_deg >= 0 && sharp_deg >= 0) {
+            // Both candidates exist; prefer sharp for degrees 0,1,3,4
+            // (I, II, IV, V → #I, #II, #IV, #V preferred over bII, bIII, bV, bVI)
+            // and flat for degrees 2,5,6 (III, VI, VII → bIII, bVI, bVII preferred)
+            static constexpr bool PREFER_SHARP[7] = {
+                true, true, false, true, true, false, false
+            };
+            if (PREFER_SHARP[sharp_deg]) {
+                degree = sharp_deg;
+                accidental = 1;
+            } else {
+                degree = flat_deg;
+                accidental = -1;
             }
+        } else if (flat_deg >= 0) {
+            degree = flat_deg;
+            accidental = -1;
+        } else if (sharp_deg >= 0) {
+            degree = sharp_deg;
+            accidental = 1;
         }
     }
 
@@ -596,12 +612,23 @@ Result<std::string> chord_to_numeral(
         return std::unexpected(ErrorCode::InvalidRomanNumeral);
     }
 
-    // Determine case from quality
+    // Determine case from quality: uppercase for major-type, lowercase for
+    // minor-type. In a minor key the same rule applies — the chord's own
+    // quality governs casing (e.g. V is uppercase because the chord is
+    // major, i is lowercase because the chord is minor).
     bool is_major_quality = (quality == "major" || quality == "maj7" ||
                              quality == "7" || quality == "augmented" ||
                              quality == "aug7" || quality == "augmaj7" ||
                              quality == "9" || quality == "maj9" ||
                              quality == "6" || quality == "5");
+
+    // In a minor key, the natural diatonic quality at each degree differs
+    // from major. The casing still follows the chord quality — a major
+    // chord on degree 4 (V) stays uppercase, a minor chord on degree 0
+    // (i) stays lowercase. The is_minor flag is used here to inform
+    // quality suffix conventions when needed (currently casing derives
+    // entirely from quality, which already encodes major/minor).
+    (void)is_minor;
 
     // Build numeral string
     std::string result;

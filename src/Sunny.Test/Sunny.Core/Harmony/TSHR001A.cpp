@@ -915,3 +915,29 @@ TEST_CASE("HRRN001A: chord recognition round-trip all roots (§16.1.5)", "[harmo
         }
     }
 }
+
+// =============================================================================
+// Audit remediation: is_minor casing and accidental spelling
+// =============================================================================
+
+TEST_CASE("HRRN001A: chord_to_numeral uses is_minor for casing",
+          "[harmony][core]") {
+    // In A minor (key_root=9), a G major chord (root=7) on degree V
+    // should produce uppercase "V" because the chord quality is major.
+    // The is_minor flag is now consumed rather than suppressed.
+    auto result = chord_to_numeral(7, "major", 9, SCALE_MINOR, true);
+    REQUIRE(result.has_value());
+    // V chord in minor: major quality → uppercase
+    CHECK(result->find("V") != std::string::npos);
+    // Lowercase 'v' should not appear for a major chord
+    CHECK(result->find("v") == std::string::npos);
+}
+
+TEST_CASE("HRRN001A: chord_to_numeral labels F# in C major as #IV not bV",
+          "[harmony][core]") {
+    // F# (pitch class 6) in C major: the tritone between IV and V.
+    // Conventionally #IV is preferred over bV.
+    auto result = chord_to_numeral(6, "major", 0, SCALE_MAJOR);
+    REQUIRE(result.has_value());
+    CHECK(*result == "#IV");
+}

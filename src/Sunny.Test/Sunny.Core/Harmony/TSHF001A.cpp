@@ -226,3 +226,21 @@ TEST_CASE("HRFN001A: Edge cases", "[harmony][core]") {
                  analysis.quality == "unknown"));
     }
 }
+
+// =============================================================================
+// Audit remediation: chromatic degree classification
+// =============================================================================
+
+TEST_CASE("HRFN001A: find_degree distinguishes sharp from flat chromatic degrees",
+          "[harmony][core]") {
+    // F# (pitch class 6) in C major should map to degree 4 (1-indexed),
+    // which is #IV rather than bV. The function prefers sharp for degree
+    // IV (0-indexed 3) over flat for degree V (0-indexed 4).
+    PitchClassSet fsharp_major = {6, 10, 1};  // F#, A#, C# — F# major triad
+    auto analysis = analyze_chord_function(fsharp_major, 0, false);
+
+    // The root should be recognised as F# (pitch class 6)
+    CHECK(analysis.root == 6);
+    // 1-indexed degree 4 = #IV (0-indexed degree 3 + 1)
+    CHECK(analysis.degree == 4);
+}

@@ -226,18 +226,30 @@ Result<MutationResult> set_section_harmony(
         auto numeral = chord_to_numeral(root_pc, entry.quality, key_pc, scale, is_minor);
         ha.roman_numeral = numeral.has_value() ? *numeral : entry.quality;
 
-        // Classify harmonic function from the numeral
-        if (ha.roman_numeral == "I" || ha.roman_numeral == "i" ||
-            ha.roman_numeral == "VI" || ha.roman_numeral == "vi")
-            ha.function = ScoreHarmonicFunction::Tonic;
-        else if (ha.roman_numeral == "V" || ha.roman_numeral == "VII" ||
-                 ha.roman_numeral == "vii")
-            ha.function = ScoreHarmonicFunction::Dominant;
-        else if (ha.roman_numeral == "IV" || ha.roman_numeral == "iv" ||
-                 ha.roman_numeral == "II" || ha.roman_numeral == "ii")
-            ha.function = ScoreHarmonicFunction::Predominant;
-        else
+        // Classify harmonic function by parsing the Roman numeral to
+        // extract the base degree, then mapping degree to function via
+        // a lookup table. This handles all suffixed numerals (V7, iii7)
+        // and case variations automatically.
+        auto parsed = parse_roman_numeral_full(ha.roman_numeral);
+        if (parsed.has_value()) {
+            // Degree 0-6 → function: T, PD, T, PD, D, T, D
+            static constexpr ScoreHarmonicFunction DEGREE_FUNCTION[7] = {
+                ScoreHarmonicFunction::Tonic,        // I/i
+                ScoreHarmonicFunction::Predominant,   // II/ii
+                ScoreHarmonicFunction::Tonic,         // III/iii
+                ScoreHarmonicFunction::Predominant,   // IV/iv
+                ScoreHarmonicFunction::Dominant,       // V/v
+                ScoreHarmonicFunction::Tonic,         // VI/vi
+                ScoreHarmonicFunction::Dominant,       // VII/vii
+            };
+            int deg = parsed->degree;
+            if (deg >= 0 && deg < 7)
+                ha.function = DEGREE_FUNCTION[deg];
+            else
+                ha.function = ScoreHarmonicFunction::Ambiguous;
+        } else {
             ha.function = ScoreHarmonicFunction::Ambiguous;
+        }
 
         new_annotations.push_back(std::move(ha));
     }

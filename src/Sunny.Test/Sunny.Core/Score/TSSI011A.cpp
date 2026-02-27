@@ -273,3 +273,79 @@ TEST_CASE("SIWF001A: set_section_harmony undo removes annotations from region",
     REQUIRE(undo_result.has_value());
     CHECK(score.harmonic_annotations.empty());
 }
+
+// =============================================================================
+// Audit remediation: degree-based harmonic function classification
+// =============================================================================
+
+TEST_CASE("SIWF001A: set_section_harmony classifies V7 as Dominant",
+          "[score-ir][workflow]") {
+    ScoreSpec spec;
+    spec.title = "Function Test";
+    spec.total_bars = 4;
+    spec.bpm = 120;
+    spec.key_root = SpelledPitch{0, 0, 4};  // C major
+    spec.key_accidentals = 0;
+    spec.time_sig_num = 4;
+    spec.time_sig_den = 4;
+
+    PartDefinition piano_def;
+    piano_def.name = "Piano";
+    piano_def.abbreviation = "Pno.";
+    piano_def.instrument_type = InstrumentType::Piano;
+    spec.parts.push_back(piano_def);
+
+    auto result = create_score(spec);
+    REQUIRE(result.has_value());
+    auto& score = *result;
+
+    ScoreRegion region;
+    region.start = SCORE_START;
+    region.end = ScoreTime{5, Beat::zero()};
+
+    // G dominant 7th — should produce "V7" and classify as Dominant
+    std::vector<ChordSymbolEntry> progression = {
+        {SCORE_START, SpelledPitch{4, 0, 4}, "7", std::nullopt},  // G7 → V7
+    };
+
+    auto harm_result = set_section_harmony(score, region, progression);
+    REQUIRE(harm_result.has_value());
+    REQUIRE(score.harmonic_annotations.size() == 1);
+    CHECK(score.harmonic_annotations[0].function == ScoreHarmonicFunction::Dominant);
+}
+
+TEST_CASE("SIWF001A: set_section_harmony classifies iii as Tonic",
+          "[score-ir][workflow]") {
+    ScoreSpec spec;
+    spec.title = "Function Test 2";
+    spec.total_bars = 4;
+    spec.bpm = 120;
+    spec.key_root = SpelledPitch{0, 0, 4};  // C major
+    spec.key_accidentals = 0;
+    spec.time_sig_num = 4;
+    spec.time_sig_den = 4;
+
+    PartDefinition piano_def;
+    piano_def.name = "Piano";
+    piano_def.abbreviation = "Pno.";
+    piano_def.instrument_type = InstrumentType::Piano;
+    spec.parts.push_back(piano_def);
+
+    auto result = create_score(spec);
+    REQUIRE(result.has_value());
+    auto& score = *result;
+
+    ScoreRegion region;
+    region.start = SCORE_START;
+    region.end = ScoreTime{5, Beat::zero()};
+
+    // E minor — should produce "iii" and classify as Tonic
+    std::vector<ChordSymbolEntry> progression = {
+        {SCORE_START, SpelledPitch{2, 0, 4}, "minor", std::nullopt},  // Em → iii
+    };
+
+    auto harm_result = set_section_harmony(score, region, progression);
+    REQUIRE(harm_result.has_value());
+    REQUIRE(score.harmonic_annotations.size() == 1);
+    CHECK(score.harmonic_annotations[0].function == ScoreHarmonicFunction::Tonic);
+}
