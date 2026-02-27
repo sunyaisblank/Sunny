@@ -120,7 +120,6 @@ Result<MutationResult> set_formal_plan(
 ) {
     // Capture old section map for undo
     auto old_map = score.section_map;
-    auto old_version = score.version;
 
     // Build new section map
     SectionMap new_map;
@@ -143,7 +142,7 @@ Result<MutationResult> set_formal_plan(
             ++score.version;
             return {};
         },
-        [&score, old_map, old_version]() -> VoidResult {
+        [&score, old_map]() -> VoidResult {
             score.section_map = old_map;
             ++score.version;
             return {};
