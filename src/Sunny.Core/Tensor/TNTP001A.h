@@ -95,6 +95,7 @@ enum class ErrorCode : int {
     InvalidToneRow = 2130,
     InvalidTriad = 2131,
     InvalidMelody = 2132,
+    ArithmeticOverflow = 2135,
 
     // Theory computation errors (3xxx)
     ScaleGenerationFailed = 3100,

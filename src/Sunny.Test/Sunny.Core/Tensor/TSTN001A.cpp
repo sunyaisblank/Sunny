@@ -95,6 +95,7 @@ TEST_CASE("TSTN001A: ErrorCode enum value uniqueness", "[tensor][types]") {
     values.insert(static_cast<int>(ErrorCode::InvalidToneRow));
     values.insert(static_cast<int>(ErrorCode::InvalidTriad));
     values.insert(static_cast<int>(ErrorCode::InvalidMelody));
+    values.insert(static_cast<int>(ErrorCode::ArithmeticOverflow));
     // Theory computation errors (3xxx)
     values.insert(static_cast<int>(ErrorCode::ScaleGenerationFailed));
     values.insert(static_cast<int>(ErrorCode::ChordGenerationFailed));
@@ -125,8 +126,8 @@ TEST_CASE("TSTN001A: ErrorCode enum value uniqueness", "[tensor][types]") {
     values.insert(static_cast<int>(ErrorCode::InvalidAbcFile));
     values.insert(static_cast<int>(ErrorCode::InvalidMusicXml));
 
-    // 44 enum values, all distinct
-    REQUIRE(values.size() == 44);
+    // 45 enum values, all distinct
+    REQUIRE(values.size() == 45);
 }
 
 // =============================================================================
@@ -331,6 +332,85 @@ TEST_CASE("TSTN001A: beat_lcm", "[tensor][beat]") {
     // LCM of 3/4 and 2/3 = lcm(3,2)/gcd(4,3) = 6/1
     auto lcm3 = beat_lcm(Beat{3, 4}, Beat{2, 3});
     REQUIRE(lcm3 == Beat{6, 1});
+}
+
+// =============================================================================
+// TNBT001A - Beat __int128 overflow protection
+// =============================================================================
+
+TEST_CASE("TSTN001A: Beat comparison correct for large coprime values", "[tensor][beat]") {
+    // INT64_MAX/3 and INT64_MAX/5 are coprime-ish large values whose
+    // cross-products overflow int64_t but fit in __int128.
+    constexpr std::int64_t a_num = INT64_MAX / 3;   // ~3.07e18
+    constexpr std::int64_t a_den = INT64_MAX / 5;   // ~1.84e18
+    constexpr std::int64_t b_num = INT64_MAX / 5;
+    constexpr std::int64_t b_den = INT64_MAX / 3;
+
+    Beat a{a_num, a_den};
+    Beat b{b_num, b_den};
+
+    // a = (MAX/3)/(MAX/5) > 1, b = (MAX/5)/(MAX/3) < 1
+    REQUIRE(a > b);
+    REQUIRE(b < a);
+    REQUIRE_FALSE(a == b);
+    REQUIRE(a >= b);
+    REQUIRE(b <= a);
+}
+
+TEST_CASE("TSTN001A: Beat operator+ correct for coprime denominators", "[tensor][beat]") {
+    // 1/7 + 1/13 = (13 + 7) / 91 = 20/91
+    Beat a{1, 7};
+    Beat b{1, 13};
+    auto sum = a + b;
+    REQUIRE(sum == Beat{20, 91});
+    REQUIRE(sum.numerator == 20);
+    REQUIRE(sum.denominator == 91);
+}
+
+TEST_CASE("TSTN001A: checked_add returns error on overflow", "[tensor][beat]") {
+    // Consecutive integers are coprime, so 1/p + 1/q = (p+q)/(p*q) is
+    // irreducible. Choosing p and q just above sqrt(INT64_MAX) guarantees
+    // p*q > INT64_MAX, which makes the reduced denominator unrepresentable.
+    constexpr std::int64_t p = 3037000500LL;  // ceil(sqrt(INT64_MAX))
+    constexpr std::int64_t q = 3037000501LL;  // consecutive => coprime
+
+    Beat a{1, p};
+    Beat b{1, q};
+    auto result = checked_add(a, b);
+    REQUIRE_FALSE(result.has_value());
+    REQUIRE(result.error() == ErrorCode::ArithmeticOverflow);
+}
+
+TEST_CASE("TSTN001A: beat_lcm handles large coprime inputs", "[tensor][beat]") {
+    // beat_lcm(1/7, 1/13): lcm(1,1)/gcd(7,13) = 1/1
+    auto lcm = beat_lcm(Beat{1, 7}, Beat{1, 13});
+    REQUIRE(lcm == Beat{1, 1});
+
+    // beat_lcm(3/7, 5/7): lcm(3,5)/gcd(7,7) = 15/7
+    auto lcm2 = beat_lcm(Beat{3, 7}, Beat{5, 7});
+    REQUIRE(lcm2 == Beat{15, 7});
+}
+
+TEST_CASE("TSTN001A: Beat operator* correct for values near sqrt bound", "[tensor][beat]") {
+    // Values near sqrt(INT64_MAX) whose products fit after reduction.
+    // (p/1) * (1/p) = 1/1 — trivially reduces despite large intermediate.
+    constexpr std::int64_t p = 3037000499LL;  // floor(sqrt(INT64_MAX))
+    Beat a{p, 1};
+    Beat b{1, p};
+    auto prod = a * b;
+    REQUIRE(prod == Beat{1, 1});
+
+    // (p/1) * (2/p) = 2/1
+    Beat c{2, p};
+    auto prod2 = a * c;
+    REQUIRE(prod2 == Beat{2, 1});
+}
+
+TEST_CASE("TSTN001A: Beat unary negation of zero is zero", "[tensor][beat]") {
+    auto neg_zero = -Beat::zero();
+    REQUIRE(neg_zero == Beat::zero());
+    REQUIRE(neg_zero.numerator == 0);
+    REQUIRE(neg_zero.denominator == 1);
 }
 
 // =============================================================================
