@@ -900,3 +900,241 @@ TEST_CASE("SIMT001A: UndoGroup RAII produces single entry after scope exit",
     CHECK(stack.undo_entries.size() == 1);
     CHECK(stack.undo_entries[0].description == "RAII test");
 }
+
+// =============================================================================
+// Mutation Atomicity and Undo Correctness (RC-D audit remediation)
+// =============================================================================
+
+TEST_CASE("SIMT001A: undo preserves entry on inverse failure",
+          "[score-ir][undo][atomicity]") {
+    auto score = make_valid_score(1);
+    UndoStack stack;
+
+    // Set up a note
+    auto& voice = score.parts[0].measures[0].voices[0];
+    NoteGroup ng;
+    ng.notes.push_back(Note{SpelledPitch{0, 0, 4}, VelocityValue{{}, 80}});
+    ng.duration = Beat{1, 1};
+    voice.events[0].payload = ng;
+
+    EventId target = voice.events[0].id;
+    auto r = modify_pitch(score, target, 0, SpelledPitch{4, 0, 4}, &stack);
+    REQUIRE(r.has_value());
+    CHECK(stack.can_undo());
+    CHECK(stack.undo_entries.size() == 1);
+
+    // Corrupt state: remove all events so the inverse (which tries to
+    // find the event by ID) will fail.
+    voice.events.clear();
+
+    auto undo_result = undo(score, stack);
+    CHECK_FALSE(undo_result.has_value());
+
+    // The entry must still be on the undo stack, not lost
+    CHECK(stack.undo_entries.size() == 1);
+    CHECK_FALSE(stack.can_redo());
+}
+
+TEST_CASE("SIMT001A: redo preserves entry on forward failure",
+          "[score-ir][undo][atomicity]") {
+    auto score = make_valid_score(1);
+    UndoStack stack;
+
+    EventId target = score.parts[0].measures[0].voices[0].events[0].id;
+    auto r = modify_duration(score, target, Beat{1, 2}, &stack);
+    REQUIRE(r.has_value());
+
+    // Undo succeeds
+    auto ur = undo(score, stack);
+    REQUIRE(ur.has_value());
+    CHECK(stack.can_redo());
+    CHECK(stack.redo_entries.size() == 1);
+
+    // Corrupt state: remove all events so the forward will fail
+    score.parts[0].measures[0].voices[0].events.clear();
+
+    auto rr = redo(score, stack);
+    CHECK_FALSE(rr.has_value());
+
+    // The entry must still be on the redo stack, not lost
+    CHECK(stack.redo_entries.size() == 1);
+    CHECK_FALSE(stack.can_undo());
+}
+
+TEST_CASE("SIMT001A: reorder_parts rejects duplicate PartIds",
+          "[score-ir][undo][atomicity]") {
+    auto score = make_valid_score(2);
+
+    // Add a second part
+    PartDefinition violin_def;
+    violin_def.name = "Violin";
+    violin_def.abbreviation = "Vln.";
+    violin_def.instrument_type = InstrumentType::Violin;
+    violin_def.range = PitchRange{
+        SpelledPitch{4, 0, 3}, SpelledPitch{2, 0, 7},
+        SpelledPitch{4, 0, 3}, SpelledPitch{2, 0, 7}
+    };
+    auto add_result = add_part(score, violin_def, 1);
+    REQUIRE(add_result.has_value());
+    REQUIRE(score.parts.size() == 2);
+
+    PartId piano_id = score.parts[0].id;
+
+    // Attempt to reorder with a duplicate: [piano, piano] instead of [piano, violin]
+    auto result = reorder_parts(score, {piano_id, piano_id});
+    CHECK_FALSE(result.has_value());
+}
+
+TEST_CASE("SIMT001A: insert_measures is atomic across all parts",
+          "[score-ir][undo][atomicity]") {
+    auto score = make_valid_score(4);
+
+    // Add a second part
+    PartDefinition violin_def;
+    violin_def.name = "Violin";
+    violin_def.abbreviation = "Vln.";
+    violin_def.instrument_type = InstrumentType::Violin;
+    violin_def.range = PitchRange{
+        SpelledPitch{4, 0, 3}, SpelledPitch{2, 0, 7},
+        SpelledPitch{4, 0, 3}, SpelledPitch{2, 0, 7}
+    };
+    auto add_result = add_part(score, violin_def, 1);
+    REQUIRE(add_result.has_value());
+
+    auto r = insert_measures(score, 2, 3);
+    REQUIRE(r.has_value());
+
+    // All parts should have equal measure counts after insertion
+    CHECK(score.parts[0].measures.size() == score.parts[1].measures.size());
+    CHECK(score.metadata.total_bars == 7);
+}
+
+TEST_CASE("SIMT001A: undo-redo-undo cycle does not accumulate events",
+          "[score-ir][undo][atomicity]") {
+    auto score = make_valid_score(1);
+    UndoStack stack;
+
+    // Use modify_pitch, which preserves EventId through undo-redo cycles
+    // (unlike insert_note, which allocates a fresh EventId on forward replay).
+    auto& voice = score.parts[0].measures[0].voices[0];
+    NoteGroup ng;
+    ng.notes.push_back(Note{SpelledPitch{0, 0, 4}, VelocityValue{{}, 80}});
+    ng.duration = Beat{1, 1};
+    voice.events[0].payload = ng;
+
+    auto original_count = voice.events.size();
+    EventId target = voice.events[0].id;
+    SpelledPitch original_pitch{0, 0, 4};
+
+    // Modify pitch
+    auto r = modify_pitch(score, target, 0, SpelledPitch{4, 0, 4}, &stack);
+    REQUIRE(r.has_value());
+
+    // Undo
+    auto ur = undo(score, stack);
+    REQUIRE(ur.has_value());
+
+    // Redo
+    auto rr = redo(score, stack);
+    REQUIRE(rr.has_value());
+
+    // Undo again
+    auto ur2 = undo(score, stack);
+    REQUIRE(ur2.has_value());
+
+    // Event count should match original — no accumulation
+    CHECK(voice.events.size() == original_count);
+
+    // Pitch should be restored to original
+    auto* restored = voice.events[0].as_note_group();
+    REQUIRE(restored != nullptr);
+    CHECK(restored->notes[0].pitch == original_pitch);
+}
+
+TEST_CASE("SIMT001A: move_region undo does not delete unrelated events",
+          "[score-ir][undo][atomicity]") {
+    auto score = make_valid_score(4);
+    UndoStack stack;
+
+    // Place a C4 note in bar 1
+    auto& voice1 = score.parts[0].measures[0].voices[0];
+    NoteGroup ng1;
+    ng1.notes.push_back(Note{SpelledPitch{0, 0, 4}, VelocityValue{{}, 80}});
+    ng1.duration = Beat{1, 1};
+    voice1.events[0].payload = ng1;
+
+    ScoreRegion src;
+    src.start = SCORE_START;
+    src.end = ScoreTime{2, Beat::zero()};
+
+    ScoreTime dest{3, Beat::zero()};
+
+    // Move bar 1 content to bar 3
+    auto mr = move_region(score, src, dest, &stack);
+    REQUIRE(mr.has_value());
+
+    // Insert an unrelated note in bar 2, after the move but before undo.
+    // This note has its own ID that should survive the move_region undo.
+    Note unrelated_note;
+    unrelated_note.pitch = SpelledPitch{2, 0, 5};  // E5
+    unrelated_note.velocity = VelocityValue{{}, 90};
+
+    auto ins_result = insert_note(
+        score, PartId{100}, 2, 0,
+        Beat::zero(), unrelated_note, Beat{1, 4}, &stack
+    );
+    REQUIRE(ins_result.has_value());
+
+    // Find the unrelated note's EventId
+    EventId unrelated_id{0};
+    for (const auto& ev : score.parts[0].measures[1].voices[0].events) {
+        if (ev.is_note_group()) {
+            auto* ng = ev.as_note_group();
+            if (ng && !ng->notes.empty() && ng->notes[0].pitch.letter == 2 &&
+                ng->notes[0].pitch.octave == 5) {
+                unrelated_id = ev.id;
+                break;
+            }
+        }
+    }
+    REQUIRE(unrelated_id.value != 0);
+
+    // Undo the insert_note first (it was pushed after move_region)
+    auto ur1 = undo(score, stack);
+    REQUIRE(ur1.has_value());
+
+    // Re-insert the unrelated note (simulating it being added independently)
+    auto ins2 = insert_note(
+        score, PartId{100}, 2, 0,
+        Beat::zero(), unrelated_note, Beat{1, 4}, nullptr
+    );
+    REQUIRE(ins2.has_value());
+
+    // Capture the unrelated event ID after re-insertion
+    EventId unrelated_id2{0};
+    for (const auto& ev : score.parts[0].measures[1].voices[0].events) {
+        if (ev.is_note_group()) {
+            auto* ng = ev.as_note_group();
+            if (ng && !ng->notes.empty() && ng->notes[0].pitch.letter == 2 &&
+                ng->notes[0].pitch.octave == 5) {
+                unrelated_id2 = ev.id;
+                break;
+            }
+        }
+    }
+    REQUIRE(unrelated_id2.value != 0);
+
+    // Undo the move_region
+    auto ur2 = undo(score, stack);
+    REQUIRE(ur2.has_value());
+
+    // The unrelated note in bar 2 should still exist
+    bool found_unrelated = false;
+    for (const auto& ev : score.parts[0].measures[1].voices[0].events) {
+        if (ev.id == unrelated_id2) {
+            found_unrelated = true;
+            break;
+        }
+    }
+    CHECK(found_unrelated);
+}

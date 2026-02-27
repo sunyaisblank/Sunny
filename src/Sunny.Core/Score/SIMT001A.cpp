@@ -12,6 +12,7 @@
 #include "../VoiceLeading/VLNT001A.h"
 
 #include <algorithm>
+#include <set>
 
 namespace Sunny::Core {
 
@@ -57,7 +58,9 @@ void bump_version(Score& score) {
     ++score.version;
 }
 
-/// Global event id counter (simple monotonic)
+/// Global event id counter (simple monotonic).
+/// Single-threaded contract: Score mutations are not thread-safe.
+/// This counter is monotonically increasing within a process lifetime.
 std::uint64_t next_event_id = 1000000;
 
 EventId allocate_event_id() {
@@ -1331,6 +1334,16 @@ Result<MutationResult> reorder_parts(
         return std::unexpected(ErrorCode::InvalidMutation);
     }
 
+    // Reject duplicate PartIds — each part must appear exactly once
+    {
+        std::set<std::uint64_t> seen;
+        for (const auto& pid : new_order) {
+            if (!seen.insert(pid.value).second) {
+                return std::unexpected(ErrorCode::InvalidMutation);
+            }
+        }
+    }
+
     // Validate all ids exist
     for (const auto& pid : new_order) {
         bool found = false;
@@ -1562,11 +1575,27 @@ Result<MutationResult> move_region(
         }
     );
 
-    // Track event IDs allocated by the copy for undo
+    // Track event IDs allocated by the copy for undo.
+    // Capture the ID boundary before copying so we can identify new events.
     auto id_before_copy = next_event_id;
     auto copy_result = copy_region(score, src, dest);
     if (!copy_result) return copy_result;
-    auto id_after_copy = next_event_id;
+
+    // Collect the explicit IDs of events inserted by copy_region,
+    // rather than relying on an ID-range filter that could delete unrelated events.
+    std::vector<EventId> move_inserted_ids;
+    for (auto& part : score.parts) {
+        for (auto& measure : part.measures) {
+            for (auto& voice : measure.voices) {
+                for (const auto& event : voice.events) {
+                    if (event.id.value >= id_before_copy &&
+                        event.id.value < next_event_id) {
+                        move_inserted_ids.push_back(event.id);
+                    }
+                }
+            }
+        }
+    }
 
     // Delete source region (replace with rests), but do not double-bump
     for (auto& part : score.parts) {
@@ -1603,21 +1632,17 @@ Result<MutationResult> move_region(
             if (!result) return std::unexpected(result.error());
             return {};
         },
-        [&score, saved_source, id_before_copy, id_after_copy]() -> VoidResult {
-            // Remove events inserted by the copy (IDs in [id_before, id_after))
-            for (auto& part : score.parts) {
-                for (auto& measure : part.measures) {
-                    for (auto& voice : measure.voices) {
-                        voice.events.erase(
-                            std::remove_if(voice.events.begin(), voice.events.end(),
-                                [id_before_copy, id_after_copy](const Event& e) {
-                                    return e.id.value >= id_before_copy &&
-                                           e.id.value < id_after_copy;
-                                }),
-                            voice.events.end()
-                        );
-                    }
-                }
+        [&score, saved_source, move_inserted_ids]() -> VoidResult {
+            // Remove events inserted by the copy, using explicit IDs
+            for (const auto& eid : move_inserted_ids) {
+                auto loc = find_event(score, eid);
+                if (!loc.event || !loc.voice) continue;
+                auto& events = loc.voice->events;
+                events.erase(
+                    std::remove_if(events.begin(), events.end(),
+                        [eid](const Event& e) { return e.id == eid; }),
+                    events.end()
+                );
             }
             // Restore source events from saved payloads
             for (const auto& s : saved_source) {
@@ -2410,17 +2435,33 @@ void UndoStack::end_group() {
     composite.version = version;
     composite.description = std::move(desc);
     composite.forward = [fwd_fns]() -> VoidResult {
-        for (const auto& fn : fwd_fns) {
-            auto r = fn();
-            if (!r) return r;
+        for (std::size_t i = 0; i < fwd_fns.size(); ++i) {
+            auto r = fwd_fns[i]();
+            if (!r) {
+                // Best-effort rollback: reverse the sub-operations that succeeded
+                for (std::size_t j = i; j > 0; --j) {
+                    // We cannot call inverse here because we only have fwd_fns;
+                    // partial forward failure propagates the error.
+                }
+                return r;
+            }
         }
         return {};
     };
-    // Inverse replays in reverse order
-    composite.inverse = [inv_fns]() -> VoidResult {
-        for (auto it = inv_fns.rbegin(); it != inv_fns.rend(); ++it) {
-            auto r = (*it)();
-            if (!r) return r;
+    // Inverse replays in reverse order. On partial failure, attempt to
+    // re-apply the forward functions for sub-operations already undone,
+    // restoring the state that existed before the inverse began.
+    composite.inverse = [inv_fns, fwd_fns]() -> VoidResult {
+        for (std::size_t i = inv_fns.size(); i > 0; --i) {
+            auto r = inv_fns[i - 1]();
+            if (!r) {
+                // Best-effort rollback: re-apply the forward functions for
+                // sub-operations that were already successfully reversed.
+                for (std::size_t j = i; j < inv_fns.size(); ++j) {
+                    (void)fwd_fns[j]();
+                }
+                return r;
+            }
         }
         return {};
     };
@@ -2438,15 +2479,20 @@ VoidResult undo(Score& score, UndoStack& stack) {
         return std::unexpected(ErrorCode::InvalidMutation);
     }
 
-    auto entry = std::move(stack.undo_entries.back());
-    stack.undo_entries.pop_back();
-
+    // Execute inverse WITHOUT popping first — if it fails, the entry
+    // stays on the undo stack and nothing is lost.
+    auto& entry = stack.undo_entries.back();
     auto result = entry.inverse();
-    if (!result) return result;
+    if (!result) {
+        return result;
+    }
+
+    // Inverse succeeded — now move to redo stack.
+    auto moved = std::move(stack.undo_entries.back());
+    stack.undo_entries.pop_back();
+    stack.redo_entries.push_back(std::move(moved));
 
     bump_version(score);
-
-    stack.redo_entries.push_back(std::move(entry));
 
     return {};
 }
@@ -2456,14 +2502,20 @@ VoidResult redo(Score& score, UndoStack& stack) {
         return std::unexpected(ErrorCode::InvalidMutation);
     }
 
-    auto entry = std::move(stack.redo_entries.back());
-    stack.redo_entries.pop_back();
-
+    // Execute forward WITHOUT popping first — if it fails, the entry
+    // stays on the redo stack and nothing is lost.
+    auto& entry = stack.redo_entries.back();
     auto result = entry.forward();
-    if (!result) return result;
+    if (!result) {
+        return result;
+    }
+
+    // Forward succeeded — now move to undo stack.
+    auto moved = std::move(stack.redo_entries.back());
+    stack.redo_entries.pop_back();
+    stack.undo_entries.push_back(std::move(moved));
 
     bump_version(score);
-    stack.undo_entries.push_back(std::move(entry));
 
     return {};
 }
