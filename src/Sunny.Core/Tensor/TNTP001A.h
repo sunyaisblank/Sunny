@@ -189,4 +189,15 @@ constexpr int EUCLIDEAN_MAX_STEPS = 64;
     return vel >= Constants::VELOCITY_MIN && vel <= Constants::VELOCITY_MAX;
 }
 
+/**
+ * @brief Positive modulo 12 for pitch class computation
+ *
+ * Standard C++ truncation-toward-zero yields negative remainders for negative
+ * operands. This function returns a value in [0, 11] for any integer input.
+ */
+[[nodiscard]] constexpr PitchClass mod12_positive(int value) noexcept {
+    int r = value % 12;
+    return static_cast<PitchClass>(r < 0 ? r + 12 : r);
+}
+
 }  // namespace Sunny::Core

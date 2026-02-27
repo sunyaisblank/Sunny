@@ -175,8 +175,8 @@ void dedup_octaves(std::vector<CollectedNote>& notes, bool is_treble) {
         // Group by pitch class (mod 12)
         std::map<uint8_t, std::vector<std::size_t>> pc_groups;
         for (std::size_t k = i; k < j; ++k) {
-            uint8_t pc = static_cast<uint8_t>(midi_value(notes[k].note.pitch) % 12);
-            pc_groups[pc].push_back(k);
+            uint8_t note_pc = pc(notes[k].note.pitch);
+            pc_groups[note_pc].push_back(k);
         }
 
         for (auto& [pc, indices] : pc_groups) {

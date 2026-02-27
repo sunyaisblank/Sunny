@@ -561,9 +561,7 @@ std::vector<PitchClass> query_pitch_content(
                     if (!time_in_region(etime, region)) continue;
 
                     for (const auto& note : ng->notes) {
-                        int mv = midi_value(note.pitch) % 12;
-                        if (mv < 0) mv += 12;
-                        pcs.insert(static_cast<PitchClass>(mv));
+                        pcs.insert(pc(note.pitch));
                     }
                 }
             }
@@ -659,9 +657,7 @@ std::vector<MotifOccurrence> query_find_motif(
                     ScoreTime etime{measure.bar_number, event.offset};
                     if (!time_in_region(etime, region)) continue;
 
-                    int mv = midi_value(ng->notes[0].pitch) % 12;
-                    if (mv < 0) mv += 12;
-                    pcs.push_back({static_cast<PitchClass>(mv), etime});
+                    pcs.push_back({pc(ng->notes[0].pitch), etime});
                 }
             }
         }

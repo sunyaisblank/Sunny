@@ -148,7 +148,7 @@ HarmonicAnnotationLayer derive_for_range(
         TimeSignature ts = query_time_signature_at(score, bar);
         KeySignature key = query_key_at(score, ScoreTime{bar, Beat::zero()});
 
-        PitchClass key_root = static_cast<PitchClass>(midi_value(key.root) % 12);
+        PitchClass key_root = pc(key.root);
         bool minor = is_minor_key(key);
         auto scale_ints = key.mode.get_intervals();
 
@@ -264,7 +264,7 @@ Result<HarmonicAnnotationLayer> derive_harmonic_layer(const Score& score) {
         if (at_boundary && !layer[i-1].chord.notes.empty() &&
             !layer[i].chord.notes.empty()) {
             KeySignature key = query_key_at(score, layer[i].position);
-            PitchClass key_root = static_cast<PitchClass>(midi_value(key.root) % 12);
+            PitchClass key_root = pc(key.root);
             bool minor = is_minor_key(key);
 
             auto cadence = detect_cadence(

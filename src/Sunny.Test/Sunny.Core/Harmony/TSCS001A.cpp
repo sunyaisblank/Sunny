@@ -175,3 +175,23 @@ TEST_CASE("HRCS001A: default_chord_scale out of range", "[harmony][chord-scale][
     REQUIRE_FALSE(default_chord_scale(-1).has_value());
     REQUIRE_FALSE(default_chord_scale(7).has_value());
 }
+
+// =============================================================================
+// Remediation: negative interval without OOB in analyze_chord_scale
+// =============================================================================
+
+TEST_CASE("HRCS001A: analyze_chord_scale handles negative interval without OOB", "[harmony][chord-scale][core]") {
+    // Scale root at Bb (10) with intervals that include a negative value.
+    // The Interval type is int8_t; a negative value tests the mod12_positive path.
+    std::vector<PitchClass> chord = {10, 2, 5};  // Bbmaj: Bb, D, F
+    std::array<Interval, 3> neg_intervals = {0, -2, 4};
+    auto result = analyze_chord_scale(chord, 10, neg_intervals);
+
+    // Interval 0 from root 10: pc = mod12_positive(10 + 0) = 10 (chord tone)
+    // Interval -2 from root 10: pc = mod12_positive(10 + (-2)) = 8 (Ab)
+    // Interval 4 from root 10: pc = mod12_positive(10 + 4) = 2 (D, chord tone)
+    std::size_t total = result.chord_tones.size()
+                      + result.available.size()
+                      + result.avoid.size();
+    REQUIRE(total == neg_intervals.size());
+}

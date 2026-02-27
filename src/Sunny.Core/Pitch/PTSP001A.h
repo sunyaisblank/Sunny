@@ -19,6 +19,7 @@
 #include "../Tensor/TNTP001A.h"
 
 #include <array>
+#include <cassert>
 #include <string>
 #include <string_view>
 
@@ -65,6 +66,7 @@ constexpr std::array<int, 7> LOF_BASE = {0, 2, 4, -1, 1, 3, 5};
  * @pre letter ∈ [0, 6]
  */
 [[nodiscard]] constexpr PitchClass nat(uint8_t letter) noexcept {
+    assert(letter < 7 && "nat: letter must be in [0, 6]");
     return NATURAL_PITCH_CLASS[letter];
 }
 
@@ -125,6 +127,7 @@ constexpr std::array<int, 7> LOF_BASE = {0, 2, 4, -1, 1, 3, 5};
  * @return LoF position (integer, unbounded)
  */
 [[nodiscard]] constexpr int line_of_fifths_position(SpelledPitch sp) noexcept {
+    assert(sp.letter < 7 && "line_of_fifths_position: letter must be in [0, 6]");
     return LOF_BASE[sp.letter] + 7 * sp.accidental;
 }
 
@@ -181,7 +184,7 @@ constexpr std::array<int, 7> LOF_BASE = {0, 2, 4, -1, 1, 3, 5};
 /**
  * @brief Format as scientific pitch notation (e.g. "C#4", "Bb3", "D##5")
  */
-[[nodiscard]] std::string to_spn(SpelledPitch sp);
+[[nodiscard]] Result<std::string> to_spn(SpelledPitch sp);
 
 /**
  * @brief Parse scientific pitch notation

@@ -189,7 +189,7 @@ Result<MutationResult> set_section_harmony(
         }
     }
 
-    PitchClass key_pc = static_cast<PitchClass>(midi_value(key_ctx.root) % 12);
+    PitchClass key_pc = pc(key_ctx.root);
     bool is_minor = (key_ctx.accidentals < 0 && key_ctx.root.letter == 5) ||
                     false;  // Simplified minor detection; rely on caller's context
 
@@ -212,7 +212,7 @@ Result<MutationResult> set_section_harmony(
         }
 
         // Build chord voicing
-        PitchClass root_pc = static_cast<PitchClass>(midi_value(entry.root) % 12);
+        PitchClass root_pc = pc(entry.root);
         ha.chord.root = root_pc;
         ha.chord.quality = entry.quality;
 

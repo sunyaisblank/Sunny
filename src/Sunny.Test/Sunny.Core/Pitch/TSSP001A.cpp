@@ -186,14 +186,14 @@ TEST_CASE("PTSP001A: from_line_of_fifths specific values", "[pitch][spelled]") {
 // =============================================================================
 
 TEST_CASE("PTSP001A: to_spn formatting", "[pitch][spelled]") {
-    CHECK(to_spn({0, 0, 4}) == "C4");
-    CHECK(to_spn({5, 0, 4}) == "A4");
-    CHECK(to_spn({0, 1, 4}) == "C#4");
-    CHECK(to_spn({6, -1, 3}) == "Bb3");
-    CHECK(to_spn({1, 2, 5}) == "D##5");
-    CHECK(to_spn({2, -2, 3}) == "Ebb3");
-    CHECK(to_spn({0, 0, -1}) == "C-1");
-    CHECK(to_spn({4, 0, 0}) == "G0");
+    CHECK(to_spn({0, 0, 4}).value() == "C4");
+    CHECK(to_spn({5, 0, 4}).value() == "A4");
+    CHECK(to_spn({0, 1, 4}).value() == "C#4");
+    CHECK(to_spn({6, -1, 3}).value() == "Bb3");
+    CHECK(to_spn({1, 2, 5}).value() == "D##5");
+    CHECK(to_spn({2, -2, 3}).value() == "Ebb3");
+    CHECK(to_spn({0, 0, -1}).value() == "C-1");
+    CHECK(to_spn({4, 0, 0}).value() == "G0");
 }
 
 // =============================================================================
@@ -273,7 +273,9 @@ TEST_CASE("PTSP001A: from_spn parsing", "[pitch][spelled]") {
             {3, 0, 0}, {0, 0, -1}, {5, -2, 2}
         };
         for (auto sp : cases) {
-            auto rt = from_spn(to_spn(sp));
+            auto spn = to_spn(sp);
+            REQUIRE(spn.has_value());
+            auto rt = from_spn(*spn);
             REQUIRE(rt.has_value());
             CHECK(*rt == sp);
         }
@@ -332,4 +334,44 @@ TEST_CASE("PTSP001A: is_valid_letter boundary check", "[pitch][spelled]") {
     CHECK(is_valid_letter(6));
     CHECK_FALSE(is_valid_letter(-1));
     CHECK_FALSE(is_valid_letter(7));
+}
+
+// =============================================================================
+// Remediation: to_spn error on invalid letter
+// =============================================================================
+
+TEST_CASE("PTSP001A: to_spn returns error for invalid letter", "[pitch][spelled]") {
+    SpelledPitch invalid{7, 0, 4};
+    auto result = to_spn(invalid);
+    REQUIRE_FALSE(result.has_value());
+    CHECK(result.error() == ErrorCode::InvalidLetterName);
+}
+
+// =============================================================================
+// Remediation: from_spn rejects excessive accidentals
+// =============================================================================
+
+TEST_CASE("PTSP001A: from_spn rejects excessive accidentals", "[pitch][spelled]") {
+    // Build a string with 130 sharps, which overflows int8_t range
+    std::string excessive = "C";
+    for (int i = 0; i < 130; ++i) excessive += '#';
+    excessive += "4";
+
+    auto result = from_spn(excessive);
+    REQUIRE_FALSE(result.has_value());
+    CHECK(result.error() == ErrorCode::InvalidSpelledPitch);
+}
+
+// =============================================================================
+// Remediation: pc produces valid PitchClass for negative midi_value
+// =============================================================================
+
+TEST_CASE("PTSP001A: pc produces valid PitchClass for negative midi_value", "[pitch][spelled]") {
+    // Cb0 has midi_value = 12*(0+1) + 0 + (-1) = 11, pc should be 11
+    SpelledPitch cb0{0, -1, 0};
+    CHECK(pc(cb0) == 11);
+
+    // Cb-1 has midi_value = 12*(-1+1) + 0 + (-1) = -1, pc should still be 11
+    SpelledPitch cbm1{0, -1, -1};
+    CHECK(pc(cbm1) == 11);
 }
