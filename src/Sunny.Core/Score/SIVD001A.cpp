@@ -1115,6 +1115,152 @@ void validate_r5(const Score& score, std::vector<Diagnostic>& out) {
 }
 
 // =============================================================================
+// S12: Beat denominator > 0 for all Beat fields in document
+// =============================================================================
+
+void validate_s12(const Score& score, std::vector<Diagnostic>& out) {
+    // Check tempo map
+    for (const auto& te : score.tempo_map) {
+        if (te.position.beat.denominator <= 0) {
+            out.push_back(make_diagnostic(
+                ValidationSeverity::Error, "S12",
+                "Beat denominator <= 0 in tempo map position",
+                ScoreError::InvariantViolation,
+                te.position
+            ));
+        }
+        if (te.linear_duration.denominator <= 0) {
+            out.push_back(make_diagnostic(
+                ValidationSeverity::Error, "S12",
+                "Beat denominator <= 0 in tempo linear_duration",
+                ScoreError::InvariantViolation,
+                te.position
+            ));
+        }
+    }
+
+    // Check parts, measures, events
+    for (const auto& part : score.parts) {
+        for (const auto& m : part.measures) {
+            for (const auto& v : m.voices) {
+                for (const auto& e : v.events) {
+                    if (e.offset.denominator <= 0) {
+                        out.push_back(make_diagnostic(
+                            ValidationSeverity::Error, "S12",
+                            "Event offset has denominator <= 0",
+                            ScoreError::InvariantViolation,
+                            ScoreTime{m.bar_number, Beat::zero()}, part.id
+                        ));
+                    }
+                    // Check duration fields in NoteGroup and RestEvent
+                    if (const auto* ng = e.as_note_group()) {
+                        if (ng->duration.denominator <= 0) {
+                            out.push_back(make_diagnostic(
+                                ValidationSeverity::Error, "S12",
+                                "NoteGroup duration has denominator <= 0",
+                                ScoreError::InvariantViolation,
+                                ScoreTime{m.bar_number, e.offset}, part.id
+                            ));
+                        }
+                    }
+                    if (const auto* r = e.as_rest()) {
+                        if (r->duration.denominator <= 0) {
+                            out.push_back(make_diagnostic(
+                                ValidationSeverity::Error, "S12",
+                                "Rest duration has denominator <= 0",
+                                ScoreError::InvariantViolation,
+                                ScoreTime{m.bar_number, e.offset}, part.id
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// =============================================================================
+// S13: EventId uniqueness
+// =============================================================================
+
+void validate_s13(const Score& score, std::vector<Diagnostic>& out) {
+    std::set<std::uint64_t> seen_ids;
+    for (const auto& part : score.parts) {
+        for (const auto& m : part.measures) {
+            for (const auto& v : m.voices) {
+                for (const auto& e : v.events) {
+                    if (!seen_ids.insert(e.id.value).second) {
+                        out.push_back(make_diagnostic(
+                            ValidationSeverity::Error, "S13",
+                            "Duplicate EventId: " + std::to_string(e.id.value),
+                            ScoreError::InvariantViolation,
+                            ScoreTime{m.bar_number, e.offset}, part.id
+                        ));
+                    }
+                }
+            }
+        }
+    }
+}
+
+// =============================================================================
+// S14: BeamGroup/Tuplet referential integrity
+// =============================================================================
+
+void validate_s14(const Score& score, std::vector<Diagnostic>& out) {
+    for (const auto& part : score.parts) {
+        for (const auto& m : part.measures) {
+            for (const auto& v : m.voices) {
+                // Collect all event IDs in this voice
+                std::set<std::uint64_t> voice_event_ids;
+                for (const auto& e : v.events) {
+                    voice_event_ids.insert(e.id.value);
+                }
+
+                // Check beam groups reference valid events
+                for (const auto& bg : v.beam_groups) {
+                    for (const auto& eid : bg.event_ids) {
+                        if (!voice_event_ids.contains(eid.value)) {
+                            out.push_back(make_diagnostic(
+                                ValidationSeverity::Error, "S14",
+                                "BeamGroup references non-existent EventId: " +
+                                    std::to_string(eid.value),
+                                ScoreError::InvariantViolation,
+                                ScoreTime{m.bar_number, Beat::zero()}, part.id
+                            ));
+                        }
+                    }
+                }
+
+                // Check tuplet context references: if nested_in is set, verify
+                // that some event in this voice shares that parent tuplet id
+                std::set<std::uint64_t> tuplet_ids;
+                for (const auto& e : v.events) {
+                    const auto* ng = e.as_note_group();
+                    if (ng && ng->tuplet_context) {
+                        tuplet_ids.insert(ng->tuplet_context->id.value);
+                    }
+                }
+                for (const auto& e : v.events) {
+                    const auto* ng = e.as_note_group();
+                    if (ng && ng->tuplet_context && ng->tuplet_context->nested_in) {
+                        if (!tuplet_ids.contains(ng->tuplet_context->nested_in->value)) {
+                            out.push_back(make_diagnostic(
+                                ValidationSeverity::Error, "S14",
+                                "Tuplet nested_in references unknown TupletId: " +
+                                    std::to_string(ng->tuplet_context->nested_in->value),
+                                ScoreError::InvariantViolation,
+                                ScoreTime{m.bar_number, e.offset}, part.id
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// =============================================================================
 // Sorting helper
 // =============================================================================
 
@@ -1160,6 +1306,9 @@ std::vector<Diagnostic> validate_structural(const Score& score) {
     validate_s9(score, diags);
     validate_s10(score, diags);
     validate_s11(score, diags);
+    validate_s12(score, diags);
+    validate_s13(score, diags);
+    validate_s14(score, diags);
 
     sort_diagnostics(diags);
     return diags;
