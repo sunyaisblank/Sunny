@@ -20,6 +20,7 @@
 #include "TUET001A.h"
 
 #include <array>
+#include <climits>
 #include <cstdint>
 #include <cmath>
 #include <numeric>
@@ -33,12 +34,15 @@ struct JIRatio {
     std::int64_t numerator;
     std::int64_t denominator;
 
-    [[nodiscard]] constexpr double to_double() const noexcept {
+    [[nodiscard]] Result<double> to_double() const {
+        if (denominator == 0) return std::unexpected(ErrorCode::InvalidJIRatio);
         return static_cast<double>(numerator) / static_cast<double>(denominator);
     }
 
-    [[nodiscard]] double to_cents() const noexcept {
-        return ratio_to_cents(to_double());
+    [[nodiscard]] Result<double> to_cents() const {
+        auto d = to_double();
+        if (!d) return std::unexpected(d.error());
+        return ratio_to_cents(*d);
     }
 
     [[nodiscard]] constexpr bool operator==(const JIRatio&) const noexcept = default;
@@ -82,11 +86,11 @@ constexpr std::array<JIRatio, 13> JI_5LIMIT_INTERVALS = {{
  * @brief Get the cents value for a 5-limit JI interval
  *
  * @param semitones Semitone offset (0–12)
- * @return Cents value
+ * @return Cents value, or InvalidJIRatio if out of range
  */
-[[nodiscard]] inline double ji_cents(int semitones) noexcept {
+[[nodiscard]] inline Result<double> ji_cents(int semitones) {
     auto r = ji_ratio(semitones);
-    if (r.denominator == 0) return 0.0;
+    if (r.denominator == 0) return std::unexpected(ErrorCode::InvalidJIRatio);
     return r.to_cents();
 }
 
@@ -98,13 +102,15 @@ constexpr std::array<JIRatio, 13> JI_5LIMIT_INTERVALS = {{
  *
  * @param root_freq Root frequency in Hz
  * @param ratio JI ratio
- * @return Frequency in Hz
+ * @return Frequency in Hz, or InvalidJIRatio if denominator is zero
  */
-[[nodiscard]] constexpr double ji_frequency(
+[[nodiscard]] inline Result<double> ji_frequency(
     double root_freq,
     JIRatio ratio
-) noexcept {
-    return root_freq * ratio.to_double();
+) {
+    auto d = ratio.to_double();
+    if (!d) return std::unexpected(d.error());
+    return root_freq * *d;
 }
 
 // =============================================================================
@@ -126,15 +132,34 @@ constexpr JIRatio COMMA_SCHISMA = {32805, 32768};
 /**
  * @brief Multiply two JI ratios and reduce
  *
+ * Uses __int128 intermediate to detect overflow of int64_t.
+ *
  * @param a First ratio
  * @param b Second ratio
- * @return Reduced product
+ * @return Reduced product, or InvalidJIRatio on overflow
  */
-[[nodiscard]] constexpr JIRatio ji_multiply(JIRatio a, JIRatio b) noexcept {
-    std::int64_t num = a.numerator * b.numerator;
-    std::int64_t den = a.denominator * b.denominator;
-    auto g = std::gcd(num, den);
-    return {num / g, den / g};
+[[nodiscard]] inline Result<JIRatio> ji_multiply(JIRatio a, JIRatio b) {
+    __int128 num = static_cast<__int128>(a.numerator) * b.numerator;
+    __int128 den = static_cast<__int128>(a.denominator) * b.denominator;
+    if (den == 0) return std::unexpected(ErrorCode::InvalidJIRatio);
+    // Reduce before range check to maximise representable products
+    __int128 g = 1;
+    {
+        // GCD on __int128 via Euclidean algorithm
+        __int128 x = num < 0 ? -num : num;
+        __int128 y = den < 0 ? -den : den;
+        while (y != 0) {
+            __int128 t = y;
+            y = x % y;
+            x = t;
+        }
+        g = x;
+    }
+    num /= g;
+    den /= g;
+    if (num > INT64_MAX || num < INT64_MIN || den > INT64_MAX || den < INT64_MIN)
+        return std::unexpected(ErrorCode::InvalidJIRatio);
+    return JIRatio{static_cast<std::int64_t>(num), static_cast<std::int64_t>(den)};
 }
 
 /**
@@ -142,9 +167,10 @@ constexpr JIRatio COMMA_SCHISMA = {32805, 32768};
  *
  * @param a Dividend
  * @param b Divisor
- * @return Reduced quotient
+ * @return Reduced quotient, or InvalidJIRatio on overflow or zero divisor
  */
-[[nodiscard]] constexpr JIRatio ji_divide(JIRatio a, JIRatio b) noexcept {
+[[nodiscard]] inline Result<JIRatio> ji_divide(JIRatio a, JIRatio b) {
+    if (b.numerator == 0) return std::unexpected(ErrorCode::InvalidJIRatio);
     return ji_multiply(a, {b.denominator, b.numerator});
 }
 

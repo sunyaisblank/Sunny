@@ -38,12 +38,12 @@ namespace Sunny::Core {
  *
  * @param partials_a Partials of first tone: (freq, amplitude) pairs
  * @param partials_b Partials of second tone: (freq, amplitude) pairs
- * @return Roughness value (>= 0)
+ * @return Roughness value (>= 0), or error on invalid frequencies
  */
-[[nodiscard]] inline double roughness(
+[[nodiscard]] inline Result<double> roughness(
     std::span<const std::pair<double, double>> partials_a,
     std::span<const std::pair<double, double>> partials_b
-) noexcept {
+) {
     return sethares_dissonance(partials_a, partials_b);
 }
 
@@ -54,16 +54,18 @@ namespace Sunny::Core {
  *
  * @param partials_a Partials of first tone: (freq, amplitude)
  * @param partials_b Partials of second tone: (freq, amplitude)
- * @return Roughness value (>= 0)
+ * @return Roughness value (>= 0), or error on invalid frequencies
  */
-[[nodiscard]] inline double roughness_product(
+[[nodiscard]] inline Result<double> roughness_product(
     std::span<const std::pair<double, double>> partials_a,
     std::span<const std::pair<double, double>> partials_b
-) noexcept {
+) {
     double total = 0.0;
     for (const auto& [fa, aa] : partials_a) {
         for (const auto& [fb, ab] : partials_b) {
-            total += (aa * ab) * plomp_levelt_dissonance(fa, fb);
+            auto d = plomp_levelt_dissonance(fa, fb);
+            if (!d) return std::unexpected(d.error());
+            total += (aa * ab) * *d;
         }
     }
     return total;

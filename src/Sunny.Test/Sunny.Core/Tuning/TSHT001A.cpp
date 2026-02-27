@@ -63,43 +63,69 @@ TEST_CASE("TUHT001A: list_temperament_names returns all", "[tuning][temperament]
 
 TEST_CASE("TUHT001A: equal temperament frequency matches 12-EDO", "[tuning][temperament][core]") {
     // A4 (pc=9, octave=4) in equal temperament should be 440 Hz
-    double f = tempered_frequency(9, 4, TUNING_EQUAL);
-    REQUIRE_THAT(f, WithinRel(440.0, 1e-6));
+    auto f = tempered_frequency(9, 4, TUNING_EQUAL);
+    REQUIRE(f.has_value());
+    REQUIRE_THAT(*f, WithinRel(440.0, 1e-6));
 }
 
 TEST_CASE("TUHT001A: equal temperament C4", "[tuning][temperament][core]") {
-    double f_equal = tempered_frequency(0, 4, TUNING_EQUAL);
+    auto f_equal = tempered_frequency(0, 4, TUNING_EQUAL);
+    REQUIRE(f_equal.has_value());
     // C4 ≈ 261.63 Hz
-    REQUIRE_THAT(f_equal, WithinRel(261.63, 0.001));
+    REQUIRE_THAT(*f_equal, WithinRel(261.63, 0.001));
 }
 
 TEST_CASE("TUHT001A: tempered frequency differs from equal", "[tuning][temperament][core]") {
     // E4 in quarter-comma meantone should differ from 12-TET
-    double f_equal = tempered_frequency(4, 4, TUNING_EQUAL);
-    double f_meantone = tempered_frequency(4, 4, TUNING_QUARTER_COMMA_MEANTONE);
+    auto f_equal = tempered_frequency(4, 4, TUNING_EQUAL);
+    auto f_meantone = tempered_frequency(4, 4, TUNING_QUARTER_COMMA_MEANTONE);
+    REQUIRE(f_equal.has_value());
+    REQUIRE(f_meantone.has_value());
 
     // Meantone E is lower than 12-TET E (deviation is -13.69 cents)
-    REQUIRE(f_meantone < f_equal);
+    REQUIRE(*f_meantone < *f_equal);
 }
 
 TEST_CASE("TUHT001A: Pythagorean fifth is wider than equal", "[tuning][temperament][core]") {
     // G in Pythagorean has +1.96 cents deviation
-    double f_g_pyth = tempered_frequency(7, 4, TUNING_PYTHAGOREAN);
-    double f_g_equal = tempered_frequency(7, 4, TUNING_EQUAL);
+    auto f_g_pyth = tempered_frequency(7, 4, TUNING_PYTHAGOREAN);
+    auto f_g_equal = tempered_frequency(7, 4, TUNING_EQUAL);
+    REQUIRE(f_g_pyth.has_value());
+    REQUIRE(f_g_equal.has_value());
 
-    REQUIRE(f_g_pyth > f_g_equal);
+    REQUIRE(*f_g_pyth > *f_g_equal);
 }
 
 TEST_CASE("TUHT001A: meantone major third is closer to just", "[tuning][temperament][core]") {
     // Just major third = 5/4 = 386.314 cents above root
     // 12-TET major third = 400 cents (error ~13.7)
     // Meantone E deviation = -13.69 cents → ~386.3 cents (near just)
-    double f_c = tempered_frequency(0, 4, TUNING_QUARTER_COMMA_MEANTONE);
-    double f_e = tempered_frequency(4, 4, TUNING_QUARTER_COMMA_MEANTONE);
+    auto f_c = tempered_frequency(0, 4, TUNING_QUARTER_COMMA_MEANTONE);
+    auto f_e = tempered_frequency(4, 4, TUNING_QUARTER_COMMA_MEANTONE);
+    REQUIRE(f_c.has_value());
+    REQUIRE(f_e.has_value());
 
-    double meantone_third_cents = ratio_to_cents(f_e / f_c);
-    double just_third_cents = ratio_to_cents(5.0 / 4.0);  // 386.314
+    auto meantone_third_cents = ratio_to_cents(*f_e / *f_c);
+    auto just_third_cents = ratio_to_cents(5.0 / 4.0);  // 386.314
+    REQUIRE(meantone_third_cents.has_value());
+    REQUIRE(just_third_cents.has_value());
 
     // Should be within 2 cents of just
-    REQUIRE_THAT(meantone_third_cents, WithinAbs(just_third_cents, 2.0));
+    REQUIRE_THAT(*meantone_third_cents, WithinAbs(*just_third_cents, 2.0));
+}
+
+// =============================================================================
+// Precondition rejection tests
+// =============================================================================
+
+TEST_CASE("TUHT001A: tempered_frequency rejects negative pitch_class", "[tuning][temperament][core]") {
+    auto r = tempered_frequency(-1, 4, TUNING_EQUAL);
+    REQUIRE_FALSE(r.has_value());
+    REQUIRE(r.error() == ErrorCode::InvalidPitchClass);
+}
+
+TEST_CASE("TUHT001A: tempered_frequency rejects pitch_class > 11", "[tuning][temperament][core]") {
+    auto r = tempered_frequency(12, 4, TUNING_EQUAL);
+    REQUIRE_FALSE(r.has_value());
+    REQUIRE(r.error() == ErrorCode::InvalidPitchClass);
 }
