@@ -144,12 +144,14 @@ constexpr TuningTable TUNING_VALLOTTI = {
  * @param ref_freq Reference frequency (default A4=440)
  * @return Frequency in Hz
  */
-[[nodiscard]] inline double tempered_frequency(
+[[nodiscard]] inline Result<double> tempered_frequency(
     int pitch_class,
     int octave,
     const TuningTable& table,
     double ref_freq = 440.0
-) noexcept {
+) {
+    if (pitch_class < 0 || pitch_class > 11)
+        return std::unexpected(ErrorCode::InvalidPitchClass);
     int midi = 12 * octave + pitch_class + 12;  // MIDI note (C-1 = 0)
     return ref_freq * std::pow(2.0,
         (midi - 69.0) / 12.0 + table[pitch_class % 12] / 1200.0);

@@ -16,9 +16,12 @@
 
 #pragma once
 
+#include "../Tensor/TNTP001A.h"
+
 #include <array>
 #include <cmath>
 #include <string_view>
+#include <vector>
 
 namespace Sunny::Core {
 
@@ -56,10 +59,12 @@ constexpr std::array<HarmonicPartial, 16> HARMONIC_SERIES = {{
  * @brief Compute the frequency of the nth partial
  *
  * @param n Partial number (>= 1)
- * @param fundamental Fundamental frequency in Hz
- * @return Frequency of nth partial
+ * @param fundamental Fundamental frequency in Hz (> 0)
+ * @return Frequency of nth partial, or error if n < 1 or fundamental <= 0
  */
-[[nodiscard]] constexpr double partial_frequency(int n, double fundamental) noexcept {
+[[nodiscard]] inline Result<double> partial_frequency(int n, double fundamental) {
+    if (n < 1) return std::unexpected(ErrorCode::InvalidPartialNumber);
+    if (fundamental <= 0.0) return std::unexpected(ErrorCode::InvalidFrequency);
     return n * fundamental;
 }
 
@@ -69,16 +74,18 @@ constexpr std::array<HarmonicPartial, 16> HARMONIC_SERIES = {{
  * Amplitude of nth partial = 1/n^rolloff.
  * Common: rolloff=1 (sawtooth-like), rolloff=2 (softer).
  *
- * @param fundamental Fundamental frequency
- * @param n_partials Number of partials to generate
+ * @param fundamental Fundamental frequency (> 0)
+ * @param n_partials Number of partials to generate (>= 1)
  * @param rolloff Amplitude rolloff exponent (>= 0)
- * @return Pairs of (frequency, amplitude)
+ * @return Pairs of (frequency, amplitude), or error if fundamental <= 0
  */
-[[nodiscard]] inline std::vector<std::pair<double, double>> harmonic_spectrum(
+[[nodiscard]] inline Result<std::vector<std::pair<double, double>>> harmonic_spectrum(
     double fundamental,
     int n_partials,
     double rolloff = 1.0
 ) {
+    if (fundamental <= 0.0) return std::unexpected(ErrorCode::InvalidFrequency);
+    if (n_partials < 1) return std::unexpected(ErrorCode::InvalidPartialNumber);
     std::vector<std::pair<double, double>> result;
     result.reserve(n_partials);
     for (int n = 1; n <= n_partials; ++n) {

@@ -20,6 +20,8 @@
 
 #pragma once
 
+#include "../Tensor/TNTP001A.h"
+
 #include <cmath>
 #include <span>
 #include <utility>
@@ -37,9 +39,10 @@ namespace Sunny::Core {
  * CB(f) ≈ 25 + 75 · (1 + 1.4 · (f/1000)²)^0.69
  *
  * @param freq Frequency in Hz (> 0)
- * @return Critical bandwidth in Hz
+ * @return Critical bandwidth in Hz, or InvalidFrequency if freq <= 0
  */
-[[nodiscard]] inline double critical_bandwidth(double freq) noexcept {
+[[nodiscard]] inline Result<double> critical_bandwidth(double freq) {
+    if (freq <= 0.0) return std::unexpected(ErrorCode::InvalidFrequency);
     double x = freq / 1000.0;
     return 25.0 + 75.0 * std::pow(1.0 + 1.4 * x * x, 0.69);
 }
@@ -58,19 +61,21 @@ constexpr double PL_B = 5.75;
  * d(f1, f2) = e^(-a·s) - e^(-b·s)
  * where s = |f2 - f1| / (0.24 · CB(mean(f1, f2)))
  *
- * @param f1 First frequency in Hz
- * @param f2 Second frequency in Hz
- * @return Dissonance value in [0, ~0.37]
+ * @param f1 First frequency in Hz (> 0)
+ * @param f2 Second frequency in Hz (> 0)
+ * @return Dissonance value in [0, ~0.37], or InvalidFrequency if either <= 0
  */
-[[nodiscard]] inline double plomp_levelt_dissonance(
+[[nodiscard]] inline Result<double> plomp_levelt_dissonance(
     double f1, double f2
-) noexcept {
+) {
+    if (f1 <= 0.0 || f2 <= 0.0) return std::unexpected(ErrorCode::InvalidFrequency);
     double diff = std::abs(f2 - f1);
     if (diff < 1e-10) return 0.0;
 
     double mean_f = (f1 + f2) / 2.0;
-    double cb = critical_bandwidth(mean_f);
-    double s = diff / (0.24 * cb);
+    auto cb = critical_bandwidth(mean_f);
+    if (!cb) return std::unexpected(cb.error());
+    double s = diff / (0.24 * *cb);
 
     return std::exp(-PL_A * s) - std::exp(-PL_B * s);
 }
@@ -86,20 +91,23 @@ constexpr double PL_B = 5.75;
  * weighted by partial amplitudes.
  *
  * Each tone is represented as a vector of (frequency, amplitude) pairs.
+ * All frequencies must be positive.
  *
  * @param partials_a Partials of first tone: (freq, amplitude) pairs
  * @param partials_b Partials of second tone: (freq, amplitude) pairs
- * @return Total weighted dissonance
+ * @return Total weighted dissonance, or InvalidFrequency if any frequency <= 0
  */
-[[nodiscard]] inline double sethares_dissonance(
+[[nodiscard]] inline Result<double> sethares_dissonance(
     std::span<const std::pair<double, double>> partials_a,
     std::span<const std::pair<double, double>> partials_b
-) noexcept {
+) {
     double total = 0.0;
     for (const auto& [fa, aa] : partials_a) {
         for (const auto& [fb, ab] : partials_b) {
             double weight = std::min(aa, ab);
-            total += weight * plomp_levelt_dissonance(fa, fb);
+            auto d = plomp_levelt_dissonance(fa, fb);
+            if (!d) return std::unexpected(d.error());
+            total += weight * *d;
         }
     }
     return total;
@@ -116,9 +124,9 @@ constexpr double PL_B = 5.75;
  * @param min_ratio Minimum interval ratio (e.g., 1.0 for unison)
  * @param max_ratio Maximum interval ratio (e.g., 2.0 for octave)
  * @param steps Number of steps in the sweep
- * @return Vector of (ratio, dissonance) pairs
+ * @return Vector of (ratio, dissonance) pairs, or error on invalid frequencies
  */
-[[nodiscard]] inline std::vector<std::pair<double, double>> dissonance_curve(
+[[nodiscard]] inline Result<std::vector<std::pair<double, double>>> dissonance_curve(
     std::span<const std::pair<double, double>> partials,
     double min_ratio = 1.0,
     double max_ratio = 2.0,
@@ -139,8 +147,9 @@ constexpr double PL_B = 5.75;
             transposed.emplace_back(f * ratio, a);
         }
 
-        double d = sethares_dissonance(partials, transposed);
-        curve.emplace_back(ratio, d);
+        auto d = sethares_dissonance(partials, transposed);
+        if (!d) return std::unexpected(d.error());
+        curve.emplace_back(ratio, *d);
     }
 
     return curve;

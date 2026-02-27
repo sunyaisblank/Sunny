@@ -43,13 +43,15 @@ TEST_CASE("ACHS001A: octaves have zero deviation", "[acoustics][core]") {
 }
 
 TEST_CASE("ACHS001A: partial_frequency basic", "[acoustics][core]") {
-    REQUIRE(partial_frequency(1, 440.0) == 440.0);
-    REQUIRE(partial_frequency(2, 440.0) == 880.0);
-    REQUIRE(partial_frequency(3, 440.0) == 1320.0);
+    REQUIRE(*partial_frequency(1, 440.0) == 440.0);
+    REQUIRE(*partial_frequency(2, 440.0) == 880.0);
+    REQUIRE(*partial_frequency(3, 440.0) == 1320.0);
 }
 
 TEST_CASE("ACHS001A: harmonic_spectrum rolloff", "[acoustics][core]") {
-    auto spectrum = harmonic_spectrum(100.0, 4, 1.0);
+    auto spectrum_r = harmonic_spectrum(100.0, 4, 1.0);
+    REQUIRE(spectrum_r.has_value());
+    auto& spectrum = *spectrum_r;
     REQUIRE(spectrum.size() == 4);
 
     REQUIRE(spectrum[0].first == 100.0);
@@ -70,49 +72,56 @@ TEST_CASE("ACHS001A: harmonic_spectrum rolloff", "[acoustics][core]") {
 // =============================================================================
 
 TEST_CASE("ACPL001A: critical_bandwidth is positive", "[acoustics][core]") {
-    REQUIRE(critical_bandwidth(100.0) > 0.0);
-    REQUIRE(critical_bandwidth(1000.0) > 0.0);
-    REQUIRE(critical_bandwidth(5000.0) > 0.0);
+    REQUIRE(*critical_bandwidth(100.0) > 0.0);
+    REQUIRE(*critical_bandwidth(1000.0) > 0.0);
+    REQUIRE(*critical_bandwidth(5000.0) > 0.0);
 }
 
 TEST_CASE("ACPL001A: critical_bandwidth increases with frequency", "[acoustics][core]") {
-    REQUIRE(critical_bandwidth(2000.0) > critical_bandwidth(500.0));
+    REQUIRE(*critical_bandwidth(2000.0) > *critical_bandwidth(500.0));
 }
 
 TEST_CASE("ACPL001A: plomp_levelt unison is zero", "[acoustics][core]") {
-    REQUIRE(plomp_levelt_dissonance(440.0, 440.0) == 0.0);
+    REQUIRE(*plomp_levelt_dissonance(440.0, 440.0) == 0.0);
 }
 
 TEST_CASE("ACPL001A: plomp_levelt near-unison has dissonance", "[acoustics][core]") {
     // Slight detuning produces roughness
-    double d = plomp_levelt_dissonance(440.0, 445.0);
-    REQUIRE(d > 0.0);
+    auto d = plomp_levelt_dissonance(440.0, 445.0);
+    REQUIRE(d.has_value());
+    REQUIRE(*d > 0.0);
 }
 
 TEST_CASE("ACPL001A: plomp_levelt wide interval has low dissonance", "[acoustics][core]") {
     // Octave apart — well beyond critical bandwidth
-    double d_octave = plomp_levelt_dissonance(220.0, 440.0);
-    double d_close = plomp_levelt_dissonance(440.0, 460.0);
-    REQUIRE(d_close > d_octave);
+    auto d_octave = plomp_levelt_dissonance(220.0, 440.0);
+    auto d_close = plomp_levelt_dissonance(440.0, 460.0);
+    REQUIRE(d_octave.has_value());
+    REQUIRE(d_close.has_value());
+    REQUIRE(*d_close > *d_octave);
 }
 
 TEST_CASE("ACPL001A: sethares_dissonance with harmonic tones", "[acoustics][core]") {
-    auto tone_a = harmonic_spectrum(220.0, 6, 1.0);
-    auto tone_b = harmonic_spectrum(330.0, 6, 1.0);  // Perfect fifth
+    auto tone_a = *harmonic_spectrum(220.0, 6, 1.0);
+    auto tone_b = *harmonic_spectrum(330.0, 6, 1.0);  // Perfect fifth
 
-    double d_fifth = sethares_dissonance(tone_a, tone_b);
+    auto d_fifth = sethares_dissonance(tone_a, tone_b);
+    REQUIRE(d_fifth.has_value());
 
     // Compare with minor second (dissonant)
-    auto tone_c = harmonic_spectrum(233.08, 6, 1.0);  // ~m2 above
-    double d_m2 = sethares_dissonance(tone_a, tone_c);
+    auto tone_c = *harmonic_spectrum(233.08, 6, 1.0);  // ~m2 above
+    auto d_m2 = sethares_dissonance(tone_a, tone_c);
+    REQUIRE(d_m2.has_value());
 
     // Fifth should be more consonant (less dissonance) than minor second
-    REQUIRE(d_fifth < d_m2);
+    REQUIRE(*d_fifth < *d_m2);
 }
 
 TEST_CASE("ACPL001A: dissonance_curve has unison minimum", "[acoustics][core]") {
-    auto partials = harmonic_spectrum(220.0, 6, 1.0);
-    auto curve = dissonance_curve(partials, 1.0, 2.0, 50);
+    auto partials = *harmonic_spectrum(220.0, 6, 1.0);
+    auto curve_r = dissonance_curve(partials, 1.0, 2.0, 50);
+    REQUIRE(curve_r.has_value());
+    auto& curve = *curve_r;
 
     REQUIRE(curve.size() == 51);
     // Unison (ratio 1.0) should have low dissonance
@@ -125,17 +134,19 @@ TEST_CASE("ACPL001A: dissonance_curve has unison minimum", "[acoustics][core]") 
 // =============================================================================
 
 TEST_CASE("ACRG001A: roughness identical tones is near-zero", "[acoustics][core]") {
-    auto tone = harmonic_spectrum(440.0, 4, 1.0);
+    auto tone = *harmonic_spectrum(440.0, 4, 1.0);
     // Self-roughness at unison — all partials match exactly
-    double r = roughness(tone, tone);
-    REQUIRE_THAT(r, WithinAbs(0.0, 1e-10));
+    auto r = roughness(tone, tone);
+    REQUIRE(r.has_value());
+    REQUIRE_THAT(*r, WithinAbs(0.0, 1e-10));
 }
 
 TEST_CASE("ACRG001A: roughness_product positive for detuned tones", "[acoustics][core]") {
-    auto tone_a = harmonic_spectrum(440.0, 4, 1.0);
-    auto tone_b = harmonic_spectrum(445.0, 4, 1.0);
-    double r = roughness_product(tone_a, tone_b);
-    REQUIRE(r > 0.0);
+    auto tone_a = *harmonic_spectrum(440.0, 4, 1.0);
+    auto tone_b = *harmonic_spectrum(445.0, 4, 1.0);
+    auto r = roughness_product(tone_a, tone_b);
+    REQUIRE(r.has_value());
+    REQUIRE(*r > 0.0);
 }
 
 // =============================================================================
@@ -178,4 +189,62 @@ TEST_CASE("ACVP001A: virtual_pitch confidence reflects match quality", "[acousti
     auto result = virtual_pitch(perfect);
     REQUIRE(result.has_value());
     REQUIRE(result->confidence >= 0.9);
+}
+
+// =============================================================================
+// Precondition rejection tests
+// =============================================================================
+
+TEST_CASE("ACHS001A: partial_frequency rejects n < 1", "[acoustics][core]") {
+    auto r = partial_frequency(0, 440.0);
+    REQUIRE_FALSE(r.has_value());
+    REQUIRE(r.error() == ErrorCode::InvalidPartialNumber);
+}
+
+TEST_CASE("ACHS001A: partial_frequency rejects f <= 0", "[acoustics][core]") {
+    auto r = partial_frequency(1, 0.0);
+    REQUIRE_FALSE(r.has_value());
+    REQUIRE(r.error() == ErrorCode::InvalidFrequency);
+}
+
+TEST_CASE("ACHS001A: partial_frequency rejects negative f", "[acoustics][core]") {
+    auto r = partial_frequency(1, -100.0);
+    REQUIRE_FALSE(r.has_value());
+    REQUIRE(r.error() == ErrorCode::InvalidFrequency);
+}
+
+TEST_CASE("ACHS001A: harmonic_spectrum rejects f <= 0", "[acoustics][core]") {
+    auto r = harmonic_spectrum(0.0, 4, 1.0);
+    REQUIRE_FALSE(r.has_value());
+    REQUIRE(r.error() == ErrorCode::InvalidFrequency);
+}
+
+TEST_CASE("ACHS001A: harmonic_spectrum rejects n_partials < 1", "[acoustics][core]") {
+    auto r = harmonic_spectrum(440.0, 0, 1.0);
+    REQUIRE_FALSE(r.has_value());
+    REQUIRE(r.error() == ErrorCode::InvalidPartialNumber);
+}
+
+TEST_CASE("ACPL001A: critical_bandwidth rejects f <= 0", "[acoustics][core]") {
+    auto r = critical_bandwidth(0.0);
+    REQUIRE_FALSE(r.has_value());
+    REQUIRE(r.error() == ErrorCode::InvalidFrequency);
+}
+
+TEST_CASE("ACPL001A: critical_bandwidth rejects negative f", "[acoustics][core]") {
+    auto r = critical_bandwidth(-100.0);
+    REQUIRE_FALSE(r.has_value());
+    REQUIRE(r.error() == ErrorCode::InvalidFrequency);
+}
+
+TEST_CASE("ACPL001A: plomp_levelt_dissonance rejects f1 <= 0", "[acoustics][core]") {
+    auto r = plomp_levelt_dissonance(0.0, 440.0);
+    REQUIRE_FALSE(r.has_value());
+    REQUIRE(r.error() == ErrorCode::InvalidFrequency);
+}
+
+TEST_CASE("ACPL001A: plomp_levelt_dissonance rejects f2 <= 0", "[acoustics][core]") {
+    auto r = plomp_levelt_dissonance(440.0, -1.0);
+    REQUIRE_FALSE(r.has_value());
+    REQUIRE(r.error() == ErrorCode::InvalidFrequency);
 }
