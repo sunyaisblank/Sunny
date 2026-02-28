@@ -319,3 +319,115 @@ TEST_CASE("S6 detects duplicate key signature positions",
     auto diags = validate_structural(score);
     CHECK(has_rule(diags, "S6"));
 }
+
+// =============================================================================
+// S13: PartId and SectionId uniqueness
+// =============================================================================
+
+TEST_CASE("S13 detects duplicate PartId",
+          "[score][validation][s13]") {
+    auto score = make_compilable_score(2);
+
+    // Duplicate the part with the same PartId
+    Part dup = score.parts[0];
+    dup.definition.name = "Piano Copy";
+    score.parts.push_back(dup);
+
+    auto diags = validate_structural(score);
+    CHECK(has_rule(diags, "S13"));
+}
+
+TEST_CASE("S13 detects duplicate SectionId",
+          "[score][validation][s13]") {
+    auto score = make_compilable_score(4);
+
+    ScoreSection s1;
+    s1.id = SectionId{500};
+    s1.label = "A";
+    s1.start = SCORE_START;
+    s1.end = ScoreTime{3, Beat::zero()};
+
+    ScoreSection s2;
+    s2.id = SectionId{500};  // duplicate
+    s2.label = "B";
+    s2.start = ScoreTime{3, Beat::zero()};
+    s2.end = ScoreTime{5, Beat::zero()};
+
+    score.section_map.push_back(s1);
+    score.section_map.push_back(s2);
+
+    auto diags = validate_structural(score);
+    CHECK(has_rule(diags, "S13"));
+}
+
+// =============================================================================
+// S14: NonChordTone referential integrity
+// =============================================================================
+
+namespace {
+
+bool has_warning_rule(const std::vector<Diagnostic>& diags, const std::string& rule) {
+    for (const auto& d : diags) {
+        if (d.rule == rule && d.severity == ValidationSeverity::Warning) return true;
+    }
+    return false;
+}
+
+}  // anonymous namespace
+
+TEST_CASE("S14 detects NonChordTone referencing non-existent EventId",
+          "[score][validation][s14]") {
+    auto score = make_compilable_score(2);
+    place_whole_note(score, 0, 0, C4);
+
+    HarmonicAnnotation ha;
+    ha.position = SCORE_START;
+    ha.duration = Beat{1, 1};
+    ha.roman_numeral = "I";
+    ha.function = ScoreHarmonicFunction::Tonic;
+    ha.chord.root = 0;
+    ha.chord.quality = "major";
+    ha.key_context.root = SpelledPitch{0, 0, 4};
+    ha.key_context.accidentals = 0;
+
+    NonChordToneAnnotation nct;
+    nct.event_id = EventId{999999};  // non-existent
+    nct.note_index = 0;
+    nct.type = NonChordToneType::PassingTone;
+    ha.non_chord_tones.push_back(nct);
+
+    score.harmonic_annotations.push_back(ha);
+
+    auto diags = validate_structural(score);
+    CHECK(has_warning_rule(diags, "S14"));
+}
+
+TEST_CASE("S14 detects NonChordTone with out-of-bounds note_index",
+          "[score][validation][s14]") {
+    auto score = make_compilable_score(2);
+    place_whole_note(score, 0, 0, C4);
+
+    // Get the actual EventId of the note we placed
+    EventId note_id = score.parts[0].measures[0].voices[0].events[0].id;
+
+    HarmonicAnnotation ha;
+    ha.position = SCORE_START;
+    ha.duration = Beat{1, 1};
+    ha.roman_numeral = "I";
+    ha.function = ScoreHarmonicFunction::Tonic;
+    ha.chord.root = 0;
+    ha.chord.quality = "major";
+    ha.key_context.root = SpelledPitch{0, 0, 4};
+    ha.key_context.accidentals = 0;
+
+    NonChordToneAnnotation nct;
+    nct.event_id = note_id;
+    nct.note_index = 5;  // only 1 note, so index 5 is out of bounds
+    nct.type = NonChordToneType::NeighborTone;
+    ha.non_chord_tones.push_back(nct);
+
+    score.harmonic_annotations.push_back(ha);
+
+    auto diags = validate_structural(score);
+    CHECK(has_warning_rule(diags, "S14"));
+}

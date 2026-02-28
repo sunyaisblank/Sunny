@@ -12,6 +12,7 @@
 #include "../VoiceLeading/VLNT001A.h"
 
 #include <algorithm>
+#include <memory>
 #include <set>
 
 namespace Sunny::Core {
@@ -206,8 +207,11 @@ Result<MutationResult> insert_note(
         if (ev.id == new_id) { inserted_payload = ev.payload; break; }
     }
 
+    // Shared cell: forward closure writes fresh ID on redo; inverse reads it.
+    auto shared_id = std::make_shared<EventId>(new_id);
+
     push_undo(undo, score, "insert_note",
-        [&score, part_id, bar, voice_index, offset, inserted_payload, duration]() -> VoidResult {
+        [&score, part_id, bar, voice_index, offset, inserted_payload, duration, shared_id]() -> VoidResult {
             // Forward: re-insert a note with the same payload
             auto* p = find_part(score, part_id);
             if (!p || bar < 1 || bar > p->measures.size())
@@ -218,16 +222,26 @@ Result<MutationResult> insert_note(
                 if (vc.voice_index == voice_index) { v = &vc; break; }
             }
             if (!v) return std::unexpected(ErrorCode::InvalidMutation);
-            Event event{allocate_event_id(), offset, inserted_payload};
+            EventId fresh = allocate_event_id();
+            *shared_id = fresh;
+            Event event{fresh, offset, inserted_payload};
             auto it = std::lower_bound(v->events.begin(), v->events.end(), offset,
                 [](const Event& e, const Beat& off) { return e.offset < off; });
             v->events.insert(it, std::move(event));
             bump_version(score);
             return {};
         },
-        [&score, new_id]() -> VoidResult {
-            auto result = delete_event(score, new_id);
-            if (!result) return std::unexpected(result.error());
+        [&score, shared_id]() -> VoidResult {
+            // Erase the event entirely (not delete_event, which replaces with rest)
+            auto loc = find_event(score, *shared_id);
+            if (!loc.event) return std::unexpected(ErrorCode::InvalidMutation);
+            auto& events = loc.voice->events;
+            events.erase(
+                std::remove_if(events.begin(), events.end(),
+                    [&](const Event& e) { return e.id == *shared_id; }),
+                events.end()
+            );
+            bump_version(score);
             return {};
         }
     );
@@ -633,6 +647,12 @@ Result<MutationResult> insert_measures(
 ) {
     if (after_bar > score.metadata.total_bars) {
         return std::unexpected(ErrorCode::InvalidMutation);
+    }
+
+    // Pre-validate: after_bar must not exceed any part's actual measure count
+    for (const auto& part : score.parts) {
+        if (after_bar > part.measures.size())
+            return std::unexpected(ErrorCode::InvalidMutation);
     }
 
     // Determine time signature for new measures
@@ -1519,21 +1539,36 @@ Result<MutationResult> copy_region(
         target_voice->events.insert(it, std::move(rec.event));
     }
 
-    // Collect IDs of inserted events for undo
-    std::vector<EventId> inserted_ids;
+    // Shared cell: forward closure writes fresh IDs on redo; inverse reads them.
+    auto shared_ids = std::make_shared<std::vector<EventId>>();
     for (const auto& rec : records) {
-        inserted_ids.push_back(rec.event.id);
+        shared_ids->push_back(rec.event.id);
     }
 
     bump_version(score);
     push_undo(undo, score, "copy_region",
-        [&score, src, dest]() -> VoidResult {
+        [&score, src, dest, shared_ids]() -> VoidResult {
+            auto id_before = next_event_id;
             auto result = copy_region(score, src, dest);
             if (!result) return std::unexpected(result.error());
+            // Re-scan for freshly inserted IDs
+            shared_ids->clear();
+            for (const auto& part : score.parts) {
+                for (const auto& measure : part.measures) {
+                    for (const auto& voice : measure.voices) {
+                        for (const auto& event : voice.events) {
+                            if (event.id.value >= id_before &&
+                                event.id.value < next_event_id) {
+                                shared_ids->push_back(event.id);
+                            }
+                        }
+                    }
+                }
+            }
             return {};
         },
-        [&score, inserted_ids]() -> VoidResult {
-            for (const auto& eid : inserted_ids) {
+        [&score, shared_ids]() -> VoidResult {
+            for (const auto& eid : *shared_ids) {
                 auto loc = find_event(score, eid);
                 if (!loc.event || !loc.voice) continue;
                 auto& events = loc.voice->events;
@@ -1625,16 +1660,34 @@ Result<MutationResult> move_region(
         }
     }
 
+    // Shared cell for move-inserted IDs: forward writes on redo, inverse reads.
+    auto shared_move_ids = std::make_shared<std::vector<EventId>>(std::move(move_inserted_ids));
+
     // copy_region already bumped version; no extra bump needed
     push_undo(undo, score, "move_region",
-        [&score, src, dest]() -> VoidResult {
+        [&score, src, dest, shared_move_ids]() -> VoidResult {
+            auto id_before = next_event_id;
             auto result = move_region(score, src, dest);
             if (!result) return std::unexpected(result.error());
+            // Re-scan for freshly inserted IDs
+            shared_move_ids->clear();
+            for (const auto& part : score.parts) {
+                for (const auto& measure : part.measures) {
+                    for (const auto& voice : measure.voices) {
+                        for (const auto& event : voice.events) {
+                            if (event.id.value >= id_before &&
+                                event.id.value < next_event_id) {
+                                shared_move_ids->push_back(event.id);
+                            }
+                        }
+                    }
+                }
+            }
             return {};
         },
-        [&score, saved_source, move_inserted_ids]() -> VoidResult {
+        [&score, saved_source, shared_move_ids]() -> VoidResult {
             // Remove events inserted by the copy, using explicit IDs
-            for (const auto& eid : move_inserted_ids) {
+            for (const auto& eid : *shared_move_ids) {
                 auto loc = find_event(score, eid);
                 if (!loc.event || !loc.voice) continue;
                 auto& events = loc.voice->events;

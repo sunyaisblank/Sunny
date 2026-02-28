@@ -16,6 +16,9 @@
 
 #pragma once
 
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wpedantic"
+
 #include "../Tensor/TNTP001A.h"
 #include "../Tensor/TNBT001A.h"
 #include "../Tensor/TNEV001A.h"
@@ -54,9 +57,10 @@ struct Tuplet {
  * @return Beat duration of one tuplet note
  */
 [[nodiscard]] constexpr Beat tuplet_note_duration(const Tuplet& t) noexcept {
-    // (normal / actual) * base_duration
-    return Beat{t.normal * t.base_duration.numerator,
-                t.actual * t.base_duration.denominator};
+    // (normal / actual) * base_duration, using wide intermediates for overflow safety
+    __int128 num = static_cast<__int128>(t.normal) * t.base_duration.numerator;
+    __int128 den = static_cast<__int128>(t.actual) * t.base_duration.denominator;
+    return Beat::normalise_wide(num, den);
 }
 
 /**
@@ -106,10 +110,13 @@ struct Tuplet {
     // inner base = outer note duration = (outer.normal / outer.actual) * outer.base
     // inner note = (inner_normal / inner_actual) * inner_base
     // = (outer.normal * inner_normal) / (outer.actual * inner_actual) * outer.base
-    return Beat{
-        outer.normal * inner_normal * outer.base_duration.numerator,
-        outer.actual * inner_actual * outer.base_duration.denominator
-    };
+    __int128 num = static_cast<__int128>(outer.normal) * inner_normal
+                   * outer.base_duration.numerator;
+    __int128 den = static_cast<__int128>(outer.actual) * inner_actual
+                   * outer.base_duration.denominator;
+    return Beat::normalise_wide(num, den);
 }
 
 }  // namespace Sunny::Core
+
+#pragma GCC diagnostic pop

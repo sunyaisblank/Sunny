@@ -96,13 +96,16 @@ Result<Beat> score_time_to_absolute_beat(
         if (!entry) {
             return std::unexpected(ErrorCode::InvalidTimeSignature);
         }
-        cumulative = cumulative + entry->time_signature.measure_duration();
+        auto sum = checked_add(cumulative, entry->time_signature.measure_duration());
+        if (!sum) return std::unexpected(sum.error());
+        cumulative = *sum;
     }
 
     // Add the beat offset within the target bar
-    cumulative = cumulative + time.beat;
+    auto final_sum = checked_add(cumulative, time.beat);
+    if (!final_sum) return std::unexpected(final_sum.error());
 
-    return cumulative;
+    return *final_sum;
 }
 
 Result<ScoreTime> absolute_beat_to_score_time(
@@ -129,7 +132,9 @@ Result<ScoreTime> absolute_beat_to_score_time(
         if (remaining < measure_dur) {
             return ScoreTime{bar, remaining};
         }
-        remaining = remaining - measure_dur;
+        auto diff = checked_sub(remaining, measure_dur);
+        if (!diff) return std::unexpected(diff.error());
+        remaining = *diff;
     }
 
     // Past end of score

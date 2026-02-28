@@ -19,8 +19,9 @@ using Catch::Matchers::WithinAbs;
 
 TEST_CASE("TUJI001A: unison ratio is 1/1", "[tuning][ji][core]") {
     auto r = ji_ratio(0);
-    REQUIRE(r.numerator == 1);
-    REQUIRE(r.denominator == 1);
+    REQUIRE(r.has_value());
+    REQUIRE(r->numerator == 1);
+    REQUIRE(r->denominator == 1);
     auto c = ji_cents(0);
     REQUIRE(c.has_value());
     REQUIRE_THAT(*c, WithinAbs(0.0, 1e-10));
@@ -28,8 +29,9 @@ TEST_CASE("TUJI001A: unison ratio is 1/1", "[tuning][ji][core]") {
 
 TEST_CASE("TUJI001A: octave ratio is 2/1", "[tuning][ji][core]") {
     auto r = ji_ratio(12);
-    REQUIRE(r.numerator == 2);
-    REQUIRE(r.denominator == 1);
+    REQUIRE(r.has_value());
+    REQUIRE(r->numerator == 2);
+    REQUIRE(r->denominator == 1);
     auto c = ji_cents(12);
     REQUIRE(c.has_value());
     REQUIRE_THAT(*c, WithinAbs(1200.0, 1e-10));
@@ -37,7 +39,8 @@ TEST_CASE("TUJI001A: octave ratio is 2/1", "[tuning][ji][core]") {
 
 TEST_CASE("TUJI001A: perfect fifth is 3/2", "[tuning][ji][core]") {
     auto r = ji_ratio(7);
-    REQUIRE(r == JIRatio{3, 2});
+    REQUIRE(r.has_value());
+    REQUIRE(*r == JIRatio{3, 2});
     auto c = ji_cents(7);
     REQUIRE(c.has_value());
     REQUIRE_THAT(*c, WithinAbs(701.955, 0.001));
@@ -45,7 +48,8 @@ TEST_CASE("TUJI001A: perfect fifth is 3/2", "[tuning][ji][core]") {
 
 TEST_CASE("TUJI001A: major third is 5/4", "[tuning][ji][core]") {
     auto r = ji_ratio(4);
-    REQUIRE(r == JIRatio{5, 4});
+    REQUIRE(r.has_value());
+    REQUIRE(*r == JIRatio{5, 4});
     auto c = ji_cents(4);
     REQUIRE(c.has_value());
     REQUIRE_THAT(*c, WithinAbs(386.314, 0.001));
@@ -53,7 +57,8 @@ TEST_CASE("TUJI001A: major third is 5/4", "[tuning][ji][core]") {
 
 TEST_CASE("TUJI001A: perfect fourth is 4/3", "[tuning][ji][core]") {
     auto r = ji_ratio(5);
-    REQUIRE(r == JIRatio{4, 3});
+    REQUIRE(r.has_value());
+    REQUIRE(*r == JIRatio{4, 3});
     auto c = ji_cents(5);
     REQUIRE(c.has_value());
     REQUIRE_THAT(*c, WithinAbs(498.045, 0.001));
@@ -61,15 +66,16 @@ TEST_CASE("TUJI001A: perfect fourth is 4/3", "[tuning][ji][core]") {
 
 TEST_CASE("TUJI001A: minor third is 6/5", "[tuning][ji][core]") {
     auto r = ji_ratio(3);
-    REQUIRE(r == JIRatio{6, 5});
+    REQUIRE(r.has_value());
+    REQUIRE(*r == JIRatio{6, 5});
     auto c = ji_cents(3);
     REQUIRE(c.has_value());
     REQUIRE_THAT(*c, WithinAbs(315.641, 0.001));
 }
 
-TEST_CASE("TUJI001A: out-of-range returns zero ratio", "[tuning][ji][core]") {
-    REQUIRE(ji_ratio(-1) == JIRatio{0, 0});
-    REQUIRE(ji_ratio(13) == JIRatio{0, 0});
+TEST_CASE("TUJI001A: out-of-range returns error", "[tuning][ji][core]") {
+    CHECK_FALSE(ji_ratio(-1).has_value());
+    CHECK_FALSE(ji_ratio(13).has_value());
 }
 
 // =============================================================================
@@ -77,13 +83,13 @@ TEST_CASE("TUJI001A: out-of-range returns zero ratio", "[tuning][ji][core]") {
 // =============================================================================
 
 TEST_CASE("TUJI001A: ji_frequency with 5/4 ratio", "[tuning][ji][core]") {
-    auto f = ji_frequency(440.0, ji_ratio(4));
+    auto f = ji_frequency(440.0, *ji_ratio(4));
     REQUIRE(f.has_value());
     REQUIRE_THAT(*f, WithinAbs(550.0, 1e-10));  // 440 * 5/4
 }
 
 TEST_CASE("TUJI001A: ji_frequency octave doubles", "[tuning][ji][core]") {
-    auto f = ji_frequency(261.63, ji_ratio(12));
+    auto f = ji_frequency(261.63, *ji_ratio(12));
     REQUIRE(f.has_value());
     REQUIRE_THAT(*f, WithinAbs(523.26, 0.01));
 }

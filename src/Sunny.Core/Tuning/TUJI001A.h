@@ -9,7 +9,7 @@
  * ratios. Provides 5-limit interval table and comma definitions.
  *
  * Invariants:
- * - ji_ratio(0).numerator == 1 && ji_ratio(0).denominator == 1
+ * - ji_ratio(0)->numerator == 1 && ji_ratio(0)->denominator == 1
  * - ji_cents(0) == 0.0
  * - All ratios have gcd(num, den) == 1
  * - comma_syntonic ≈ 21.5 cents
@@ -75,10 +75,11 @@ constexpr std::array<JIRatio, 13> JI_5LIMIT_INTERVALS = {{
  * @brief Get the 5-limit JI ratio for a semitone index
  *
  * @param semitones Semitone offset (0–12)
- * @return JI ratio, or {0,0} if out of range
+ * @return JI ratio, or InvalidJIRatio if out of range
  */
-[[nodiscard]] constexpr JIRatio ji_ratio(int semitones) noexcept {
-    if (semitones < 0 || semitones > 12) return {0, 0};
+[[nodiscard]] constexpr Result<JIRatio> ji_ratio(int semitones) noexcept {
+    if (semitones < 0 || semitones > 12)
+        return std::unexpected(ErrorCode::InvalidJIRatio);
     return JI_5LIMIT_INTERVALS[semitones];
 }
 
@@ -90,8 +91,8 @@ constexpr std::array<JIRatio, 13> JI_5LIMIT_INTERVALS = {{
  */
 [[nodiscard]] inline Result<double> ji_cents(int semitones) {
     auto r = ji_ratio(semitones);
-    if (r.denominator == 0) return std::unexpected(ErrorCode::InvalidJIRatio);
-    return r.to_cents();
+    if (!r) return std::unexpected(r.error());
+    return r->to_cents();
 }
 
 /**

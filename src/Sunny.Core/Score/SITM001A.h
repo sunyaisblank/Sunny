@@ -25,6 +25,9 @@
 
 #pragma once
 
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wpedantic"
+
 #include "SIDC001A.h"
 
 #include <cmath>
@@ -140,15 +143,22 @@ constexpr int DEFAULT_PPQ = 480;
     // Therefore: tick_count = (absolute / Beat{1,4}) * ppq
     //                       = absolute * 4 * ppq
 
-    // Compute exact: absolute.numerator * 4 * ppq / absolute.denominator
-    std::int64_t exact_num = absolute.numerator * 4 * ppq;
-    std::int64_t exact_den = absolute.denominator;
+    // Compute in __int128 to prevent overflow for large numerators
+    __int128 exact_num = static_cast<__int128>(absolute.numerator) * 4 * ppq;
+    __int128 exact_den = absolute.denominator;
 
     // Round to nearest integer (Bresenham)
+    __int128 result;
     if (exact_num >= 0) {
-        return (exact_num + exact_den / 2) / exact_den;
+        result = (exact_num + exact_den / 2) / exact_den;
+    } else {
+        result = (exact_num - exact_den / 2) / exact_den;
     }
-    return (exact_num - exact_den / 2) / exact_den;
+
+    // Saturate to int64_t range
+    if (result > INT64_MAX) return INT64_MAX;
+    if (result < INT64_MIN) return INT64_MIN;
+    return static_cast<std::int64_t>(result);
 }
 
 /**
@@ -259,3 +269,5 @@ constexpr int DEFAULT_PPQ = 480;
 }
 
 }  // namespace Sunny::Core
+
+#pragma GCC diagnostic pop

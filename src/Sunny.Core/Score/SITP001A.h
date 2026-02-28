@@ -18,6 +18,9 @@
 
 #pragma once
 
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wpedantic"
+
 #include "../Tensor/TNTP001A.h"
 #include "../Tensor/TNBT001A.h"
 #include "../Pitch/PTSP001A.h"
@@ -25,6 +28,7 @@
 #include "../Scale/SCDF001A.h"
 #include "../Rhythm/RHTS001A.h"
 
+#include <compare>
 #include <cstdint>
 #include <functional>
 #include <string>
@@ -98,7 +102,11 @@ struct PositiveRational {
 
     constexpr bool operator==(const PositiveRational&) const noexcept = default;
     constexpr auto operator<=>(const PositiveRational& o) const noexcept {
-        return numerator * o.denominator <=> o.numerator * denominator;
+        __int128 lhs = static_cast<__int128>(numerator) * o.denominator;
+        __int128 rhs = static_cast<__int128>(o.numerator) * denominator;
+        if (lhs < rhs) return std::strong_ordering::less;
+        if (lhs > rhs) return std::strong_ordering::greater;
+        return std::strong_ordering::equal;
     }
 };
 
@@ -584,3 +592,5 @@ namespace ScoreError {
 }
 
 }  // namespace Sunny::Core
+
+#pragma GCC diagnostic pop

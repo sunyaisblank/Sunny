@@ -1250,13 +1250,30 @@ void validate_s12(const Score& score, std::vector<Diagnostic>& out) {
 // S13: EventId uniqueness
 // =============================================================================
 
+void validate_s13_sections(const std::vector<ScoreSection>& sections,
+                           std::set<std::uint64_t>& seen,
+                           std::vector<Diagnostic>& out) {
+    for (const auto& s : sections) {
+        if (!seen.insert(s.id.value).second) {
+            out.push_back(make_diagnostic(
+                ValidationSeverity::Error, "S13",
+                "Duplicate SectionId: " + std::to_string(s.id.value),
+                ScoreError::InvariantViolation,
+                s.start
+            ));
+        }
+        validate_s13_sections(s.children, seen, out);
+    }
+}
+
 void validate_s13(const Score& score, std::vector<Diagnostic>& out) {
-    std::set<std::uint64_t> seen_ids;
+    // EventId uniqueness
+    std::set<std::uint64_t> seen_event_ids;
     for (const auto& part : score.parts) {
         for (const auto& m : part.measures) {
             for (const auto& v : m.voices) {
                 for (const auto& e : v.events) {
-                    if (!seen_ids.insert(e.id.value).second) {
+                    if (!seen_event_ids.insert(e.id.value).second) {
                         out.push_back(make_diagnostic(
                             ValidationSeverity::Error, "S13",
                             "Duplicate EventId: " + std::to_string(e.id.value),
@@ -1268,6 +1285,22 @@ void validate_s13(const Score& score, std::vector<Diagnostic>& out) {
             }
         }
     }
+
+    // PartId uniqueness
+    std::set<std::uint64_t> seen_part_ids;
+    for (const auto& part : score.parts) {
+        if (!seen_part_ids.insert(part.id.value).second) {
+            out.push_back(make_diagnostic(
+                ValidationSeverity::Error, "S13",
+                "Duplicate PartId: " + std::to_string(part.id.value),
+                ScoreError::InvariantViolation
+            ));
+        }
+    }
+
+    // SectionId uniqueness (recursive walk)
+    std::set<std::uint64_t> seen_section_ids;
+    validate_s13_sections(score.section_map, seen_section_ids, out);
 }
 
 // =============================================================================
@@ -1275,6 +1308,19 @@ void validate_s13(const Score& score, std::vector<Diagnostic>& out) {
 // =============================================================================
 
 void validate_s14(const Score& score, std::vector<Diagnostic>& out) {
+    // Build event-id → note-count map for NonChordTone referential integrity
+    std::map<std::uint64_t, std::size_t> event_note_count;
+    for (const auto& part : score.parts) {
+        for (const auto& m : part.measures) {
+            for (const auto& v : m.voices) {
+                for (const auto& e : v.events) {
+                    const auto* ng = e.as_note_group();
+                    event_note_count[e.id.value] = ng ? ng->notes.size() : 0;
+                }
+            }
+        }
+    }
+
     for (const auto& part : score.parts) {
         for (const auto& m : part.measures) {
             for (const auto& v : m.voices) {
@@ -1322,6 +1368,30 @@ void validate_s14(const Score& score, std::vector<Diagnostic>& out) {
                         }
                     }
                 }
+            }
+        }
+    }
+
+    // NonChordTone referential integrity: event_id must exist, note_index in bounds
+    for (const auto& ha : score.harmonic_annotations) {
+        for (const auto& nct : ha.non_chord_tones) {
+            auto it = event_note_count.find(nct.event_id.value);
+            if (it == event_note_count.end()) {
+                out.push_back(make_diagnostic(
+                    ValidationSeverity::Warning, "S14",
+                    "NonChordTone references non-existent EventId: " +
+                        std::to_string(nct.event_id.value),
+                    ScoreError::InvariantViolation,
+                    ha.position
+                ));
+            } else if (nct.note_index >= it->second) {
+                out.push_back(make_diagnostic(
+                    ValidationSeverity::Warning, "S14",
+                    "NonChordTone note_index " + std::to_string(nct.note_index) +
+                        " out of bounds for EventId " + std::to_string(nct.event_id.value),
+                    ScoreError::InvariantViolation,
+                    ha.position
+                ));
             }
         }
     }

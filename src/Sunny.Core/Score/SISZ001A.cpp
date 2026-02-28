@@ -19,6 +19,13 @@ using json = nlohmann::json;
 
 namespace {
 
+template <typename EnumT>
+EnumT check_enum_range(int val, EnumT max_val, const char* name, const json& j) {
+    if (val < 0 || val > static_cast<int>(max_val))
+        throw json::other_error::create(604, std::string(name) + " out of range", &j);
+    return static_cast<EnumT>(val);
+}
+
 json spelled_pitch_to_json(const SpelledPitch& sp) {
     return json{
         {"letter", static_cast<int>(sp.letter)},
@@ -73,11 +80,8 @@ json velocity_value_to_json(const VelocityValue& v) {
 VelocityValue velocity_value_from_json(const json& j) {
     VelocityValue v;
     if (j.contains("written")) {
-        auto dyn_val = j.at("written").get<int>();
-        if (dyn_val < 0 || dyn_val > static_cast<int>(DynamicLevel::rfz)) {
-            throw json::other_error::create(604, "DynamicLevel out of range", &j);
-        }
-        v.written = static_cast<DynamicLevel>(dyn_val);
+        v.written = check_enum_range(j.at("written").get<int>(),
+            DynamicLevel::rfz, "DynamicLevel", j);
     }
     v.value = j.at("value").get<std::uint8_t>();
     return v;
@@ -98,19 +102,13 @@ json ornament_to_json(const Ornament& o) {
 
 Ornament ornament_from_json(const json& j) {
     Ornament o;
-    auto orn_val = j.at("type").get<int>();
-    if (orn_val < 0 || orn_val > static_cast<int>(OrnamentType::Arpeggio)) {
-        throw json::other_error::create(604, "OrnamentType out of range", &j);
-    }
-    o.type = static_cast<OrnamentType>(orn_val);
+    o.type = check_enum_range(j.at("type").get<int>(),
+        OrnamentType::Arpeggio, "OrnamentType", j);
     o.trill_interval = j.value("trill_interval", static_cast<Interval>(0));
     if (j.contains("accidental"))
         o.accidental = j.at("accidental").get<std::int8_t>();
-    auto arp_val = j.value("arpeggio_direction", 2);
-    if (arp_val < 0 || arp_val > static_cast<int>(ArpeggioDirection::None)) {
-        throw json::other_error::create(604, "ArpeggioDirection out of range", &j);
-    }
-    o.arpeggio_direction = static_cast<ArpeggioDirection>(arp_val);
+    o.arpeggio_direction = check_enum_range(j.value("arpeggio_direction", 2),
+        ArpeggioDirection::None, "ArpeggioDirection", j);
     return o;
 }
 
@@ -132,17 +130,18 @@ json technical_to_json(const TechnicalDirection& td) {
 
 TechnicalDirection technical_from_json(const json& j) {
     TechnicalDirection td;
-    td.type = static_cast<TechnicalDirection::Type>(j.at("type").get<int>());
+    td.type = check_enum_range(j.at("type").get<int>(),
+        TechnicalDirection::Type::Caesura, "TechnicalDirection::Type", j);
     if (j.contains("fingering"))
         td.fingering = j.at("fingering").get<std::vector<std::uint8_t>>();
     td.number = j.value("number", static_cast<std::uint8_t>(0));
     if (j.contains("pattern"))
         td.pattern = j.at("pattern").get<std::string>();
-    td.slide_direction = static_cast<SlideDirection>(
-        j.value("slide_direction", 0));
+    td.slide_direction = check_enum_range(j.value("slide_direction", 0),
+        SlideDirection::Descending, "SlideDirection", j);
     td.bend_cents = j.value("bend_cents", static_cast<std::int16_t>(0));
-    td.vibrato_speed = static_cast<VibratoSpeed>(
-        j.value("vibrato_speed", 1));  // Normal
+    td.vibrato_speed = check_enum_range(j.value("vibrato_speed", 1),
+        VibratoSpeed::None, "VibratoSpeed", j);
     return td;
 }
 
@@ -176,28 +175,19 @@ Note note_from_json(const json& j) {
     note.pitch = spelled_pitch_from_json(j.at("pitch"));
     note.velocity = velocity_value_from_json(j.at("velocity"));
     if (j.contains("articulation")) {
-        auto art_val = j.at("articulation").get<int>();
-        if (art_val < 0 || art_val > static_cast<int>(ArticulationType::BendDown)) {
-            throw json::other_error::create(604, "ArticulationType out of range", &j);
-        }
-        note.articulation = static_cast<ArticulationType>(art_val);
+        note.articulation = check_enum_range(j.at("articulation").get<int>(),
+            ArticulationType::BendDown, "ArticulationType", j);
     }
     if (j.contains("dynamic")) {
-        auto dyn_val = j.at("dynamic").get<int>();
-        if (dyn_val < 0 || dyn_val > static_cast<int>(DynamicLevel::rfz)) {
-            throw json::other_error::create(604, "DynamicLevel out of range", &j);
-        }
-        note.dynamic = static_cast<DynamicLevel>(dyn_val);
+        note.dynamic = check_enum_range(j.at("dynamic").get<int>(),
+            DynamicLevel::rfz, "DynamicLevel", j);
     }
     if (j.contains("ornament"))
         note.ornament = ornament_from_json(j.at("ornament"));
     note.tie_forward = j.value("tie_forward", false);
     if (j.contains("grace")) {
-        auto grace_val = j.at("grace").get<int>();
-        if (grace_val < 0 || grace_val > static_cast<int>(GraceType::Appoggiatura)) {
-            throw json::other_error::create(604, "GraceType out of range", &j);
-        }
-        note.grace = static_cast<GraceType>(grace_val);
+        note.grace = check_enum_range(j.at("grace").get<int>(),
+            GraceType::Appoggiatura, "GraceType", j);
     }
     if (j.contains("technical")) {
         for (const auto& tj : j.at("technical")) {
@@ -207,11 +197,8 @@ Note note_from_json(const json& j) {
     if (j.contains("lyric"))
         note.lyric = j.at("lyric").get<std::string>();
     if (j.contains("notation_head")) {
-        auto nh_val = j.at("notation_head").get<int>();
-        if (nh_val < 0 || nh_val > static_cast<int>(NoteHeadType::Cue)) {
-            throw json::other_error::create(604, "NoteHeadType out of range", &j);
-        }
-        note.notation_head = static_cast<NoteHeadType>(nh_val);
+        note.notation_head = check_enum_range(j.at("notation_head").get<int>(),
+            NoteHeadType::Cue, "NoteHeadType", j);
     }
     return note;
 }
@@ -323,19 +310,13 @@ Event event_from_json(const json& j) {
         event.payload = std::move(cs);
     } else if (type == "direction") {
         ScoreDirection d;
-        auto dir_val = j.at("direction_type").get<int>();
-        if (dir_val < 0 || dir_val > static_cast<int>(DirectionType::Caesura)) {
-            throw json::other_error::create(604, "DirectionType out of range", &j);
-        }
-        d.type = static_cast<DirectionType>(dir_val);
+        d.type = check_enum_range(j.at("direction_type").get<int>(),
+            DirectionType::Caesura, "DirectionType", j);
         if (j.contains("text"))
             d.text = j.at("text").get<std::string>();
         if (j.contains("new_clef")) {
-            auto clef_val = j.at("new_clef").get<int>();
-            if (clef_val < 0 || clef_val > static_cast<int>(Clef::Tab)) {
-                throw json::other_error::create(604, "Clef value out of range", &j);
-            }
-            d.new_clef = static_cast<Clef>(clef_val);
+            d.new_clef = check_enum_range(j.at("new_clef").get<int>(),
+                Clef::Tab, "Clef", j);
         }
         d.ottava_shift = j.value("ottava_shift", static_cast<std::int8_t>(0));
         event.payload = std::move(d);
@@ -519,9 +500,11 @@ PartDefinition part_definition_from_json(const json& j) {
     PartDefinition def;
     def.name = j.at("name").get<std::string>();
     def.abbreviation = j.at("abbreviation").get<std::string>();
-    def.instrument_type = static_cast<InstrumentType>(j.at("instrument_type").get<int>());
+    def.instrument_type = check_enum_range(j.at("instrument_type").get<int>(),
+        InstrumentType::Custom, "InstrumentType", j);
     def.transposition = j.value("transposition", static_cast<Interval>(0));
-    def.clef = static_cast<Clef>(j.value("clef", 0));
+    def.clef = check_enum_range(j.value("clef", 0),
+        Clef::Tab, "Clef", j);
     def.staff_count = j.value("staff_count", static_cast<std::uint8_t>(1));
     if (j.contains("custom_descriptor"))
         def.custom_descriptor = j.at("custom_descriptor").get<std::string>();
@@ -539,7 +522,8 @@ PartDefinition part_definition_from_json(const json& j) {
     if (j.contains("articulation_vocabulary")) {
         for (const auto& av : j.at("articulation_vocabulary")) {
             def.articulation_vocabulary.push_back(
-                static_cast<ArticulationType>(av.get<int>()));
+                check_enum_range(av.get<int>(),
+                    ArticulationType::BendDown, "ArticulationType", av));
         }
     }
 
@@ -580,17 +564,11 @@ Hairpin hairpin_from_json(const json& j) {
     Hairpin hp;
     hp.start = score_time_from_json(j.at("start"));
     hp.end = score_time_from_json(j.at("end"));
-    auto hp_val = j.at("type").get<int>();
-    if (hp_val < 0 || hp_val > static_cast<int>(HairpinType::Diminuendo)) {
-        throw json::other_error::create(604, "HairpinType out of range", &j);
-    }
-    hp.type = static_cast<HairpinType>(hp_val);
+    hp.type = check_enum_range(j.at("type").get<int>(),
+        HairpinType::Diminuendo, "HairpinType", j);
     if (j.contains("target")) {
-        auto tgt_val = j.at("target").get<int>();
-        if (tgt_val < 0 || tgt_val > static_cast<int>(DynamicLevel::rfz)) {
-            throw json::other_error::create(604, "DynamicLevel out of range", &j);
-        }
-        hp.target = static_cast<DynamicLevel>(tgt_val);
+        hp.target = check_enum_range(j.at("target").get<int>(),
+            DynamicLevel::rfz, "DynamicLevel", j);
     }
     return hp;
 }
@@ -608,7 +586,8 @@ PartDirective part_directive_from_json(const json& j) {
     PartDirective pd;
     pd.start = score_time_from_json(j.at("start"));
     pd.end = score_time_from_json(j.at("end"));
-    pd.directive = static_cast<DirectiveType>(j.at("directive").get<int>());
+    pd.directive = check_enum_range(j.at("directive").get<int>(),
+        DirectiveType::TreCorde, "DirectiveType", j);
     pd.divisi_count = j.value("divisi_count", static_cast<std::uint8_t>(0));
     return pd;
 }
@@ -685,7 +664,10 @@ ChordVoicing chord_voicing_from_json(const json& j) {
             cv.notes.push_back(static_cast<MidiNote>(n.get<int>()));
         }
     }
-    cv.root = static_cast<PitchClass>(j.value("root", 0));
+    auto root_val = j.value("root", 0);
+    if (root_val < 0 || root_val > 11)
+        throw json::other_error::create(604, "PitchClass root out of range [0,11]", &j);
+    cv.root = static_cast<PitchClass>(root_val);
     cv.quality = j.value("quality", std::string{});
     cv.inversion = j.value("inversion", 0);
     return cv;
@@ -723,19 +705,22 @@ HarmonicAnnotation harmonic_annotation_from_json(const json& j) {
     if (j.contains("chord"))
         ha.chord = chord_voicing_from_json(j.at("chord"));
     ha.roman_numeral = j.at("roman_numeral").get<std::string>();
-    ha.function = static_cast<ScoreHarmonicFunction>(j.at("function").get<int>());
+    ha.function = check_enum_range(j.at("function").get<int>(),
+        ScoreHarmonicFunction::Ambiguous, "ScoreHarmonicFunction", j);
     if (j.contains("secondary_function"))
         ha.secondary_function = j.at("secondary_function").get<std::string>();
     ha.key_context = key_signature_from_json(j.at("key_context"));
     if (j.contains("cadence"))
-        ha.cadence = static_cast<CadenceType>(j.at("cadence").get<int>());
+        ha.cadence = check_enum_range(j.at("cadence").get<int>(),
+            CadenceType::None, "CadenceType", j);
     ha.confidence = j.value("confidence", 1.0f);
     if (j.contains("non_chord_tones")) {
         for (const auto& nj : j.at("non_chord_tones")) {
             NonChordToneAnnotation nct;
             nct.event_id = EventId{nj.at("event_id").get<std::uint64_t>()};
             nct.note_index = nj.at("note_index").get<std::uint8_t>();
-            nct.type = static_cast<NonChordToneType>(nj.at("type").get<int>());
+            nct.type = check_enum_range(nj.at("type").get<int>(),
+                NonChordToneType::Pedal, "NonChordToneType", nj);
             ha.non_chord_tones.push_back(nct);
         }
     }
@@ -761,11 +746,14 @@ OrchestrationAnnotation orchestration_from_json(const json& j) {
     oa.part_id = PartId{j.at("part_id").get<std::uint64_t>()};
     oa.start = score_time_from_json(j.at("start"));
     oa.end = score_time_from_json(j.at("end"));
-    oa.role = static_cast<TexturalRole>(j.at("role").get<int>());
+    oa.role = check_enum_range(j.at("role").get<int>(),
+        TexturalRole::Accompagnato, "TexturalRole", j);
     if (j.contains("texture"))
-        oa.texture = static_cast<TextureType>(j.at("texture").get<int>());
+        oa.texture = check_enum_range(j.at("texture").get<int>(),
+            TextureType::MelodyAccompaniment, "TextureType", j);
     if (j.contains("dynamic_balance"))
-        oa.dynamic_balance = static_cast<DynamicBalance>(j.at("dynamic_balance").get<int>());
+        oa.dynamic_balance = check_enum_range(j.at("dynamic_balance").get<int>(),
+            DynamicBalance::Background, "DynamicBalance", j);
     if (j.contains("doubled_part"))
         oa.doubled_part = PartId{j.at("doubled_part").get<std::uint64_t>()};
     if (j.contains("pedal_pitch"))
@@ -851,13 +839,17 @@ TempoMap tempo_map_from_json(const json& arr) {
             j.at("bpm_num").get<std::int64_t>(),
             j.at("bpm_den").get<std::int64_t>()
         };
-        event.beat_unit = static_cast<BeatUnit>(j.value("beat_unit", 3));  // Quarter
-        event.transition_type = static_cast<TempoTransitionType>(j.value("transition", 0));
+        event.beat_unit = check_enum_range(j.value("beat_unit", 3),
+            BeatUnit::Sixteenth, "BeatUnit", j);
+        event.transition_type = check_enum_range(j.value("transition", 0),
+            TempoTransitionType::MetricModulation, "TempoTransitionType", j);
         event.linear_duration = j.contains("linear_duration")
             ? beat_from_json(j.at("linear_duration"))
             : Beat::zero();
-        event.old_unit = static_cast<BeatUnit>(j.value("old_unit", 3));
-        event.new_unit = static_cast<BeatUnit>(j.value("new_unit", 3));
+        event.old_unit = check_enum_range(j.value("old_unit", 3),
+            BeatUnit::Sixteenth, "BeatUnit", j);
+        event.new_unit = check_enum_range(j.value("new_unit", 3),
+            BeatUnit::Sixteenth, "BeatUnit", j);
         tm.push_back(event);
     }
     return tm;
@@ -936,9 +928,9 @@ ScoreSection section_from_json(const json& j) {
     section.start = score_time_from_json(j.at("start"));
     section.end = score_time_from_json(j.at("end"));
     if (j.contains("form_function")) {
-        section.form_function = static_cast<FormFunction>(
-            j.at("form_function").get<int>()
-        );
+        section.form_function = check_enum_range(
+            j.at("form_function").get<int>(),
+            FormFunction::Parenthetical, "FormFunction", j);
     }
     if (j.contains("children")) {
         for (const auto& cj : j.at("children")) {
@@ -1069,7 +1061,8 @@ Result<Score> score_from_json(const nlohmann::json& j) {
     Score score;
     score.id = ScoreId{j.at("id").get<std::uint64_t>()};
     score.version = j.value("version", static_cast<std::uint64_t>(1));
-    score.state = static_cast<DocumentState>(j.value("state", 0));
+    score.state = check_enum_range(j.value("state", 0),
+        DocumentState::Locked, "DocumentState", j);
 
     // Metadata
     const auto& meta = j.at("metadata");

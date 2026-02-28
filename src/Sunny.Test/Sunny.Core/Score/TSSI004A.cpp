@@ -565,3 +565,80 @@ TEST_CASE("SISZ001A: articulation_vocabulary survives round-trip",
     CHECK(vocab[1] == ArticulationType::Tenuto);
     CHECK(vocab[2] == ArticulationType::Accent);
 }
+
+// =============================================================================
+// SISZ001A: Enum bounds-check negative paths
+// =============================================================================
+
+TEST_CASE("SISZ001A: out-of-range DocumentState rejects",
+          "[score-ir][serialisation][trust-boundary]") {
+    auto original = make_serialisation_score();
+    auto j = score_to_json(original);
+    j["state"] = 99;
+    auto result = score_from_json(j);
+    CHECK_FALSE(result.has_value());
+}
+
+TEST_CASE("SISZ001A: out-of-range BeatUnit rejects",
+          "[score-ir][serialisation][trust-boundary]") {
+    auto original = make_serialisation_score();
+    auto j = score_to_json(original);
+    j["tempo_map"][0]["beat_unit"] = 99;
+    auto result = score_from_json(j);
+    CHECK_FALSE(result.has_value());
+}
+
+TEST_CASE("SISZ001A: out-of-range InstrumentType rejects",
+          "[score-ir][serialisation][trust-boundary]") {
+    auto original = make_serialisation_score();
+    auto j = score_to_json(original);
+    j["parts"][0]["definition"]["instrument_type"] = 200;
+    auto result = score_from_json(j);
+    CHECK_FALSE(result.has_value());
+}
+
+TEST_CASE("SISZ001A: out-of-range TexturalRole rejects",
+          "[score-ir][serialisation][trust-boundary]") {
+    auto original = make_serialisation_score();
+    auto j = score_to_json(original);
+
+    OrchestrationAnnotation oa;
+    oa.part_id = PartId{100};
+    oa.start = SCORE_START;
+    oa.end = ScoreTime{3, Beat::zero()};
+    oa.role = TexturalRole::Melody;
+    original.orchestration_annotations.push_back(oa);
+    j = score_to_json(original);
+    j["orchestration_annotations"][0]["role"] = 99;
+    auto result = score_from_json(j);
+    CHECK_FALSE(result.has_value());
+}
+
+TEST_CASE("SISZ001A: out-of-range FormFunction rejects",
+          "[score-ir][serialisation][trust-boundary]") {
+    auto original = make_serialisation_score();
+    auto j = score_to_json(original);
+    j["section_map"][0]["form_function"] = 99;
+    auto result = score_from_json(j);
+    CHECK_FALSE(result.has_value());
+}
+
+TEST_CASE("SISZ001A: out-of-range PitchClass root rejects",
+          "[score-ir][serialisation][trust-boundary]") {
+    auto original = make_serialisation_score();
+
+    HarmonicAnnotation ha;
+    ha.position = SCORE_START;
+    ha.duration = Beat{1, 1};
+    ha.chord.root = 0;
+    ha.chord.quality = "major";
+    ha.roman_numeral = "I";
+    ha.function = ScoreHarmonicFunction::Tonic;
+    ha.key_context.root = SpelledPitch{0, 0, 4};
+    ha.key_context.accidentals = 0;
+    original.harmonic_annotations.push_back(ha);
+    auto j = score_to_json(original);
+    j["harmonic_annotations"][0]["chord"]["root"] = 15;
+    auto result = score_from_json(j);
+    CHECK_FALSE(result.has_value());
+}

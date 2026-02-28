@@ -1138,3 +1138,101 @@ TEST_CASE("SIMT001A: move_region undo does not delete unrelated events",
     }
     CHECK(found_unrelated);
 }
+
+// =============================================================================
+// Undo-redo-undo: insert_note cycle does not orphan events
+// =============================================================================
+
+TEST_CASE("SIMT001A: insert_note undo-redo-undo returns to original event count",
+          "[score-ir][undo][stale-id]") {
+    auto score = make_valid_score(1);
+    UndoStack stack;
+
+    auto& voice = score.parts[0].measures[0].voices[0];
+    voice.events.clear();
+    RestEvent rest{Beat{3, 4}, true};
+    voice.events.push_back(Event{EventId{500}, Beat::zero(), rest});
+    auto original_count = voice.events.size();
+
+    Note note;
+    note.pitch = SpelledPitch{0, 0, 4};
+    note.velocity = VelocityValue{{}, 80};
+
+    auto r = insert_note(score, PartId{100}, 1, 0, Beat{3, 4}, note, Beat{1, 4}, &stack);
+    REQUIRE(r.has_value());
+    CHECK(voice.events.size() == original_count + 1);
+
+    // Undo
+    auto ur = undo(score, stack);
+    REQUIRE(ur.has_value());
+
+    // Redo (allocates a fresh EventId internally)
+    auto rr = redo(score, stack);
+    REQUIRE(rr.has_value());
+    CHECK(voice.events.size() == original_count + 1);
+
+    // Undo again — inverse must use the fresh ID, not the stale original
+    auto ur2 = undo(score, stack);
+    REQUIRE(ur2.has_value());
+
+    // Verify no note group remains at offset 3/4
+    bool has_note_at_34 = false;
+    for (const auto& ev : voice.events) {
+        if (ev.is_note_group() && ev.offset == Beat{3, 4}) {
+            has_note_at_34 = true;
+        }
+    }
+    CHECK_FALSE(has_note_at_34);
+}
+
+// =============================================================================
+// Undo-redo-undo: copy_region cycle does not orphan events
+// =============================================================================
+
+TEST_CASE("SIMT001A: copy_region undo-redo-undo leaves no orphan events",
+          "[score-ir][undo][stale-id]") {
+    auto score = make_valid_score(4);
+    UndoStack stack;
+
+    // Place a note in bar 1
+    auto& voice1 = score.parts[0].measures[0].voices[0];
+    NoteGroup ng;
+    ng.notes.push_back(Note{SpelledPitch{0, 0, 4}, VelocityValue{{}, 80}});
+    ng.duration = Beat{1, 1};
+    voice1.events[0].payload = ng;
+
+    ScoreRegion src;
+    src.start = SCORE_START;
+    src.end = ScoreTime{2, Beat::zero()};
+    ScoreTime dest{3, Beat::zero()};
+
+    // Count events in bar 3 before copy
+    auto count_bar3_notes = [&]() {
+        std::size_t count = 0;
+        for (const auto& ev : score.parts[0].measures[2].voices[0].events) {
+            if (ev.is_note_group()) ++count;
+        }
+        return count;
+    };
+
+    CHECK(count_bar3_notes() == 0);
+
+    auto r = copy_region(score, src, dest, &stack);
+    REQUIRE(r.has_value());
+    CHECK(count_bar3_notes() == 1);
+
+    // Undo
+    auto ur = undo(score, stack);
+    REQUIRE(ur.has_value());
+    CHECK(count_bar3_notes() == 0);
+
+    // Redo
+    auto rr = redo(score, stack);
+    REQUIRE(rr.has_value());
+    CHECK(count_bar3_notes() == 1);
+
+    // Undo again
+    auto ur2 = undo(score, stack);
+    REQUIRE(ur2.has_value());
+    CHECK(count_bar3_notes() == 0);
+}
