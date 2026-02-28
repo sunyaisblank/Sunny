@@ -63,8 +63,8 @@ namespace Sunny::Core {
  * @param rest_threshold Minimum consecutive rest bars before inserting a cue note (0 disables)
  * @return New score with one part, or empty score if part_id not found
  */
-[[nodiscard]] Score part_extract(const Score& score, PartId part_id,
-                                 std::uint32_t rest_threshold = 4);
+[[nodiscard]] Result<Score> part_extract(const Score& score, PartId part_id,
+                                        std::uint32_t rest_threshold = 4);
 
 /**
  * @brief Strip ornamentation, keep chord tones
@@ -88,6 +88,6 @@ namespace Sunny::Core {
  * @param region Region to extract
  * @return New score spanning the region
  */
-[[nodiscard]] Score region_view(const Score& score, const ScoreRegion& region);
+[[nodiscard]] Result<Score> region_view(const Score& score, const ScoreRegion& region);
 
 }  // namespace Sunny::Core

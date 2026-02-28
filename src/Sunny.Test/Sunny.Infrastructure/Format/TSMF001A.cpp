@@ -345,3 +345,107 @@ TEST_CASE("FMMI001A: PPQ 480 default resolution", "[midi][format]") {
     auto file = note_events_to_midi(events);
     REQUIRE(file.ppq == 480);
 }
+
+// =============================================================================
+// Trust boundary validation (PS-5)
+// =============================================================================
+
+TEST_CASE("FMMI001A: PPQ zero returns InvalidMidiPPQ", "[midi][format]") {
+    auto data = make_empty_smf(0);
+    auto result = parse_midi(data);
+    REQUIRE_FALSE(result.has_value());
+    REQUIRE(result.error() == Sunny::Core::ErrorCode::InvalidMidiPPQ);
+}
+
+TEST_CASE("FMMI001A: tempo zero returns InvalidMidiTempo", "[midi][format]") {
+    // Build SMF with a tempo meta event where uspb = 0
+    std::vector<uint8_t> data;
+    // MThd
+    data.push_back('M'); data.push_back('T'); data.push_back('h'); data.push_back('d');
+    data.push_back(0); data.push_back(0); data.push_back(0); data.push_back(6);
+    data.push_back(0); data.push_back(0);  // format 0
+    data.push_back(0); data.push_back(1);  // 1 track
+    data.push_back(0); data.push_back(0x78);  // ppq = 120
+    // MTrk
+    data.push_back('M'); data.push_back('T'); data.push_back('r'); data.push_back('k');
+    // Track events: delta=0, tempo meta (0x00 0x00 0x00 = 0 uspb), then end
+    std::vector<uint8_t> track;
+    track.push_back(0x00);  // delta
+    track.push_back(0xFF); track.push_back(0x51); track.push_back(0x03);
+    track.push_back(0x00); track.push_back(0x00); track.push_back(0x00);  // uspb = 0
+    track.push_back(0x00);  // delta
+    track.push_back(0xFF); track.push_back(0x2F); track.push_back(0x00);  // end
+    // Track length
+    uint32_t tlen = static_cast<uint32_t>(track.size());
+    data.push_back(static_cast<uint8_t>((tlen >> 24) & 0xFF));
+    data.push_back(static_cast<uint8_t>((tlen >> 16) & 0xFF));
+    data.push_back(static_cast<uint8_t>((tlen >> 8) & 0xFF));
+    data.push_back(static_cast<uint8_t>(tlen & 0xFF));
+    data.insert(data.end(), track.begin(), track.end());
+
+    auto result = parse_midi(data);
+    REQUIRE_FALSE(result.has_value());
+    REQUIRE(result.error() == Sunny::Core::ErrorCode::InvalidMidiTempo);
+}
+
+TEST_CASE("FMMI001A: time sig denominator exponent 8 returns InvalidMidiTimeSig", "[midi][format]") {
+    std::vector<uint8_t> data;
+    // MThd
+    data.push_back('M'); data.push_back('T'); data.push_back('h'); data.push_back('d');
+    data.push_back(0); data.push_back(0); data.push_back(0); data.push_back(6);
+    data.push_back(0); data.push_back(0);
+    data.push_back(0); data.push_back(1);
+    data.push_back(0); data.push_back(0x78);  // ppq = 120
+    // MTrk
+    data.push_back('M'); data.push_back('T'); data.push_back('r'); data.push_back('k');
+    std::vector<uint8_t> track;
+    track.push_back(0x00);  // delta
+    track.push_back(0xFF); track.push_back(0x58); track.push_back(0x04);
+    track.push_back(4);    // numerator = 4
+    track.push_back(8);    // denominator exponent = 8 (overflow)
+    track.push_back(24);   // clocks per click
+    track.push_back(8);    // 32nd notes per quarter
+    track.push_back(0x00);
+    track.push_back(0xFF); track.push_back(0x2F); track.push_back(0x00);
+    uint32_t tlen = static_cast<uint32_t>(track.size());
+    data.push_back(static_cast<uint8_t>((tlen >> 24) & 0xFF));
+    data.push_back(static_cast<uint8_t>((tlen >> 16) & 0xFF));
+    data.push_back(static_cast<uint8_t>((tlen >> 8) & 0xFF));
+    data.push_back(static_cast<uint8_t>(tlen & 0xFF));
+    data.insert(data.end(), track.begin(), track.end());
+
+    auto result = parse_midi(data);
+    REQUIRE_FALSE(result.has_value());
+    REQUIRE(result.error() == Sunny::Core::ErrorCode::InvalidMidiTimeSig);
+}
+
+TEST_CASE("FMMI001A: time sig numerator zero returns InvalidMidiTimeSig", "[midi][format]") {
+    std::vector<uint8_t> data;
+    // MThd
+    data.push_back('M'); data.push_back('T'); data.push_back('h'); data.push_back('d');
+    data.push_back(0); data.push_back(0); data.push_back(0); data.push_back(6);
+    data.push_back(0); data.push_back(0);
+    data.push_back(0); data.push_back(1);
+    data.push_back(0); data.push_back(0x78);  // ppq = 120
+    // MTrk
+    data.push_back('M'); data.push_back('T'); data.push_back('r'); data.push_back('k');
+    std::vector<uint8_t> track;
+    track.push_back(0x00);
+    track.push_back(0xFF); track.push_back(0x58); track.push_back(0x04);
+    track.push_back(0);    // numerator = 0 (invalid)
+    track.push_back(2);    // denominator exponent = 2 (den = 4)
+    track.push_back(24);
+    track.push_back(8);
+    track.push_back(0x00);
+    track.push_back(0xFF); track.push_back(0x2F); track.push_back(0x00);
+    uint32_t tlen = static_cast<uint32_t>(track.size());
+    data.push_back(static_cast<uint8_t>((tlen >> 24) & 0xFF));
+    data.push_back(static_cast<uint8_t>((tlen >> 16) & 0xFF));
+    data.push_back(static_cast<uint8_t>((tlen >> 8) & 0xFF));
+    data.push_back(static_cast<uint8_t>(tlen & 0xFF));
+    data.insert(data.end(), track.begin(), track.end());
+
+    auto result = parse_midi(data);
+    REQUIRE_FALSE(result.has_value());
+    REQUIRE(result.error() == Sunny::Core::ErrorCode::InvalidMidiTimeSig);
+}

@@ -1398,6 +1398,108 @@ void validate_s14(const Score& score, std::vector<Diagnostic>& out) {
 }
 
 // =============================================================================
+// S15: Harmonic annotation ordering and overlap
+// =============================================================================
+
+void validate_s15(const Score& score, std::vector<Diagnostic>& out) {
+    const auto& anns = score.harmonic_annotations;
+    for (std::size_t i = 1; i < anns.size(); ++i) {
+        if (anns[i].position < anns[i - 1].position) {
+            out.push_back(make_diagnostic(
+                ValidationSeverity::Error, "S15",
+                "Harmonic annotations not sorted by position",
+                ScoreError::OverlappingAnnotation,
+                anns[i].position
+            ));
+            break;
+        }
+        // Check overlap: previous annotation's end exceeds current start
+        ScoreTime prev_end = anns[i - 1].position;
+        // Approximate end as position + duration (in quarter notes).
+        // Duration is in beats relative to the measure.
+        Beat end_beat = anns[i - 1].position.beat + anns[i - 1].duration;
+        prev_end.beat = end_beat;
+        if (prev_end > anns[i].position) {
+            out.push_back(make_diagnostic(
+                ValidationSeverity::Error, "S15",
+                "Harmonic annotations overlap at position",
+                ScoreError::OverlappingAnnotation,
+                anns[i].position
+            ));
+        }
+    }
+}
+
+// =============================================================================
+// S16: Orchestration annotation field consistency
+// =============================================================================
+
+void validate_s16(const Score& score, std::vector<Diagnostic>& out) {
+    for (const auto& ann : score.orchestration_annotations) {
+        switch (ann.role) {
+            case TexturalRole::Doubling:
+                if (!ann.doubled_part) {
+                    out.push_back(make_diagnostic(
+                        ValidationSeverity::Error, "S16",
+                        "Doubling role missing doubled_part field",
+                        ScoreError::InconsistentOrchField,
+                        ann.start, ann.part_id
+                    ));
+                }
+                break;
+            case TexturalRole::PedalTone:
+                if (!ann.pedal_pitch) {
+                    out.push_back(make_diagnostic(
+                        ValidationSeverity::Error, "S16",
+                        "PedalTone role missing pedal_pitch field",
+                        ScoreError::InconsistentOrchField,
+                        ann.start, ann.part_id
+                    ));
+                }
+                break;
+            case TexturalRole::Dialogue:
+                if (!ann.dialogue_partner) {
+                    out.push_back(make_diagnostic(
+                        ValidationSeverity::Error, "S16",
+                        "Dialogue role missing dialogue_partner field",
+                        ScoreError::InconsistentOrchField,
+                        ann.start, ann.part_id
+                    ));
+                }
+                break;
+            default:
+                // Non-role-specific: doubled_part, pedal_pitch, dialogue_partner
+                // should not be populated
+                if (ann.doubled_part) {
+                    out.push_back(make_diagnostic(
+                        ValidationSeverity::Warning, "S16",
+                        "doubled_part set on non-Doubling role",
+                        ScoreError::InconsistentOrchField,
+                        ann.start, ann.part_id
+                    ));
+                }
+                if (ann.pedal_pitch) {
+                    out.push_back(make_diagnostic(
+                        ValidationSeverity::Warning, "S16",
+                        "pedal_pitch set on non-PedalTone role",
+                        ScoreError::InconsistentOrchField,
+                        ann.start, ann.part_id
+                    ));
+                }
+                if (ann.dialogue_partner) {
+                    out.push_back(make_diagnostic(
+                        ValidationSeverity::Warning, "S16",
+                        "dialogue_partner set on non-Dialogue role",
+                        ScoreError::InconsistentOrchField,
+                        ann.start, ann.part_id
+                    ));
+                }
+                break;
+        }
+    }
+}
+
+// =============================================================================
 // Sorting helper
 // =============================================================================
 
@@ -1446,6 +1548,8 @@ std::vector<Diagnostic> validate_structural(const Score& score) {
     validate_s12(score, diags);
     validate_s13(score, diags);
     validate_s14(score, diags);
+    validate_s15(score, diags);
+    validate_s16(score, diags);
 
     sort_diagnostics(diags);
     return diags;

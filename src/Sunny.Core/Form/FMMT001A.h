@@ -63,7 +63,7 @@ enum class MotivicTransform {
  * @param semitones Transposition amount
  * @return Transposed pitches (clamped to valid MIDI range)
  */
-[[nodiscard]] std::vector<MidiNote> motif_transpose(
+[[nodiscard]] Result<std::vector<MidiNote>> motif_transpose(
     std::span<const MidiNote> pitches,
     int semitones
 );
@@ -74,9 +74,9 @@ enum class MotivicTransform {
  * Each interval from the first note is negated.
  *
  * @param pitches Input pitch sequence
- * @return Inverted pitches
+ * @return Inverted pitches, or error if any result exceeds MIDI range
  */
-[[nodiscard]] std::vector<MidiNote> motif_invert(
+[[nodiscard]] Result<std::vector<MidiNote>> motif_invert(
     std::span<const MidiNote> pitches
 );
 
@@ -98,7 +98,7 @@ enum class MotivicTransform {
  * @param pitches Input pitch sequence
  * @return Retrograde-inverted pitches
  */
-[[nodiscard]] std::vector<MidiNote> motif_retrograde_inversion(
+[[nodiscard]] Result<std::vector<MidiNote>> motif_retrograde_inversion(
     std::span<const MidiNote> pitches
 );
 

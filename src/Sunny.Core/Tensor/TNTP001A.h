@@ -96,6 +96,8 @@ enum class ErrorCode : int {
     InvalidTriad = 2131,
     InvalidMelody = 2132,
     ArithmeticOverflow = 2135,
+    InvalidBPM            = 2136,
+    InvalidBarRange       = 2138,
 
     // Theory computation errors (3xxx)
     ScaleGenerationFailed = 3100,
@@ -112,6 +114,7 @@ enum class ErrorCode : int {
     InvalidJIRatio       = 3191,
     InvalidFrequency     = 3192,
     InvalidPartialNumber = 3193,
+    InvalidKNetEdgeIndex  = 3195,
     ScaleNotFound         = 3010,
     TemperamentNotFound   = 3011,
     ChordNotRecognised    = 3012,
@@ -137,11 +140,16 @@ enum class ErrorCode : int {
     InvalidMidiFile   = 4502,
     InvalidAbcFile    = 4503,
     InvalidMusicXml   = 4504,
+    InvalidMidiPPQ    = 4505,
+    InvalidMidiTempo  = 4506,
+    InvalidMidiTimeSig = 4507,
 
     // Score IR errors (5xxx)
     InvalidScoreTime  = 5200,
     InvalidMutation   = 5400,
     InvariantViolation = 5401,
+    InvalidRegion     = 5402,
+    PartNotFound      = 5403,
     EmptyVoice        = 5003,
 };
 

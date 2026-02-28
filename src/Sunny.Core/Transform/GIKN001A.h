@@ -194,7 +194,7 @@ struct KNetEdgeSpec {
     TILabel::Kind kind;  ///< Whether this edge is T or I
 };
 
-[[nodiscard]] KNet knet_from_nodes(
+[[nodiscard]] Result<KNet> knet_from_nodes(
     std::span<const PitchClass> nodes,
     std::span<const KNetEdgeSpec> edge_specs);
 

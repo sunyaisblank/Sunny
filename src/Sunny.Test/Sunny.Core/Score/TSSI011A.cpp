@@ -13,6 +13,7 @@
 
 #include "Score/SIWF001A.h"
 #include "Score/SIVD001A.h"
+#include "Score/SIVW001A.h"
 
 using namespace Sunny::Core;
 
@@ -348,4 +349,197 @@ TEST_CASE("SIWF001A: set_section_harmony classifies iii as Tonic",
     REQUIRE(harm_result.has_value());
     REQUIRE(score.harmonic_annotations.size() == 1);
     CHECK(score.harmonic_annotations[0].function == ScoreHarmonicFunction::Tonic);
+}
+
+// =============================================================================
+// Entry-point validation (PS-1, PS-2)
+// =============================================================================
+
+TEST_CASE("SIWF001A: create_score rejects BPM zero",
+          "[score-ir][workflow]") {
+    ScoreSpec spec;
+    spec.title = "Bad BPM";
+    spec.total_bars = 4;
+    spec.bpm = 0;
+    spec.key_root = SpelledPitch{0, 0, 4};
+    PartDefinition pd;
+    pd.name = "Piano";
+    pd.abbreviation = "Pno.";
+    pd.instrument_type = InstrumentType::Piano;
+    spec.parts.push_back(pd);
+    auto result = create_score(spec);
+    REQUIRE_FALSE(result.has_value());
+    CHECK(result.error() == ErrorCode::InvalidBPM);
+}
+
+TEST_CASE("SIWF001A: create_score rejects BPM above max",
+          "[score-ir][workflow]") {
+    ScoreSpec spec;
+    spec.title = "Fast";
+    spec.total_bars = 4;
+    spec.bpm = 1000;
+    spec.key_root = SpelledPitch{0, 0, 4};
+    PartDefinition pd;
+    pd.name = "Piano";
+    pd.abbreviation = "Pno.";
+    pd.instrument_type = InstrumentType::Piano;
+    spec.parts.push_back(pd);
+    auto result = create_score(spec);
+    REQUIRE_FALSE(result.has_value());
+    CHECK(result.error() == ErrorCode::InvalidBPM);
+}
+
+TEST_CASE("SIWF001A: set_formal_plan rejects start_bar zero",
+          "[score-ir][workflow]") {
+    ScoreSpec spec;
+    spec.title = "Plan test";
+    spec.total_bars = 8;
+    spec.bpm = 120;
+    spec.key_root = SpelledPitch{0, 0, 4};
+    PartDefinition pd;
+    pd.name = "Piano";
+    pd.abbreviation = "Pno.";
+    pd.instrument_type = InstrumentType::Piano;
+    spec.parts.push_back(pd);
+    auto score = create_score(spec).value();
+
+    std::vector<SectionDefinition> sections = {
+        {"A", 0, 4, std::nullopt},  // start_bar == 0
+    };
+    auto result = set_formal_plan(score, sections);
+    REQUIRE_FALSE(result.has_value());
+    CHECK(result.error() == ErrorCode::InvalidBarRange);
+}
+
+TEST_CASE("SIWF001A: set_formal_plan rejects end_bar < start_bar",
+          "[score-ir][workflow]") {
+    ScoreSpec spec;
+    spec.title = "Plan test";
+    spec.total_bars = 8;
+    spec.bpm = 120;
+    spec.key_root = SpelledPitch{0, 0, 4};
+    PartDefinition pd;
+    pd.name = "Piano";
+    pd.abbreviation = "Pno.";
+    pd.instrument_type = InstrumentType::Piano;
+    spec.parts.push_back(pd);
+    auto score = create_score(spec).value();
+
+    std::vector<SectionDefinition> sections = {
+        {"A", 5, 2, std::nullopt},  // end < start
+    };
+    auto result = set_formal_plan(score, sections);
+    REQUIRE_FALSE(result.has_value());
+    CHECK(result.error() == ErrorCode::InvalidBarRange);
+}
+
+TEST_CASE("SIVW001A: part_extract nonexistent part returns PartNotFound",
+          "[score-ir][view]") {
+    ScoreSpec spec;
+    spec.title = "Extract test";
+    spec.total_bars = 4;
+    spec.bpm = 120;
+    spec.key_root = SpelledPitch{0, 0, 4};
+    PartDefinition pd;
+    pd.name = "Piano";
+    pd.abbreviation = "Pno.";
+    pd.instrument_type = InstrumentType::Piano;
+    spec.parts.push_back(pd);
+    auto score = create_score(spec).value();
+
+    auto result = part_extract(score, PartId{99999});
+    REQUIRE_FALSE(result.has_value());
+    CHECK(result.error() == ErrorCode::PartNotFound);
+}
+
+TEST_CASE("SIVW001A: region_view rejects inverted region",
+          "[score-ir][view]") {
+    ScoreSpec spec;
+    spec.title = "Region test";
+    spec.total_bars = 8;
+    spec.bpm = 120;
+    spec.key_root = SpelledPitch{0, 0, 4};
+    PartDefinition pd;
+    pd.name = "Piano";
+    pd.abbreviation = "Pno.";
+    pd.instrument_type = InstrumentType::Piano;
+    spec.parts.push_back(pd);
+    auto score = create_score(spec).value();
+
+    ScoreRegion region;
+    region.start = ScoreTime{5, Beat::zero()};
+    region.end = ScoreTime{2, Beat::zero()};  // end < start
+
+    auto result = region_view(score, region);
+    REQUIRE_FALSE(result.has_value());
+    CHECK(result.error() == ErrorCode::InvalidRegion);
+}
+
+// =============================================================================
+// Annotation validation (PS-8)
+// =============================================================================
+
+TEST_CASE("SIVD001A: S15 detects unsorted harmonic annotations",
+          "[score-ir][validation]") {
+    ScoreSpec spec;
+    spec.title = "S15 test";
+    spec.total_bars = 4;
+    spec.bpm = 120;
+    spec.key_root = SpelledPitch{0, 0, 4};
+    PartDefinition pd;
+    pd.name = "Piano";
+    pd.abbreviation = "Pno.";
+    pd.instrument_type = InstrumentType::Piano;
+    spec.parts.push_back(pd);
+    auto score = create_score(spec).value();
+
+    // Insert two annotations in reverse order
+    HarmonicAnnotation ha1;
+    ha1.position = ScoreTime{3, Beat::zero()};
+    ha1.duration = Beat{1, 1};
+    ha1.function = ScoreHarmonicFunction::Tonic;
+    score.harmonic_annotations.push_back(ha1);
+
+    HarmonicAnnotation ha2;
+    ha2.position = ScoreTime{1, Beat::zero()};
+    ha2.duration = Beat{1, 1};
+    ha2.function = ScoreHarmonicFunction::Dominant;
+    score.harmonic_annotations.push_back(ha2);
+
+    auto diags = validate_structural(score);
+    bool found_s15 = false;
+    for (const auto& d : diags) {
+        if (d.rule == "S15") found_s15 = true;
+    }
+    CHECK(found_s15);
+}
+
+TEST_CASE("SIVD001A: S16 detects missing doubled_part on Doubling role",
+          "[score-ir][validation]") {
+    ScoreSpec spec;
+    spec.title = "S16 test";
+    spec.total_bars = 4;
+    spec.bpm = 120;
+    spec.key_root = SpelledPitch{0, 0, 4};
+    PartDefinition pd;
+    pd.name = "Piano";
+    pd.abbreviation = "Pno.";
+    pd.instrument_type = InstrumentType::Piano;
+    spec.parts.push_back(pd);
+    auto score = create_score(spec).value();
+
+    OrchestrationAnnotation ann;
+    ann.part_id = score.parts[0].id;
+    ann.start = SCORE_START;
+    ann.end = ScoreTime{5, Beat::zero()};
+    ann.role = TexturalRole::Doubling;
+    // deliberately omit doubled_part
+    score.orchestration_annotations.push_back(ann);
+
+    auto diags = validate_structural(score);
+    bool found_s16 = false;
+    for (const auto& d : diags) {
+        if (d.rule == "S16") found_s16 = true;
+    }
+    CHECK(found_s16);
 }

@@ -248,9 +248,9 @@ TEST_CASE("derive_harmonic_layer: unrecognised chord gets Ambiguous",
     REQUIRE(result.has_value());
 
     const auto& layer = *result;
-    REQUIRE(!layer.empty());
-    CHECK(layer[0].function == ScoreHarmonicFunction::Ambiguous);
-    CHECK(layer[0].confidence < 1.0f);
+    // The unrecognised chord receives confidence 0.3, which falls below the
+    // HARMONY_CONFIDENCE_THRESHOLD (0.5) and is filtered out.
+    CHECK(layer.empty());
 }
 
 TEST_CASE("derive_harmonic_layer: refresh_stale_regions re-analyses only stale bars",
@@ -336,4 +336,33 @@ TEST_CASE("derive_harmonic_layer: key change mid-score",
     // Key contexts should reflect the change
     CHECK(layer[0].key_context.root.letter == 0);  // C
     CHECK(layer[2].key_context.root.letter == 4);  // G
+}
+
+// =============================================================================
+// Confidence gate (PS-8)
+// =============================================================================
+
+TEST_CASE("derive_harmonic_layer: low confidence annotations filtered out",
+          "[score-ir][harmonic]") {
+    auto score = make_score_with_key(2, C4, 0);
+
+    // Bar 1: recognisable C major triad (high confidence)
+    place_chord(score, 0, 0, {C4, E4, G4});
+
+    // Bar 2: chromatic cluster that won't be recognised as any standard chord
+    // This should produce a low-confidence annotation that gets filtered
+    place_chord(score, 0, 1, {SpelledPitch{0, 0, 4},   // C4
+                               SpelledPitch{0, 1, 4},   // C#4
+                               SpelledPitch{1, 0, 4},   // D4
+                               SpelledPitch{1, 1, 4}}); // D#4
+
+    auto result = derive_harmonic_layer(score);
+    REQUIRE(result.has_value());
+
+    const auto& layer = *result;
+    // The recognisable chord should appear; the unrecognised one should be
+    // filtered by the confidence gate.
+    for (const auto& ann : layer) {
+        CHECK(ann.confidence >= 0.5f);
+    }
 }

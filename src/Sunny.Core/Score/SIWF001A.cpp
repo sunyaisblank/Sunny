@@ -12,6 +12,7 @@
 #include "../Scale/SCDF001A.h"
 
 #include <algorithm>
+#include <limits>
 
 namespace Sunny::Core {
 
@@ -48,6 +49,8 @@ Result<Score> create_score(const ScoreSpec& spec) {
         return std::unexpected(ErrorCode::InvalidMutation);
     if (spec.parts.empty())
         return std::unexpected(ErrorCode::InvalidMutation);
+    if (spec.bpm < Constants::TEMPO_MIN_BPM || spec.bpm > Constants::TEMPO_MAX_BPM)
+        return std::unexpected(ErrorCode::InvalidBPM);
 
     auto ts = make_time_signature(spec.time_sig_num, spec.time_sig_den);
     if (!ts) return std::unexpected(ts.error());
@@ -124,6 +127,11 @@ Result<MutationResult> set_formal_plan(
     // Build new section map
     SectionMap new_map;
     for (const auto& def : sections) {
+        if (def.start_bar == 0 || def.end_bar < def.start_bar)
+            return std::unexpected(ErrorCode::InvalidBarRange);
+        if (def.end_bar == std::numeric_limits<std::uint32_t>::max())
+            return std::unexpected(ErrorCode::ArithmeticOverflow);
+
         ScoreSection sec;
         sec.id = SectionId{g_wf_section_id++};
         sec.label = def.label;

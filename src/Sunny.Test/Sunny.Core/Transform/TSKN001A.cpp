@@ -92,7 +92,7 @@ TEST_CASE("GIKN001A: knet_from_nodes builds correct labels", "[knet][core]") {
         {1, 2, TILabel::Kind::T},  // E→G: T3
         {0, 2, TILabel::Kind::T},  // C→G: T7
     };
-    auto net = knet_from_nodes(nodes, specs);
+    auto net = knet_from_nodes(nodes, specs).value();
     REQUIRE(net.edges[0].label == TILabel::transposition(4));
     REQUIRE(net.edges[1].label == TILabel::transposition(3));
     REQUIRE(net.edges[2].label == TILabel::transposition(7));
@@ -104,7 +104,7 @@ TEST_CASE("GIKN001A: knet_from_nodes with inversion edges", "[knet][core]") {
     std::vector<KNetEdgeSpec> specs = {
         {0, 1, TILabel::Kind::I},  // I_n(0) = 4 → n = 4
     };
-    auto net = knet_from_nodes(nodes, specs);
+    auto net = knet_from_nodes(nodes, specs).value();
     REQUIRE(net.edges[0].label == TILabel::inversion(4));
     REQUIRE(net.edges[0].label.apply(0) == 4);
 }
@@ -115,7 +115,7 @@ TEST_CASE("GIKN001A: knet_edges_consistent valid net", "[knet][core]") {
         {0, 1, TILabel::Kind::T},
         {1, 2, TILabel::Kind::T},
     };
-    auto net = knet_from_nodes(nodes, specs);
+    auto net = knet_from_nodes(nodes, specs).value();
     REQUIRE(knet_edges_consistent(net));
 }
 
@@ -138,7 +138,7 @@ TEST_CASE("GIKN001A: knet_well_formed triangle all-T", "[knet][core]") {
         {1, 2, TILabel::Kind::T},  // T3
         {2, 0, TILabel::Kind::T},  // T5
     };
-    auto net = knet_from_nodes(nodes, specs);
+    auto net = knet_from_nodes(nodes, specs).value();
     REQUIRE(knet_well_formed(net));
 }
 
@@ -151,7 +151,7 @@ TEST_CASE("GIKN001A: knet_well_formed with inversion edges", "[knet][core]") {
         {0, 1, TILabel::Kind::I},  // I4
         {1, 0, TILabel::Kind::I},  // I4(4) = 0, so also I4
     };
-    auto net = knet_from_nodes(nodes, specs);
+    auto net = knet_from_nodes(nodes, specs).value();
     REQUIRE(knet_well_formed(net));
 }
 
@@ -162,7 +162,7 @@ TEST_CASE("GIKN001A: knet_well_formed no cycles is well-formed", "[knet][core]")
         {0, 1, TILabel::Kind::T},
         {0, 2, TILabel::Kind::T},
     };
-    auto net = knet_from_nodes(nodes, specs);
+    auto net = knet_from_nodes(nodes, specs).value();
     REQUIRE(knet_well_formed(net));
 }
 
@@ -177,11 +177,11 @@ TEST_CASE("GIKN001A: knet_isographic same topology", "[knet][core]") {
         {0, 1, TILabel::Kind::T},
         {1, 2, TILabel::Kind::T},
     };
-    auto a = knet_from_nodes(nodes_a, specs);
+    auto a = knet_from_nodes(nodes_a, specs).value();
 
     // Net B: {D, F#, A} with T4, T3 — same topology, same edge kinds
     std::vector<PitchClass> nodes_b = {2, 6, 9};
-    auto b = knet_from_nodes(nodes_b, specs);
+    auto b = knet_from_nodes(nodes_b, specs).value();
 
     REQUIRE(knet_isographic(a, b));
 }
@@ -191,8 +191,8 @@ TEST_CASE("GIKN001A: knet_isographic fails on different edge kind", "[knet][core
     std::vector<KNetEdgeSpec> specs_t = {{0, 1, TILabel::Kind::T}};
     std::vector<KNetEdgeSpec> specs_i = {{0, 1, TILabel::Kind::I}};
 
-    auto a = knet_from_nodes(nodes, specs_t);
-    auto b = knet_from_nodes(nodes, specs_i);
+    auto a = knet_from_nodes(nodes, specs_t).value();
+    auto b = knet_from_nodes(nodes, specs_i).value();
     REQUIRE_FALSE(knet_isographic(a, b));
 }
 
@@ -215,12 +215,12 @@ TEST_CASE("GIKN001A: knet_strongly_isographic transposed K-nets", "[knet][core]"
         {0, 1, TILabel::Kind::T},
         {1, 2, TILabel::Kind::T},
     };
-    auto a = knet_from_nodes(nodes_a, specs);
+    auto a = knet_from_nodes(nodes_a, specs).value();
 
     // Net B: D(2)→F#(6)→A(9) — transposed up by 2
     // T4 → T4, T3 → T3 (same T-labels, diff = 0)
     std::vector<PitchClass> nodes_b = {2, 6, 9};
-    auto b = knet_from_nodes(nodes_b, specs);
+    auto b = knet_from_nodes(nodes_b, specs).value();
 
     REQUIRE(knet_strongly_isographic(a, b));
 }
@@ -243,4 +243,30 @@ TEST_CASE("GIKN001A: knet_strongly_isographic fails on non-uniform diff", "[knet
     };
 
     REQUIRE_FALSE(knet_strongly_isographic(a, b));
+}
+
+// =============================================================================
+// Bounds checking
+// =============================================================================
+
+TEST_CASE("GIKN001A: knet_from_nodes oob returns error", "[knet][core]") {
+    std::vector<PitchClass> nodes = {0, 4, 7};
+    std::vector<KNetEdgeSpec> specs = {
+        {0, 3, TILabel::Kind::T},  // to == nodes.size(), out of bounds
+    };
+    auto result = knet_from_nodes(nodes, specs);
+    REQUIRE_FALSE(result.has_value());
+    REQUIRE(result.error() == ErrorCode::InvalidKNetEdgeIndex);
+}
+
+TEST_CASE("GIKN001A: knet_from_nodes valid unchanged", "[knet][core]") {
+    std::vector<PitchClass> nodes = {0, 4, 7};
+    std::vector<KNetEdgeSpec> specs = {
+        {0, 1, TILabel::Kind::T},
+        {1, 2, TILabel::Kind::T},
+    };
+    auto result = knet_from_nodes(nodes, specs);
+    REQUIRE(result.has_value());
+    REQUIRE(result->nodes.size() == 3);
+    REQUIRE(result->edges.size() == 2);
 }

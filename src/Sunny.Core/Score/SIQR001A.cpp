@@ -111,8 +111,8 @@ std::optional<HarmonicAnnotation> query_harmony_at(
 // query_tempo_at
 // =============================================================================
 
-TempoEvent query_tempo_at(const Score& score, ScoreTime time) {
-    TempoEvent result{};
+std::optional<TempoEvent> query_tempo_at(const Score& score, ScoreTime time) {
+    std::optional<TempoEvent> result;
     for (const auto& te : score.tempo_map) {
         if (te.position <= time) {
             result = te;
@@ -127,8 +127,8 @@ TempoEvent query_tempo_at(const Score& score, ScoreTime time) {
 // query_key_at
 // =============================================================================
 
-KeySignature query_key_at(const Score& score, ScoreTime time) {
-    KeySignature result{};
+std::optional<KeySignature> query_key_at(const Score& score, ScoreTime time) {
+    std::optional<KeySignature> result;
     for (const auto& ke : score.key_map) {
         if (ke.position <= time) {
             result = ke.key;
@@ -612,11 +612,12 @@ std::vector<FormSummaryEntry> query_form_summary(const Score& score) {
         entry.end = sec.end;
 
         // Find key at section start
-        entry.key = query_key_at(score, sec.start);
+        auto key = query_key_at(score, sec.start);
+        if (key) entry.key = *key;
 
         // Find tempo at section start
         auto tempo = query_tempo_at(score, sec.start);
-        entry.tempo_bpm = tempo.bpm.to_float();
+        entry.tempo_bpm = tempo ? tempo->bpm.to_float() : 0.0;
 
         result.push_back(std::move(entry));
     }

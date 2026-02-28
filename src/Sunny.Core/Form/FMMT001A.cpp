@@ -17,7 +17,7 @@ namespace Sunny::Core {
 // Pitch Operations
 // =============================================================================
 
-std::vector<MidiNote> motif_transpose(
+Result<std::vector<MidiNote>> motif_transpose(
     std::span<const MidiNote> pitches,
     int semitones
 ) {
@@ -25,16 +25,17 @@ std::vector<MidiNote> motif_transpose(
     result.reserve(pitches.size());
     for (auto p : pitches) {
         int transposed = static_cast<int>(p) + semitones;
-        transposed = std::clamp(transposed, 0, 127);
+        if (transposed < 0 || transposed > 127)
+            return std::unexpected(ErrorCode::InvalidMidiNote);
         result.push_back(static_cast<MidiNote>(transposed));
     }
     return result;
 }
 
-std::vector<MidiNote> motif_invert(
+Result<std::vector<MidiNote>> motif_invert(
     std::span<const MidiNote> pitches
 ) {
-    if (pitches.empty()) return {};
+    if (pitches.empty()) return std::vector<MidiNote>{};
 
     std::vector<MidiNote> result;
     result.reserve(pitches.size());
@@ -42,7 +43,8 @@ std::vector<MidiNote> motif_invert(
     for (auto p : pitches) {
         int interval = static_cast<int>(p) - static_cast<int>(axis);
         int inverted = static_cast<int>(axis) - interval;
-        inverted = std::clamp(inverted, 0, 127);
+        if (inverted < 0 || inverted > 127)
+            return std::unexpected(ErrorCode::InvalidMidiNote);
         result.push_back(static_cast<MidiNote>(inverted));
     }
     return result;
@@ -56,7 +58,7 @@ std::vector<MidiNote> motif_retrograde(
     return result;
 }
 
-std::vector<MidiNote> motif_retrograde_inversion(
+Result<std::vector<MidiNote>> motif_retrograde_inversion(
     std::span<const MidiNote> pitches
 ) {
     auto retro = motif_retrograde(pitches);
@@ -175,7 +177,9 @@ MotivicTransform classify_transformation(
     if (is_transposition) return MotivicTransform::Transposition;
 
     // Check inversion (intervals negated, relative to first note)
-    auto inv = motif_invert(original);
+    auto inv_result = motif_invert(original);
+    if (!inv_result) return MotivicTransform::Unknown;
+    auto& inv = *inv_result;
     // Inversion preserves first note; check if transformed matches inversion transposed
     int inv_diff = static_cast<int>(transformed[0]) - static_cast<int>(inv[0]);
     bool is_inversion = true;
@@ -201,7 +205,9 @@ MotivicTransform classify_transformation(
     if (is_retrograde) return MotivicTransform::Retrograde;
 
     // Check retrograde-inversion
-    auto ri = motif_retrograde_inversion(original);
+    auto ri_result = motif_retrograde_inversion(original);
+    if (!ri_result) return MotivicTransform::Unknown;
+    auto& ri = *ri_result;
     int ri_diff = static_cast<int>(transformed[0]) - static_cast<int>(ri[0]);
     bool is_ri = true;
     for (std::size_t i = 0; i < original.size(); ++i) {

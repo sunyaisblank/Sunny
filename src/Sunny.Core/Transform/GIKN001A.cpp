@@ -148,7 +148,7 @@ bool knet_strongly_isographic(const KNet& a, const KNet& b) {
     return true;
 }
 
-KNet knet_from_nodes(
+Result<KNet> knet_from_nodes(
     std::span<const PitchClass> nodes,
     std::span<const KNetEdgeSpec> edge_specs
 ) {
@@ -157,6 +157,9 @@ KNet knet_from_nodes(
     net.edges.reserve(edge_specs.size());
 
     for (const auto& spec : edge_specs) {
+        if (spec.from >= nodes.size() || spec.to >= nodes.size())
+            return std::unexpected(ErrorCode::InvalidKNetEdgeIndex);
+
         KNetEdge edge;
         edge.from = spec.from;
         edge.to = spec.to;

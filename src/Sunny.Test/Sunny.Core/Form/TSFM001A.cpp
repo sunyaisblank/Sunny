@@ -162,35 +162,47 @@ TEST_CASE("FMST001A: is_sentence with 8-bar structure", "[form][core]") {
 TEST_CASE("FMMT001A: motif_transpose identity", "[form][core]") {
     std::vector<MidiNote> pitches = {60, 64, 67};
     auto result = motif_transpose(pitches, 0);
-    REQUIRE(result == pitches);
+    REQUIRE(result.has_value());
+    REQUIRE(*result == pitches);
 }
 
 TEST_CASE("FMMT001A: motif_transpose up", "[form][core]") {
     std::vector<MidiNote> pitches = {60, 64, 67};
     auto result = motif_transpose(pitches, 5);
-    REQUIRE(result == std::vector<MidiNote>{65, 69, 72});
+    REQUIRE(result.has_value());
+    REQUIRE(*result == std::vector<MidiNote>{65, 69, 72});
 }
 
-TEST_CASE("FMMT001A: motif_transpose clamps to valid range", "[form][core]") {
+TEST_CASE("FMMT001A: motif_transpose exceeding range returns error", "[form][core]") {
     std::vector<MidiNote> pitches = {120, 125, 127};
     auto result = motif_transpose(pitches, 10);
-    REQUIRE(result[2] == 127);  // Clamped
+    REQUIRE_FALSE(result.has_value());
+    REQUIRE(result.error() == ErrorCode::InvalidMidiNote);
 }
 
 TEST_CASE("FMMT001A: motif_invert around first note", "[form][core]") {
     // C E G → C Ab F (intervals +4,+7 become -4,-7)
     std::vector<MidiNote> pitches = {60, 64, 67};
     auto result = motif_invert(pitches);
-    REQUIRE(result[0] == 60);   // Axis
-    REQUIRE(result[1] == 56);   // 60 - 4
-    REQUIRE(result[2] == 53);   // 60 - 7
+    REQUIRE(result.has_value());
+    REQUIRE((*result)[0] == 60);   // Axis
+    REQUIRE((*result)[1] == 56);   // 60 - 4
+    REQUIRE((*result)[2] == 53);   // 60 - 7
 }
 
 TEST_CASE("FMMT001A: motif_invert is self-inverse", "[form][core]") {
     std::vector<MidiNote> pitches = {60, 64, 67, 72};
-    auto inv = motif_invert(pitches);
-    auto inv_inv = motif_invert(inv);
+    auto inv = motif_invert(pitches).value();
+    auto inv_inv = motif_invert(inv).value();
     REQUIRE(inv_inv == std::vector<MidiNote>(pitches.begin(), pitches.end()));
+}
+
+TEST_CASE("FMMT001A: motif_invert exceeding range returns error", "[form][core]") {
+    // Axis at 10, note at 127: inverted = 10 - (127-10) = -107
+    std::vector<MidiNote> pitches = {10, 127};
+    auto result = motif_invert(pitches);
+    REQUIRE_FALSE(result.has_value());
+    REQUIRE(result.error() == ErrorCode::InvalidMidiNote);
 }
 
 TEST_CASE("FMMT001A: motif_retrograde reverses", "[form][core]") {
@@ -209,10 +221,11 @@ TEST_CASE("FMMT001A: motif_retrograde is self-inverse", "[form][core]") {
 TEST_CASE("FMMT001A: motif_retrograde_inversion", "[form][core]") {
     std::vector<MidiNote> pitches = {60, 64, 67};
     auto ri = motif_retrograde_inversion(pitches);
+    REQUIRE(ri.has_value());
     // Retrograde: {67, 64, 60}. Invert around 67: {67, 70, 74}
-    REQUIRE(ri[0] == 67);
-    REQUIRE(ri[1] == 70);
-    REQUIRE(ri[2] == 74);
+    REQUIRE((*ri)[0] == 67);
+    REQUIRE((*ri)[1] == 70);
+    REQUIRE((*ri)[2] == 74);
 }
 
 TEST_CASE("FMMT001A: motif_augment doubles durations", "[form][core]") {
@@ -246,7 +259,7 @@ TEST_CASE("FMMT001A: motif_interval_similarity identical", "[form][core]") {
 
 TEST_CASE("FMMT001A: motif_interval_similarity transposition", "[form][core]") {
     std::vector<MidiNote> a = {60, 64, 67, 72};
-    auto b = motif_transpose(a, 5);
+    auto b = motif_transpose(a, 5).value();
     // Same intervals, so similarity should be 1.0
     REQUIRE_THAT(motif_interval_similarity(a, b), WithinAbs(1.0, 1e-10));
 }
@@ -271,7 +284,7 @@ TEST_CASE("FMMT001A: classify_transformation transposition", "[form][core]") {
 
 TEST_CASE("FMMT001A: classify_transformation inversion", "[form][core]") {
     std::vector<MidiNote> a = {60, 64, 67};
-    auto inv = motif_invert(a);
+    auto inv = motif_invert(a).value();
     REQUIRE(classify_transformation(a, inv) == MotivicTransform::Inversion);
 }
 
@@ -283,7 +296,7 @@ TEST_CASE("FMMT001A: classify_transformation retrograde", "[form][core]") {
 
 TEST_CASE("FMMT001A: classify_transformation retrograde_inversion", "[form][core]") {
     std::vector<MidiNote> a = {60, 64, 67, 72};
-    auto ri = motif_retrograde_inversion(a);
+    auto ri = motif_retrograde_inversion(a).value();
     REQUIRE(classify_transformation(a, ri) == MotivicTransform::RetrogradeInversion);
 }
 

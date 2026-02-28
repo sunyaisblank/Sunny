@@ -119,6 +119,8 @@ Sunny::Core::Result<MidiFile> parse_midi(std::span<const uint8_t> data) {
     result.format = read_u16_be(data, 8);
     uint16_t ntrks = read_u16_be(data, 10);
     result.ppq = read_u16_be(data, 12);
+    if (result.ppq == 0)
+        return std::unexpected(Sunny::Core::ErrorCode::InvalidMidiPPQ);
 
     // Parse tracks
     std::size_t pos = 8 + header_len;
@@ -170,11 +172,18 @@ Sunny::Core::Result<MidiFile> parse_midi(std::span<const uint8_t> data) {
                     uint32_t uspb = (static_cast<uint32_t>(data[pos]) << 16) |
                                     (static_cast<uint32_t>(data[pos + 1]) << 8) |
                                     static_cast<uint32_t>(data[pos + 2]);
+                    if (uspb == 0)
+                        return std::unexpected(Sunny::Core::ErrorCode::InvalidMidiTempo);
                     result.tempos.push_back({abs_tick, uspb});
                 } else if (meta_type == 0x58 && *meta_len >= 2) {
                     // Time signature
+                    uint8_t den_exp = data[pos + 1];
+                    if (den_exp > 7)
+                        return std::unexpected(Sunny::Core::ErrorCode::InvalidMidiTimeSig);
                     int num = data[pos];
-                    int den = 1 << data[pos + 1];
+                    if (num == 0)
+                        return std::unexpected(Sunny::Core::ErrorCode::InvalidMidiTimeSig);
+                    int den = 1 << den_exp;
                     result.time_signatures.push_back({abs_tick, num, den});
                 }
                 // End of track

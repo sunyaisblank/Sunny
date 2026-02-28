@@ -49,16 +49,20 @@ struct LocatedEvent {
 
 /**
  * @brief Find the tempo event active at a given time
+ *
+ * Returns std::nullopt when the tempo map is empty.
  */
-[[nodiscard]] TempoEvent query_tempo_at(
+[[nodiscard]] std::optional<TempoEvent> query_tempo_at(
     const Score& score,
     ScoreTime time
 );
 
 /**
  * @brief Find the key signature active at a given time
+ *
+ * Returns std::nullopt when the key map is empty.
  */
-[[nodiscard]] KeySignature query_key_at(
+[[nodiscard]] std::optional<KeySignature> query_key_at(
     const Score& score,
     ScoreTime time
 );

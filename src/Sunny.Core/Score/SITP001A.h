@@ -538,6 +538,9 @@ namespace ScoreError {
     constexpr int MissingPreset       = 5500;
     constexpr int UnmappedArticulation = 5501;
 
+    constexpr int OverlappingAnnotation = 5302;
+    constexpr int InconsistentOrchField = 5303;
+
     constexpr int SchemaVersionMismatch = 5600;
     constexpr int CorruptDocument      = 5601;
     constexpr int ValidationOnLoadFailed = 5602;

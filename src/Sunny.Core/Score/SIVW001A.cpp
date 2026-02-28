@@ -567,8 +567,8 @@ std::optional<SpelledPitch> find_cue_pitch(
 
 }  // anonymous namespace
 
-Score part_extract(const Score& score, PartId part_id,
-                   std::uint32_t rest_threshold) {
+Result<Score> part_extract(const Score& score, PartId part_id,
+                          std::uint32_t rest_threshold) {
     Score result = copy_score_skeleton(score);
 
     for (const auto& part : score.parts) {
@@ -684,14 +684,7 @@ Score part_extract(const Score& score, PartId part_id,
         }
     }
 
-    // Part not found — return skeleton with empty part
-    Part empty;
-    empty.id = part_id;
-    empty.definition.name = "Unknown";
-    empty.definition.abbreviation = "?";
-    empty.definition.instrument_type = InstrumentType::Custom;
-    result.parts.push_back(std::move(empty));
-    return result;
+    return std::unexpected(ErrorCode::PartNotFound);
 }
 
 // =============================================================================
@@ -779,7 +772,10 @@ Score harmonic_skeleton(const Score& score) {
 // region_view
 // =============================================================================
 
-Score region_view(const Score& score, const ScoreRegion& region) {
+Result<Score> region_view(const Score& score, const ScoreRegion& region) {
+    if (region.end < region.start)
+        return std::unexpected(ErrorCode::InvalidRegion);
+
     std::uint32_t start_bar = region.start.bar;
     std::uint32_t end_bar = region.end.bar;
     // Include the end bar if the beat offset is non-zero

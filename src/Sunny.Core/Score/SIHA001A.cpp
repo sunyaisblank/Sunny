@@ -133,6 +133,8 @@ bool in_stale_region(ScoreTime position, const std::vector<ScoreRegion>& regions
     return false;
 }
 
+constexpr double HARMONY_CONFIDENCE_THRESHOLD = 0.5;
+
 /// Derive annotations for bars in [start_bar, end_bar].
 HarmonicAnnotationLayer derive_for_range(
     const Score& score,
@@ -146,7 +148,9 @@ HarmonicAnnotationLayer derive_for_range(
 
     for (std::uint32_t bar = start_bar; bar <= end_bar; ++bar) {
         TimeSignature ts = query_time_signature_at(score, bar);
-        KeySignature key = query_key_at(score, ScoreTime{bar, Beat::zero()});
+        auto key_opt = query_key_at(score, ScoreTime{bar, Beat::zero()});
+        if (!key_opt) continue;
+        KeySignature key = *key_opt;
 
         PitchClass key_root = pc(key.root);
         bool minor = is_minor_key(key);
@@ -232,6 +236,11 @@ HarmonicAnnotationLayer derive_for_range(
         }
     }
 
+    // Filter out annotations below the confidence threshold
+    std::erase_if(layer, [](const HarmonicAnnotation& ann) {
+        return ann.confidence < HARMONY_CONFIDENCE_THRESHOLD;
+    });
+
     return layer;
 }
 
@@ -263,9 +272,10 @@ Result<HarmonicAnnotationLayer> derive_harmonic_layer(const Score& score) {
 
         if (at_boundary && !layer[i-1].chord.notes.empty() &&
             !layer[i].chord.notes.empty()) {
-            KeySignature key = query_key_at(score, layer[i].position);
-            PitchClass key_root = pc(key.root);
-            bool minor = is_minor_key(key);
+            auto key_opt = query_key_at(score, layer[i].position);
+            if (!key_opt) continue;
+            PitchClass key_root = pc(key_opt->root);
+            bool minor = is_minor_key(*key_opt);
 
             auto cadence = detect_cadence(
                 layer[i-1].chord, layer[i].chord, key_root, minor);

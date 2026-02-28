@@ -126,7 +126,9 @@ TEST_CASE("SIVW001A: part_extract produces single-part score",
     auto score = make_two_part_score();
     CHECK(score.parts.size() == 2);
 
-    auto extracted = part_extract(score, PartId{100});  // Piano
+    auto result = part_extract(score, PartId{100});  // Piano
+    REQUIRE(result.has_value());
+    auto& extracted = *result;
     CHECK(extracted.parts.size() == 1);
     CHECK(extracted.parts[0].definition.name == "Piano");
     CHECK(extracted.metadata.total_bars == score.metadata.total_bars);
@@ -136,14 +138,12 @@ TEST_CASE("SIVW001A: part_extract produces single-part score",
     CHECK(extracted.key_map.size() == score.key_map.size());
 }
 
-TEST_CASE("SIVW001A: part_extract with nonexistent id returns placeholder",
+TEST_CASE("SIVW001A: part_extract with nonexistent id returns PartNotFound",
           "[score-ir][view]") {
     auto score = make_valid_score();
-    auto extracted = part_extract(score, PartId{999});
-    // When the part is not found, the implementation returns a skeleton
-    // with one placeholder part named "Unknown"
-    REQUIRE(extracted.parts.size() == 1);
-    CHECK(extracted.parts[0].definition.name == "Unknown");
+    auto result = part_extract(score, PartId{999});
+    REQUIRE_FALSE(result.has_value());
+    CHECK(result.error() == ErrorCode::PartNotFound);
 }
 
 TEST_CASE("SIVW001A: piano_reduction collapses to one part",
@@ -178,7 +178,9 @@ TEST_CASE("SIVW001A: region_view extracts bars 2-3 from 4-bar score",
     region.start = ScoreTime{2, Beat::zero()};
     region.end = ScoreTime{4, Beat::zero()};  // bars 2-3
 
-    auto view = region_view(score, region);
+    auto result = region_view(score, region);
+    REQUIRE(result.has_value());
+    auto& view = *result;
 
     // Should have 2 bars, renumbered starting from 1
     CHECK(view.metadata.total_bars == 2);
@@ -233,8 +235,9 @@ TEST_CASE("SIQR001A: query_tempo_at returns tempo at position",
     auto score = make_valid_score();
 
     auto tempo = query_tempo_at(score, SCORE_START);
-    CHECK(tempo.bpm.to_float() == 120.0);
-    CHECK(tempo.beat_unit == BeatUnit::Quarter);
+    REQUIRE(tempo.has_value());
+    CHECK(tempo->bpm.to_float() == 120.0);
+    CHECK(tempo->beat_unit == BeatUnit::Quarter);
 }
 
 TEST_CASE("SIQR001A: query_key_at returns key at position",
@@ -242,9 +245,26 @@ TEST_CASE("SIQR001A: query_key_at returns key at position",
     auto score = make_valid_score();
 
     auto key = query_key_at(score, SCORE_START);
-    CHECK(key.root.letter == 0);       // C
-    CHECK(key.root.accidental == 0);   // Natural
-    CHECK(key.accidentals == 0);       // No sharps/flats
+    REQUIRE(key.has_value());
+    CHECK(key->root.letter == 0);       // C
+    CHECK(key->root.accidental == 0);   // Natural
+    CHECK(key->accidentals == 0);       // No sharps/flats
+}
+
+TEST_CASE("SIQR001A: query_tempo_at empty map returns nullopt",
+          "[score-ir][query]") {
+    auto score = make_valid_score();
+    score.tempo_map.clear();
+    auto tempo = query_tempo_at(score, SCORE_START);
+    CHECK_FALSE(tempo.has_value());
+}
+
+TEST_CASE("SIQR001A: query_key_at empty map returns nullopt",
+          "[score-ir][query]") {
+    auto score = make_valid_score();
+    score.key_map.clear();
+    auto key = query_key_at(score, SCORE_START);
+    CHECK_FALSE(key.has_value());
 }
 
 TEST_CASE("SIQR001A: query_voice_count returns correct count",
@@ -328,13 +348,13 @@ TEST_CASE("SIVW001A: views do not modify source score", "[score-ir][view]") {
     auto original_part_count = score.parts.size();
 
     // Generate views
-    auto extracted = part_extract(score, PartId{100});
+    auto extracted = part_extract(score, PartId{100}).value();
     auto reduced = piano_reduction(score);
 
     ScoreRegion region;
     region.start = SCORE_START;
     region.end = ScoreTime{3, Beat::zero()};
-    auto view = region_view(score, region);
+    auto view = region_view(score, region).value();
 
     // Source should be unchanged
     CHECK(score.version == original_version);
@@ -1221,7 +1241,9 @@ TEST_CASE("SIVW001A: part_extract inserts cue note after 4-bar rest (default thr
     // Clarinet has 8 bars of rest; flute has notes in every bar.
     // With threshold 4, a cue note should appear in the last rest bar
     // before the run breaks (here, entire score is rests so cue goes in bar 8).
-    auto extracted = part_extract(score, PartId{201});
+    auto result = part_extract(score, PartId{201});
+    REQUIRE(result.has_value());
+    auto& extracted = *result;
 
     REQUIRE(extracted.parts.size() == 1);
     auto& cl = extracted.parts[0];
@@ -1257,7 +1279,7 @@ TEST_CASE("SIVW001A: part_extract no cue note for 3-bar rest (below threshold)",
     ng2.duration = Beat{1, 1};
     cl_voice_b5.events[0].payload = ng2;
 
-    auto extracted = part_extract(score, PartId{201});
+    auto extracted = part_extract(score, PartId{201}).value();
     auto& cl = extracted.parts[0];
 
     // Bars 2-4 are 3 rests (below threshold of 4). No cue note expected there.
@@ -1290,7 +1312,7 @@ TEST_CASE("SIVW001A: part_extract custom threshold of 2 triggers cue insertion",
     cl_b4.events[0].payload = ng2;
 
     // Threshold of 2: bars 2-3 form a 2-bar rest run, which meets the threshold
-    auto extracted = part_extract(score, PartId{201}, 2);
+    auto extracted = part_extract(score, PartId{201}, 2).value();
     auto& cl = extracted.parts[0];
 
     // Cue note should be in bar 3 (last rest bar before bar 4's note)
@@ -1310,7 +1332,7 @@ TEST_CASE("SIVW001A: part_extract cue note has NoteHeadType::Cue",
           "[score-ir][view][cue]") {
     auto score = make_cue_note_test_score(8);
 
-    auto extracted = part_extract(score, PartId{201});
+    auto extracted = part_extract(score, PartId{201}).value();
     auto& cl = extracted.parts[0];
 
     // Find any cue note and verify its notation_head
@@ -1343,7 +1365,7 @@ TEST_CASE("SIVW001A: part_extract cue pitch matches melody part with orchestrati
     oa.role = TexturalRole::Melody;
     score.orchestration_annotations.push_back(oa);
 
-    auto extracted = part_extract(score, PartId{201});
+    auto extracted = part_extract(score, PartId{201}).value();
     auto& cl = extracted.parts[0];
 
     // The cue note pitch should come from the flute melody (E5)
