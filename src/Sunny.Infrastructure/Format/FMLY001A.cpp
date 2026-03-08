@@ -66,7 +66,7 @@ int as_dotted_duration(Sunny::Core::Beat dur) {
 
 std::string ly_pitch(Sunny::Core::SpelledPitch sp) {
     std::string result;
-    result += LY_LETTER[sp.letter];
+    result += LY_LETTER[sp.letter < 7 ? sp.letter : 0];
 
     // Accidentals: Dutch convention
     // Special cases for E-flat and A-flat: "ees" and "aes" (not "es")

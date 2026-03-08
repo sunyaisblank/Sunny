@@ -21,6 +21,21 @@ namespace {
 using namespace Sunny::Core;
 
 // =============================================================================
+// LilyPond string escaping — prevent injection via metadata fields
+// =============================================================================
+
+std::string ly_escape(const std::string& s) {
+    std::string out;
+    out.reserve(s.size());
+    for (char c : s) {
+        if (c == '"') out += "\\\"";
+        else if (c == '\\') out += "\\\\";
+        else out += c;
+    }
+    return out;
+}
+
+// =============================================================================
 // Minor key detection — same heuristic as SICM001A
 // =============================================================================
 
@@ -133,6 +148,7 @@ std::string tuplet_note_duration(const TupletContext& tc) {
 
 const KeySignature& key_at_bar(const KeySignatureMap& key_map, std::uint32_t bar) {
     // key_map is ordered by position; find the last entry at or before bar
+    // Precondition: key_map is non-empty (enforced by is_compilable)
     const KeySignature* current = &key_map.front().key;
     for (const auto& ke : key_map) {
         if (ke.position.bar > bar) break;
@@ -143,6 +159,7 @@ const KeySignature& key_at_bar(const KeySignatureMap& key_map, std::uint32_t bar
 }
 
 const TimeSignature& time_at_bar(const TimeSignatureMap& time_map, std::uint32_t bar) {
+    // Precondition: time_map is non-empty (enforced by is_compilable)
     const TimeSignature* current = &time_map.front().time_signature;
     for (const auto& tse : time_map) {
         if (tse.bar > bar) break;
@@ -332,10 +349,10 @@ void emit_rest(
 void emit_direction(std::ostringstream& out, const ScoreDirection& dir) {
     switch (dir.type) {
         case DirectionType::Text:
-            if (dir.text) out << "^\"" << *dir.text << "\" ";
+            if (dir.text) out << "^\"" << ly_escape(*dir.text) << "\" ";
             break;
         case DirectionType::TempoText:
-            if (dir.text) out << "^\\markup { \\bold \"" << *dir.text << "\" } ";
+            if (dir.text) out << "^\\markup { \\bold \"" << ly_escape(*dir.text) << "\" } ";
             break;
         case DirectionType::ClefChange:
             if (dir.new_clef) out << "\\clef " << ly_clef_name(*dir.new_clef) << " ";
@@ -477,18 +494,18 @@ Result<LilyPondCompilationResult> compile_score_to_lilypond(const Score& score) 
     out << "\\version \"2.24.0\"\n\n";
 
     out << "\\header {\n";
-    out << "  title = \"" << score.metadata.title << "\"\n";
+    out << "  title = \"" << ly_escape(score.metadata.title) << "\"\n";
     if (score.metadata.composer) {
-        out << "  composer = \"" << *score.metadata.composer << "\"\n";
+        out << "  composer = \"" << ly_escape(*score.metadata.composer) << "\"\n";
     }
     if (score.metadata.subtitle) {
-        out << "  subtitle = \"" << *score.metadata.subtitle << "\"\n";
+        out << "  subtitle = \"" << ly_escape(*score.metadata.subtitle) << "\"\n";
     }
     if (score.metadata.arranger) {
-        out << "  arranger = \"" << *score.metadata.arranger << "\"\n";
+        out << "  arranger = \"" << ly_escape(*score.metadata.arranger) << "\"\n";
     }
     if (score.metadata.opus) {
-        out << "  opus = \"" << *score.metadata.opus << "\"\n";
+        out << "  opus = \"" << ly_escape(*score.metadata.opus) << "\"\n";
     }
     out << "}\n\n";
 

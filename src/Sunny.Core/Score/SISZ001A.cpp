@@ -56,7 +56,7 @@ Beat beat_from_json(const json& j) {
     if (den <= 0) {
         throw json::other_error::create(601, "Beat denominator must be > 0", &j);
     }
-    return Beat{num, den};
+    return Beat::normalise(num, den);
 }
 
 json score_time_to_json(const ScoreTime& st) {
@@ -450,6 +450,50 @@ Measure measure_from_json(const json& j) {
     return measure;
 }
 
+// =============================================================================
+// ArticulationMapping serialisation (recursive for Combined type)
+// =============================================================================
+
+json articulation_mapping_to_json(const ArticulationMapping& am) {
+    json j;
+    j["type"] = static_cast<int>(am.type);
+    j["keyswitch_pitch"] = spelled_pitch_to_json(am.keyswitch_pitch);
+    j["cc_number"] = am.cc_number;
+    j["cc_value"] = am.cc_value;
+    j["velocity_min"] = am.velocity_min;
+    j["velocity_max"] = am.velocity_max;
+    j["duration_scale"] = am.duration_scale;
+    j["program"] = am.program;
+    if (!am.combined.empty()) {
+        json arr = json::array();
+        for (const auto& sub : am.combined) {
+            arr.push_back(articulation_mapping_to_json(sub));
+        }
+        j["combined"] = arr;
+    }
+    return j;
+}
+
+ArticulationMapping articulation_mapping_from_json(const json& j) {
+    ArticulationMapping am;
+    am.type = check_enum_range(j.at("type").get<int>(),
+        ArticulationMapping::Type::Combined, "ArticulationMapping::Type", j);
+    if (j.contains("keyswitch_pitch"))
+        am.keyswitch_pitch = spelled_pitch_from_json(j.at("keyswitch_pitch"));
+    am.cc_number = j.value("cc_number", static_cast<std::uint8_t>(0));
+    am.cc_value = j.value("cc_value", static_cast<std::uint8_t>(0));
+    am.velocity_min = j.value("velocity_min", static_cast<std::uint8_t>(0));
+    am.velocity_max = j.value("velocity_max", static_cast<std::uint8_t>(127));
+    am.duration_scale = j.value("duration_scale", 1.0f);
+    am.program = j.value("program", static_cast<std::uint8_t>(0));
+    if (j.contains("combined")) {
+        for (const auto& sub : j.at("combined")) {
+            am.combined.push_back(articulation_mapping_from_json(sub));
+        }
+    }
+    return am;
+}
+
 json part_definition_to_json(const PartDefinition& def) {
     json j;
     j["name"] = def.name;
@@ -487,6 +531,14 @@ json part_definition_to_json(const PartDefinition& def) {
         rc["pan"] = *def.rendering.pan;
     if (def.rendering.group)
         rc["group"] = *def.rendering.group;
+    if (!def.rendering.articulation_map.empty()) {
+        json am_obj = json::object();
+        for (const auto& [art, mapping] : def.rendering.articulation_map) {
+            am_obj[std::to_string(static_cast<int>(art))] =
+                articulation_mapping_to_json(mapping);
+        }
+        rc["articulation_map"] = am_obj;
+    }
     j["rendering"] = rc;
 
     // Backward compat: keep flat midi_channel/instrument_preset
@@ -538,6 +590,14 @@ PartDefinition part_definition_from_json(const json& j) {
             def.rendering.pan = rc.at("pan").get<float>();
         if (rc.contains("group"))
             def.rendering.group = rc.at("group").get<std::string>();
+        if (rc.contains("articulation_map")) {
+            for (const auto& [key, val] : rc.at("articulation_map").items()) {
+                auto art = check_enum_range(std::stoi(key),
+                    ArticulationType::BendDown, "ArticulationType", val);
+                def.rendering.articulation_map[art] =
+                    articulation_mapping_from_json(val);
+            }
+        }
     } else {
         // Backward compat: flat keys from schema v1/v2
         def.rendering.midi_channel = j.value("midi_channel", static_cast<std::uint8_t>(1));

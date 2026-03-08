@@ -14,6 +14,7 @@
 
 #include "MCPS001A.h"
 #include "MCPT001A.h"
+#include "MCPT002A.h"
 #include "Application/INOR001A.h"
 
 int main() {
@@ -21,6 +22,7 @@ int main() {
     Sunny::Infrastructure::McpServer server;
 
     Sunny::Infrastructure::register_sunny_tools(server, orchestrator);
+    Sunny::Infrastructure::register_timbre_tools(server);
 
     server.run();
 

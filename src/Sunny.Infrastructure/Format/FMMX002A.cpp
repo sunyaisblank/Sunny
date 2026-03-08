@@ -443,7 +443,7 @@ void emit_chord_symbol(
     auto harmony = parent.append_child("harmony");
 
     auto root_node = harmony.append_child("root");
-    std::string step_str(1, STEP_CHARS[cs.root.letter]);
+    std::string step_str(1, STEP_CHARS[cs.root.letter < 7 ? cs.root.letter : 0]);
     root_node.append_child("root-step").text().set(step_str.c_str());
     if (cs.root.accidental != 0) {
         root_node.append_child("root-alter").text().set(
@@ -455,7 +455,7 @@ void emit_chord_symbol(
 
     if (cs.bass) {
         auto bass_node = harmony.append_child("bass");
-        std::string bass_step(1, STEP_CHARS[cs.bass->letter]);
+        std::string bass_step(1, STEP_CHARS[cs.bass->letter < 7 ? cs.bass->letter : 0]);
         bass_node.append_child("bass-step").text().set(bass_step.c_str());
         if (cs.bass->accidental != 0) {
             bass_node.append_child("bass-alter").text().set(
@@ -473,7 +473,7 @@ void emit_note_pitch(
     const Sunny::Core::SpelledPitch& pitch
 ) {
     auto pitch_node = note_node.append_child("pitch");
-    std::string step_str(1, STEP_CHARS[pitch.letter]);
+    std::string step_str(1, STEP_CHARS[pitch.letter < 7 ? pitch.letter : 0]);
     pitch_node.append_child("step").text().set(step_str.c_str());
     if (pitch.accidental != 0) {
         pitch_node.append_child("alter").text().set(

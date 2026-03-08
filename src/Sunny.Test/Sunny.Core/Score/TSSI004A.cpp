@@ -566,6 +566,70 @@ TEST_CASE("SISZ001A: articulation_vocabulary survives round-trip",
     CHECK(vocab[2] == ArticulationType::Accent);
 }
 
+TEST_CASE("SISZ001A: articulation_map survives round-trip",
+          "[score-ir][serialisation]") {
+    auto original = make_serialisation_score();
+
+    ArticulationMapping ks;
+    ks.type = ArticulationMapping::Type::Keyswitch;
+    ks.keyswitch_pitch = SpelledPitch{0, 0, 1};  // C1
+
+    ArticulationMapping cc;
+    cc.type = ArticulationMapping::Type::CC;
+    cc.cc_number = 64;
+    cc.cc_value = 127;
+
+    // Combined mapping that nests two sub-mappings
+    ArticulationMapping combined;
+    combined.type = ArticulationMapping::Type::Combined;
+    combined.combined = {ks, cc};
+
+    original.parts[0].definition.rendering.articulation_map[ArticulationType::Staccato] = ks;
+    original.parts[0].definition.rendering.articulation_map[ArticulationType::Tenuto] = combined;
+
+    auto j = score_to_json(original);
+    auto restored = score_from_json(j);
+    REQUIRE(restored.has_value());
+
+    const auto& am = restored->parts[0].definition.rendering.articulation_map;
+    REQUIRE(am.size() == 2);
+    REQUIRE(am.count(ArticulationType::Staccato));
+    CHECK(am.at(ArticulationType::Staccato).type == ArticulationMapping::Type::Keyswitch);
+    CHECK(am.at(ArticulationType::Staccato).keyswitch_pitch.octave == 1);
+    REQUIRE(am.count(ArticulationType::Tenuto));
+    CHECK(am.at(ArticulationType::Tenuto).type == ArticulationMapping::Type::Combined);
+    REQUIRE(am.at(ArticulationType::Tenuto).combined.size() == 2);
+    CHECK(am.at(ArticulationType::Tenuto).combined[0].type == ArticulationMapping::Type::Keyswitch);
+    CHECK(am.at(ArticulationType::Tenuto).combined[1].type == ArticulationMapping::Type::CC);
+    CHECK(am.at(ArticulationType::Tenuto).combined[1].cc_number == 64);
+}
+
+TEST_CASE("SISZ001A: beat_from_json normalises non-canonical fractions",
+          "[score-ir][serialisation]") {
+    auto original = make_serialisation_score();
+
+    // Manually inject a non-canonical beat into the JSON
+    auto j = score_to_json(original);
+    // Overwrite the first event's offset beat with {2, 4} instead of {1, 2}
+    auto& events = j["parts"][0]["measures"][0]["voices"][0]["events"];
+    if (!events.empty()) {
+        events[0]["offset"]["num"] = 2;
+        events[0]["offset"]["den"] = 4;
+    }
+
+    auto restored = score_from_json(j);
+    REQUIRE(restored.has_value());
+
+    if (!restored->parts[0].measures.empty() &&
+        !restored->parts[0].measures[0].voices.empty() &&
+        !restored->parts[0].measures[0].voices[0].events.empty()) {
+        const auto& beat = restored->parts[0].measures[0].voices[0].events[0].offset;
+        // {2, 4} should normalise to {1, 2}
+        CHECK(beat.numerator == 1);
+        CHECK(beat.denominator == 2);
+    }
+}
+
 // =============================================================================
 // SISZ001A: Enum bounds-check negative paths
 // =============================================================================

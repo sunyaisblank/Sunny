@@ -24,11 +24,19 @@ void McpServer::register_tool(std::string name, std::string description,
 }
 
 void McpServer::run() {
-    running_ = true;
+    running_.store(true, std::memory_order_relaxed);
     std::string line;
 
-    while (running_ && std::getline(std::cin, line)) {
+    constexpr std::size_t MAX_LINE_LENGTH = 4 * 1024 * 1024;  // 4 MiB
+
+    while (running_.load(std::memory_order_relaxed) && std::getline(std::cin, line)) {
         if (line.empty()) continue;
+
+        if (line.size() > MAX_LINE_LENGTH) {
+            auto error = make_error(nullptr, -32600, "Request exceeds size limit");
+            std::cout << error.dump() << "\n" << std::flush;
+            continue;
+        }
 
         nlohmann::json request;
         try {
@@ -45,11 +53,11 @@ void McpServer::run() {
         }
     }
 
-    running_ = false;
+    running_.store(false, std::memory_order_relaxed);
 }
 
 void McpServer::stop() {
-    running_ = false;
+    running_.store(false, std::memory_order_relaxed);
 }
 
 nlohmann::json McpServer::handle_request(const nlohmann::json& request) {
@@ -74,8 +82,8 @@ nlohmann::json McpServer::handle_request(const nlohmann::json& request) {
         return handle_tools_list(id);
     } else if (method == "tools/call") {
         return handle_tools_call(id, params);
-    } else if (method == "notifications/initialized") {
-        // Client notification, no response
+    } else if (method.rfind("notifications/", 0) == 0) {
+        // JSON-RPC notifications have no "id" and require no response
         return nullptr;
     } else {
         return make_error(id, -32601, "Method not found: " + method);
@@ -138,6 +146,14 @@ nlohmann::json McpServer::handle_tools_call(const nlohmann::json& id,
         nlohmann::json content = {
             {"content", nlohmann::json::array({
                 {{"type", "text"}, {"text", std::string("Error: ") + e.what()}}
+            })},
+            {"isError", true}
+        };
+        return make_response(id, content);
+    } catch (...) {
+        nlohmann::json content = {
+            {"content", nlohmann::json::array({
+                {{"type", "text"}, {"text", "Error: unknown exception"}}
             })},
             {"isError", true}
         };

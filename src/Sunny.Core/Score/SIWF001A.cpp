@@ -639,7 +639,8 @@ Score wf_get_reduction(
     const Score& score, const std::string& view_type,
     const std::optional<ScoreRegion>& region
 ) {
-    // When a region is specified, extract it first
+    // When a region is specified, extract it; fall back to the full score
+    // if the region is invalid rather than producing a partial result.
     const Score* source = &score;
     std::optional<Score> region_score;
     if (region) {
@@ -648,13 +649,14 @@ Score wf_get_reduction(
             region_score = std::move(*rv);
             source = &(*region_score);
         }
+        // If region_view fails, source remains the full score.
     }
 
     if (view_type == "piano") return piano_reduction(*source);
     if (view_type == "short") return short_score(*source);
     if (view_type == "skeleton") return harmonic_skeleton(*source);
 
-    // Default to piano reduction for unrecognised view types
+    // Unrecognised view type falls back to piano reduction
     return piano_reduction(*source);
 }
 

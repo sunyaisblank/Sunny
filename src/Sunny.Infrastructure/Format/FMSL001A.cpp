@@ -15,6 +15,7 @@
 namespace Sunny::Infrastructure::Format {
 
 double ratio_to_cents(int num, int den) {
+    if (num <= 0 || den <= 0) return 0.0;
     return 1200.0 * std::log2(static_cast<double>(num) / static_cast<double>(den));
 }
 

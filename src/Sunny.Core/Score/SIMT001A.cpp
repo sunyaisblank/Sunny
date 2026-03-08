@@ -695,6 +695,28 @@ Result<MutationResult> insert_measures(
         }
     }
 
+    // Shift position-bearing annotation structures
+    for (auto& s : score.section_map) {
+        if (s.start.bar > after_bar) s.start.bar += count;
+        if (s.end.bar > after_bar) s.end.bar += count;
+    }
+    for (auto& ha : score.harmonic_annotations) {
+        if (ha.position.bar > after_bar) ha.position.bar += count;
+    }
+    for (auto& oa : score.orchestration_annotations) {
+        if (oa.start.bar > after_bar) oa.start.bar += count;
+        if (oa.end.bar > after_bar) oa.end.bar += count;
+    }
+    for (auto& rm : score.rehearsal_marks) {
+        if (rm.position.bar > after_bar) rm.position.bar += count;
+    }
+    for (auto& part : score.parts) {
+        for (auto& hp : part.hairpins) {
+            if (hp.start.bar > after_bar) hp.start.bar += count;
+            if (hp.end.bar > after_bar) hp.end.bar += count;
+        }
+    }
+
     score.metadata.total_bars += count;
     bump_version(score);
 
@@ -760,6 +782,42 @@ Result<MutationResult> delete_measures(
             saved_time.push_back(e);
     }
 
+    // Save annotation entries in the deleted range for undo
+    std::vector<ScoreSection> saved_sections;
+    for (const auto& s : score.section_map) {
+        if (s.start.bar >= bar && s.start.bar < bar + count)
+            saved_sections.push_back(s);
+    }
+    std::vector<HarmonicAnnotation> saved_harmony;
+    for (const auto& ha : score.harmonic_annotations) {
+        if (ha.position.bar >= bar && ha.position.bar < bar + count)
+            saved_harmony.push_back(ha);
+    }
+    std::vector<OrchestrationAnnotation> saved_orch;
+    for (const auto& oa : score.orchestration_annotations) {
+        if (oa.start.bar >= bar && oa.start.bar < bar + count)
+            saved_orch.push_back(oa);
+    }
+    std::vector<RehearsalMark> saved_marks;
+    for (const auto& rm : score.rehearsal_marks) {
+        if (rm.position.bar >= bar && rm.position.bar < bar + count)
+            saved_marks.push_back(rm);
+    }
+    // Hairpins saved per-part alongside measures
+    struct PartHairpins {
+        PartId part_id;
+        std::vector<Hairpin> hairpins;
+    };
+    std::vector<PartHairpins> saved_hairpins;
+    for (const auto& part : score.parts) {
+        PartHairpins ph{part.id, {}};
+        for (const auto& hp : part.hairpins) {
+            if (hp.start.bar >= bar && hp.start.bar < bar + count)
+                ph.hairpins.push_back(hp);
+        }
+        saved_hairpins.push_back(std::move(ph));
+    }
+
     for (auto& part : score.parts) {
         part.measures.erase(
             part.measures.begin() + first,
@@ -809,6 +867,62 @@ Result<MutationResult> delete_measures(
         }
     }
 
+    // Remove and shift annotation structures
+    score.section_map.erase(
+        std::remove_if(score.section_map.begin(), score.section_map.end(),
+            [bar, count](const ScoreSection& s) {
+                return s.start.bar >= bar && s.start.bar < bar + count;
+            }),
+        score.section_map.end());
+    for (auto& s : score.section_map) {
+        if (s.start.bar >= bar + count) s.start.bar -= count;
+        if (s.end.bar >= bar + count) s.end.bar -= count;
+    }
+
+    score.harmonic_annotations.erase(
+        std::remove_if(score.harmonic_annotations.begin(), score.harmonic_annotations.end(),
+            [bar, count](const HarmonicAnnotation& ha) {
+                return ha.position.bar >= bar && ha.position.bar < bar + count;
+            }),
+        score.harmonic_annotations.end());
+    for (auto& ha : score.harmonic_annotations) {
+        if (ha.position.bar >= bar + count) ha.position.bar -= count;
+    }
+
+    score.orchestration_annotations.erase(
+        std::remove_if(score.orchestration_annotations.begin(), score.orchestration_annotations.end(),
+            [bar, count](const OrchestrationAnnotation& oa) {
+                return oa.start.bar >= bar && oa.start.bar < bar + count;
+            }),
+        score.orchestration_annotations.end());
+    for (auto& oa : score.orchestration_annotations) {
+        if (oa.start.bar >= bar + count) oa.start.bar -= count;
+        if (oa.end.bar >= bar + count) oa.end.bar -= count;
+    }
+
+    score.rehearsal_marks.erase(
+        std::remove_if(score.rehearsal_marks.begin(), score.rehearsal_marks.end(),
+            [bar, count](const RehearsalMark& rm) {
+                return rm.position.bar >= bar && rm.position.bar < bar + count;
+            }),
+        score.rehearsal_marks.end());
+    for (auto& rm : score.rehearsal_marks) {
+        if (rm.position.bar >= bar + count) rm.position.bar -= count;
+    }
+
+    for (auto& part : score.parts) {
+        part.hairpins.erase(
+            std::remove_if(part.hairpins.begin(), part.hairpins.end(),
+                [bar, count](const Hairpin& hp) {
+                    return hp.start.bar >= bar && hp.start.bar < bar + count;
+                }),
+            part.hairpins.end());
+        for (auto& hp : part.hairpins) {
+            if (hp.start.bar >= bar + count) hp.start.bar -= count;
+            if (hp.end.bar >= bar + count) hp.end.bar -= count;
+        }
+    }
+
     score.metadata.total_bars -= count;
     bump_version(score);
 
@@ -818,7 +932,8 @@ Result<MutationResult> delete_measures(
             if (!result) return std::unexpected(result.error());
             return {};
         },
-        [&score, bar, count, saved_measures, saved_tempo, saved_keys, saved_time]() -> VoidResult {
+        [&score, bar, count, saved_measures, saved_tempo, saved_keys, saved_time,
+         saved_sections, saved_harmony, saved_orch, saved_marks, saved_hairpins]() -> VoidResult {
             std::uint32_t ins = bar - 1;
             // Re-insert measures into each part
             for (const auto& pm : saved_measures) {
@@ -859,6 +974,59 @@ Result<MutationResult> delete_measures(
                 [](const TimeSignatureEntry& a, const TimeSignatureEntry& b) {
                     return a.bar < b.bar;
                 });
+
+            // Restore annotation structures
+            for (auto& s : score.section_map) {
+                if (s.start.bar >= bar) s.start.bar += count;
+                if (s.end.bar >= bar) s.end.bar += count;
+            }
+            for (const auto& s : saved_sections) score.section_map.push_back(s);
+            std::sort(score.section_map.begin(), score.section_map.end(),
+                [](const ScoreSection& a, const ScoreSection& b) {
+                    return a.start < b.start;
+                });
+
+            for (auto& ha : score.harmonic_annotations) {
+                if (ha.position.bar >= bar) ha.position.bar += count;
+            }
+            for (const auto& ha : saved_harmony) score.harmonic_annotations.push_back(ha);
+            std::sort(score.harmonic_annotations.begin(), score.harmonic_annotations.end(),
+                [](const HarmonicAnnotation& a, const HarmonicAnnotation& b) {
+                    return a.position < b.position;
+                });
+
+            for (auto& oa : score.orchestration_annotations) {
+                if (oa.start.bar >= bar) oa.start.bar += count;
+                if (oa.end.bar >= bar) oa.end.bar += count;
+            }
+            for (const auto& oa : saved_orch) score.orchestration_annotations.push_back(oa);
+            std::sort(score.orchestration_annotations.begin(), score.orchestration_annotations.end(),
+                [](const OrchestrationAnnotation& a, const OrchestrationAnnotation& b) {
+                    return a.start < b.start;
+                });
+
+            for (auto& rm : score.rehearsal_marks) {
+                if (rm.position.bar >= bar) rm.position.bar += count;
+            }
+            for (const auto& rm : saved_marks) score.rehearsal_marks.push_back(rm);
+            std::sort(score.rehearsal_marks.begin(), score.rehearsal_marks.end(),
+                [](const RehearsalMark& a, const RehearsalMark& b) {
+                    return a.position < b.position;
+                });
+
+            for (const auto& ph : saved_hairpins) {
+                Part* part = find_part(score, ph.part_id);
+                if (!part) continue;
+                for (auto& hp : part->hairpins) {
+                    if (hp.start.bar >= bar) hp.start.bar += count;
+                    if (hp.end.bar >= bar) hp.end.bar += count;
+                }
+                for (const auto& hp : ph.hairpins) part->hairpins.push_back(hp);
+                std::sort(part->hairpins.begin(), part->hairpins.end(),
+                    [](const Hairpin& a, const Hairpin& b) {
+                        return a.start < b.start;
+                    });
+            }
 
             score.metadata.total_bars += count;
             bump_version(score);
@@ -1954,6 +2122,10 @@ Result<MutationResult> augment_region(
     Beat factor,
     UndoStack* undo
 ) {
+    if (factor.numerator <= 0 || factor.denominator <= 0) {
+        return std::unexpected(ErrorCode::InvalidMutation);
+    }
+
     for_each_event_in_region(score, region,
         [&](Part&, Measure&, Voice&, Event& event) {
             if (auto* ng = std::get_if<NoteGroup>(&event.payload)) {

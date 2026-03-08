@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <functional>
 #include <map>
 #include <string>
@@ -75,7 +76,7 @@ private:
     };
 
     std::map<std::string, ToolEntry> tools_;
-    bool running_{false};
+    std::atomic<bool> running_{false};
 
     nlohmann::json handle_request(const nlohmann::json& request);
     nlohmann::json handle_initialize(const nlohmann::json& id);

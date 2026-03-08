@@ -91,8 +91,11 @@ Sunny::Core::Result<MusicXmlScore> parse_musicxml(std::string_view xml) {
             if (attrs) {
                 auto div_node = attrs.child("divisions");
                 if (div_node) {
-                    divisions = div_node.text().as_int();
-                    score.divisions = divisions;
+                    int d = div_node.text().as_int();
+                    if (d > 0) {
+                        divisions = d;
+                        score.divisions = divisions;
+                    }
                 }
 
                 auto key_node = attrs.child("key");
@@ -257,7 +260,7 @@ Sunny::Core::Result<std::string> write_musicxml(const MusicXmlScore& score) {
                     n.append_child("rest");
                 } else {
                     auto pitch = n.append_child("pitch");
-                    std::string step_str(1, STEP_CHARS[note.pitch.letter]);
+                    std::string step_str(1, STEP_CHARS[note.pitch.letter < 7 ? note.pitch.letter : 0]);
                     pitch.append_child("step").text().set(step_str.c_str());
                     if (note.pitch.accidental != 0) {
                         pitch.append_child("alter").text().set(

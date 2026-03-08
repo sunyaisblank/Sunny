@@ -62,11 +62,15 @@ Sunny::Core::Result<uint32_t> decode_vlq(std::span<const uint8_t> data, std::siz
 // Binary read helpers
 // =============================================================================
 
-uint16_t read_u16_be(std::span<const uint8_t> data, std::size_t pos) {
+Sunny::Core::Result<uint16_t> read_u16_be(std::span<const uint8_t> data, std::size_t pos) {
+    if (pos + 2 > data.size())
+        return std::unexpected(Sunny::Core::ErrorCode::InvalidMidiFile);
     return static_cast<uint16_t>((data[pos] << 8) | data[pos + 1]);
 }
 
-uint32_t read_u32_be(std::span<const uint8_t> data, std::size_t pos) {
+Sunny::Core::Result<uint32_t> read_u32_be(std::span<const uint8_t> data, std::size_t pos) {
+    if (pos + 4 > data.size())
+        return std::unexpected(Sunny::Core::ErrorCode::InvalidMidiFile);
     return (static_cast<uint32_t>(data[pos]) << 24) |
            (static_cast<uint32_t>(data[pos + 1]) << 16) |
            (static_cast<uint32_t>(data[pos + 2]) << 8) |
@@ -110,15 +114,23 @@ Sunny::Core::Result<MidiFile> parse_midi(std::span<const uint8_t> data) {
         return std::unexpected(Sunny::Core::ErrorCode::InvalidMidiFile);
     }
 
-    uint32_t header_len = read_u32_be(data, 4);
+    auto header_len_r = read_u32_be(data, 4);
+    if (!header_len_r) return std::unexpected(header_len_r.error());
+    uint32_t header_len = *header_len_r;
     if (header_len < 6 || data.size() < 8 + header_len) {
         return std::unexpected(Sunny::Core::ErrorCode::InvalidMidiFile);
     }
 
     MidiFile result;
-    result.format = read_u16_be(data, 8);
-    uint16_t ntrks = read_u16_be(data, 10);
-    result.ppq = read_u16_be(data, 12);
+    auto fmt_r = read_u16_be(data, 8);
+    if (!fmt_r) return std::unexpected(fmt_r.error());
+    result.format = *fmt_r;
+    auto ntrks_r = read_u16_be(data, 10);
+    if (!ntrks_r) return std::unexpected(ntrks_r.error());
+    uint16_t ntrks = *ntrks_r;
+    auto ppq_r = read_u16_be(data, 12);
+    if (!ppq_r) return std::unexpected(ppq_r.error());
+    result.ppq = *ppq_r;
     if (result.ppq == 0)
         return std::unexpected(Sunny::Core::ErrorCode::InvalidMidiPPQ);
 
@@ -132,7 +144,9 @@ Sunny::Core::Result<MidiFile> parse_midi(std::span<const uint8_t> data) {
             return std::unexpected(Sunny::Core::ErrorCode::InvalidMidiFile);
         }
 
-        uint32_t track_len = read_u32_be(data, pos + 4);
+        auto track_len_r = read_u32_be(data, pos + 4);
+        if (!track_len_r) return std::unexpected(track_len_r.error());
+        uint32_t track_len = *track_len_r;
         pos += 8;
 
         if (pos + track_len > data.size()) {
@@ -239,11 +253,24 @@ Sunny::Core::Result<MidiFile> parse_midi(std::span<const uint8_t> data) {
                 }
             } else if (msg_type == 0xA0 || msg_type == 0xB0 || msg_type == 0xE0) {
                 // 2 data bytes: aftertouch, control change, pitch bend
+                if (pos + 2 > track_end) break;
                 pos += 2;
             } else if (msg_type == 0xC0 || msg_type == 0xD0) {
                 // 1 data byte: program change, channel pressure
+                if (pos + 1 > track_end) break;
                 pos += 1;
             }
+        }
+
+        // Close orphaned pending notes at the track boundary with zero duration
+        for (const auto& pn : pending) {
+            result.notes.push_back({
+                pn.tick,
+                0,  // zero duration signals truncated note
+                pn.channel,
+                pn.note,
+                pn.velocity
+            });
         }
 
         pos = track_end;
@@ -386,6 +413,7 @@ MidiFile note_events_to_midi(
     file.ppq = ppq;
 
     // Add tempo event
+    if (bpm <= 0.0) bpm = 120.0;
     uint32_t uspb = static_cast<uint32_t>(60000000.0 / bpm);
     file.tempos.push_back({0, uspb});
 
@@ -393,11 +421,11 @@ MidiFile note_events_to_midi(
     for (const auto& ev : events) {
         if (ev.muted) continue;
 
-        // Beat to ticks: beat * ppq
+        // Beat to ticks: beat * ppq (use int64_t to avoid truncation and overflow)
         uint32_t tick = static_cast<uint32_t>(
-            ev.start_time.numerator * ppq / ev.start_time.denominator);
+            static_cast<int64_t>(ev.start_time.numerator) * ppq / ev.start_time.denominator);
         uint32_t dur_ticks = static_cast<uint32_t>(
-            ev.duration.numerator * ppq / ev.duration.denominator);
+            static_cast<int64_t>(ev.duration.numerator) * ppq / ev.duration.denominator);
 
         file.notes.push_back({
             tick,

@@ -304,6 +304,8 @@ void mark_inner_cue(std::vector<CollectedNote>& notes) {
 Score piano_reduction(const Score& score) {
     Score result = copy_score_skeleton(score);
 
+    if (score.metadata.total_bars == 0) return result;
+
     Part piano;
     piano.id = PartId{900000};
     piano.definition.name = "Piano Reduction";

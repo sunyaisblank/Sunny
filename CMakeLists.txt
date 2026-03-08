@@ -133,6 +133,7 @@ if(SUNNY_BUILD_MCP_SERVER)
     add_executable(sunny-mcp
         src/Sunny.Infrastructure/Mcp/MCPS001A.cpp
         src/Sunny.Infrastructure/Mcp/MCPT001A.cpp
+        src/Sunny.Infrastructure/Mcp/MCPT002A.cpp
         src/Sunny.Infrastructure/Mcp/main.cpp
     )
     target_link_libraries(sunny-mcp PRIVATE

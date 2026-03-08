@@ -88,6 +88,11 @@ file(GLOB_RECURSE SCORE_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/Score/*.h"
 )
 
+file(GLOB_RECURSE TIMBRE_SOURCES
+    "${CMAKE_CURRENT_SOURCE_DIR}/Timbre/*.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/Timbre/*.h"
+)
+
 # Create static library
 add_library(Sunny.Core STATIC
     ${PITCH_SOURCES}
@@ -104,6 +109,7 @@ add_library(Sunny.Core STATIC
     ${ACOUSTICS_SOURCES}
     ${FORM_SOURCES}
     ${SCORE_SOURCES}
+    ${TIMBRE_SOURCES}
 )
 
 # Include directories

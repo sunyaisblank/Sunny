@@ -193,12 +193,18 @@ void register_sunny_tools(McpServer& server, Orchestrator& orchestrator) {
         [](const json& params) -> json {
             Core::PitchClassSet pcs;
             for (auto pc : params.at("chord_notes")) {
-                pcs.insert(static_cast<Core::PitchClass>(pc.get<int>()));
+                int val = pc.get<int>();
+                if (val < 0 || val > 11) return {{"error", "Pitch class must be 0-11, got " + std::to_string(val)}};
+                pcs.insert(static_cast<Core::PitchClass>(val));
             }
+
+            int key_root_val = params.at("key_root").get<int>();
+            if (key_root_val < 0 || key_root_val > 11)
+                return {{"error", "key_root must be 0-11, got " + std::to_string(key_root_val)}};
 
             auto analysis = Core::analyze_chord_function(
                 pcs,
-                static_cast<Core::PitchClass>(params.at("key_root").get<int>()),
+                static_cast<Core::PitchClass>(key_root_val),
                 params.value("is_minor", false)
             );
 
@@ -230,12 +236,18 @@ void register_sunny_tools(McpServer& server, Orchestrator& orchestrator) {
         [](const json& params) -> json {
             Core::PitchClassSet pcs;
             for (auto pc : params.at("chord_notes")) {
-                pcs.insert(static_cast<Core::PitchClass>(pc.get<int>()));
+                int val = pc.get<int>();
+                if (val < 0 || val > 11) return {{"error", "Pitch class must be 0-11, got " + std::to_string(val)}};
+                pcs.insert(static_cast<Core::PitchClass>(val));
             }
+
+            int key_root_val = params.at("key_root").get<int>();
+            if (key_root_val < 0 || key_root_val > 11)
+                return {{"error", "key_root must be 0-11, got " + std::to_string(key_root_val)}};
 
             auto result = Core::negative_harmony(
                 pcs,
-                static_cast<Core::PitchClass>(params.at("key_root").get<int>())
+                static_cast<Core::PitchClass>(key_root_val)
             );
 
             json notes = json::array();
@@ -270,12 +282,14 @@ void register_sunny_tools(McpServer& server, Orchestrator& orchestrator) {
             std::vector<Core::MidiNote> source;
             source.reserve(source_vec.size());
             for (auto n : source_vec) {
+                if (n < 0 || n > 127) return {{"error", "MIDI note must be 0-127, got " + std::to_string(n)}};
                 source.push_back(static_cast<Core::MidiNote>(n));
             }
 
             std::vector<Core::PitchClass> target;
             target.reserve(target_vec.size());
             for (auto pc : target_vec) {
+                if (pc < 0 || pc > 11) return {{"error", "Pitch class must be 0-11, got " + std::to_string(pc)}};
                 target.push_back(static_cast<Core::PitchClass>(pc));
             }
 

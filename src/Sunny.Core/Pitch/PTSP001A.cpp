@@ -112,6 +112,10 @@ Result<SpelledPitch> from_spn(std::string_view s) {
         octave_val = -octave_val;
     }
 
+    if (octave_val < -128 || octave_val > 127) {
+        return std::unexpected(ErrorCode::InvalidSpelledPitch);
+    }
+
     return SpelledPitch{letter, accidental, static_cast<int8_t>(octave_val)};
 }
 
