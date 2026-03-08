@@ -6,6 +6,7 @@
  */
 
 #include "FMMX001A.h"
+#include "FMMX_Internal.h"
 
 #include "../../Sunny.Core/Pitch/PTPC001A.h"
 
@@ -15,111 +16,18 @@
 
 namespace Sunny::Infrastructure::Format {
 
+using namespace MxmlInternal;
+
 namespace {
 
-/// Letter index to MusicXML step character
-constexpr std::array<char, 7> STEP_CHARS = {'C', 'D', 'E', 'F', 'G', 'A', 'B'};
-
-/// MusicXML step character to letter index
-int step_to_letter(char step) {
-    switch (step) {
-        case 'C': return 0; case 'D': return 1; case 'E': return 2;
-        case 'F': return 3; case 'G': return 4; case 'A': return 5;
-        case 'B': return 6;
-        default: return -1;
-    }
-}
-
-/// Convert line-of-fifths key centre to MusicXML <fifths> value
-/// The fifths value is the number of sharps (positive) or flats (negative).
-/// This maps key centre LoF position to the conventional circle of fifths count.
-int lof_to_fifths(Sunny::Core::SpelledPitch tonic, bool is_major) {
-    // For major keys, the LoF position of the tonic directly gives the fifths count
-    // C=0, G=1, D=2, A=3, E=4, B=5, F#=6, F=-1, Bb=-2, Eb=-3, Ab=-4, Db=-5, Gb=-6
-    int lof = Sunny::Core::line_of_fifths_position(tonic);
-    if (!is_major) {
-        // Minor key: relative major is 3 LoF positions up (A minor -> C major)
-        lof += 3;
-    }
-    return lof;
-}
-
-/// Convert MusicXML <fifths> to a SpelledPitch tonic
-Sunny::Core::SpelledPitch fifths_to_tonic(int fifths, bool is_major) {
-    int lof = fifths;
-    if (!is_major) {
-        lof -= 3;  // Relative minor is 3 LoF positions down
-    }
-    return Sunny::Core::from_line_of_fifths(lof, 4);
-}
-
-/// Compute divisions needed for a set of Beat durations
-/// Returns the LCM of all denominators (relative to quarter note)
+/// Compute divisions for a MusicXmlScore by collecting all note durations
 int compute_divisions(const MusicXmlScore& score) {
-    int64_t lcm_val = 1;
-    for (const auto& part : score.parts) {
-        for (const auto& measure : part.measures) {
-            for (const auto& note : measure.notes) {
-                auto r = note.duration.reduce();
-                // Duration is in beats (quarter notes).
-                // divisions * duration = MusicXML duration units
-                // We need divisions such that divisions * (num/den) is always integral.
-                // That means divisions must be a multiple of den.
-                // But duration is in quarter notes (1/4 = quarter note = 1 beat).
-                // Actually, Beat{1,4} = quarter note. Beat{1,2} = half note.
-                // MusicXML duration = divisions * (beat_value_in_quarters)
-                // beat_value_in_quarters = num/den / (1/4) = 4*num/den
-                // So we need divisions * 4 * num / den to be integral.
-                // => divisions must be a multiple of den / gcd(den, 4*num)
-                int64_t beat_num = 4 * r.numerator;
-                int64_t beat_den = r.denominator;
-                int64_t g = std::gcd(beat_num, beat_den);
-                int64_t needed_den = beat_den / g;
-                lcm_val = std::lcm(lcm_val, needed_den);
-            }
-        }
-    }
-    return static_cast<int>(lcm_val);
-}
-
-/// Convert Beat duration to MusicXML duration units
-int beat_to_mxml_duration(Sunny::Core::Beat dur, int divisions) {
-    auto r = dur.reduce();
-    // duration_units = divisions * 4 * num / den
-    return static_cast<int>(static_cast<int64_t>(divisions) * 4 * r.numerator / r.denominator);
-}
-
-/// Convert MusicXML duration units to Beat
-Sunny::Core::Beat mxml_duration_to_beat(int units, int divisions) {
-    // units = divisions * 4 * num / den
-    // In quarter notes: units / divisions beats
-    // In absolute: units / (divisions * 4) whole notes = units / divisions quarter notes
-    // Beat is in whole notes by convention? No, Beat is abstract rational.
-    // Looking at existing usage: Beat{1,4} = quarter note, Beat{1,1} = whole note.
-    // So Beat = units / (4 * divisions)
-    return Sunny::Core::Beat{units, 4 * static_cast<int64_t>(divisions)};
-}
-
-/// Get MusicXML <type> string for a duration
-std::string duration_type_name(Sunny::Core::Beat dur) {
-    auto r = dur.reduce();
-    // Map common durations
-    if (r == Sunny::Core::Beat{1, 1}) return "whole";
-    if (r == Sunny::Core::Beat{1, 2}) return "half";
-    if (r == Sunny::Core::Beat{1, 4}) return "quarter";
-    if (r == Sunny::Core::Beat{1, 8}) return "eighth";
-    if (r == Sunny::Core::Beat{1, 16}) return "16th";
-    if (r == Sunny::Core::Beat{1, 32}) return "32nd";
-    if (r == Sunny::Core::Beat{3, 8}) return "quarter";  // dotted quarter
-    if (r == Sunny::Core::Beat{3, 4}) return "half";      // dotted half
-    if (r == Sunny::Core::Beat{3, 16}) return "eighth";   // dotted eighth
-    return "quarter";  // fallback
-}
-
-bool is_dotted(Sunny::Core::Beat dur) {
-    auto r = dur.reduce();
-    return r.numerator == 3 && (r.denominator == 8 || r.denominator == 4 ||
-                                 r.denominator == 16 || r.denominator == 2);
+    std::vector<Sunny::Core::Beat> durations;
+    for (const auto& part : score.parts)
+        for (const auto& measure : part.measures)
+            for (const auto& note : measure.notes)
+                durations.push_back(note.duration);
+    return compute_divisions_from(durations.begin(), durations.end());
 }
 
 }  // anonymous namespace
