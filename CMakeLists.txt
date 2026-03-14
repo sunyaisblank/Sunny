@@ -51,6 +51,7 @@ option(SUNNY_BUILD_TESTS "Build test suite" ON)
 option(SUNNY_BUILD_PYTHON_BINDINGS "Build Python bindings" ON)
 option(SUNNY_BUILD_MAX "Build Max/MSP externals" OFF)
 option(SUNNY_BUILD_MCP_SERVER "Build MCP server binary" ON)
+option(SUNNY_MULL_INSTRUMENT "Add Mull IR frontend pass to Sunny targets only" OFF)
 
 # =============================================================================
 # Dependencies
@@ -109,6 +110,14 @@ add_subdirectory(src/Sunny.Render)
 
 # Infrastructure library (application, communication)
 add_subdirectory(src/Sunny.Infrastructure)
+
+# Mull mutation testing instrumentation (Sunny targets only, not dependencies)
+if(SUNNY_MULL_INSTRUMENT)
+    set(MULL_FLAGS -fpass-plugin=/usr/lib/mull-ir-frontend-18 -g -grecord-command-line)
+    target_compile_options(Sunny.Core PRIVATE ${MULL_FLAGS})
+    target_compile_options(Sunny.Render PRIVATE ${MULL_FLAGS})
+    target_compile_options(Sunny.Infrastructure PRIVATE ${MULL_FLAGS})
+endif()
 
 # Test suite
 if(SUNNY_BUILD_TESTS)
