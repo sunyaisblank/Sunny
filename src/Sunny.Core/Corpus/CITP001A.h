@@ -156,18 +156,13 @@ struct HarmonicRhythmProfile {
     std::map<std::string, float> rate_by_section;
 };
 
-enum class CadenceType : std::uint8_t {
-    PAC,        // Perfect authentic
-    IAC,        // Imperfect authentic
-    HC,         // Half cadence
-    DC,         // Deceptive cadence
-    PC,         // Plagal cadence
-    Phrygian
-};
+/// Cadence type stored as a string to avoid name collision with
+/// the CadenceType enum in HRCD001A.h (included via Score IR).
+/// Values: "PAC", "IAC", "HC", "DC", "PC", "Phrygian"
 
 struct CadenceEvent {
     ScoreTime position;
-    CadenceType type = CadenceType::PAC;
+    std::string type;                   ///< e.g. "PAC", "IAC", "HC"
     std::vector<std::string> approach;
     std::string section_context;
     bool is_structural = false;

@@ -8,6 +8,7 @@
  */
 
 #include "CIWF001A.h"
+#include "CIAN001A.h"
 
 #include <algorithm>
 #include <cmath>
@@ -282,17 +283,16 @@ Result<void> wf_add_period_profile(
 
 Result<void> wf_analyze_work(
     CorpusDatabase& corpus,
-    IngestedWorkId work_id
+    IngestedWorkId work_id,
+    const Score* score
 ) {
     auto* work = find_work(corpus, work_id);
     if (!work) return std::unexpected(not_found());
 
-    // Mark analysis as complete. The actual analytical decomposition
-    // requires integration with the theory engine (harmonic analysis,
-    // melodic contour extraction, formal segmentation); those heuristic
-    // algorithms operate on Score IR content and are beyond the scope
-    // of the document model layer. The analysis fields are populated
-    // by the caller or by future theory engine integration.
+    if (score) {
+        work->analysis = analyze_score(*score);
+    }
+
     work->analysis_complete = true;
     return {};
 }

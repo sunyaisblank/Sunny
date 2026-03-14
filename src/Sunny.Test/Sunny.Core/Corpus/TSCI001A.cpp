@@ -122,9 +122,12 @@ TEST_CASE("CITP001A: ModulationTechnique enum values", "[corpus-ir][types]") {
     CHECK(static_cast<int>(ModulationTechnique::Abrupt) == 6);
 }
 
-TEST_CASE("CITP001A: CadenceType enum values", "[corpus-ir][types]") {
-    CHECK(static_cast<int>(CadenceType::PAC) == 0);
-    CHECK(static_cast<int>(CadenceType::Phrygian) == 5);
+TEST_CASE("CITP001A: CadenceEvent type is string", "[corpus-ir][types]") {
+    CadenceEvent ce;
+    ce.type = "PAC";
+    CHECK(ce.type == "PAC");
+    ce.type = "Phrygian";
+    CHECK(ce.type == "Phrygian");
 }
 
 TEST_CASE("CITP001A: HarmonicAnalysisRecord default", "[corpus-ir][types]") {

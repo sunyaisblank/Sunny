@@ -25,6 +25,7 @@
 
 #include "CIDC001A.h"
 #include "CIVD001A.h"
+#include "../Score/SIDC001A.h"
 
 namespace Sunny::Core {
 
@@ -78,14 +79,15 @@ namespace Sunny::Core {
 /**
  * @brief Run analytical decomposition on an ingested work.
  *
- * Produces a WorkAnalysis covering all nine analytical domains.
- * This is a placeholder that initialises the analysis structure;
- * full heuristic analysis requires the theory engine integration
- * which is beyond the scope of the document model layer.
+ * When a Score is provided, performs full analytical decomposition
+ * via CIAN001A across all nine domains. When no Score is provided,
+ * marks the work as analysis-complete without populating fields
+ * (for manual or deferred analysis).
  */
 [[nodiscard]] Result<void> wf_analyze_work(
     CorpusDatabase& corpus,
-    IngestedWorkId work_id);
+    IngestedWorkId work_id,
+    const Score* score = nullptr);
 
 /**
  * @brief Rebuild a composer's style profile from all their works.

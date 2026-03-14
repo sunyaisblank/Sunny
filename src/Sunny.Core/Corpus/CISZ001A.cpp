@@ -143,7 +143,7 @@ json harmonic_analysis_j(const HarmonicAnalysisRecord& h) {
     for (const auto& c : h.cadence_inventory) {
         cads.push_back({
             {"position", score_time_j(c.position)},
-            {"type", static_cast<int>(c.type)},
+            {"type", c.type},
             {"approach", c.approach},
             {"section_context", c.section_context},
             {"is_structural", c.is_structural}
