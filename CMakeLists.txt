@@ -134,6 +134,8 @@ if(SUNNY_BUILD_MCP_SERVER)
         src/Sunny.Infrastructure/Mcp/MCPS001A.cpp
         src/Sunny.Infrastructure/Mcp/MCPT001A.cpp
         src/Sunny.Infrastructure/Mcp/MCPT002A.cpp
+        src/Sunny.Infrastructure/Mcp/MCPT003A.cpp
+        src/Sunny.Infrastructure/Mcp/MCPT004A.cpp
         src/Sunny.Infrastructure/Mcp/main.cpp
     )
     target_link_libraries(sunny-mcp PRIVATE

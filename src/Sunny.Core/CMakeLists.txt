@@ -93,6 +93,16 @@ file(GLOB_RECURSE TIMBRE_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/Timbre/*.h"
 )
 
+file(GLOB_RECURSE MIX_SOURCES
+    "${CMAKE_CURRENT_SOURCE_DIR}/Mix/*.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/Mix/*.h"
+)
+
+file(GLOB_RECURSE CORPUS_SOURCES
+    "${CMAKE_CURRENT_SOURCE_DIR}/Corpus/*.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/Corpus/*.h"
+)
+
 # Create static library
 add_library(Sunny.Core STATIC
     ${PITCH_SOURCES}
@@ -110,6 +120,8 @@ add_library(Sunny.Core STATIC
     ${FORM_SOURCES}
     ${SCORE_SOURCES}
     ${TIMBRE_SOURCES}
+    ${MIX_SOURCES}
+    ${CORPUS_SOURCES}
 )
 
 # Include directories

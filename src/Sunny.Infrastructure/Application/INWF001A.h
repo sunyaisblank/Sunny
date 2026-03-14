@@ -14,6 +14,8 @@
 
 #include "../Format/FMMX002A.h"
 #include "../Format/FMLY002A.h"
+#include "../Bridge/INTP001A.h"
+#include "../Format/FMAL001A.h"
 
 namespace Sunny::Infrastructure {
 
@@ -22,5 +24,8 @@ wf_compile_to_musicxml(const Sunny::Core::Score& score);
 
 [[nodiscard]] Sunny::Core::Result<Format::LilyPondCompilationResult>
 wf_compile_to_lilypond(const Sunny::Core::Score& score);
+
+[[nodiscard]] Sunny::Core::Result<Format::AbletonCompilationResult>
+wf_compile_to_ableton(const Sunny::Core::Score& score, LomTransport& transport);
 
 }  // namespace Sunny::Infrastructure

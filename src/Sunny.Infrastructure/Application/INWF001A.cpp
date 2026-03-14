@@ -19,4 +19,9 @@ wf_compile_to_lilypond(const Sunny::Core::Score& score) {
     return Format::compile_score_to_lilypond(score);
 }
 
+Sunny::Core::Result<Format::AbletonCompilationResult>
+wf_compile_to_ableton(const Sunny::Core::Score& score, LomTransport& transport) {
+    return Format::compile_to_ableton(score, transport);
+}
+
 }  // namespace Sunny::Infrastructure
