@@ -147,7 +147,8 @@ TEST_CASE("INTP001A: TcpTransport state change callback", "[bridge][transport]")
     tcp.connect();
     tcp.disconnect();
 
-    REQUIRE(observed.size() == 2);
-    CHECK(observed[0] == ConnectionState::Error);
-    CHECK(observed[1] == ConnectionState::Disconnected);
+    REQUIRE(observed.size() == 3);
+    CHECK(observed[0] == ConnectionState::Connecting);
+    CHECK(observed[1] == ConnectionState::Error);
+    CHECK(observed[2] == ConnectionState::Disconnected);
 }

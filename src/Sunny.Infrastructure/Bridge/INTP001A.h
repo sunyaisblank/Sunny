@@ -136,11 +136,8 @@ struct TcpConfig {
  * Connects to the Python Remote Script via TCP, serialises
  * LomRequests to JSON, sends them, and deserialises responses.
  *
- * This is a structural placeholder: the socket implementation
- * requires platform-specific or third-party networking (e.g. asio),
- * which is deferred until the Python Remote Script is available
- * for integration testing. The interface is fully specified so
- * that the compilers can be developed and tested against CommandBuffer.
+ * Wire protocol: 4-byte big-endian length prefix + UTF-8 JSON payload.
+ * Uses POSIX sockets; compatible with WSL2 connecting to Windows host.
  */
 class TcpTransport final : public LomTransport {
 public:
@@ -166,7 +163,20 @@ public:
     void on_state_change(std::function<void(ConnectionState)> callback);
 
 private:
+    /// Send a length-prefixed frame and receive the response
+    LomResponse send_and_receive(const std::string& json_payload);
+
+    /// Send exactly n bytes
+    bool send_all(const void* data, std::size_t n);
+
+    /// Receive exactly n bytes
+    bool recv_all(void* data, std::size_t n);
+
+    /// Transition state and notify callback
+    void set_state(ConnectionState new_state);
+
     TcpConfig config_;
+    int socket_fd_ = -1;
     ConnectionState state_ = ConnectionState::Disconnected;
     std::function<void(ConnectionState)> state_callback_;
 };
