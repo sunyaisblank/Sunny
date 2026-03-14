@@ -14,6 +14,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/catch_approx.hpp>
+#include <catch2/matchers/catch_matchers_floating_point.hpp>
 
 #include "Score/SITM001A.h"
 
@@ -410,4 +411,186 @@ TEST_CASE("SITM001A: absolute_beat_to_score_time at exact score end returns bar 
     // This kills the mutant that would produce total_bars-1 (bar 3).
     CHECK(result->bar == 5);
     CHECK(result->beat == Beat::zero());
+}
+
+// =============================================================================
+// SITM001A: linear tempo ramp — absolute_beat_to_real_time
+// =============================================================================
+
+TEST_CASE("SITM001A: linear tempo ramp real-time at midpoint",
+          "[score-ir][temporal]") {
+    using Catch::Matchers::WithinAbs;
+
+    // 4/4 time signature
+    TimeSignatureMap time_map;
+    auto ts = make_time_signature(4, 4);
+    time_map.push_back(TimeSignatureEntry{1, *ts});
+
+    // 120 BPM ramping linearly over 2 whole notes to 60 BPM
+    TempoMap tempo_map;
+
+    TempoEvent e0;
+    e0.position = SCORE_START;
+    e0.bpm = make_bpm(120);
+    e0.beat_unit = BeatUnit::Quarter;
+    e0.transition_type = TempoTransitionType::Linear;
+    e0.linear_duration = Beat{2, 1};
+    e0.old_unit = BeatUnit::Quarter;
+    e0.new_unit = BeatUnit::Quarter;
+    tempo_map.push_back(e0);
+
+    TempoEvent e1;
+    e1.position = ScoreTime{3, Beat::zero()};
+    e1.bpm = make_bpm(60);
+    e1.beat_unit = BeatUnit::Quarter;
+    e1.transition_type = TempoTransitionType::Immediate;
+    e1.linear_duration = Beat::zero();
+    e1.old_unit = BeatUnit::Quarter;
+    e1.new_unit = BeatUnit::Quarter;
+    tempo_map.push_back(e1);
+
+    // Query at 1 whole note — midpoint of the 2-whole-note ramp.
+    // Interpolation: t0=0, t1=0.5, b0=120, b1=90.
+    // Closed-form: 60 * 4 * ln(90/120) / (90 - 120) ≈ 2.3014 seconds.
+    auto result = absolute_beat_to_real_time(Beat{1, 1}, tempo_map, time_map);
+    REQUIRE(result.has_value());
+
+    double expected = 60.0 * 4.0 * std::log(90.0 / 120.0) / (90.0 - 120.0);
+    CHECK_THAT(*result, WithinAbs(expected, 0.01));
+
+    // Confirm it differs from the constant-120 result (2.0 seconds)
+    CHECK(*result > 2.0);
+}
+
+TEST_CASE("SITM001A: linear ramp past transition uses end BPM",
+          "[score-ir][temporal]") {
+    using Catch::Matchers::WithinAbs;
+
+    TimeSignatureMap time_map;
+    auto ts = make_time_signature(4, 4);
+    time_map.push_back(TimeSignatureEntry{1, *ts});
+
+    TempoMap tempo_map;
+
+    TempoEvent e0;
+    e0.position = SCORE_START;
+    e0.bpm = make_bpm(120);
+    e0.beat_unit = BeatUnit::Quarter;
+    e0.transition_type = TempoTransitionType::Linear;
+    e0.linear_duration = Beat{2, 1};
+    e0.old_unit = BeatUnit::Quarter;
+    e0.new_unit = BeatUnit::Quarter;
+    tempo_map.push_back(e0);
+
+    TempoEvent e1;
+    e1.position = ScoreTime{3, Beat::zero()};
+    e1.bpm = make_bpm(60);
+    e1.beat_unit = BeatUnit::Quarter;
+    e1.transition_type = TempoTransitionType::Immediate;
+    e1.linear_duration = Beat::zero();
+    e1.old_unit = BeatUnit::Quarter;
+    e1.new_unit = BeatUnit::Quarter;
+    tempo_map.push_back(e1);
+
+    // Query at 3 whole notes: 1 whole note past the ramp end.
+    // Ramp portion (0 to 2 whole notes): b0=120, b1=60, 8 quarter notes.
+    //   60 * 8 * ln(60/120) / (60-120) ≈ 5.5452 seconds.
+    // Constant portion (2 to 3 whole notes at 60 BPM): 60*4/60 = 4.0 seconds.
+    // Total ≈ 9.5452 seconds.
+    auto result = absolute_beat_to_real_time(Beat{3, 1}, tempo_map, time_map);
+    REQUIRE(result.has_value());
+
+    double ramp = 60.0 * 8.0 * std::log(60.0 / 120.0) / (60.0 - 120.0);
+    double constant = 60.0 * 4.0 / 60.0;
+    CHECK_THAT(*result, WithinAbs(ramp + constant, 0.01));
+}
+
+TEST_CASE("SITM001A: linear ramp with identical BPM uses constant path",
+          "[score-ir][temporal]") {
+    using Catch::Matchers::WithinAbs;
+
+    TimeSignatureMap time_map;
+    auto ts = make_time_signature(4, 4);
+    time_map.push_back(TimeSignatureEntry{1, *ts});
+
+    TempoMap tempo_map;
+
+    TempoEvent e0;
+    e0.position = SCORE_START;
+    e0.bpm = make_bpm(120);
+    e0.beat_unit = BeatUnit::Quarter;
+    e0.transition_type = TempoTransitionType::Linear;
+    e0.linear_duration = Beat{2, 1};
+    e0.old_unit = BeatUnit::Quarter;
+    e0.new_unit = BeatUnit::Quarter;
+    tempo_map.push_back(e0);
+
+    TempoEvent e1;
+    e1.position = ScoreTime{3, Beat::zero()};
+    e1.bpm = make_bpm(120);
+    e1.beat_unit = BeatUnit::Quarter;
+    e1.transition_type = TempoTransitionType::Immediate;
+    e1.linear_duration = Beat::zero();
+    e1.old_unit = BeatUnit::Quarter;
+    e1.new_unit = BeatUnit::Quarter;
+    tempo_map.push_back(e1);
+
+    // Both events at 120 BPM — the abs(b1-b0) < 1e-10 branch applies.
+    // Should give same result as constant 120 BPM: 60*4/120 = 2.0 seconds.
+    auto result = absolute_beat_to_real_time(Beat{1, 1}, tempo_map, time_map);
+    REQUIRE(result.has_value());
+    CHECK_THAT(*result, WithinAbs(2.0, 1e-9));
+}
+
+TEST_CASE("SITM001A: multi-tempo-segment boundary",
+          "[score-ir][temporal]") {
+    using Catch::Matchers::WithinAbs;
+
+    TimeSignatureMap time_map;
+    auto ts = make_time_signature(4, 4);
+    time_map.push_back(TimeSignatureEntry{1, *ts});
+
+    // Three Immediate tempo changes: 120 at bar 1, 90 at bar 3, 60 at bar 5
+    TempoMap tempo_map;
+
+    TempoEvent e0;
+    e0.position = SCORE_START;
+    e0.bpm = make_bpm(120);
+    e0.beat_unit = BeatUnit::Quarter;
+    e0.transition_type = TempoTransitionType::Immediate;
+    e0.linear_duration = Beat::zero();
+    e0.old_unit = BeatUnit::Quarter;
+    e0.new_unit = BeatUnit::Quarter;
+    tempo_map.push_back(e0);
+
+    TempoEvent e1;
+    e1.position = ScoreTime{3, Beat::zero()};
+    e1.bpm = make_bpm(90);
+    e1.beat_unit = BeatUnit::Quarter;
+    e1.transition_type = TempoTransitionType::Immediate;
+    e1.linear_duration = Beat::zero();
+    e1.old_unit = BeatUnit::Quarter;
+    e1.new_unit = BeatUnit::Quarter;
+    tempo_map.push_back(e1);
+
+    TempoEvent e2;
+    e2.position = ScoreTime{5, Beat::zero()};
+    e2.bpm = make_bpm(60);
+    e2.beat_unit = BeatUnit::Quarter;
+    e2.transition_type = TempoTransitionType::Immediate;
+    e2.linear_duration = Beat::zero();
+    e2.old_unit = BeatUnit::Quarter;
+    e2.new_unit = BeatUnit::Quarter;
+    tempo_map.push_back(e2);
+
+    // Query at 3 whole notes (bar 4 downbeat, inside second segment at 90 BPM).
+    // Segment 1: 0 to 2 whole notes at 120 BPM = 60*8/120 = 4.0 seconds.
+    // Segment 2: 2 to 3 whole notes at 90 BPM  = 60*4/90  ≈ 2.6667 seconds.
+    // Total ≈ 6.6667 seconds.
+    auto result = absolute_beat_to_real_time(Beat{3, 1}, tempo_map, time_map);
+    REQUIRE(result.has_value());
+
+    double seg1 = 60.0 * 8.0 / 120.0;
+    double seg2 = 60.0 * 4.0 / 90.0;
+    CHECK_THAT(*result, WithinAbs(seg1 + seg2, 0.01));
 }

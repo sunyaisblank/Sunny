@@ -249,3 +249,76 @@ TEST_CASE("MLCT001A: detect_tonal_sequences in C major", "[melody][core]") {
     }
     REQUIRE(found);
 }
+
+// =============================================================================
+// Mutation-killing tests
+// =============================================================================
+
+TEST_CASE("MLCT001A: two-note input accepted by all functions", "[melody][core]") {
+    std::array<MidiNote, 2> notes = {60, 72};
+
+    auto contour = extract_contour(notes);
+    REQUIRE(contour.has_value());
+    REQUIRE(contour->size() == 1);
+    REQUIRE((*contour)[0] == ContourDirection::Ascending);
+
+    auto reduced = contour_reduction(notes);
+    REQUIRE(reduced.has_value());
+    REQUIRE(reduced->size() == 2);
+    REQUIRE((*reduced)[0] == 60);
+    REQUIRE((*reduced)[1] == 72);
+
+    auto motion = classify_motion(notes);
+    REQUIRE(motion.has_value());
+
+    auto stats = compute_melody_statistics(notes);
+    REQUIRE(stats.has_value());
+}
+
+TEST_CASE("MLCT001A: contour reduction with consecutive duplicates", "[melody][core]") {
+    std::array<MidiNote, 5> notes = {60, 60, 65, 65, 60};
+    auto reduced = contour_reduction(notes);
+    REQUIRE(reduced.has_value());
+    // After dedup: {60, 65, 60} — all are extrema, so reduction keeps all three
+    REQUIRE(reduced->size() == 3);
+    REQUIRE((*reduced)[0] == 60);
+    REQUIRE((*reduced)[1] == 65);
+    REQUIRE((*reduced)[2] == 60);
+}
+
+TEST_CASE("MLCT001A: conjunct threshold at exact boundary", "[melody][core]") {
+    // Intervals: 60->62 = +2 (conjunct), 62->67 = +5 (disjunct)
+    // conjunct_ratio = 1/2 = 0.5
+    std::array<MidiNote, 3> notes = {60, 62, 67};
+
+    auto result_at = is_predominantly_conjunct(notes, 0.5);
+    REQUIRE(result_at.has_value());
+    REQUIRE(*result_at == true);  // ratio (0.5) >= threshold (0.5)
+
+    auto result_above = is_predominantly_conjunct(notes, 0.51);
+    REQUIRE(result_above.has_value());
+    REQUIRE(*result_above == false);  // ratio (0.5) < threshold (0.51)
+}
+
+TEST_CASE("MLCT001A: statistics with descending interval", "[melody][core]") {
+    std::array<MidiNote, 2> notes = {72, 60};
+    auto stats = compute_melody_statistics(notes);
+    REQUIRE(stats.has_value());
+    // Interval = 60 - 72 = -12, clamped to -12, index = -12 + 12 = 0
+    REQUIRE(stats->interval_histogram[0] == 1);
+    // All other histogram entries should be zero
+    for (int i = 1; i < 25; ++i) {
+        REQUIRE(stats->interval_histogram[i] == 0);
+    }
+}
+
+TEST_CASE("MLCT001A: contour reduction with plateau", "[melody][core]") {
+    std::array<MidiNote, 4> notes = {60, 65, 65, 60};
+    auto reduced = contour_reduction(notes);
+    REQUIRE(reduced.has_value());
+    // After dedup: {60, 65, 60} — 65 is local max, both 60s are endpoints
+    REQUIRE(reduced->size() == 3);
+    REQUIRE((*reduced)[0] == 60);
+    REQUIRE((*reduced)[1] == 65);
+    REQUIRE((*reduced)[2] == 60);
+}

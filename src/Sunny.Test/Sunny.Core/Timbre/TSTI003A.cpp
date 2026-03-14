@@ -420,3 +420,58 @@ TEST_CASE("TIVD001A: diagnostics are sorted by severity", "[timbre-ir][validatio
     // Errors come first
     CHECK(diags.front().severity == ValidationSeverity::Error);
 }
+
+// =============================================================================
+// Boundary values at validation thresholds
+// =============================================================================
+
+TEST_CASE("TIVD001A: boundary values at validation thresholds", "[timbre-ir][validation]") {
+    SECTION("T3 cutoff exactly at Nyquist") {
+        // T3 triggers on cutoff > nyquist (strict). At exactly Nyquist
+        // the condition is false, so no warning should be emitted.
+        auto profile = make_valid_profile();
+        auto& sub = std::get<SubtractiveSynth>(profile.source.data);
+        sub.filter.cutoff = 22050.0f;
+
+        auto diags = validate_timbre(profile, 44100.0f);
+        bool found_t3 = false;
+        for (const auto& d : diags) {
+            if (d.rule == "T3") found_t3 = true;
+        }
+        CHECK_FALSE(found_t3);
+    }
+
+    SECTION("T4 detune exactly 100 cents") {
+        // T4 triggers on abs(tune_cents) > 100.0f (strict). At exactly
+        // 100 the condition is false, so no warning should be emitted.
+        // A mutation of > to >= would incorrectly trigger T4 here.
+        auto profile = make_valid_profile();
+        auto& sub = std::get<SubtractiveSynth>(profile.source.data);
+        sub.oscillators[0].tune_cents = 100.0f;
+
+        auto diags = validate_timbre(profile);
+        bool found_t4 = false;
+        for (const auto& d : diags) {
+            if (d.rule == "T4") found_t4 = true;
+        }
+        CHECK_FALSE(found_t4);
+    }
+
+    SECTION("T5 feedback exactly at threshold") {
+        // T5 triggers on abs(feedback) > 0.95f (strict). At exactly
+        // 0.95 the condition is false, so no warning should be emitted.
+        // A mutation of > to >= would incorrectly trigger T5 here.
+        auto profile = make_valid_profile();
+        FMSynth fm;
+        fm.operators = {FMOperator{}};
+        fm.feedback = 0.95f;
+        profile.source.data = std::move(fm);
+
+        auto diags = validate_timbre(profile);
+        bool found_t5 = false;
+        for (const auto& d : diags) {
+            if (d.rule == "T5") found_t5 = true;
+        }
+        CHECK_FALSE(found_t5);
+    }
+}

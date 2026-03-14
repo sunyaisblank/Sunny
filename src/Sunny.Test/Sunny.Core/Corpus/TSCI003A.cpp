@@ -517,3 +517,138 @@ TEST_CASE("CIAN001A: empty and single-pitch scores produce empty harmonic analys
         CHECK(harmonic.chord_vocabulary.empty());
     }
 }
+
+// =============================================================================
+// Boundary-value tests targeting mutation: < to <= and > to >=
+// =============================================================================
+
+TEST_CASE("CIVD001A: boundary values at validation thresholds",
+          "[corpus-ir][validation]") {
+
+    SECTION("C1 at exactly 0.7 confidence") {
+        IngestedWork work;
+        work.id = IngestedWorkId{1};
+        work.ingestion_confidence.key_confidence = 0.7f;
+        work.ingestion_confidence.metre_confidence = 0.7f;
+        work.ingestion_confidence.spelling_confidence = 0.7f;
+        work.ingestion_confidence.voice_separation_confidence = 0.7f;
+        work.ingestion_confidence.source_format = "musicxml";
+
+        auto diags = validate_ingested_work(work);
+        CHECK_FALSE(has_rule(diags, "C1"));
+
+        // Sanity: 0.699f must trigger C1
+        work.ingestion_confidence.key_confidence = 0.699f;
+        diags = validate_ingested_work(work);
+        CHECK(has_rule(diags, "C1"));
+    }
+
+    SECTION("C3 at exactly 0.5 key confidence") {
+        IngestedWork work;
+        work.id = IngestedWorkId{1};
+        work.ingestion_confidence.key_confidence = 0.5f;
+        work.ingestion_confidence.source_format = "midi";
+
+        auto diags = validate_ingested_work(work);
+        CHECK_FALSE(has_rule(diags, "C3"));
+    }
+
+    SECTION("C4 at exactly 1.0 metre confidence") {
+        IngestedWork work;
+        work.id = IngestedWorkId{1};
+        work.ingestion_confidence.metre_confidence = 1.0f;
+        work.ingestion_confidence.source_format = "midi";
+
+        auto diags = validate_ingested_work(work);
+        CHECK_FALSE(has_rule(diags, "C4"));
+    }
+
+    SECTION("C5 at exactly 6 voices") {
+        IngestedWork work;
+        work.id = IngestedWorkId{1};
+
+        ScoreSpec spec;
+        spec.title = "Boundary C5";
+        spec.total_bars = 1;
+        spec.bpm = 120.0;
+        spec.key_root = SpelledPitch{0, 0, 4};
+        spec.time_sig_num = 4;
+        spec.time_sig_den = 4;
+        PartDefinition pd;
+        pd.name = "Piano";
+        pd.abbreviation = "Pno";
+        pd.instrument_type = InstrumentType::Piano;
+        pd.clef = Clef::Treble;
+        spec.parts.push_back(pd);
+
+        auto score_result = create_score(spec);
+        REQUIRE(score_result.has_value());
+        Score score = std::move(*score_result);
+
+        // Pad to exactly 6 voices (create_score gives 1 voice)
+        auto& measure = score.parts[0].measures[0];
+        while (measure.voices.size() < 6) {
+            Voice v;
+            v.voice_index = static_cast<std::uint8_t>(measure.voices.size());
+            RestEvent rest;
+            rest.duration = Beat{1, 1};
+            Event ev;
+            ev.id = EventId{static_cast<std::uint64_t>(200 + measure.voices.size())};
+            ev.offset = Beat::zero();
+            ev.payload = rest;
+            v.events.push_back(ev);
+            measure.voices.push_back(v);
+        }
+        REQUIRE(measure.voices.size() == 6);
+        work.score = score;
+
+        auto diags = validate_ingested_work(work);
+        CHECK_FALSE(has_rule(diags, "C5"));
+    }
+
+    SECTION("C7 at exactly 4 bar section") {
+        IngestedWork work;
+        work.id = IngestedWorkId{1};
+        work.analysis_complete = true;
+        work.analysis.harmonic_analysis.chord_vocabulary = {{"I", 100}};
+        work.analysis.formal_analysis.total_duration_bars = 100;
+
+        FormalSection sec;
+        sec.label = "Boundary";
+        sec.start_bar = 1;
+        sec.end_bar = 4;
+        sec.length_bars = 4;
+        work.analysis.formal_analysis.section_plan.push_back(sec);
+
+        auto diags = validate_ingested_work(work);
+        CHECK_FALSE(has_rule(diags, "C7"));
+    }
+
+    SECTION("C10 at exactly 5 works") {
+        ComposerProfile profile;
+        profile.id = ComposerProfileId{1};
+        profile.name = "Test";
+        for (std::uint64_t i = 1; i <= 5; ++i)
+            profile.works.push_back(IngestedWorkId{i});
+
+        auto diags = validate_composer_profile(profile);
+        CHECK_FALSE(has_rule(diags, "C10"));
+    }
+
+    SECTION("C13 at exactly 1.5 distinctiveness") {
+        ComposerProfile profile;
+        profile.id = ComposerProfileId{1};
+        profile.name = "Test";
+        for (std::uint64_t i = 1; i <= 10; ++i)
+            profile.works.push_back(IngestedWorkId{i});
+
+        SignaturePattern pat;
+        pat.id = SignaturePatternId{1};
+        pat.description = "Boundary pattern";
+        pat.distinctiveness = 1.5f;
+        profile.style_profile.signature_patterns.push_back(pat);
+
+        auto diags = validate_composer_profile(profile);
+        CHECK_FALSE(has_rule(diags, "C13"));
+    }
+}

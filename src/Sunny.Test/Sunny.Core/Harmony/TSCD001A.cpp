@@ -239,3 +239,29 @@ TEST_CASE("HRCD001A: cadence in non-C key kills modular mutant", "[harmony][core
         REQUIRE(cad.is_root_position == true);
     }
 }
+
+TEST_CASE("HRCD001A: chromatic chord root cadence in C major", "[harmony][core]") {
+    // bII (Neapolitan) resolving to I in C major.
+    // bII root = Db (PC 1), quality "major". I root = C (PC 0), quality "major".
+    // find_scale_degree for PC 1 in C major: interval = (1 - 0 + 12) % 12 = 1.
+    // No diatonic degree matches 1 exactly, so the chromatic fallback loop
+    // runs. sharp_deg = 0 (scale[0]=0 == interval-1), flat_deg = 1 (scale[1]=2
+    // == interval+1). PREFER_SHARP[0] is true, so the function returns degree 0
+    // (interpreting Db as raised tonic rather than lowered supertonic).
+    ChordVoicing bII;
+    bII.root = 1;  // Db
+    bII.quality = "major";
+    bII.notes = {61, 65, 68};  // Db4, F4, Ab4
+
+    ChordVoicing I;
+    I.root = 0;  // C
+    I.quality = "major";
+    I.notes = {60, 64, 72};  // C4, E4, C5 — soprano on tonic
+
+    auto cad = detect_cadence(bII, I, 0, false);
+    // The chromatic fallback should resolve without crashing.
+    // penultimate_degree is 0 (sharp interpretation of the chromatic root).
+    CHECK(cad.penultimate_degree == 0);
+    // final chord resolves to degree 0 (I) via diatonic match.
+    CHECK(cad.final_degree == 0);
+}

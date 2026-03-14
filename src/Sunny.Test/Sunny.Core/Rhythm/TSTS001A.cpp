@@ -221,3 +221,44 @@ TEST_CASE("RHTS001A: is_syncopated", "[rhythm][core]") {
         REQUIRE_FALSE(is_syncopated(*ts, 1, 0));
     }
 }
+
+TEST_CASE("RHTS001A: is_syncopated with equal weight positions", "[rhythm][core]") {
+    // In 4/4, groups are {1,1,1,1}. Position 1 has metrical_weight 3
+    // (group boundary) and position 2 also has weight 3 (group boundary).
+    // A note starting at position 1, duration 2, sustains through position 2.
+    // sustained_weight (3) > onset_weight (3) is false, so not syncopated.
+    // A mutation of > to >= would incorrectly return true.
+    auto ts = make_time_signature(4, 4);
+    REQUIRE(ts.has_value());
+
+    int w1 = metrical_weight(*ts, 1);
+    int w2 = metrical_weight(*ts, 2);
+    REQUIRE(w1 == w2);  // both group boundaries, weight 3
+
+    CHECK_FALSE(is_syncopated(*ts, 1, 2));
+}
+
+TEST_CASE("RHTS001A: metrical_weight mid-group subdivision", "[rhythm][core]") {
+    // In 6/8, groups are {3,3}, numerator is 6.
+    // Position 0: downbeat → weight 4
+    // Position 1: mid-group subdivision of first group (offset=1 in group of 3,
+    //   g/2 = 1, so offset == g/2) → weight 1
+    // Position 2: offset 2 in first group, not g/2 → weight 0
+    // Position 3: group boundary → weight 3
+    auto ts = make_time_signature(6, 8);
+    REQUIRE(ts.has_value());
+
+    CHECK(metrical_weight(*ts, 0) == 4);  // downbeat
+    CHECK(metrical_weight(*ts, 1) == 1);  // mid-group subdivision
+    CHECK(metrical_weight(*ts, 2) == 0);  // weak subdivision
+    CHECK(metrical_weight(*ts, 3) == 3);  // group boundary
+
+    // In 4/4, groups are {1,1,1,1}. Each group has size 1, so no mid-group
+    // subdivision is possible. Position 2 is a group boundary (weight 3).
+    // Position 1 is also a group boundary (weight 3).
+    auto ts44 = make_time_signature(4, 4);
+    REQUIRE(ts44.has_value());
+
+    CHECK(metrical_weight(*ts44, 1) == 3);  // group boundary, not weight 1
+    CHECK(metrical_weight(*ts44, 2) == 3);  // group boundary, not weight 1
+}

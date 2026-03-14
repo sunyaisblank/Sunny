@@ -433,3 +433,33 @@ TEST_CASE("SICM001A: articulation velocity offsets are exact", "[score][midi]") 
         CHECK(result->midi.notes[0].velocity == 80);
     }
 }
+
+// =============================================================================
+// Hairpin interpolation — indirect test of hairpin_ratio (L87–91)
+// =============================================================================
+
+TEST_CASE("SICM001A: hairpin interpolates velocity between dynamics", "[score][midi]") {
+    // 4-bar score; crescendo from bar 1 to bar 3, target ff.
+    // Default dynamic is mf (88). Hairpin target ff (116).
+    // A note at bar 2 (midpoint) has no explicit dynamic, so the
+    // pipeline resolves: start_vel = 88, target_vel = 116, ratio = 0.5,
+    // velocity = 88 + 0.5 * (116 - 88) = 102.
+    auto score = make_compilable_score(4);
+
+    // Place a note only in bar 2 (bar_idx 1) with no explicit dynamic.
+    place_whole_note(score, 0, 1, C4);
+
+    Hairpin cresc;
+    cresc.start = ScoreTime{1, Beat::zero()};
+    cresc.end   = ScoreTime{3, Beat::zero()};
+    cresc.type  = HairpinType::Crescendo;
+    cresc.target = DynamicLevel::ff;
+    score.parts[0].hairpins.push_back(cresc);
+
+    auto result = compile_to_midi(score, 480);
+    REQUIRE(result.has_value());
+
+    const auto& midi = result->midi;
+    REQUIRE(midi.notes.size() == 1);
+    CHECK(midi.notes[0].velocity == 102);
+}
