@@ -186,8 +186,11 @@ void aggregate_voice_leading(StyleProfile& out, const std::vector<const WorkAnal
     }
 
     auto n = static_cast<float>(analyses.size());
+    float avg_contrary = total_contrary / n;
     out.voice_leading_profile.common_tone_retention = total_common_tone / n;
     out.voice_leading_profile.voice_independence_index = total_independence / n;
+    out.voice_leading_profile.preferred_motion_type =
+        (avg_contrary > 0.4f) ? "contrary" : "similar";
 }
 
 /// Aggregate textural data.

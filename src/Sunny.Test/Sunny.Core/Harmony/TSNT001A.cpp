@@ -7,6 +7,7 @@
  */
 
 #include <catch2/catch_test_macros.hpp>
+#include <algorithm>
 #include "Harmony/HRNT001A.h"
 #include "Harmony/HRRN001A.h"
 
