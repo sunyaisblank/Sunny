@@ -115,6 +115,17 @@ void insert_note(Score& score, std::size_t part_idx, SpelledPitch pitch,
     }
 }
 
+class FailingTransport : public LomTransport {
+public:
+    LomResponse send(const LomRequest&) override {
+        return {false, std::nullopt, "transport failure", std::nullopt};
+    }
+    LomResponse send_notes(const LomPath&, const std::vector<LomNoteData>&) override {
+        return {false, std::nullopt, "transport failure", std::nullopt};
+    }
+    [[nodiscard]] bool is_connected() const override { return false; }
+};
+
 }  // namespace
 
 // =============================================================================
@@ -345,4 +356,17 @@ TEST_CASE("FMAL001A: single-part command sequence is well-ordered", "[ableton][c
     // Should have: set tempo, create track, set name, create clip, set clip name,
     // add notes — all in sequence
     CHECK(buf.size() >= 5);
+}
+
+// =============================================================================
+// Transport failure propagation
+// =============================================================================
+
+TEST_CASE("FMAL001A: transport failure propagates SendFailed", "[ableton][compiler]") {
+    auto score = make_test_score(4);
+    FailingTransport failing;
+
+    auto result = compile_to_ableton(score, failing);
+    REQUIRE_FALSE(result.has_value());
+    CHECK(result.error() == ErrorCode::SendFailed);
 }

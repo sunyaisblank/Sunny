@@ -561,3 +561,12 @@ TEST_CASE("TSTN001A: mod12_positive handles negative operands", "[tensor][types]
     REQUIRE(mod12_positive(-1) == 11);
     REQUIRE(mod12_positive(-13) == 11);
 }
+
+TEST_CASE("TSTN001A: operator>= correct for cross-multiplication", "[tensor][beat]") {
+    // Kill mutant: * -> / on lhs (numerator * other.denominator)
+    REQUIRE(Beat{1, 2} >= Beat{2, 4});      // equal fractions, different representation
+    REQUIRE(Beat{3, 4} >= Beat{2, 4});      // 0.75 >= 0.5
+    // Kill mutant: * -> / on rhs (other.numerator * denominator)
+    REQUIRE_FALSE(Beat{1, 4} >= Beat{1, 3}); // 0.25 < 0.333
+    REQUIRE_FALSE(Beat{1, 3} >= Beat{1, 2}); // 0.333 < 0.5
+}

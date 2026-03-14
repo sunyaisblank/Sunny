@@ -375,3 +375,11 @@ TEST_CASE("PTSP001A: pc produces valid PitchClass for negative midi_value", "[pi
     SpelledPitch cbm1{0, -1, -1};
     CHECK(pc(cbm1) == 11);
 }
+
+TEST_CASE("PTSP001A: from_spn parses double-digit octave", "[pitch][spelled]") {
+    auto r = from_spn("C10");
+    REQUIRE(r.has_value());
+    CHECK(r->octave == 10);
+    CHECK(r->letter == 0);   // C
+    CHECK(r->accidental == 0);
+}

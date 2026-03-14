@@ -30,6 +30,7 @@
 #pragma once
 
 #include "CITP001A.h"
+#include "../Score/SIDC001A.h"
 
 namespace Sunny::Core {
 
@@ -43,6 +44,7 @@ struct IngestedWork {
     IngestionConfidence ingestion_confidence;
     WorkAnalysis analysis;
     bool analysis_complete = false;
+    std::optional<Score> score;
 };
 
 // =============================================================================

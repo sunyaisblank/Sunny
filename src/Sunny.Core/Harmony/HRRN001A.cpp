@@ -198,7 +198,7 @@ Result<ParsedNumeral> parse_roman_numeral_full(std::string_view numeral) {
 
         // Parse optional inversion suffix (N6 = Neapolitan sixth)
         if (!remaining.empty()) {
-            auto [slen, inv] = parse_inversion_suffix(remaining);
+            auto [slen, inv] = parse_inversion_suffix(remaining); (void)slen;
             result.inversion = inv;
         }
         return result;

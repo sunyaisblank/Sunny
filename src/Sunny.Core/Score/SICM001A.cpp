@@ -246,14 +246,14 @@ Result<CompiledMidiResult> compile_to_midi(const Score& score, int ppq) {
             }
 
             // Track consumed notes for tie handling
-            std::set<std::pair<std::uint64_t, std::uint8_t>> consumed;
+            std::set<std::pair<std::uint64_t, std::size_t>> consumed;
             DynamicLevel current_dynamic = DynamicLevel::mf;
 
             for (std::size_t fi = 0; fi < flat.size(); ++fi) {
                 const auto& fn = flat[fi];
                 const NoteGroup& ng = *fn.ng;
 
-                for (std::uint8_t ni = 0; ni < ng.notes.size(); ++ni) {
+                for (std::size_t ni = 0; ni < ng.notes.size(); ++ni) {
                     if (consumed.contains({fn.event_id.value, ni})) continue;
 
                     const Note& note = ng.notes[ni];
@@ -290,7 +290,7 @@ Result<CompiledMidiResult> compile_to_midi(const Score& score, int ppq) {
                             const auto& next_fn = flat[search];
                             const NoteGroup& next_ng = *next_fn.ng;
 
-                            for (std::uint8_t nni = 0; nni < next_ng.notes.size(); ++nni) {
+                            for (std::size_t nni = 0; nni < next_ng.notes.size(); ++nni) {
                                 if (consumed.contains({next_fn.event_id.value, nni})) continue;
                                 if (next_ng.notes[nni].pitch == tied_pitch) {
                                     consumed.insert({next_fn.event_id.value, nni});

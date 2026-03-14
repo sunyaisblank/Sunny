@@ -13,6 +13,8 @@
 
 #include "Corpus/CIWF001A.h"
 #include "Corpus/CISZ001A.h"
+#include "../Corpus/CIIN001A.h"
+#include "../Application/INWF001A.h"
 
 #include <map>
 #include <memory>
@@ -100,6 +102,42 @@ json evolution_j(const EvolutionaryAnalysis& ea) {
 std::optional<FormClassification> form_from_int(int val) {
     if (val < 0 || val > 20) return std::nullopt;
     return static_cast<FormClassification>(val);
+}
+
+/// Decode a base64 string to raw bytes
+std::vector<std::uint8_t> decode_base64(const std::string& input) {
+    static constexpr unsigned char table[256] = {
+        64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,
+        64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,
+        64,64,64,64,64,64,64,64,64,64,64,62,64,64,64,63,
+        52,53,54,55,56,57,58,59,60,61,64,64,64,65,64,64,
+        64, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9,10,11,12,13,14,
+        15,16,17,18,19,20,21,22,23,24,25,64,64,64,64,64,
+        64,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,
+        41,42,43,44,45,46,47,48,49,50,51,64,64,64,64,64,
+        64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,
+        64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,
+        64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,
+        64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,
+        64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,
+        64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,
+        64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,
+        64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64
+    };
+    std::vector<std::uint8_t> out;
+    out.reserve(input.size() * 3 / 4);
+    std::uint32_t val = 0;
+    int bits = -8;
+    for (unsigned char c : input) {
+        if (table[c] >= 64) continue;
+        val = (val << 6) | table[c];
+        bits += 6;
+        if (bits >= 0) {
+            out.push_back(static_cast<std::uint8_t>((val >> bits) & 0xFF));
+            bits -= 8;
+        }
+    }
+    return out;
 }
 
 }  // anonymous namespace
@@ -261,8 +299,13 @@ void register_corpus_tools(McpServer& server) {
         {{"work_id", "integer"}},
         [session](const json& params) -> json {
             auto wid = IngestedWorkId{params.value("work_id", std::uint64_t{0})};
-            auto r = wf_analyze_work(session->corpus, wid);
-            if (!r) return error_response("analysis failed: work not found");
+            // Pass embedded Score pointer when available
+            auto wit = session->corpus.works.find(wid.value);
+            if (wit == session->corpus.works.end())
+                return error_response("analysis failed: work not found");
+            const Score* sp = wit->second.score ? &*wit->second.score : nullptr;
+            auto r = wf_analyze_work(session->corpus, wid, sp);
+            if (!r) return error_response("analysis failed");
             return {{"work_id", wid.value}, {"analysis_complete", true}};
         });
 
@@ -479,6 +522,120 @@ void register_corpus_tools(McpServer& server) {
         {},
         [session](const json& /*params*/) -> json {
             return corpus_to_json(session->corpus);
+        });
+
+    // =========================================================================
+    // Ingestion
+    // =========================================================================
+
+    server.register_tool(
+        "ingest_midi",
+        "Ingest a MIDI file into the corpus (base64-encoded binary)",
+        {{"midi_base64", "string"}, {"title", "string"}, {"composer_id", "integer"},
+         {"instrumentation", "string (optional)"}, {"quantise_grid", "integer (optional)"}},
+        [session](const json& params) -> json {
+            auto b64 = params.value("midi_base64", "");
+            auto title = params.value("title", "");
+            auto cid_val = params.value("composer_id", std::uint64_t{0});
+            if (b64.empty()) return error_response("midi_base64 is required");
+            if (title.empty()) return error_response("title is required");
+            if (cid_val == 0) return error_response("composer_id is required");
+
+            auto data = decode_base64(b64);
+            if (data.empty()) return error_response("invalid base64 data");
+
+            Corpus::IngestionOptions opts;
+            opts.title = title;
+            if (params.contains("instrumentation"))
+                opts.instrumentation = params["instrumentation"].get<std::string>();
+            if (params.contains("quantise_grid"))
+                opts.quantise_grid = params["quantise_grid"].get<int>();
+
+            auto wid = IngestedWorkId{session->next_work_id++};
+            auto cid = ComposerProfileId{cid_val};
+
+            auto r = wf_ingest_midi(session->corpus,
+                std::span<const std::uint8_t>(data), wid, cid, opts);
+            if (!r) return error_response("MIDI ingestion failed");
+
+            return {{"work_id", wid.value}, {"title", title}, {"analysis_complete", true}};
+        });
+
+    server.register_tool(
+        "ingest_musicxml",
+        "Ingest a MusicXML document into the corpus",
+        {{"musicxml", "string"}, {"title", "string"}, {"composer_id", "integer"},
+         {"instrumentation", "string (optional)"}},
+        [session](const json& params) -> json {
+            auto xml = params.value("musicxml", "");
+            auto title = params.value("title", "");
+            auto cid_val = params.value("composer_id", std::uint64_t{0});
+            if (xml.empty()) return error_response("musicxml is required");
+            if (title.empty()) return error_response("title is required");
+            if (cid_val == 0) return error_response("composer_id is required");
+
+            Corpus::IngestionOptions opts;
+            opts.title = title;
+            if (params.contains("instrumentation"))
+                opts.instrumentation = params["instrumentation"].get<std::string>();
+
+            auto wid = IngestedWorkId{session->next_work_id++};
+            auto cid = ComposerProfileId{cid_val};
+
+            auto r = wf_ingest_musicxml(session->corpus, xml, wid, cid, opts);
+            if (!r) return error_response("MusicXML ingestion failed");
+
+            return {{"work_id", wid.value}, {"title", title}, {"analysis_complete", true}};
+        });
+
+    server.register_tool(
+        "ingest_batch",
+        "Ingest multiple works into the corpus",
+        {{"works", "array of {title, data/musicxml, composer_id, format}"}},
+        [session](const json& params) -> json {
+            if (!params.contains("works") || !params["works"].is_array())
+                return error_response("works array is required");
+
+            json results = json::array();
+            for (const auto& entry : params["works"]) {
+                auto title = entry.value("title", "");
+                auto cid_val = entry.value("composer_id", std::uint64_t{0});
+                auto format = entry.value("format", "");
+                if (title.empty() || cid_val == 0 || format.empty()) {
+                    results.push_back({{"title", title}, {"error", "missing required fields"}});
+                    continue;
+                }
+
+                Corpus::IngestionOptions opts;
+                opts.title = title;
+                if (entry.contains("instrumentation"))
+                    opts.instrumentation = entry["instrumentation"].get<std::string>();
+
+                auto wid = IngestedWorkId{session->next_work_id++};
+                auto cid = ComposerProfileId{cid_val};
+
+                if (format == "midi") {
+                    auto b64 = entry.value("data", "");
+                    auto data = decode_base64(b64);
+                    auto r = wf_ingest_midi(session->corpus,
+                        std::span<const std::uint8_t>(data), wid, cid, opts);
+                    if (r)
+                        results.push_back({{"work_id", wid.value}, {"title", title}, {"ok", true}});
+                    else
+                        results.push_back({{"title", title}, {"error", "MIDI ingestion failed"}});
+                } else if (format == "musicxml") {
+                    auto xml = entry.value("musicxml", "");
+                    auto r = wf_ingest_musicxml(session->corpus, xml, wid, cid, opts);
+                    if (r)
+                        results.push_back({{"work_id", wid.value}, {"title", title}, {"ok", true}});
+                    else
+                        results.push_back({{"title", title}, {"error", "MusicXML ingestion failed"}});
+                } else {
+                    results.push_back({{"title", title}, {"error", "unknown format: " + format}});
+                }
+            }
+
+            return {{"results", results}, {"count", results.size()}};
         });
 }
 

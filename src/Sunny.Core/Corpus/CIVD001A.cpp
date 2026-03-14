@@ -8,6 +8,7 @@
  */
 
 #include "CIVD001A.h"
+#include "../Score/SIVD001A.h"
 
 #include <algorithm>
 #include <cmath>
@@ -42,11 +43,40 @@ std::vector<Diagnostic> validate_ingested_work(const IngestedWork& work) {
             CorpusError::LowKeyConfidence));
     }
 
+    // C2: Score validation failed (when Score is present)
+    if (work.score) {
+        auto score_diags = validate_structural(*work.score);
+        for (const auto& sd : score_diags) {
+            if (sd.severity == ValidationSeverity::Error) {
+                diags.push_back(make_diag(ValidationSeverity::Error, "C2",
+                    "Embedded Score fails structural validation: " + sd.message,
+                    CorpusError::ScoreValidationFailed));
+                break;
+            }
+        }
+    }
+
     // C4: Inferred time signature
     if (ic.metre_confidence < 1.0f && ic.source_format == "midi") {
         diags.push_back(make_diag(ValidationSeverity::Info, "C4",
             "Time signature inferred from content (MIDI source)",
             CorpusError::InferredTimeSig));
+    }
+
+    // C5: Excessive voices (when Score is present, > 6 voices in any measure)
+    if (work.score) {
+        for (const auto& part : work.score->parts) {
+            for (const auto& measure : part.measures) {
+                if (measure.voices.size() > 6) {
+                    diags.push_back(make_diag(ValidationSeverity::Warning, "C5",
+                        "Measure " + std::to_string(measure.bar_number) +
+                        " has " + std::to_string(measure.voices.size()) + " voices (> 6)",
+                        CorpusError::ExcessiveVoices));
+                    goto c5_done;
+                }
+            }
+        }
+        c5_done:;
     }
 
     if (!work.analysis_complete) {

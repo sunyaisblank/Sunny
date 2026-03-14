@@ -56,7 +56,7 @@ std::vector<std::string> split_path(const std::string& path) {
 int parse_index(const std::string& seg) {
     if (seg.size() < 3 || seg.front() != '[' || seg.back() != ']') return -1;
     int idx = 0;
-    auto [ptr, ec] = std::from_chars(seg.data() + 1, seg.data() + seg.size() - 1, idx);
+    auto [ptr, ec] = std::from_chars(seg.data() + 1, seg.data() + seg.size() - 1, idx); (void)ptr;
     if (ec != std::errc{}) return -1;
     return idx;
 }

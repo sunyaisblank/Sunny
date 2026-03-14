@@ -28,6 +28,8 @@ file(GLOB_RECURSE INFRA_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/RealTime/*.h"
     "${CMAKE_CURRENT_SOURCE_DIR}/Format/*.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/Format/*.h"
+    "${CMAKE_CURRENT_SOURCE_DIR}/Corpus/*.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/Corpus/*.h"
 )
 
 add_library(Sunny.Infrastructure STATIC

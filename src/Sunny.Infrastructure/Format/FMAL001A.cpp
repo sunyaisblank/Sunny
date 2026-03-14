@@ -116,19 +116,17 @@ Result<AbletonCompilationResult> compile_to_ableton(
     if (!score.tempo_map.empty()) {
         const auto& first_tempo = score.tempo_map[0];
         double bpm = first_tempo.bpm.to_float();
-        transport.send(LomProtocol::set_property(
+        auto resp = transport.send(LomProtocol::set_property(
             LomPaths::song(), "tempo", bpm));
+        if (!resp.success) return std::unexpected(ErrorCode::SendFailed);
         result.tempo_events_written++;
 
         // Additional tempo changes as automation
         for (std::size_t i = 1; i < compiled.tempos.size(); ++i) {
-            // Tempo automation would be written as clip automation
-            // For now, we record each tempo change as a set_property at the
-            // appropriate position. Full automation envelope support requires
-            // Ableton's clip automation API.
             double tempo_bpm = 60000000.0 / compiled.tempos[i].microseconds_per_beat;
-            transport.send(LomProtocol::set_property(
+            resp = transport.send(LomProtocol::set_property(
                 LomPaths::song(), "tempo", tempo_bpm));
+            if (!resp.success) return std::unexpected(ErrorCode::SendFailed);
             result.tempo_events_written++;
         }
     }
@@ -136,40 +134,46 @@ Result<AbletonCompilationResult> compile_to_ableton(
     // Step 2: Create tracks and clips
     for (const auto& ti : tracks) {
         // Create MIDI track
-        transport.send(LomProtocol::call_method(
+        auto resp = transport.send(LomProtocol::call_method(
             LomPaths::song(), "create_midi_track",
             {ti.track_index}));
+        if (!resp.success) return std::unexpected(ErrorCode::SendFailed);
         result.tracks_created++;
 
         // Set track name
-        transport.send(LomProtocol::set_property(
+        resp = transport.send(LomProtocol::set_property(
             LomPaths::track(ti.track_index), "name",
             ti.name));
+        if (!resp.success) return std::unexpected(ErrorCode::SendFailed);
 
         // Load instrument preset if specified
         if (ti.rendering->instrument_preset) {
-            transport.send(LomProtocol::set_property(
+            resp = transport.send(LomProtocol::set_property(
                 LomPaths::track(ti.track_index), "instrument_preset",
                 *ti.rendering->instrument_preset));
+            if (!resp.success) return std::unexpected(ErrorCode::SendFailed);
         }
 
         // Set pan if specified
         if (ti.rendering->pan) {
-            transport.send(LomProtocol::set_property(
+            resp = transport.send(LomProtocol::set_property(
                 LomPaths::track(ti.track_index).child("mixer"), "panning",
                 static_cast<double>(*ti.rendering->pan)));
+            if (!resp.success) return std::unexpected(ErrorCode::SendFailed);
         }
 
         // Create clip in slot 0 spanning full score
-        transport.send(LomProtocol::call_method(
+        resp = transport.send(LomProtocol::call_method(
             LomPaths::clip_slot(ti.track_index, 0), "create_clip",
             {clip_length_beats}));
+        if (!resp.success) return std::unexpected(ErrorCode::SendFailed);
         result.clips_created++;
 
         // Set clip name
-        transport.send(LomProtocol::set_property(
+        resp = transport.send(LomProtocol::set_property(
             LomPaths::clip(ti.track_index, 0), "name",
             ti.name));
+        if (!resp.success) return std::unexpected(ErrorCode::SendFailed);
 
         // Inject notes for this channel
         auto ch_it = notes_by_channel.find(ti.channel);
@@ -179,9 +183,10 @@ Result<AbletonCompilationResult> compile_to_ableton(
             for (const auto* n : ch_it->second) {
                 lom_notes.push_back(to_lom_note(*n, ppq));
             }
-            transport.send_notes(
+            resp = transport.send_notes(
                 LomPaths::clip(ti.track_index, 0),
                 lom_notes);
+            if (!resp.success) return std::unexpected(ErrorCode::SendFailed);
             result.notes_written += static_cast<std::uint32_t>(lom_notes.size());
         }
     }
@@ -191,9 +196,10 @@ Result<AbletonCompilationResult> compile_to_ableton(
         auto tick_result = score_time_to_tick(section.start, score.time_map, ppq);
         if (tick_result) {
             double beat_pos = tick_to_ableton_beats(*tick_result, ppq);
-            transport.send(LomProtocol::call_method(
+            auto resp = transport.send(LomProtocol::call_method(
                 LomPaths::song(), "set_or_delete_cue",
                 {beat_pos, section.label}));
+            if (!resp.success) return std::unexpected(ErrorCode::SendFailed);
             result.markers_created++;
         }
     }

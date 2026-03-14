@@ -8,6 +8,7 @@
  */
 
 #include "CISZ001A.h"
+#include "../Score/SISZ001A.h"
 
 #include <stdexcept>
 
@@ -513,7 +514,7 @@ Result<ComposerProfile> composer_profile_from_json(const json& j) {
 }
 
 json ingested_work_to_json(const IngestedWork& work) {
-    return {
+    json j = {
         {"schema_version", CORPUS_IR_SCHEMA_VERSION},
         {"id", work.id.value},
         {"metadata", metadata_j(work.metadata)},
@@ -521,6 +522,9 @@ json ingested_work_to_json(const IngestedWork& work) {
         {"analysis", work_analysis_j(work.analysis)},
         {"analysis_complete", work.analysis_complete}
     };
+    if (work.score)
+        j["score"] = score_to_json(*work.score);
+    return j;
 }
 
 Result<IngestedWork> ingested_work_from_json(const json& j) {
@@ -534,6 +538,11 @@ Result<IngestedWork> ingested_work_from_json(const json& j) {
     if (j.contains("analysis"))
         work.analysis = work_analysis_f(j["analysis"]);
     work.analysis_complete = j.value("analysis_complete", false);
+    if (j.contains("score")) {
+        auto score_result = score_from_json(j["score"]);
+        if (score_result)
+            work.score = std::move(*score_result);
+    }
     return work;
 }
 

@@ -523,9 +523,6 @@ void emit_note_notations(
     if (note.articulation) {
         auto* entry = find_articulation_entry(*note.articulation);
         if (entry) need_notations = true;
-        if (!entry && !is_unsupported_articulation(*note.articulation)) {
-            // Sforzando and ForzandoPiano are dynamics, not notations
-        }
     }
 
     if (!need_notations) return;

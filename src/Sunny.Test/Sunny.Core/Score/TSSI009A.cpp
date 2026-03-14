@@ -386,3 +386,50 @@ TEST_CASE("compile_to_note_events: rest-only bars produce zero events",
     REQUIRE(result.has_value());
     CHECK(result->events.empty());
 }
+
+// =============================================================================
+// Articulation velocity offset assertions
+// =============================================================================
+
+TEST_CASE("SICM001A: articulation velocity offsets are exact", "[score][midi]") {
+
+    SECTION("Accent adds exactly 20 from mf base") {
+        auto score = make_compilable_score(1);
+        place_whole_note(score, 0, 0, C4, DynamicLevel::mf, ArticulationType::Accent);
+
+        auto result = compile_to_midi(score, 480);
+        REQUIRE(result.has_value());
+        REQUIRE(result->midi.notes.size() == 1);
+        CHECK(result->midi.notes[0].velocity == 108);
+    }
+
+    SECTION("Marcato adds exactly 30 from mf base") {
+        auto score = make_compilable_score(1);
+        place_whole_note(score, 0, 0, C4, DynamicLevel::mf, ArticulationType::Marcato);
+
+        auto result = compile_to_midi(score, 480);
+        REQUIRE(result.has_value());
+        REQUIRE(result->midi.notes.size() == 1);
+        CHECK(result->midi.notes[0].velocity == 118);
+    }
+
+    SECTION("Sforzando saturates at 127 from fff") {
+        auto score = make_compilable_score(1);
+        place_whole_note(score, 0, 0, C4, DynamicLevel::fff, ArticulationType::Sforzando);
+
+        auto result = compile_to_midi(score, 480);
+        REQUIRE(result.has_value());
+        REQUIRE(result->midi.notes.size() == 1);
+        CHECK(result->midi.notes[0].velocity == 127);
+    }
+
+    SECTION("Sforzando adds exactly 40 from pp") {
+        auto score = make_compilable_score(1);
+        place_whole_note(score, 0, 0, C4, DynamicLevel::pp, ArticulationType::Sforzando);
+
+        auto result = compile_to_midi(score, 480);
+        REQUIRE(result.has_value());
+        REQUIRE(result->midi.notes.size() == 1);
+        CHECK(result->midi.notes[0].velocity == 80);
+    }
+}

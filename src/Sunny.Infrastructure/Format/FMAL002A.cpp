@@ -81,24 +81,27 @@ Result<TimbreCompilationResult> compile_timbre_to_ableton(
     }
 
     // Load device on track
-    transport.send(LomProtocol::call_method(
+    auto resp = transport.send(LomProtocol::call_method(
         track, "load_device", {device_name}));
+    if (!resp.success) return std::unexpected(ErrorCode::SendFailed);
     result.devices_created++;
 
     // Load preset if specified
     if (rc.preset_path) {
-        transport.send(LomProtocol::set_property(
+        resp = transport.send(LomProtocol::set_property(
             track.child("devices").child(0), "preset",
             *rc.preset_path));
+        if (!resp.success) return std::unexpected(ErrorCode::SendFailed);
     }
 
     // Step 2: Apply parameter mappings
     for (const auto& [path, param] : rc.parameter_map) {
         auto device_path = track.child("devices").child(
             static_cast<int>(param.device_index));
-        transport.send(LomProtocol::set_property(
+        resp = transport.send(LomProtocol::set_property(
             device_path, param.parameter_name,
-            static_cast<double>(param.range_min)));  // Set to default min
+            static_cast<double>(param.range_min)));
+        if (!resp.success) return std::unexpected(ErrorCode::SendFailed);
         result.parameters_mapped++;
     }
 
@@ -108,26 +111,27 @@ Result<TimbreCompilationResult> compile_timbre_to_ableton(
         if (!effect.enabled) continue;
 
         std::string effect_device = ableton_effect_name(effect.parameters);
-        transport.send(LomProtocol::call_method(
+        resp = transport.send(LomProtocol::call_method(
             track, "load_device", {effect_device}));
+        if (!resp.success) return std::unexpected(ErrorCode::SendFailed);
         result.effects_inserted++;
 
         // Set dry/wet mix
         auto effect_path = track.child("devices").child(device_offset);
-        transport.send(LomProtocol::set_property(
+        resp = transport.send(LomProtocol::set_property(
             effect_path, "mix",
             static_cast<double>(effect.mix)));
+        if (!resp.success) return std::unexpected(ErrorCode::SendFailed);
 
         device_offset++;
     }
 
     // Step 4: Automation
     for (const auto& auto_lane : profile.parameter_automation) {
-        // Each automation lane targets a parameter path
-        // Write breakpoints as automation on the corresponding device
-        transport.send(LomProtocol::call_method(
+        resp = transport.send(LomProtocol::call_method(
             track, "create_automation_envelope",
             {auto_lane.parameter_path}));
+        if (!resp.success) return std::unexpected(ErrorCode::SendFailed);
         result.automation_lanes++;
     }
 

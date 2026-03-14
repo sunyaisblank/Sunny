@@ -190,6 +190,144 @@ void aggregate_voice_leading(StyleProfile& out, const std::vector<const WorkAnal
     out.voice_leading_profile.voice_independence_index = total_independence / n;
 }
 
+/// Aggregate textural data.
+void aggregate_textural(StyleProfile& out, const std::vector<const WorkAnalysis*>& analyses) {
+    if (analyses.empty()) return;
+
+    float total_density = 0.0f;
+    float total_span = 0.0f;
+    float min_density = 1e9f;
+    float max_density = 0.0f;
+    std::map<std::string, float> total_texture_type;
+    std::uint32_t texture_sources = 0;
+
+    for (const auto* a : analyses) {
+        total_density += a->textural_analysis.average_density;
+        total_span += a->textural_analysis.average_register_span;
+
+        for (const auto& [st, density] : a->textural_analysis.density_curve) {
+            float d = static_cast<float>(density);
+            if (d < min_density) min_density = d;
+            if (d > max_density) max_density = d;
+        }
+
+        for (const auto& [type, prop] : a->textural_analysis.texture_type_proportions) {
+            total_texture_type[type] += prop;
+            texture_sources++;
+        }
+    }
+
+    auto n = static_cast<float>(analyses.size());
+    out.textural_profile.average_density = total_density / n;
+    out.textural_profile.register_span_preference = total_span / n;
+    out.textural_profile.density_range_low = (min_density < 1e9f) ? min_density : 0.0f;
+    out.textural_profile.density_range_high = max_density;
+
+    if (texture_sources > 0) {
+        for (const auto& [type, total] : total_texture_type)
+            out.textural_profile.texture_type_distribution[type] = total / n;
+    }
+}
+
+/// Dynamic level ordering for comparison.
+int dynamic_ordinal(const std::string& name) {
+    static const std::map<std::string, int> order = {
+        {"pppp", 0}, {"ppp", 1}, {"pp", 2}, {"p", 3}, {"mp", 4},
+        {"mf", 5}, {"f", 6}, {"ff", 7}, {"fff", 8}, {"ffff", 9}
+    };
+    auto it = order.find(name);
+    return it != order.end() ? it->second : 5;
+}
+
+/// Aggregate dynamic data.
+void aggregate_dynamic(StyleProfile& out, const std::vector<const WorkAnalysis*>& analyses) {
+    if (analyses.empty()) return;
+
+    int lowest_ordinal = 10;
+    int highest_ordinal = -1;
+    std::string lowest_name;
+    std::string highest_name;
+    float total_change_rate = 0.0f;
+    float total_subito = 0.0f;
+    std::map<std::string, std::uint32_t> total_dist;
+
+    for (const auto* a : analyses) {
+        int lo = dynamic_ordinal(a->dynamic_analysis.dynamic_range_low);
+        int hi = dynamic_ordinal(a->dynamic_analysis.dynamic_range_high);
+        if (lo < lowest_ordinal) {
+            lowest_ordinal = lo;
+            lowest_name = a->dynamic_analysis.dynamic_range_low;
+        }
+        if (hi > highest_ordinal) {
+            highest_ordinal = hi;
+            highest_name = a->dynamic_analysis.dynamic_range_high;
+        }
+        total_change_rate += a->dynamic_analysis.dynamic_change_rate;
+        total_subito += static_cast<float>(a->dynamic_analysis.subito_dynamics_count);
+
+        for (const auto& [dyn, count] : a->dynamic_analysis.dynamic_distribution)
+            total_dist[dyn] += count;
+    }
+
+    auto n = static_cast<float>(analyses.size());
+    out.dynamic_profile.dynamic_range_low = lowest_name;
+    out.dynamic_profile.dynamic_range_high = highest_name;
+    out.dynamic_profile.dynamic_change_rate = total_change_rate / n;
+    out.dynamic_profile.subito_frequency = total_subito / n;
+
+    // Most frequent dynamic
+    std::uint32_t max_count = 0;
+    for (const auto& [dyn, count] : total_dist) {
+        if (count > max_count) {
+            max_count = count;
+            out.dynamic_profile.most_frequent_dynamic = dyn;
+        }
+    }
+}
+
+/// Aggregate orchestration data.
+void aggregate_orchestration(StyleProfile& out, const std::vector<const WorkAnalysis*>& analyses) {
+    std::map<std::string, float> total_usage;
+    std::map<std::string, float> total_melody;
+    std::uint32_t orch_count = 0;
+
+    for (const auto* a : analyses) {
+        if (!a->orchestration_analysis) continue;
+        orch_count++;
+        for (const auto& [inst, usage] : a->orchestration_analysis->instrument_usage)
+            total_usage[inst] += usage;
+        for (const auto& [inst, prop] : a->orchestration_analysis->melody_carrier_distribution)
+            total_melody[inst] += prop;
+    }
+
+    if (orch_count == 0) return;
+
+    OrchestrationStyleProfile osp;
+    auto n = static_cast<float>(orch_count);
+    for (const auto& [inst, total] : total_usage)
+        osp.preferred_instruments[inst] = total / n;
+    for (const auto& [inst, total] : total_melody)
+        osp.melody_assignment_preference[inst] = total / n;
+    out.orchestration_profile = std::move(osp);
+}
+
+/// Aggregate motivic data.
+void aggregate_motivic(StyleProfile& out, const std::vector<const WorkAnalysis*>& analyses) {
+    if (analyses.empty()) return;
+
+    float total_economy = 0.0f;
+    float total_density = 0.0f;
+
+    for (const auto* a : analyses) {
+        total_economy += a->motivic_analysis.thematic_economy;
+        total_density += a->motivic_analysis.thematic_density;
+    }
+
+    auto n = static_cast<float>(analyses.size());
+    out.motivic_profile.thematic_economy = total_economy / n;
+    out.motivic_profile.development_density = total_density / n;
+}
+
 }  // anonymous namespace
 
 // =============================================================================
@@ -289,9 +427,12 @@ Result<void> wf_analyze_work(
     auto* work = find_work(corpus, work_id);
     if (!work) return std::unexpected(not_found());
 
-    if (score) {
-        work->analysis = analyze_score(*score);
-    }
+    const Score* effective_score = score;
+    if (!effective_score && work->score)
+        effective_score = &*work->score;
+
+    if (effective_score)
+        work->analysis = analyze_score(*effective_score);
 
     work->analysis_complete = true;
     return {};
@@ -325,6 +466,10 @@ Result<void> wf_rebuild_style_profile(
         aggregate_rhythmic(profile, analyses);
         aggregate_formal(profile, analyses);
         aggregate_voice_leading(profile, analyses);
+        aggregate_textural(profile, analyses);
+        aggregate_dynamic(profile, analyses);
+        aggregate_orchestration(profile, analyses);
+        aggregate_motivic(profile, analyses);
     }
 
     composer->style_profile = std::move(profile);

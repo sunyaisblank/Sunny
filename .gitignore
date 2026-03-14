@@ -4,7 +4,6 @@ __pycache__/
 *$py.class
 *.so
 .Python
-bin/
 develop-eggs/
 dist/
 downloads/
@@ -49,12 +48,18 @@ htmlcov/
 .ruff_cache/
 
 # Build artifacts
+bin/
 build/
 *.manifest
 *.spec
 
 # CTest output
 Testing/
+
+# Static analysis and mutation testing (generated output)
+codeql-db/
+codeql-results/
+mull-build/
 
 # Snapshots (local only)
 .sunny/

@@ -66,8 +66,8 @@ Sunny::Core::Result<ScalaInterval> parse_interval(std::string_view line) {
         if (sp != std::string_view::npos) den_sv = den_sv.substr(0, sp);
 
         int num = 0, den = 0;
-        auto [p1, ec1] = std::from_chars(num_sv.data(), num_sv.data() + num_sv.size(), num);
-        auto [p2, ec2] = std::from_chars(den_sv.data(), den_sv.data() + den_sv.size(), den);
+        auto [p1, ec1] = std::from_chars(num_sv.data(), num_sv.data() + num_sv.size(), num); (void)p1;
+        auto [p2, ec2] = std::from_chars(den_sv.data(), den_sv.data() + den_sv.size(), den); (void)p2;
         if (ec1 != std::errc{} || ec2 != std::errc{} || den == 0) {
             return std::unexpected(Sunny::Core::ErrorCode::InvalidScalaFile);
         }
@@ -85,7 +85,7 @@ Sunny::Core::Result<ScalaInterval> parse_interval(std::string_view line) {
     if (!has_dot) {
         // Integer ratio: n/1
         int num = 0;
-        auto [p, ec] = std::from_chars(num_part.data(), num_part.data() + num_part.size(), num);
+        auto [p, ec] = std::from_chars(num_part.data(), num_part.data() + num_part.size(), num); (void)p;
         if (ec != std::errc{} || num <= 0) {
             return std::unexpected(Sunny::Core::ErrorCode::InvalidScalaFile);
         }
@@ -123,7 +123,7 @@ Sunny::Core::Result<ScalaTuning> parse_scala(std::string_view text) {
     // Second data line: note count
     int note_count = 0;
     auto count_sv = trim(lines[1]);
-    auto [p, ec] = std::from_chars(count_sv.data(), count_sv.data() + count_sv.size(), note_count);
+    auto [p, ec] = std::from_chars(count_sv.data(), count_sv.data() + count_sv.size(), note_count); (void)p;
     if (ec != std::errc{} || note_count < 0) {
         return std::unexpected(Sunny::Core::ErrorCode::InvalidScalaFile);
     }

@@ -697,7 +697,7 @@ Score harmonic_skeleton(const Score& score) {
     Score result = copy_score_skeleton(score);
 
     // Build a set of (event_id, note_index) pairs that are non-chord tones
-    std::set<std::pair<std::uint64_t, std::uint8_t>> nct_set;
+    std::set<std::pair<std::uint64_t, std::size_t>> nct_set;
     for (const auto& ha : score.harmonic_annotations) {
         for (const auto& nct : ha.non_chord_tones) {
             nct_set.insert({nct.event_id.value, nct.note_index});
@@ -733,7 +733,7 @@ Score harmonic_skeleton(const Score& score) {
                     new_ng.slur_start = ng->slur_start;
                     new_ng.slur_end = ng->slur_end;
 
-                    for (std::uint8_t ni = 0; ni < ng->notes.size(); ++ni) {
+                    for (std::size_t ni = 0; ni < ng->notes.size(); ++ni) {
                         const auto& note = ng->notes[ni];
                         // Skip grace notes
                         if (note.grace) continue;

@@ -234,6 +234,13 @@ HarmonicAnalysisRecord analyze_harmonic(const Score& score) {
         if (score.metadata.total_bars > 0) {
             result.harmonic_rhythm.mean_rate =
                 total_changes / static_cast<float>(score.metadata.total_bars);
+            float var_sum = 0.0f;
+            for (float c : result.harmonic_rhythm.changes_per_bar) {
+                float diff = c - result.harmonic_rhythm.mean_rate;
+                var_sum += diff * diff;
+            }
+            result.harmonic_rhythm.variance =
+                var_sum / static_cast<float>(score.metadata.total_bars);
         }
 
         // Tonal plan from key map
@@ -283,12 +290,20 @@ HarmonicAnalysisRecord analyze_harmonic(const Score& score) {
             static_cast<float>(bar_chord_count));
     }
 
-    // Compute mean harmonic rhythm
+    // Compute mean and variance of harmonic rhythm
     float total = 0.0f;
     for (float c : result.harmonic_rhythm.changes_per_bar) total += c;
-    if (score.metadata.total_bars > 0)
+    if (score.metadata.total_bars > 0) {
         result.harmonic_rhythm.mean_rate =
             total / static_cast<float>(score.metadata.total_bars);
+        float var_sum = 0.0f;
+        for (float c : result.harmonic_rhythm.changes_per_bar) {
+            float diff = c - result.harmonic_rhythm.mean_rate;
+            var_sum += diff * diff;
+        }
+        result.harmonic_rhythm.variance =
+            var_sum / static_cast<float>(score.metadata.total_bars);
+    }
 
     // Tonal plan from key map
     for (const auto& entry : score.key_map) {
@@ -345,16 +360,19 @@ MelodicAnalysisRecord analyze_melodic(const Score& score) {
                 }
             }
 
-            // Chromaticism rate from pitch class distribution
+            // Chromaticism rate and scale degree distribution
             KeySignature key = key_at_bar(score, 1);
             auto ints = key.mode.get_intervals();
             std::set<PitchClass> diatonic;
+            std::vector<PitchClass> scale_pcs;
             PitchClass root = pc(key.root);
             PitchClass current = root;
             diatonic.insert(current);
+            scale_pcs.push_back(current);
             for (auto iv : ints) {
                 current = static_cast<PitchClass>((current + iv) % 12);
                 diatonic.insert(current);
+                scale_pcs.push_back(current);
             }
             std::uint32_t chromatic_count = 0;
             std::uint32_t total_notes = 0;
@@ -367,6 +385,14 @@ MelodicAnalysisRecord analyze_melodic(const Score& score) {
                 vma.chromaticism_rate =
                     static_cast<float>(chromatic_count) /
                     static_cast<float>(total_notes);
+
+            // Scale degree distribution: map each PC to its scale degree
+            for (std::size_t deg = 0; deg < scale_pcs.size() && deg < 8; ++deg) {
+                auto pch = scale_pcs[deg];
+                auto count = stats->pitch_class_histogram[pch];
+                if (count > 0)
+                    vma.scale_degree_distribution[static_cast<std::uint8_t>(deg + 1)] = count;
+            }
         }
 
         // Track primary melody voice (most notes)
@@ -390,7 +416,6 @@ MelodicAnalysisRecord analyze_melodic(const Score& score) {
 RhythmicAnalysisRecord analyze_rhythmic(const Score& score) {
     RhythmicAnalysisRecord result;
     std::uint32_t total_note_events = 0;
-    std::uint32_t total_rest_events = 0;
     float total_note_dur = 0.0f;
     float total_rest_dur = 0.0f;
     std::uint32_t time_sig_changes = 0;
@@ -416,7 +441,6 @@ RhythmicAnalysisRecord analyze_rhythmic(const Score& score) {
                         bar_onsets++;
                     } else if (event.is_rest()) {
                         const auto* r = event.as_rest();
-                        total_rest_events++;
                         total_rest_dur += r->duration.to_float();
                     }
                 }
@@ -430,6 +454,27 @@ RhythmicAnalysisRecord analyze_rhythmic(const Score& score) {
     float total_dur = total_note_dur + total_rest_dur;
     if (total_dur > 0.0f)
         result.rest_proportion = total_rest_dur / total_dur;
+
+    // Syncopation index: ratio of onsets on weak metrical positions
+    if (total_note_events > 0) {
+        std::uint32_t weak_onsets = 0;
+        for (const auto& part : score.parts) {
+            for (std::uint32_t bar = 0; bar < score.metadata.total_bars && bar < part.measures.size(); ++bar) {
+                const auto& measure = part.measures[bar];
+                for (const auto& voice : measure.voices) {
+                    for (const auto& event : voice.events) {
+                        if (!event.is_note_group()) continue;
+                        // Weak positions: offbeat eighths and sixteenths
+                        float offset_float = event.offset.to_float() * 4.0f;  // in quarter-note units
+                        float frac = offset_float - std::floor(offset_float);
+                        if (frac > 0.1f) weak_onsets++;
+                    }
+                }
+            }
+        }
+        result.syncopation_index =
+            static_cast<float>(weak_onsets) / static_cast<float>(total_note_events);
+    }
 
     // Metrical complexity: time sig changes / total bars + asymmetric penalty
     if (score.metadata.total_bars > 0) {
@@ -688,6 +733,22 @@ TexturalAnalysisRecord analyze_textural(const Score& score) {
         result.average_register_span = total_span / static_cast<float>(samples);
     }
 
+    // Texture type classification per bar
+    std::uint32_t mono_count = 0;
+    std::uint32_t homo_count = 0;
+    std::uint32_t poly_count = 0;
+    for (const auto& [st, density] : result.density_curve) {
+        if (density <= 1) mono_count++;
+        else if (density <= 2) homo_count++;
+        else poly_count++;
+    }
+    if (samples > 0) {
+        auto s = static_cast<float>(samples);
+        result.texture_type_proportions["monophonic"] = static_cast<float>(mono_count) / s;
+        result.texture_type_proportions["homophonic"] = static_cast<float>(homo_count) / s;
+        result.texture_type_proportions["polyphonic"] = static_cast<float>(poly_count) / s;
+    }
+
     // Normalise section density to per-bar averages
     for (const auto& sec : score.section_map) {
         std::uint32_t sec_bars = sec.end.bar - sec.start.bar;
@@ -759,6 +820,86 @@ DynamicAnalysisRecord analyze_dynamic(const Score& score) {
         result.dynamic_change_rate =
             static_cast<float>(dynamic_changes) /
             static_cast<float>(score.metadata.total_bars);
+    }
+
+    // Build dynamic shape curve and find climax
+    // Map dynamic levels to numeric intensity [0,1]
+    auto dynamic_intensity = [](DynamicLevel d) -> float {
+        switch (d) {
+            case DynamicLevel::pppp: return 0.05f;
+            case DynamicLevel::ppp:  return 0.1f;
+            case DynamicLevel::pp:   return 0.2f;
+            case DynamicLevel::p:    return 0.3f;
+            case DynamicLevel::mp:   return 0.4f;
+            case DynamicLevel::mf:   return 0.55f;
+            case DynamicLevel::f:    return 0.7f;
+            case DynamicLevel::ff:   return 0.85f;
+            case DynamicLevel::fff:  return 0.95f;
+            case DynamicLevel::ffff: return 1.0f;
+            case DynamicLevel::fp:   return 0.7f;
+            case DynamicLevel::sfz:  return 0.9f;
+            case DynamicLevel::sfp:  return 0.8f;
+            case DynamicLevel::rfz:  return 0.85f;
+        }
+        return 0.5f;
+    };
+
+    // Per-bar dynamic level (last dynamic heard in that bar)
+    float current_intensity = 0.5f;
+    float max_intensity = 0.0f;
+    float max_position = 0.0f;
+    for (std::uint32_t bar = 0; bar < score.metadata.total_bars; ++bar) {
+        for (const auto& part : score.parts) {
+            if (bar >= part.measures.size()) continue;
+            for (const auto& voice : part.measures[bar].voices) {
+                for (const auto& event : voice.events) {
+                    const auto* ng = event.as_note_group();
+                    if (!ng) continue;
+                    for (const auto& note : ng->notes) {
+                        if (note.dynamic)
+                            current_intensity = dynamic_intensity(*note.dynamic);
+                    }
+                }
+            }
+        }
+        ScoreTime st{bar + 1, Beat::zero()};
+        result.dynamic_shape.push_back({st, current_intensity});
+        if (current_intensity > max_intensity) {
+            max_intensity = current_intensity;
+            max_position = static_cast<float>(bar + 1);
+        }
+    }
+
+    if (score.metadata.total_bars > 0)
+        result.climax_position = max_position / static_cast<float>(score.metadata.total_bars);
+
+    // Dynamic by section: map sections to their dynamic range
+    for (const auto& sec : score.section_map) {
+        std::string sec_low;
+        std::string sec_high;
+        int sec_lo_ord = 10;
+        int sec_hi_ord = -1;
+        for (std::uint32_t bar = sec.start.bar; bar < sec.end.bar && bar <= score.metadata.total_bars; ++bar) {
+            std::uint32_t idx = bar - 1;
+            if (idx < result.dynamic_shape.size()) {
+                float intensity = result.dynamic_shape[idx].second;
+                // Map intensity back to approximate dynamic name
+                int ord = static_cast<int>(intensity * 9.0f + 0.5f);
+                ord = std::clamp(ord, 0, 9);
+                if (ord < sec_lo_ord) {
+                    sec_lo_ord = ord;
+                    static const char* names[] = {"pppp","ppp","pp","p","mp","mf","f","ff","fff","ffff"};
+                    sec_low = names[ord];
+                }
+                if (ord > sec_hi_ord) {
+                    sec_hi_ord = ord;
+                    static const char* names[] = {"pppp","ppp","pp","p","mp","mf","f","ff","fff","ffff"};
+                    sec_high = names[ord];
+                }
+            }
+        }
+        if (!sec_low.empty())
+            result.dynamic_by_section[sec.label] = {sec_low, sec_high};
     }
 
     return result;

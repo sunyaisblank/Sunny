@@ -211,7 +211,7 @@ Result<MutationResult> insert_note(
     auto shared_id = std::make_shared<EventId>(new_id);
 
     push_undo(undo, score, "insert_note",
-        [&score, part_id, bar, voice_index, offset, inserted_payload, duration, shared_id]() -> VoidResult {
+        [&score, part_id, bar, voice_index, offset, inserted_payload, shared_id]() -> VoidResult {
             // Forward: re-insert a note with the same payload
             auto* p = find_part(score, part_id);
             if (!p || bar < 1 || bar > p->measures.size())
@@ -2683,7 +2683,8 @@ void UndoStack::end_group() {
                 // Best-effort rollback: re-apply the forward functions for
                 // sub-operations that were already successfully reversed.
                 for (std::size_t j = i; j < inv_fns.size(); ++j) {
-                    (void)fwd_fns[j]();
+                    auto fwd_r = fwd_fns[j]();
+                    if (!fwd_r) return std::unexpected(ErrorCode::InvariantViolation);
                 }
                 return r;
             }

@@ -664,7 +664,7 @@ void validate_m3(const Score& score, std::vector<Diagnostic>& out) {
                 }
 
                 for (std::size_t idx = 1; idx < note_groups.size(); ++idx) {
-                    const auto& [prev_ng, prev_off] = note_groups[idx - 1];
+                    const auto& [prev_ng, prev_off] = note_groups[idx - 1]; (void)prev_off;
                     const auto& [curr_ng, curr_off] = note_groups[idx];
 
                     // Check each pair of voice indices (i, j) within the NoteGroups

@@ -16,6 +16,7 @@
 #include "../Format/FMLY002A.h"
 #include "../Bridge/INTP001A.h"
 #include "../Format/FMAL001A.h"
+#include "../Corpus/CIIN001A.h"
 
 namespace Sunny::Infrastructure {
 
@@ -27,5 +28,23 @@ wf_compile_to_lilypond(const Sunny::Core::Score& score);
 
 [[nodiscard]] Sunny::Core::Result<Format::AbletonCompilationResult>
 wf_compile_to_ableton(const Sunny::Core::Score& score, LomTransport& transport);
+
+// =============================================================================
+// Corpus Ingestion Wrappers
+// =============================================================================
+
+[[nodiscard]] Sunny::Core::Result<Sunny::Core::IngestedWorkId> wf_ingest_midi(
+    Sunny::Core::CorpusDatabase& corpus,
+    std::span<const std::uint8_t> data,
+    Sunny::Core::IngestedWorkId id,
+    Sunny::Core::ComposerProfileId composer_id,
+    const Corpus::IngestionOptions& options);
+
+[[nodiscard]] Sunny::Core::Result<Sunny::Core::IngestedWorkId> wf_ingest_musicxml(
+    Sunny::Core::CorpusDatabase& corpus,
+    std::string_view xml,
+    Sunny::Core::IngestedWorkId id,
+    Sunny::Core::ComposerProfileId composer_id,
+    const Corpus::IngestionOptions& options);
 
 }  // namespace Sunny::Infrastructure

@@ -392,3 +392,22 @@ TEST_CASE("SITM001A: effective_quarter_bpm normalisation", "[score-ir][temporal]
         CHECK(effective_quarter_bpm(event) == Catch::Approx(120.0));
     }
 }
+
+// =============================================================================
+// SITM001A: absolute_beat_to_score_time at exact score end
+// =============================================================================
+
+TEST_CASE("SITM001A: absolute_beat_to_score_time at exact score end returns bar N+1",
+          "[score-ir][temporal]") {
+    // 4 bars of 4/4: measure_duration = Beat{1,1}, total = Beat{4,1}
+    auto score = make_test_score(4);
+
+    auto result = absolute_beat_to_score_time(
+        Beat{4, 1}, score.time_map, score.metadata.total_bars
+    );
+    REQUIRE(result.has_value());
+    // Exact score end maps to bar total_bars+1 (i.e. 5), beat zero.
+    // This kills the mutant that would produce total_bars-1 (bar 3).
+    CHECK(result->bar == 5);
+    CHECK(result->beat == Beat::zero());
+}

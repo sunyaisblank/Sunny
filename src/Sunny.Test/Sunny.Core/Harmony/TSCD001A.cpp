@@ -205,3 +205,37 @@ TEST_CASE("HRCD001A: Cadences in G major", "[harmony][core]") {
         REQUIRE(cad.type == CadenceType::PAC);
     }
 }
+
+TEST_CASE("HRCD001A: cadence in non-C key kills modular mutant", "[harmony][core]") {
+    SECTION("G major V-I: penultimate_degree is 4") {
+        // V in G major is D major (root PC 2).
+        // find_scale_degree computes interval = (2 - 7 + 12) % 12 = 7,
+        // which matches MAJOR_SCALE[4].  Under % → / mutation the expression
+        // evaluates to (2 - 7 + 12) / 12 = 0, yielding degree 0 instead of 4.
+        auto V = make_chord(2, "major", 4);   // D major
+        ChordVoicing I;
+        I.root = 7;
+        I.quality = "major";
+        I.notes = {55, 59, 67};  // G3, B3, G4 — soprano on tonic G
+
+        auto cad = detect_cadence(V, I, 7, false);
+        REQUIRE(cad.type == CadenceType::PAC);
+        REQUIRE(cad.penultimate_degree == 4);
+    }
+
+    SECTION("PAC root position with bass at MIDI 60") {
+        // Root position check: bass() % 12 == root.
+        // With bass = 60 (C4) and root = 0: 60 % 12 = 0 == 0 → root position.
+        // Under % → / mutation: 60 / 12 = 5 ≠ 0 → falsely non-root-position,
+        // downgrading PAC to IAC.
+        auto V = make_chord(7, "major", 4);   // G major
+        ChordVoicing I;
+        I.root = 0;
+        I.quality = "major";
+        I.notes = {60, 64, 72};  // C4, E4, C5 — bass on root C, soprano on tonic C
+
+        auto cad = detect_cadence(V, I, 0, false);
+        REQUIRE(cad.type == CadenceType::PAC);
+        REQUIRE(cad.is_root_position == true);
+    }
+}

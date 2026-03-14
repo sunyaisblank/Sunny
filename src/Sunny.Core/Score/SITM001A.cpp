@@ -231,8 +231,8 @@ Result<double> absolute_beat_to_real_time(
                 }
             } else {
                 // Past the transition — use the end BPM
-                double bpm_end = effective_quarter_bpm(tempo_map[i + 1]);
-                total_seconds += 60.0 * span_quarters / bpm_end;
+                double bpm_post_trans = effective_quarter_bpm(tempo_map[i + 1]);
+                total_seconds += 60.0 * span_quarters / bpm_post_trans;
             }
         } else {
             // Constant tempo (Immediate or MetricModulation)

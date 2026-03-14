@@ -680,3 +680,9 @@ TEST_CASE("VLNT001A: generate_drop2_voicing returns error for 3-note input", "[v
     REQUIRE_FALSE(result.has_value());
     REQUIRE(result.error() == ErrorCode::VoiceLeadingFailed);
 }
+
+TEST_CASE("VLNT001A: stationary voices with fifths not detected as parallel", "[voiceleading][core]") {
+    // C4-G4 → C4-G4: motion = 0, not parallel
+    // Under - → + mutation: motion = 120 > 0, falsely parallel
+    REQUIRE(has_parallel_motion(60, 67, 60, 67, 7) == false);
+}

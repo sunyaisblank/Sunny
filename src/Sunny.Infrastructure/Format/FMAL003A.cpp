@@ -44,8 +44,9 @@ std::string device_for_effect(const MixEffectParameters& params) {
     }, params);
 }
 
-/// Insert an effect chain on a track path, return count of effects inserted
-std::uint32_t insert_effect_chain(
+/// Insert an effect chain on a track path, return count of effects inserted.
+/// Returns std::unexpected on transport failure.
+Result<std::uint32_t> insert_effect_chain(
     const MixEffectChain& chain,
     const LomPath& track_path,
     LomTransport& transport
@@ -54,8 +55,9 @@ std::uint32_t insert_effect_chain(
     for (const auto& effect : chain.effects) {
         if (!effect.enabled) continue;
         std::string device = device_for_effect(effect.parameters);
-        transport.send(LomProtocol::call_method(
+        auto resp = transport.send(LomProtocol::call_method(
             track_path, "load_device", {device}));
+        if (!resp.success) return std::unexpected(ErrorCode::SendFailed);
         count++;
     }
     return count;
@@ -80,34 +82,41 @@ Result<MixCompilationResult> compile_mix_to_ableton(
 
     // Step 1: Create group tracks
     for (const auto& group : graph.group_buses) {
-        transport.send(LomProtocol::call_method(
+        auto resp = transport.send(LomProtocol::call_method(
             LomPaths::song(), "create_group_track",
             {next_group_track}));
-        transport.send(LomProtocol::set_property(
+        if (!resp.success) return std::unexpected(ErrorCode::SendFailed);
+        resp = transport.send(LomProtocol::set_property(
             LomPaths::track(next_group_track), "name",
             group.name));
+        if (!resp.success) return std::unexpected(ErrorCode::SendFailed);
         result.group_tracks_created++;
         next_group_track++;
     }
 
     // Step 2: Create return tracks
     for (const auto& aux : graph.aux_buses) {
-        transport.send(LomProtocol::call_method(
+        auto resp = transport.send(LomProtocol::call_method(
             LomPaths::song(), "create_return_track", {}));
-        transport.send(LomProtocol::set_property(
+        if (!resp.success) return std::unexpected(ErrorCode::SendFailed);
+        resp = transport.send(LomProtocol::set_property(
             LomPath{{"song", "return_tracks", std::to_string(next_return_track)}},
             "name", aux.name));
+        if (!resp.success) return std::unexpected(ErrorCode::SendFailed);
 
         // Insert aux effect chain
-        result.effects_inserted += insert_effect_chain(
+        auto chain_result = insert_effect_chain(
             aux.effect_chain,
             LomPath{{"song", "return_tracks", std::to_string(next_return_track)}},
             transport);
+        if (!chain_result) return std::unexpected(chain_result.error());
+        result.effects_inserted += *chain_result;
 
         // Set return level
-        transport.send(LomProtocol::set_property(
+        resp = transport.send(LomProtocol::set_property(
             LomPath{{"song", "return_tracks", std::to_string(next_return_track)}},
             "volume", static_cast<double>(aux.return_level)));
+        if (!resp.success) return std::unexpected(ErrorCode::SendFailed);
 
         result.return_tracks_created++;
         next_return_track++;
@@ -120,29 +129,35 @@ Result<MixCompilationResult> compile_mix_to_ableton(
         auto track_path = LomPaths::track(track_idx);
 
         // Insert effects
-        result.effects_inserted += insert_effect_chain(
+        auto chain_result = insert_effect_chain(
             ch.insert_chain, track_path, transport);
+        if (!chain_result) return std::unexpected(chain_result.error());
+        result.effects_inserted += *chain_result;
 
         // Set fader level
-        transport.send(LomProtocol::set_property(
+        auto resp = transport.send(LomProtocol::set_property(
             track_path, "volume",
             static_cast<double>(ch.fader.level_db)));
+        if (!resp.success) return std::unexpected(ErrorCode::SendFailed);
 
         // Set pan
-        transport.send(LomProtocol::set_property(
+        resp = transport.send(LomProtocol::set_property(
             track_path, "panning",
             static_cast<double>(ch.spatial.pan)));
+        if (!resp.success) return std::unexpected(ErrorCode::SendFailed);
 
         // Set mute
         if (ch.mute) {
-            transport.send(LomProtocol::set_property(
+            resp = transport.send(LomProtocol::set_property(
                 track_path, "mute", true));
+            if (!resp.success) return std::unexpected(ErrorCode::SendFailed);
         }
 
         // Set solo
         if (ch.solo) {
-            transport.send(LomProtocol::set_property(
+            resp = transport.send(LomProtocol::set_property(
                 track_path, "solo", true));
+            if (!resp.success) return std::unexpected(ErrorCode::SendFailed);
         }
 
         // Configure sends
@@ -151,9 +166,10 @@ Result<MixCompilationResult> compile_mix_to_ableton(
             if (!send.enabled) continue;
             auto send_path = track_path.child("mixer").child("sends").child(
                 static_cast<int>(si));
-            transport.send(LomProtocol::set_property(
+            resp = transport.send(LomProtocol::set_property(
                 send_path, "value",
                 static_cast<double>(send.level_db)));
+            if (!resp.success) return std::unexpected(ErrorCode::SendFailed);
             result.sends_configured++;
         }
 
@@ -167,30 +183,37 @@ Result<MixCompilationResult> compile_mix_to_ableton(
         int group_idx = group_offset + static_cast<int>(gi);
         auto group_path = LomPaths::track(group_idx);
 
-        result.effects_inserted += insert_effect_chain(
+        auto chain_result = insert_effect_chain(
             group.insert_chain, group_path, transport);
+        if (!chain_result) return std::unexpected(chain_result.error());
+        result.effects_inserted += *chain_result;
 
         // Set group fader
-        transport.send(LomProtocol::set_property(
+        auto resp = transport.send(LomProtocol::set_property(
             group_path, "volume",
             static_cast<double>(group.fader.level_db)));
+        if (!resp.success) return std::unexpected(ErrorCode::SendFailed);
     }
 
     // Step 5: Master bus processing
     auto master_path = LomPath{{"song", "master_track"}};
-    result.effects_inserted += insert_effect_chain(
+    auto master_chain = insert_effect_chain(
         graph.master_bus.insert_chain, master_path, transport);
+    if (!master_chain) return std::unexpected(master_chain.error());
+    result.effects_inserted += *master_chain;
 
     // Set master fader
-    transport.send(LomProtocol::set_property(
+    auto master_resp = transport.send(LomProtocol::set_property(
         master_path, "volume",
         static_cast<double>(graph.master_bus.fader.level_db)));
+    if (!master_resp.success) return std::unexpected(ErrorCode::SendFailed);
 
     // Step 6: Automation
     for (const auto& auto_entry : graph.automation) {
-        transport.send(LomProtocol::call_method(
+        auto resp = transport.send(LomProtocol::call_method(
             LomPaths::song(), "create_automation_envelope",
             {auto_entry.target}));
+        if (!resp.success) return std::unexpected(ErrorCode::SendFailed);
         result.automation_lanes++;
     }
 
