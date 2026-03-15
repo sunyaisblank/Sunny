@@ -119,20 +119,16 @@ sudo apt install build-essential cmake python3-dev
 ### 3.2 Build Native Module
 
 ```bash
-cd cpp
-mkdir bin && cd bin
+# Build + test (via Makefile)
+make
 
-# Configure
-cmake .. -DCMAKE_BUILD_TYPE=Release
-
-# Build
-cmake --build . --config Release
-
-# Run tests
-ctest --output-on-failure
+# Or manually:
+cmake -B .bin -DCMAKE_BUILD_TYPE=Release
+cmake --build .bin
+ctest --test-dir .bin --output-on-failure
 
 # Install Python module
-cmake --install . --prefix ~/.local
+cmake --install .bin --prefix ~/.local
 ```
 
 ### 3.3 Verify Native Backend
@@ -168,13 +164,12 @@ Native available: True
 
 ```bash
 cd max
-mkdir bin && cd bin
 
 # Configure with SDK path
-cmake .. -DMAX_SDK_PATH=$MAX_SDK_PATH
+cmake -B .bin -DMAX_SDK_PATH=$MAX_SDK_PATH
 
 # Build
-cmake --build .
+cmake --build .bin
 ```
 
 ### 4.3 Install to Max Packages
@@ -301,7 +296,7 @@ pytest tests/ -v
 pytest tests/ -v --cov=src/sunny --cov-report=html
 
 # C++ tests
-cd cpp/bin && ctest --output-on-failure
+make test
 ```
 
 ### 8.2 Verify MCP Server
@@ -419,10 +414,7 @@ python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 
 # 2. Build native backend (optional but recommended)
-cd cpp && mkdir bin && cd bin
-cmake .. -DCMAKE_BUILD_TYPE=Release
-cmake --build .
-cd ../..
+make build
 
 # 3. Run tests
 pytest tests/ -v

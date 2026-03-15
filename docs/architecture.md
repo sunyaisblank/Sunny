@@ -326,12 +326,15 @@ lcm(a, 0) == 0
 # - Python 3.11+ with dev headers
 
 # Build
-mkdir bin && cd bin
-cmake .. -DCMAKE_BUILD_TYPE=Release
-cmake --build .
+# Build + test (via Makefile)
+make
+
+# Or manually:
+cmake -B .bin -DCMAKE_BUILD_TYPE=Release
+cmake --build .bin
 
 # Run tests
-ctest --output-on-failure
+ctest --test-dir .bin --output-on-failure
 
 # Current status: 87% tests pass (79/91)
 ```
@@ -475,7 +478,7 @@ tests/
 
 ```bash
 # C++ tests
-cd bin && ctest --output-on-failure
+make test
 
 # Python tests (requires pytest)
 PYTHONPATH=src pytest tests/ -v

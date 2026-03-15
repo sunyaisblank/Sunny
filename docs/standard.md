@@ -209,7 +209,10 @@ SICM001A: compile_to_midi preserves note count
 ### 6.4 Build Command
 
 ```bash
-cd bin && cmake .. -DCMAKE_BUILD_TYPE=Release && cmake --build . && ctest --output-on-failure
+make           # build (.bin/) + test
+make analysis  # CodeQL + Mull
+make coverage  # llvm-cov line/branch coverage
+make full      # all of the above
 ```
 
 ---

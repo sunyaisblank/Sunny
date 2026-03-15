@@ -7,7 +7,7 @@ on:
     branches: [main]
 
 jobs:
-  # C++ build and test
+  # C++ build, test, and static analysis
   cpp-build:
     runs-on: ubuntu-latest
 
@@ -20,20 +20,48 @@ jobs:
           sudo apt-get install -y cmake ninja-build python3-dev
 
       - name: Configure CMake
-        run: cmake -B bin -G Ninja -DCMAKE_BUILD_TYPE=Release
+        run: cmake -B .bin -G Ninja -DCMAKE_BUILD_TYPE=Release
 
       - name: Build C++
-        run: cmake --build bin
+        run: cmake --build .bin
 
       - name: Run C++ tests
-        run: ctest --test-dir bin --output-on-failure
+        run: ctest --test-dir .bin --output-on-failure
 
       - name: Upload sunny_native module
         uses: actions/upload-artifact@v4
         with:
           name: sunny-native-linux
-          path: bin/sunny_native*.so
+          path: .bin/sunny_native*.so
           if-no-files-found: warn
+
+  # CodeQL static analysis
+  codeql:
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: cpp
+          queries: .analysis/codeql
+
+      - name: Configure and build
+        run: |
+          cmake -B .bin -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build .bin
+
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@v3
 
   # Python tests (with native module)
   python-test:
@@ -68,7 +96,7 @@ jobs:
       - name: Run tests
         run: |
           PYTHONPATH=src uv run pytest src/Sunny.Test/Python/ -v --tb=short
-        continue-on-error: true  # Allow failure until all tests pass
+        continue-on-error: true
 
       - name: Run tests with coverage
         run: |
@@ -109,7 +137,7 @@ jobs:
 
       - name: Run type checking
         run: uv run mypy src/sunny --ignore-missing-imports
-        continue-on-error: true  # Allow until types are complete
+        continue-on-error: true
 
   # Security scanning
   security:
@@ -147,10 +175,10 @@ jobs:
         run: brew install cmake ninja
 
       - name: Configure CMake
-        run: cmake -B bin -G Ninja -DCMAKE_BUILD_TYPE=Release
+        run: cmake -B .bin -G Ninja -DCMAKE_BUILD_TYPE=Release
 
       - name: Build C++
-        run: cmake --build bin
+        run: cmake --build .bin
 
       - name: Run C++ tests
-        run: ctest --test-dir bin --output-on-failure
+        run: ctest --test-dir .bin --output-on-failure

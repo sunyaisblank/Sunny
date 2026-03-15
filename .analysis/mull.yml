@@ -25,3 +25,4 @@ includePaths:
   - src/Sunny\.Core/.*
   - src/Sunny\.Infrastructure/.*
   - src/Sunny\.Render/.*
+timeout: 30000

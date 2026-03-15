@@ -122,7 +122,7 @@ OrchestratorResult Orchestrator::create_progression_clip(
     Operation op;
     op.id = op_id;
     op.description = "Create progression " + root + " " + scale;
-    op.execute = [this, create_msg, notes_msg]() {
+    op.execute = [create_msg, notes_msg]() {
         // Re-queue messages
     };
     op.undo = [this, track_index, slot_index]() {
