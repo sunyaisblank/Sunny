@@ -17,6 +17,7 @@
 #include "MCPT002A.h"
 #include "MCPT003A.h"
 #include "MCPT004A.h"
+#include "MCPT005A.h"
 #include "Application/INOR001A.h"
 
 int main() {
@@ -27,6 +28,7 @@ int main() {
     Sunny::Infrastructure::register_timbre_tools(server);
     Sunny::Infrastructure::register_mix_tools(server);
     Sunny::Infrastructure::register_corpus_tools(server);
+    Sunny::Infrastructure::register_score_tools(server);
 
     server.run();
 

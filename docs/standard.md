@@ -1,8 +1,8 @@
-# Sunny - Technical Standards
+# Sunny — Technical Standards
 
-**Document ID:** SUNNY-STD-TECH-001  
-**Version:** 1.1  
-**Date:** December 2025  
+**Document ID:** SUNNY-STD-TECH-001
+**Version:** 2.0
+**Date:** March 2026
 **Status:** Active
 
 ---
@@ -13,23 +13,22 @@
 
 | Operation | Target | Maximum | Measurement |
 |-----------|--------|---------|-------------|
-| TCP Command Round-Trip | <50ms | 200ms | Benchmark test |
-| UDP/OSC Parameter Update | <5ms | 20ms | Benchmark test |
-| Theory Engine Computation | <10ms | 50ms | Unit test timing |
-| Snapshot Creation | <500ms | 2000ms | Integration test |
-| Browser Scan (full) | <5s | 30s | Integration test |
-| Plugin Preset Discovery | <10s | 30s | Integration test |
+| TCP command round-trip (WSL2 → Windows) | <50ms | 200ms | Integration test |
+| Theory engine computation (per tool call) | <10ms | 50ms | Unit test timing |
+| MIDI compilation (32-bar, 4-part score) | <5ms | 20ms | Benchmark test |
+| MusicXML/LilyPond compilation | <50ms | 200ms | Benchmark test |
+| Score validation (full ruleset) | <10ms | 50ms | Unit test timing |
+
+Performance targets are estimates pending integration test infrastructure.
 
 ### 1.2 Resource Limits
 
 | Resource | Limit | Rationale |
 |----------|-------|-----------|
-| Memory per request | 50MB | Prevent OOM |
-| Concurrent connections | 10 | Socket pool size |
-| Snapshot storage | 1GB | Disk space management |
-| Log file rotation | 100MB | Prevent disk fill |
-| Browser scan items | 10,000 | Prevent infinite loops |
-| Automation breakpoints | 1,000 | Performance |
+| Score parts | 128 | Orchestral maximum |
+| Score bars | 10,000 | Memory bound for Score IR |
+| Corpus works per database | 1,000 | Analysis aggregation performance |
+| MCP tool handlers per server | 200 | Registration map overhead |
 
 ---
 
@@ -37,13 +36,13 @@
 
 ### 2.1 Format
 
-All components use a hierarchical significant-digit coding system:
+All components use the Sirius hierarchical naming system:
 
 `[Domain][Category][Sequence][Variant]`
 
-**Example:** `THSC001A`
-- **Domain**: `TH` (Theory)
-- **Category**: `SC` (Scale)
+**Example:** `SIWF001A`
+- **Domain**: `SI` (Score IR)
+- **Category**: `WF` (Workflow)
 - **Sequence**: `001` (First component)
 - **Variant**: `A` (Primary implementation)
 
@@ -51,273 +50,194 @@ All components use a hierarchical significant-digit coding system:
 
 | Code | Domain | Description |
 |------|--------|-------------|
-| `TH` | Theory | Music theory computations |
-| `RS` | RemoteScript | Ableton Live API interactions |
-| `SR` | Server | MCP server and transport |
-| `AU` | Automation | Clip automation operations |
-| `AR` | Arrangement | Arrangement view operations |
-| `BR` | Browser | Browser navigation and plugin loading |
-| `TS` | Test | Unit and integration tests |
+| `PT` | Pitch | Pitch class, MIDI, spelled pitch, diatonic intervals |
+| `SC` | Scale | Scale definitions, generation, relationships |
+| `HR` | Harmony | Chord analysis, functions, non-tertian, chord-scale |
+| `VL` | Voice leading | Voice motion, constraints, figured bass |
+| `RH` | Rhythm | Euclidean, polyrhythm, metric modulation, swing |
+| `TN` | Tensor | Beat arithmetic, events |
+| `SR` | Serialism | Tone rows, matrix, combinatoriality |
+| `GI` | Generalised interval | GIS (Lewin), Klumpenhouwer networks |
+| `NR` | Neo-Riemannian | PLR transformations, Tonnetz |
+| `ML` | Melody | Contour, statistics, sequences |
+| `TU` | Tuning | Equal temperament, just intonation, historical |
+| `AC` | Acoustics | Harmonic series, consonance, roughness, virtual pitch |
+| `FM` | Form/Format | Phrase structure, external formats (MusicXML, LilyPond, MIDI, Ableton) |
+| `RD` | Render | DSP/audio processing |
+| `SI` | Score IR | Document hierarchy, temporal, validation, mutation, serialisation |
+| `TI` | Timbre IR | Sound source, effects, modulation, descriptors |
+| `MI` | Mix IR | Signal routing, levels, EQ, compression, spatial |
+| `CI` | Corpus IR | Ingestion, analysis, style profiles, queries |
+| `IN` | Infrastructure | Application services, transport, MCP |
+| `MC` | MCP | Protocol handler, tool registration |
+| `TS` | Test | Validation tests (mirrors source structure) |
 
 ### 2.3 Variant Codes
 
-| Code | Meaning | Usage |
-|------|---------|-------|
-| `A` | Primary | Production-ready, validated implementation |
-| `B` | Alternative | Alternative algorithm or approach |
-| `X` | Experimental | Under development, not validated |
-| `D` | Deprecated | Superseded, retained for compatibility |
+| Code | Meaning |
+|------|---------|
+| `A` | Primary production implementation |
+| `B` | Alternative algorithm or approach |
+| `X` | Experimental, not validated |
 
 ---
 
-## 3. Safety Requirements
+## 3. Error Handling
 
-### 3.1 Destructive Operation Protocol
+### 3.1 Result Type
 
-**Any operation that modifies or deletes data MUST:**
+All fallible operations return `std::expected<T, ErrorCode>` (aliased as `Result<T>`). Callers inspect the result before proceeding; no exceptions cross module boundaries.
 
-1. Create an automatic Project Snapshot before execution
-2. Log the operation with timestamp and parameters
-3. Return confirmation including snapshot ID
+### 3.2 Error Code Ranges
 
-**Destructive operations include:**
-- `delete_track`
-- `delete_clip`
-- `clear_arrangement`
-- `reset_device`
-- Any operation with `delete`, `clear`, `reset` in name
+| Range | Domain | Description |
+|-------|--------|-------------|
+| 4000–4099 | Format | External format parse/generation errors |
+| 4500 | Serialisation | JSON serialisation/deserialisation errors |
+| 5000–5699 | Score IR | Structural, temporal, harmonic, mutation, rendering errors |
+| 6000–6099 | Timbre IR | Type, validation, workflow errors |
+| 7000–7099 | Mix IR | Type, validation, workflow errors |
+| 8000–8034 | Corpus IR | Ingestion, analysis, validation errors |
 
-### 3.2 Snapshot System
+### 3.3 Error Classification
 
-```python
-class SnapshotPolicy:
-    """Snapshot creation policy."""
-    
-    # Snapshot before these operations
-    DESTRUCTIVE_OPS = [
-        "delete_track",
-        "delete_clip",
-        "clear_arrangement",
-        "reset_device",
-    ]
-    
-    # Retention policy
-    MAX_SNAPSHOTS = 50
-    MAX_AGE_HOURS = 24
-```
+| Class | Behaviour |
+|-------|-----------|
+| Transient (e.g. TCP timeout) | Retry with backoff; bounded retry budget |
+| Permanent (e.g. invalid Score structure) | Propagate to caller with context |
+| Invariant violation (e.g. denominator = 0) | Assert; do not propagate |
 
-### 3.3 Error Recovery
+### 3.4 Undo Support
 
-| Error Type | Recovery Action |
-|------------|-----------------|
-| Connection Lost | Automatic reconnect with exponential backoff |
-| Command Timeout | Retry once, then return error |
-| Invalid Parameters | Return validation error, no retry |
-| Ableton Crash | Wait for Ableton, attempt reconnect |
+Mutations on Score, Timbre, Mix documents accept an optional `UndoStack*`. When provided, the mutation records an inverse operation. Undo restores all invariants; if restoration fails, the failure propagates rather than leaving the document in an inconsistent state.
 
 ---
 
 ## 4. Communication Protocol
 
-### 4.1 TCP Protocol (Reliable)
+### 4.1 MCP Protocol (JSON-RPC 2.0 over stdio)
 
-**Port:** 9876 (configurable via environment)
+The MCP server (`sunny-mcp`) reads JSON-RPC 2.0 requests from stdin and writes responses to stdout. Each request is a single line of JSON.
 
-**Message Format:**
+Supported methods: `initialize`, `tools/list`, `tools/call`.
+
+### 4.2 TCP Transport (Ableton Bridge)
+
+**Default port:** 9001 (configurable via `TcpTransport` constructor)
+
+**Framing:** 4-byte big-endian length prefix followed by UTF-8 JSON payload.
+
+**State machine:** Disconnected → Connecting → Connected | Error
+
+**Message format (LOM command):**
 ```json
 {
-  "type": "command_name",
-  "params": {
-    "key": "value"
-  },
-  "id": "uuid"
+  "action": "get|set|call",
+  "path": "song/tracks/0/devices/0",
+  "args": []
 }
 ```
-
-**Response Format:**
-```json
-{
-  "status": "success",
-  "result": {...},
-  "id": "uuid"
-}
-```
-
-**Error Response:**
-```json
-{
-  "status": "error",
-  "message": "Description",
-  "code": 1001,
-  "id": "uuid"
-}
-```
-
-### 4.2 UDP/OSC Protocol (Fast)
-
-**Port:** 9877 (configurable via environment)
-
-**OSC Address Space:**
-```
-/track/<index>/volume <float 0.0-1.0>
-/track/<index>/pan <float -1.0-1.0>
-/track/<index>/device/<index>/param/<index> <float 0.0-1.0>
-/transport/play
-/transport/stop
-```
-
-### 4.3 Error Codes
-
-| Code | Category | Description |
-|------|----------|-------------|
-| 1000-1099 | Connection | Transport layer errors |
-| 1100-1199 | Validation | Invalid parameters |
-| 1200-1299 | Ableton | Live API errors |
-| 1300-1399 | Theory | Music theory errors |
-| 1400-1499 | Internal | Server internal errors |
 
 ---
 
-## 5. Music Theory Standards
+## 5. Type System
 
-### 5.1 Note Representation
+### 5.1 Pitch Representation
 
-| Format | Example | Usage |
-|--------|---------|-------|
-| MIDI number | 60 | Internal, clips |
-| Scientific pitch | C4 | Display, logs |
-| Scale degree | 1, b3, #4 | Theory engine |
+| Type | Representation | Usage |
+|------|---------------|-------|
+| `PitchClass` | `uint8_t` (0–11) | Pitch-class set operations, chromatic identity |
+| `MidiNote` | `uint8_t` (0–127) | MIDI output, acoustic calculations |
+| `SpelledPitch` | `{letter, accidental, octave}` | Score notation, interval arithmetic |
+| `Interval` | `int8_t` | Scale definitions, chromatic displacement |
+| `DiatonicInterval` | `{chromatic, diatonic}` | Enharmonic-aware transposition |
 
-### 5.2 Chord Representation
+### 5.2 Temporal Representation
 
-```python
-Chord = {
-    "root": "C",           # Root note name
-    "quality": "minor7",   # Chord quality
-    "notes": [60, 63, 67, 70],  # MIDI notes
-    "inversion": 0,        # 0 = root position
-    "voicing": "close",    # close/open/drop2/drop3
-}
-```
+| Type | Representation | Usage |
+|------|---------------|-------|
+| `Beat` | `{numerator, denominator}` (exact rational) | Duration, offset within bar |
+| `ScoreTime` | `{bar, beat}` | Hierarchical position in score |
+| `PositiveRational` | `{numerator, denominator}` | BPM (rate, not duration) |
 
-### 5.3 Progression Representation
+`Beat` is an aggregate; initialise with `Beat{2, 1}` (not `Beat(2)`, which gives denominator 0).
 
-```python
-Progression = [
-    {"numeral": "ii", "chord": {...}},
-    {"numeral": "V", "chord": {...}},
-    {"numeral": "I", "chord": {...}},
-]
-```
+### 5.3 Identifier Types
 
-### 5.4 Scale/Mode Registry
+All identifiers use the `Id<T>` template, where `T` is a tag type. The tag prevents accidental comparison between identifiers of different domains.
 
-| Mode | Intervals | Example (C) |
-|------|-----------|-------------|
-| Ionian (Major) | W-W-H-W-W-W-H | C D E F G A B |
-| Dorian | W-H-W-W-W-H-W | C D Eb F G A Bb |
-| Phrygian | H-W-W-W-H-W-W | C Db Eb F G Ab Bb |
-| Lydian | W-W-W-H-W-W-H | C D E F# G A B |
-| Mixolydian | W-W-H-W-W-H-W | C D E F G A Bb |
-| Aeolian (Minor) | W-H-W-W-H-W-W | C D Eb F G Ab Bb |
-| Locrian | H-W-W-H-W-W-W | C Db Eb F Gb Ab Bb |
+| Type alias | Tag | Usage |
+|-----------|-----|-------|
+| `ScoreId` | `ScoreTag` | Score document identity |
+| `PartId` | `PartTag` | Part within a score |
+| `EventId` | `EventTag` | Event within a voice |
+| `SectionId` | `SectionTag` | Formal section |
 
 ---
 
 ## 6. Testing Requirements
 
-### 6.1 Coverage Requirements
+### 6.1 Test Infrastructure
 
-| Component | Minimum Coverage |
-|-----------|------------------|
-| Theory Engine | 100% |
-| Transport Layer | 90% |
-| MCP Tools | 100% (one test per tool) |
-| Remote Script | 80% (mock Ableton) |
+| Target | Framework | Count |
+|--------|-----------|-------|
+| `Sunny.Test.Core` | Catch2 v3 | 1,228 |
+| `Sunny.Test.Render` | Catch2 v3 | 17 |
+| `Sunny.Test.Infrastructure` | Catch2 v3 | 284 |
+| `Sunny.Test.Max` | Catch2 v3 | 31 |
+| **Total** | | **1,560** |
 
-### 6.2 Test Categories
+### 6.2 Test Naming
 
-| Category | Gate Type | CI Blocking |
-|----------|-----------|-------------|
-| Unit Tests | Mandatory | Yes |
-| Integration Tests | Soft | No (requires Ableton) |
-| Benchmark Tests | Soft | No |
-| Snapshot Tests | Mandatory | Yes |
+Tests are named by the postcondition they verify, prefixed with the component under test:
 
-### 6.3 Test Naming
+```
+SITP001A: ScoreTime comparison transitivity
+SIWF001A: create_score produces compilable output
+SICM001A: compile_to_midi preserves note count
+```
 
-```python
-def test_<operation>_<scenario>():
-    """Test <operation> when <scenario>."""
+### 6.3 Test Categories
 
-# Examples:
-def test_generate_progression_major_ii_V_I():
-def test_get_scale_notes_invalid_mode_raises():
-def test_tcp_send_timeout_retries_once():
+| Category | Gate | CI blocking |
+|----------|------|-------------|
+| Unit (postcondition verification) | Mandatory | Yes |
+| Integration (Ableton round-trip) | Soft | No (requires running Ableton) |
+| Mutation (Mull) | Advisory | No |
+| Static analysis (CodeQL) | Advisory | No |
+
+### 6.4 Build Command
+
+```bash
+cd bin && cmake .. -DCMAKE_BUILD_TYPE=Release && cmake --build . && ctest --output-on-failure
 ```
 
 ---
 
-## 7. Logging Standards
+## 7. MCP Tool Registration
 
-### 7.1 Log Levels
+### 7.1 Tool Inventory
 
-| Level | Usage |
-|-------|-------|
-| DEBUG | Detailed diagnostic info |
-| INFO | Normal operations |
-| WARNING | Unexpected but handled |
-| ERROR | Failed operations |
-| CRITICAL | System failure |
+| Component | Domain | Tool count | Tool prefix |
+|-----------|--------|------------|-------------|
+| MCPT001A | Core theory | 7 | (none) |
+| MCPT002A | Timbre IR | 18 | (none) |
+| MCPT003A | Mix IR | 22 | (none) |
+| MCPT004A | Corpus IR | 22 | (none) |
+| MCPT005A | Score IR | 25 | `score_` |
+| **Total** | | **94** | |
 
-### 7.2 Log Format
+### 7.2 Session Pattern
 
-```python
-logging.basicConfig(
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    level=logging.INFO
-)
-```
+Each MCPT component creates a `shared_ptr` to a session struct captured by tool handler lambdas. The session holds domain objects keyed by auto-incrementing `uint64_t` IDs. Tool handlers validate JSON parameters, delegate to workflow functions, and return JSON responses.
 
-### 7.3 Sensitive Data
+### 7.3 Registration API
 
-**Never log:**
-- Full project file paths
-- User credentials
-- Plugin license info
-
-**Always log:**
-- Operation name and parameters
-- Timing information
-- Error details
-
----
-
-## 8. Configuration
-
-### 8.1 Environment Variables
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `SUNNY_TCP_PORT` | 9876 | TCP server port |
-| `SUNNY_UDP_PORT` | 9877 | UDP/OSC port |
-| `SUNNY_LOG_LEVEL` | INFO | Logging level |
-| `SUNNY_SNAPSHOT_DIR` | ~/.sunny/snapshots | Snapshot storage |
-| `SUNNY_MAX_SNAPSHOTS` | 50 | Max retained snapshots |
-
-### 8.2 Configuration File
-
-```toml
-# sunny.toml
-[server]
-tcp_port = 9876
-udp_port = 9877
-
-[theory]
-default_scale = "major"
-default_root = "C"
-
-[safety]
-auto_snapshot = true
-max_snapshots = 50
+```cpp
+server.register_tool(
+    "tool_name",
+    "Human-readable description",
+    {{"param1", "type hint"}, {"param2", "type hint"}},
+    [session](const json& params) -> json { ... }
+);
 ```

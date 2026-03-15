@@ -1,150 +1,177 @@
-# Sunny - Project Roadmap
+# Sunny — Project Roadmap
 
-**Document ID:** SUNNY-GOV-ROAD-001  
-**Version:** 1.0  
-**Date:** December 2025  
-**Status:** Active Development (Phase 0)  
-**Governance:** Compliant with `Structure.md` and `Standards.md`
+**Document ID:** SUNNY-GOV-ROAD-001
+**Version:** 2.0
+**Date:** March 2026
+**Status:** Active Development
+**Governance:** Compliant with `Standards.md`
 
 ---
 
 ## Table of Contents
 
 1. [Executive Summary](#executive-summary)
-2. [Vision & Goals](#vision--goals)
-3. [Current State Assessment](#current-state-assessment)
-4. [Development Phases](#development-phases)
-5. [Metrics & KPIs](#metrics--kpis)
-6. [Risk Assessment](#risk-assessment)
+2. [Vision and Goals](#vision-and-goals)
+3. [Current State](#current-state)
+4. [Completed Work](#completed-work)
+5. [Remaining Work](#remaining-work)
+6. [Metrics and KPIs](#metrics-and-kpis)
+7. [Risk Assessment](#risk-assessment)
 
 ---
 
 ## Executive Summary
 
-**Sunny** aims to provide a professional-grade MCP server granting AI agents **total agency** over Ableton Live, enabling:
+Sunny is a C++23 music theory engine with MCP tool serving, designed to give AI agents compositional agency over scores, timbres, mixes, and corpora. The engine compiles scores to MIDI, MusicXML, LilyPond, and Ableton Live via a TCP bridge.
 
-- **Composition**: Scale-aware MIDI, Roman Numeral Analysis, polyrhythmic patterns
-- **Mixing**: Auto-gain staging, signal routing, device parameter control
-- **Arrangement**: Timeline-aware clip placement, locators, Cut/Copy/Paste
+The architecture comprises four layers: Sunny.Core (music theory primitives and five IR document models), Sunny.Render (DSP/audio processing), Sunny.Infrastructure (compilation, transport, MCP serving), and Sunny.Test (validation). A Python thin wrapper provides scripting access. A Python Remote Script bridges the engine to Ableton Live over TCP.
 
-### Core Principles
-
-1. **Music Theory First**: Every MIDI operation respects the project's scale/mode context
-2. **Low-Latency Engineering**: Hybrid TCP/UDP for <5ms parameter modulation
-3. **Safety by Default**: Automatic Project Snapshots before destructive operations
-4. **Professional Quality**: Features that enable radio-ready productions
+94 MCP tools span seven domains: core theory (7), timbre IR (18), mix IR (22), corpus IR (22), and score IR (25). The formal specification covers 16 chapters and is fully implemented.
 
 ---
 
-## Vision & Goals
+## Vision and Goals
 
-### Short-Term (v0.1.0)
-- [ ] Basic MCP server with session/track tools
-- [ ] TCP communication with Remote Script
-- [ ] Theory engine with major/minor scales
+Sunny enables an AI agent to compose, orchestrate, arrange, and produce music through a structured document model with formal validation. Each intermediate representation (Score, Timbre, Mix, Corpus) captures a distinct concern; the MCP layer exposes all operations as tool calls.
 
-### Medium-Term (v0.2.0)
-- [ ] Full mode support (all 7 church modes)
-- [ ] Chord progression generation (Roman numerals)
-- [ ] Device parameter mapping
+The system prioritises correctness over convenience: exact arithmetic for pitch and rhythm, compile-time type safety for identifiers, and validation at every mutation boundary.
 
-### Long-Term (v1.0.0)
-- [ ] UDP/OSC real-time control
-- [ ] Auto-gain staging
-- [ ] Arrangement view timeline tools
-- [ ] VST deep scan and control
+### Forward Goals
+
+- Integration testing with Ableton Live via TcpTransport and SunnyRemoteScript
+- Production hardening of the TCP bridge (reconnection, error recovery)
+- Performance profiling and optimisation of compilation pipelines
+- Extended corpus ingestion (audio analysis, style transfer)
 
 ---
 
-## Current State Assessment
+## Current State
 
-### Prior Art Analysis
+### Codebase Metrics
 
-| Project | Strengths | Weaknesses |
-|---------|-----------|------------|
-| `ahujasid/ableton-mcp` | Stable, well-documented | No theory engine, TCP-only |
-| `uisato/ableton-mcp-extended` | UDP support, device params | Experimental UDP, no safety |
-| `xiaolaa2/ableton-copilot-mcp` | N/A | Limited documentation |
+| Metric | Value |
+|--------|-------|
+| C++ source files | ~162 |
+| C++ lines of code | ~37,500 |
+| Tests (Catch2) | 1,560 |
+| Test targets | 4 (Core, Render, Infrastructure, Max) |
+| MCP tools | 94 |
+| C++ standard | C++23 |
+| IR layers | 5 (Score, Timbre, Mix, Corpus, Core theory) |
+| Python wrapper files | ~45 |
 
 ### Technology Stack
 
-| Component | Technology | Rationale |
-|-----------|------------|-----------|
-| MCP Server | FastMCP (Python) | Official SDK, async support |
-| Theory Engine | music21 | Industry-standard musicology |
-| Transport | TCP + UDP/OSC | Reliability + low-latency |
-| Remote Script | Python (Ableton API) | Native Ableton integration |
-| M4L Device | Max/MSP | Sample-accurate MIDI |
+| Component | Technology |
+|-----------|------------|
+| Engine | C++23 (`std::expected`, concepts) |
+| Build system | CMake 3.24+ |
+| Test framework | Catch2 v3 |
+| JSON | nlohmann/json |
+| MCP server | Custom JSON-RPC 2.0 over stdio |
+| Ableton bridge | Python Remote Script over TCP (length-prefixed JSON) |
+| XML parsing | pugixml |
 
 ---
 
-## Development Phases
+## Completed Work
 
-### Phase 0: Project Setup ✅
-- [x] Research existing implementations
-- [x] Create governance structure
-- [ ] Create implementation plan
-- [ ] User review and approval
+### Formal Specification (all 16 chapters)
 
-### Phase 1: Foundation (2 weeks)
-- FastMCP server skeleton
-- TCP transport layer
-- Basic Remote Script
-- Core tools: session info, track management
-- Snapshot system for Creative Undo
+| Chapter | Domain | Components | Status |
+|---------|--------|------------|--------|
+| §1–3 | Pitch | PTPC, PTMN, PTPS, PTSP, PTDI, PTDN | Complete |
+| §4 | Scale | SCDF, SCGN, SCRN | Complete |
+| §5 | Harmony | HRFN, HRRN, HRNG, HRSD, HRCH, HRCD, HRNT, HRCS, HRST | Complete |
+| §7 | Voice leading | VLNT, VLCN, VLFB, VLSC | Complete |
+| §9 | Rhythm | RHEU, RHTS, RHTU, polyrhythm, swing | Complete |
+| §10 | Form | FMST, FMMT | Complete |
+| §11 | Transformational | SRTW, NRPL, GIST, GIKN | Complete |
+| §12 | Pitch-class sets | PTPS (hexachord catalogue, Z-relation, similarity) | Complete |
+| §13 | Tuning | TUET, TUJI, TUHT | Complete |
+| §14 | Acoustics | ACHS, ACPL, ACRG, ACVP | Complete |
+| §15 | Melody, external formats | MLCT, FMSL, FMLY, FMAB, FMMI, FMMX | Complete |
+| §16 | Score IR | SITP, SIDC, SITM, SIVD, SIMT, SISZ, SIWF, SIQR, SICM, SIVW | Complete |
 
-**Deliverables:**
-- Working MCP server that can query Ableton session
-- CRUD operations for tracks and clips
+### Intermediate Representations
 
-### Phase 2: Theory Engine (2 weeks)
-- music21 integration
-- Scale/mode awareness (all 7 modes)
-- Roman Numeral chord generation
-- Quantization with swing support
-- Polyrhythm and tuplet generation
+| IR | Types | Document | Validation | Serialisation | Workflow | MCP | Tests |
+|----|-------|----------|------------|---------------|----------|-----|-------|
+| Score | SITP001A | SIDC001A | SIVD001A | SISZ001A | SIWF001A | MCPT005A (25) | ~170 |
+| Timbre | TITP001A | TIDC001A | TIVD001A | TISZ001A | TIWF001A | MCPT002A (18) | 130 |
+| Mix | MITP001A | MIDC001A | MIVD001A | MISZ001A | MIWF001A | MCPT003A (22) | 106 |
+| Corpus | CITP001A | CIDC001A | CIVD001A | CISZ001A | CIWF001A | MCPT004A (22) | ~108 |
 
-**Deliverables:**
-- `generate_progression` tool with theory awareness
-- `apply_quantization` with musical intelligence
+### Compilation Targets
 
-### Phase 3: Mixing & Engineering (2 weeks)
-- Device parameter deep scan
-- Auto-gain staging (-6dB headroom)
-- Signal routing (sidechain, sends, groups)
-- UDP/OSC for real-time modulation
+| Target | Component | Path |
+|--------|-----------|------|
+| MIDI | SICM001A (Core) | Score → CompiledMidi |
+| MusicXML | FMMX002A (Infrastructure) | Score → XML string |
+| LilyPond | FMLY002A (Infrastructure) | Score → LY string |
+| Ableton | FMAL001A–003A (Infrastructure) | Score/Timbre/Mix → LOM commands via TCP |
 
-**Deliverables:**
-- Professional mixing tools
-- Sub-5ms parameter control
+### Infrastructure
 
-### Phase 4: Integration & Polish (1 week)
-- End-to-end testing
-- Documentation
-- Example workflows
-- Performance optimization
+| Component | Description |
+|-----------|-------------|
+| TcpTransport (INTP001A) | POSIX sockets, length-prefixed JSON, state machine |
+| SunnyRemoteScript | Python Control Surface for Ableton (server.py, handler.py, surface.py) |
+| Corpus ingestion (CIIN001A) | MIDI and MusicXML → IngestedWork with key estimation and quantisation |
+| Analysis engine (CIAN001A) | 9 analytical domains (harmonic, melodic, rhythmic, formal, voice-leading, textural, dynamic, orchestration, motivic) |
 
 ---
 
-## Metrics & KPIs
+## Remaining Work
+
+### Integration Testing (priority: high)
+
+The Ableton compilation path (FMAL001A–003A) has been unit-tested against a CommandBuffer mock. End-to-end testing requires a running Ableton instance with SunnyRemoteScript active.
+
+- Validate TcpTransport connection/disconnection lifecycle against Ableton
+- Verify Score → track/note injection round-trip
+- Verify Timbre → device chain mapping
+- Verify Mix → mixer configuration
+- Measure latency under realistic workloads
+
+Constraint: Ableton runs on Windows (path: `E:\Creative Libraries\Ableton\Live 12 Suite\`), while the engine runs in WSL2. Connection goes via the WSL2 host IP from `/etc/resolv.conf`.
+
+### Production Hardening (priority: medium)
+
+- Reconnection logic for TcpTransport after Ableton restart
+- Error recovery when LOM commands fail (device not found, track deleted)
+- Timeout handling for unresponsive Ableton sessions
+
+### Performance (priority: low)
+
+- Profile MIDI compilation for large scores (>100 bars, >20 parts)
+- Profile corpus analysis across >50 works
+- Evaluate whether hot paths cross translation unit boundaries and benefit from LTO
+
+---
+
+## Metrics and KPIs
 
 ### Performance Targets
 
-| Metric | Target | Bound | Priority |
-|--------|--------|-------|----------|
-| TCP Command Latency | <50ms | 200ms | P0 |
-| UDP/OSC Latency | <5ms | 20ms | P0 |
-| Theory Engine Compute | <10ms | 50ms | P1 |
-| Test Coverage | 100% | 80% | P1 |
+| Metric | Target | Bound |
+|--------|--------|-------|
+| TCP command latency (WSL2 → Windows) | <50ms | 200ms |
+| Theory engine computation (per tool call) | <10ms | 50ms |
+| MIDI compilation (32-bar, 4-part score) | <5ms | 20ms |
+| MusicXML/LilyPond compilation | <50ms | 200ms |
+| Test suite (1,560 tests) | <10s | 30s |
+
+Performance targets are estimates; measurement requires the integration test harness.
 
 ### Quality Gates
 
-| Gate | Condition | Enforcement |
-|------|-----------|-------------|
-| **G1** | All unit tests pass | CI/CD block |
-| **G2** | No unsafe operations without snapshot | Code review |
-| **G3** | Type hints on all public APIs | Ruff check |
-| **G4** | Docstrings on all tools | Ruff check |
+| Gate | Condition |
+|------|-----------|
+| G1 | All 1,560 tests pass |
+| G2 | Compilation with `-Wall -Wextra -Wpedantic -Werror` (GCC/Clang) |
+| G3 | No Error-level validation diagnostics in Score IR test fixtures |
+| G4 | Score serialisation round-trip (JSON → Score → JSON) preserves all fields |
 
 ---
 
@@ -154,57 +181,15 @@
 
 | Risk | Probability | Impact | Mitigation |
 |------|-------------|--------|------------|
-| Ableton API limitations | High | Medium | Document workarounds |
-| VST parameter access | High | Low | Manual Configure fallback |
-| UDP packet loss | Low | Medium | Implement retry logic |
-| music21 compatibility | Low | Low | Pin version |
+| WSL2 TCP latency exceeds target | Medium | Medium | Profile; fall back to shared file IPC if needed |
+| Ableton LOM API limitations | High | Medium | Document unsupported operations; degrade gracefully |
+| Large corpus memory pressure | Low | Medium | Streaming analysis; limit in-memory work count |
+| libc++ vs libstdc++ ABI differences | Low | Low | CI tests on both; pin to libc++-18 for Mull |
 
 ### Operational Risks
 
 | Risk | Probability | Impact | Mitigation |
 |------|-------------|--------|------------|
-| User data loss | Medium | Critical | Mandatory snapshots |
-| Ableton crashes | Low | Medium | Graceful reconnection |
-| Port conflicts | Medium | Low | Configurable ports |
-
----
-
-## Appendix: Tool Registry
-
-### Phase 1 Tools
-
-| Tool | Category | Description |
-|------|----------|-------------|
-| `get_session_info` | Session | Get tempo, time sig, scale |
-| `set_tempo` | Session | Set project tempo |
-| `create_midi_track` | Track | Create MIDI track |
-| `create_audio_track` | Track | Create audio track |
-| `delete_track` | Track | Delete track (with snapshot) |
-| `get_track_info` | Track | Get track details |
-| `create_clip` | Clip | Create MIDI/audio clip |
-| `add_notes_to_clip` | Clip | Add MIDI notes |
-| `get_browser_tree` | Browser | Get browser category tree |
-| `get_browser_items_at_path` | Browser | Navigate to browser path |
-| `load_instrument_or_effect` | Browser | Load instrument by URI |
-| `load_drum_kit` | Browser | Load drum rack and kit |
-
-### Phase 2 Tools
-
-| Tool | Category | Description |
-|------|----------|-------------|
-| `generate_progression` | Theory | Roman numeral chords |
-| `apply_quantization` | Theory | Scale-aware quantize |
-| `generate_melody` | Theory | Scale-aware melody |
-| `add_rhythm_pattern` | Theory | Polyrhythm generation |
-| `set_project_scale` | Theory | Set global scale/mode |
-
-### Phase 3 Tools
-
-| Tool | Category | Description |
-|------|----------|-------------|
-| `deep_scan_devices` | Device | Map all parameters |
-| `set_device_parameter` | Device | Control device param |
-| `auto_gain_stage` | Mixer | Maintain headroom |
-| `create_sidechain` | Mixer | Sidechain routing |
-| `create_send` | Mixer | Send to return track |
-| `create_group` | Mixer | Group tracks |
+| Ableton version incompatibility | Medium | High | Test against Live 12; document minimum version |
+| Port 9001 conflict | Medium | Low | Configurable via TcpTransport constructor |
+| Remote Script installation path changes | Low | Low | Document symlink procedure per OS |

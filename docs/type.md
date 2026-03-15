@@ -1,399 +1,298 @@
-# Type System
+# Sunny — Type System
 
 **Document ID:** SUNNY-DOC-TYPE-001
-**Version:** 1.0
-**Date:** February 2026
+**Version:** 2.0
+**Date:** March 2026
 **Status:** Active
 
 ---
 
 ## Overview
 
-This document defines the type system for Sunny. Types encode invariants, units, and meaning. A well-designed type system prevents classes of errors at compile time and makes code self-documenting.
-
-Read this document after [foundations.md](./foundations.md) and before [standard.md](./standard.md).
+This document defines the type system for the Sunny C++23 music theory engine. Types encode invariants, units, and meaning at compile time. The type system uses `std::expected` for fallible operations, exact rational arithmetic for pitch and rhythm, and tagged identifiers to prevent cross-domain substitution.
 
 ---
 
 ## Part I: First Principles
 
-### 1.1 What Is a Type?
+### 1.1 What a Type Encodes
 
-A type is a set of values with associated operations. Types encode:
+**Invariants.** Properties that always hold for values of the type. A `PitchClass` is always in [0, 11]; a `Beat` always has a nonzero denominator.
 
-**Invariants.** Properties that always hold for values of the type. A `MidiNote` is always in [0, 127]; attempting to construct an invalid value is an error.
+**Units.** Dimensional correctness. A `Beat` measures duration in whole-note fractions; a `PositiveRational` measures rate (BPM). Both are rational numbers, but they are not interchangeable because rate and duration compose differently.
 
-**Units.** Physical or conceptual dimensions. A `Duration` is measured in beats, not seconds. A `Tempo` is beats per minute, not beats per second.
+**Meaning.** Semantic intent beyond raw representation. `PartId` and `EventId` both wrap `uint64_t`, but the `Id<T>` template tag prevents comparison between them.
 
-**Meaning.** Semantic intent beyond raw representation. Both `TrackIndex` and `MidiNote` are integers, but they are not interchangeable.
+### 1.2 Design Decisions
 
-### 1.2 Type Categories
+**Exact arithmetic over floating-point.** Pitch intervals and rhythmic durations use integer or rational types. No floating-point appears in the pitch or rhythm paths. This eliminates accumulation error in beat offset calculations and ensures that serialisation round-trips are exact.
 
-Sunny uses four categories of types:
+**Tagged identifiers over raw integers.** The `Id<T>` template carries a phantom tag type that the compiler checks at every use site. Two identifiers with different tags cannot be compared, assigned, or passed to the wrong function, even though both are `uint64_t` at runtime.
 
-| Category | Purpose | Example |
-|----------|---------|---------|
-| **Primitives** | Language-level values | `int`, `float`, `str`, `bool` |
-| **Type Aliases** | Semantic intent for primitives | `MidiNote`, `Tempo`, `Duration` |
-| **Named Tuples** | Immutable structured data | `NoteEvent`, `ChordVoicing`, `TimeSignature` |
-| **Dataclasses** | Mutable structured state | `SessionInfo`, `TrackInfo`, `ClipInfo` |
-
-### 1.3 Immutability Preference
-
-Prefer immutable types. Immutability provides:
-
-- **Thread safety.** No synchronization required.
-- **Referential transparency.** Functions can be memoized.
-- **Debugging clarity.** Values don't change unexpectedly.
-
-Use mutable dataclasses only for state that genuinely changes over time (session state, connection health).
+**`std::expected` over exceptions.** All fallible operations return `Result<T>` (aliased to `std::expected<T, ErrorCode>`). The caller must inspect the result before accessing the value. No exceptions cross module boundaries.
 
 ---
 
-## Part II: Primitive Types and Constraints
+## Part II: Primitive Types
 
-### 2.1 Integer Types
+### 2.1 Pitch Types
 
-| Type Alias | Range | Unit | Description |
-|------------|-------|------|-------------|
-| `MidiNote` | [0, 127] | semitones from C-1 | MIDI note number |
-| `PitchClass` | [0, 11] | semitones from C | Note within octave (0=C, 11=B) |
-| `Velocity` | [1, 127] | dimensionless | MIDI velocity (loudness) |
-| `Interval` | [-127, 127] | semitones | Signed interval between pitches |
+| Type | C++ type | Range | Description |
+|------|----------|-------|-------------|
+| `PitchClass` | `uint8_t` | [0, 11] | Chromatic pitch class (0 = C) |
+| `MidiNote` | `uint8_t` | [0, 127] | MIDI note number |
+| `Interval` | `int8_t` | [-127, 127] | Chromatic semitone displacement |
 
-### 2.2 Float Types
+`PitchClass` is a type alias, not an enum. Use integer constants and arithmetic directly.
 
-| Type Alias | Range | Unit | Precision |
-|------------|-------|------|-----------|
-| `BeatPosition` | [0, ∞) | beats | BEAT_EPSILON (1e-9) |
-| `Duration` | (0, ∞) | beats | DURATION_EPSILON (1e-6) |
-| `Tempo` | [20, 999] | BPM | 0.01 BPM |
-| `Frequency` | (0, ∞) | Hz | TOLERANCE_FREQUENCY_RELATIVE (1e-6) |
+### 2.2 Spelled Pitch
 
-### 2.3 String Types
+```cpp
+struct SpelledPitch {
+    uint8_t letter;     // 0=C, 1=D, 2=E, 3=F, 4=G, 5=A, 6=B
+    int8_t accidental;  // negative=flats, 0=natural, positive=sharps
+    int8_t octave;      // -1..9 for MIDI-bounded
+};
+```
 
-| Type | Pattern | Description |
-|------|---------|-------------|
-| Note Name | `[A-G][#b]?` | Scientific pitch name without octave |
-| Scale Name | `[a-z_]+` | Lowercase with underscores |
-| Roman Numeral | `[ivIV]+[0-9]*` | Chord degree notation |
+SpelledPitch preserves enharmonic spelling (C# and Db are distinct). It has no ordering operators; use `midi_value()` when range comparison is needed. Construction from scientific pitch notation uses `from_spn("C#4")`.
+
+### 2.3 Diatonic Interval
+
+```cpp
+struct DiatonicInterval {
+    int chromatic;   // Semitone displacement (unbounded)
+    int diatonic;    // Letter-name displacement (unbounded)
+};
+```
+
+The pair `(chromatic, diatonic)` uniquely determines interval quality (major, minor, perfect, augmented, diminished). Diatonic intervals compose correctly under `interval_add` and invert under `interval_invert`.
 
 ---
 
-## Part III: Coordinate Systems
+## Part III: Temporal Types
 
-### 3.1 Pitch Representations
+### 3.1 Beat (Exact Rational)
 
-Sunny uses three coordinate systems for pitch:
-
-**MIDI Numbers.** Integer representation for computational operations.
-- Range: 0-127
-- Middle C (C4) = 60
-- Formula: `midi = 12 * octave + pitch_class + 12`
-
-**Scientific Pitch.** String representation for human readability.
-- Format: `<note><accidental><octave>` (e.g., "C#4", "Bb3")
-- Accidentals: `#` (sharp), `b` (flat)
-
-**Frequency.** Physical representation in Hertz.
-- Formula: `f = 440 * 2^((midi - 69) / 12)`
-- A4 (MIDI 69) = 440 Hz by convention
-
-**Conversion invariants:**
-```
-midi_to_frequency(frequency_to_midi(f)) ≈ f  (within TOLERANCE_FREQUENCY_RELATIVE)
-parse_note(format_note(midi)) == midi
+```cpp
+struct Beat {
+    int numerator;
+    int denominator;  // must be > 0
+};
 ```
 
-### 3.2 Time Representations
+Beat represents duration or offset as an exact fraction of a whole note. Quarter note = `Beat{1, 4}`. Eighth note = `Beat{1, 8}`.
 
-**Beats.** Primary internal representation.
-- Zero-indexed from clip/arrangement start
-- Fractional beats for sub-beat positions
-- Duration is always positive
+**Construction:** `Beat{2, 1}` for two whole notes. Do not use `Beat(2)` — the single-argument form sets denominator to 0 (aggregate initialisation leaves the second field zero-initialised).
 
-**Seconds.** Physical time (requires tempo conversion).
-- Formula: `seconds = beats * 60 / tempo`
-- Not used internally; only for external APIs
+**Arithmetic:** `Beat::zero()` returns `{0, 1}`. Addition, subtraction, multiplication by integer, and comparison operators are provided. `to_float()` returns the value in whole-note units; multiply by 4 when dividing by quarter-note BPM.
 
-**Samples.** Audio sample positions (requires sample rate).
-- Formula: `samples = seconds * sample_rate`
-- Used only by transport layer
+### 3.2 ScoreTime (Hierarchical Position)
 
-**Conversion invariants:**
-```
-beats_to_seconds(seconds_to_beats(s, tempo), tempo) ≈ s
+```cpp
+struct ScoreTime {
+    uint32_t bar;  // 1-indexed
+    Beat beat;     // offset within bar, non-negative
+};
 ```
 
-### 3.3 Parameter Normalization
+Bar 1 is the first bar. `SCORE_START` is `{1, Beat::zero()}`. Comparison operators use bar first, then beat.
 
-All continuous device parameters are normalized to [0, 1]:
+### 3.3 PositiveRational (Rate)
+
+```cpp
+struct PositiveRational {
+    int64_t numerator;   // > 0
+    int64_t denominator; // > 0
+};
+```
+
+Used for tempo (BPM). Kept distinct from `Beat` to prevent rate-duration confusion. `make_bpm(120)` constructs `{120, 1}`.
+
+### 3.4 Temporal Conversion Chain
 
 ```
-normalized = (value - min) / (max - min)
-value = min + normalized * (max - min)
+ScoreTime → AbsoluteBeat → RealTime (seconds) → TickTime (MIDI ticks)
 ```
 
-This abstraction allows uniform parameter control regardless of underlying range.
+Each conversion is bijective within the score's tempo and time signature maps. The default PPQ is 480. Tick quantisation uses Bresenham rounding to distribute rounding error evenly.
 
 ---
 
-## Part IV: Structured Types
+## Part IV: Identifier Types
 
-### 4.1 NoteEvent
+### 4.1 Id Template
 
-The fundamental unit of melodic/rhythmic content.
-
-```python
-class NoteEvent(NamedTuple):
-    pitch: MidiNote      # [0, 127]
-    start_time: BeatPosition  # [0, ∞)
-    duration: Duration   # (0, ∞)
-    velocity: Velocity = 100  # [1, 127]
+```cpp
+template <typename T>
+struct Id {
+    uint64_t value;
+    constexpr bool operator==(const Id&) const noexcept = default;
+    constexpr auto operator<=>(const Id&) const noexcept = default;
+};
 ```
 
-**Invariants:**
-- `pitch` is a valid MIDI note
-- `start_time >= 0`
-- `duration > 0`
-- `velocity >= 1` (velocity 0 is note-off)
+The tag type `T` is never instantiated; it exists solely to distinguish identifier domains at compile time.
 
-### 4.2 TimeSignature
+### 4.2 Identifier Aliases
 
-Meter representation.
+| Alias | Tag | Domain |
+|-------|-----|--------|
+| `ScoreId` | `ScoreTag` | Score document |
+| `PartId` | `PartTag` | Part within a score |
+| `EventId` | `EventTag` | Event within a voice |
+| `SectionId` | `SectionTag` | Formal section |
+| `BeamGroupId` | `BeamGroupTag` | Beaming group |
+| `TupletId` | `TupletTag` | Tuplet bracket |
 
-```python
-class TimeSignature(NamedTuple):
-    numerator: int       # [1, 32] beats per measure
-    denominator: int     # ∈ {1, 2, 4, 8, 16, 32} note value
-```
-
-**Invariants:**
-- `numerator >= 1`
-- `denominator` is a power of 2
-
-**Semantics:**
-- Bar length in beats = `numerator * (4 / denominator)`
-- 4/4 = 4 beats; 6/8 = 3 beats; 5/4 = 5 beats
-
-### 4.3 ChordVoicing
-
-A chord as realized MIDI notes.
-
-```python
-class ChordVoicing(NamedTuple):
-    notes: tuple[MidiNote, ...]  # Ascending order
-    root: PitchClass             # [0, 11]
-    quality: ChordQuality        # Major, minor, etc.
-    inversion: int = 0           # [0, len(notes)-1]
-```
-
-**Invariants:**
-- `notes` is sorted ascending
-- `root` corresponds to the chord's theoretical root
-- `inversion` specifies which note is in the bass
-
-### 4.4 ProgressionChord
-
-A chord in harmonic context.
-
-```python
-class ProgressionChord(NamedTuple):
-    numeral: str         # Roman numeral (e.g., "ii", "V7")
-    root: str            # Note name (e.g., "D", "G")
-    quality: str         # Chord quality
-    notes: tuple[MidiNote, ...]  # Voicing
-```
-
-**Usage:** Represents chords within a key, enabling functional analysis.
+All identifiers are unique within a single Score document. The hash specialisation for `Id<T>` enables use in `std::unordered_map`.
 
 ---
 
-## Part V: State Types
+## Part V: Document Model Types
 
-### 5.1 SessionInfo
+### 5.1 Score Hierarchy
 
-Current Ableton session state.
-
-```python
-@dataclass
-class SessionInfo:
-    tempo: Tempo
-    time_signature: TimeSignature
-    is_playing: bool
-    track_count: dict[str, int]
-    current_time: BeatPosition
+```
+Score
+├── ScoreMetadata (title, composer, bar_count, ...)
+├── TempoMap (bar → TempoEvent)
+├── KeySignatureMap (bar → KeySignature)
+├── TimeSignatureMap (bar → TimeSignature)
+├── SectionMap (id → ScoreSection)
+├── Parts[]
+│   ├── PartDefinition (instrument, clef, range, ...)
+│   └── Measures[]
+│       └── Voices[]
+│           └── Events[]
+│               └── EventPayload (NoteGroup | RestEvent | ChordSymbolEvent | ScoreDirection)
+├── HarmonicAnnotationLayer
+└── OrchestrationLayer
 ```
 
-**Lifecycle:** Mutable; updated on session changes.
+### 5.2 Key Structured Types
 
-### 5.2 TrackInfo
+**KeySignature:** `{SpelledPitch root, ScaleDefinition mode, int8_t accidentals}`
 
-Information about a single track.
+**TempoEvent:** `{ScoreTime position, PositiveRational bpm, BeatUnit beat_unit, TempoTransitionType transition_type, ...}`
 
-```python
-@dataclass
-class TrackInfo:
-    index: int
-    name: str
-    track_type: TrackType
-    color: int
-    volume: float        # [0, 1]
-    pan: float           # [-1, 1]
-    muted: bool
-    solo: bool
-    armed: bool
-```
+**Note:** `{SpelledPitch pitch, VelocityValue velocity, optional<ArticulationType> articulation, optional<DynamicLevel> dynamic, optional<Ornament> ornament, bool tie_forward, ...}`
 
-### 5.3 ClipInfo
+**NoteGroup:** One or more simultaneous notes with shared duration, tuplet context, and beam group.
 
-Information about a clip slot.
+**Event:** `{EventId id, Beat offset, EventPayload payload}` — the atomic unit of musical content.
 
-```python
-@dataclass
-class ClipInfo:
-    track_index: int
-    slot_index: int
-    name: str
-    length: Duration
-    color: int
-    is_looping: bool
-    loop_start: BeatPosition
-    loop_end: BeatPosition
+**ScoreRegion:** `{ScoreTime start, ScoreTime end, vector<PartId> parts}` — empty parts vector means all parts.
+
+### 5.3 Validation Diagnostic
+
+```cpp
+struct Diagnostic {
+    ValidationSeverity severity;  // Error, Warning, Info
+    std::string rule;             // e.g. "S1", "M3", "R2"
+    std::string message;
+    std::optional<ScoreTime> location;
+    std::optional<PartId> part;
+    int error_code;               // 5000–5699
+};
 ```
 
 ---
 
 ## Part VI: Enumerations
 
-### 6.1 Musical Enums
+### 6.1 Musical Enumerations
+
+| Enum | Values | Range |
+|------|--------|-------|
+| `ArticulationType` | Staccato, Tenuto, Accent, Marcato, ... | 0–24 |
+| `DynamicLevel` | pppp, ppp, pp, p, mp, mf, f, ff, fff, ffff, fp, sfz, sfp, rfz | 0–13 |
+| `InstrumentType` | Violin, Piano, Trumpet, ... Custom | 0–80 |
+| `InstrumentFamily` | Strings, Woodwinds, Brass, Percussion, Keyboard, Voice, Electronic | 0–6 |
+| `Clef` | Treble, Bass, Alto, Tenor, Percussion, Tab | 0–5 |
+| `FormFunction` | Expository, Developmental, Transitional, Cadential, Introductory, Closing, Parenthetical | 0–6 |
+| `TexturalRole` | Melody, CounterMelody, HarmonicFill, BassLine, ... Accompagnato | 0–12 |
+| `TextureType` | Monophonic, Homophonic, Polyphonic, ... MelodyAccompaniment | 0–9 |
+
+### 6.2 System Enumerations
 
 | Enum | Values | Usage |
 |------|--------|-------|
-| `ChordQuality` | major, minor, diminished, augmented, dominant, ... | Chord classification |
-| `ScaleType` | major, minor, dorian, phrygian, ... | Scale selection |
-| `NoteValue` | 1, 2, 4, 8, 16, 32, 8t, 16t | Rhythmic subdivision |
-
-### 6.2 System Enums
-
-| Enum | Values | Usage |
-|------|--------|-------|
-| `TrackType` | midi, audio, return, master, group | Track classification |
-| `DeviceType` | instrument, audio_effect, midi_effect | Device classification |
-| `TrustLevel` | untrusted, local, authenticated, admin | Security levels |
-
-### 6.3 Functional Harmony
-
-| Function | Scale Degrees | Characteristic |
-|----------|---------------|----------------|
-| Tonic (T) | I, vi, iii | Stability, rest |
-| Subdominant (S) | IV, ii | Departure, preparation |
-| Dominant (D) | V, vii° | Tension, resolution demand |
+| `ValidationSeverity` | Error, Warning, Info | Diagnostic classification |
+| `DocumentState` | Draft, Valid, Compiled, Locked | Score lifecycle |
+| `BeatUnit` | Whole, Half, DottedHalf, Quarter, ... Sixteenth | Tempo marking |
+| `TempoTransitionType` | Immediate, Linear, MetricModulation | Tempo change shape |
+| `HairpinType` | Crescendo, Diminuendo | Dynamic change |
+| `GraceType` | Acciaccatura, Appoggiatura | Grace note type |
 
 ---
 
-## Part VII: Error Types
+## Part VII: Error Handling
 
-### 7.1 Error Code Ranges
+### 7.1 Result Type
 
-| Range | Category | Example |
+```cpp
+template <typename T>
+using Result = std::expected<T, ErrorCode>;
+```
+
+`ErrorCode` is an integer. Error code ranges are allocated by domain (see `standard.md` §3.2).
+
+### 7.2 Error Classification
+
+| Class | Response | Example |
 |-------|----------|---------|
-| 1xxx | Connection/Transport | CONNECTION_FAILED, TCP_TIMEOUT |
-| 2xxx | Validation | INVALID_MIDI_NOTE, MISSING_PARAM |
-| 3xxx | Theory | SCALE_GENERATION_FAILED |
-| 4xxx | Session/Track | TRACK_NOT_FOUND, CLIP_CREATE_FAILED |
-| 5xxx | Device | DEVICE_NOT_FOUND, PARAMETER_READ_ONLY |
-| 6xxx | Security | RATE_LIMIT_EXCEEDED, UNAUTHORIZED |
-| 7xxx | Snapshot | SNAPSHOT_NOT_FOUND |
-| 9xxx | Internal | INTERNAL_ERROR, NOT_IMPLEMENTED |
+| Recoverable | Return error to caller with context | Score not found in session |
+| Transient | Retry with backoff (bounded) | TCP connection timeout |
+| Invariant violation | Assert / abort | Beat denominator = 0 |
 
-### 7.2 Exception Hierarchy
+### 7.3 MCP Error Responses
 
-```
-SunnyError (base)
-├── ConnectionError (1xxx)
-├── ValidationError (2xxx)
-├── TheoryError (3xxx)
-├── SessionError (4xxx)
-├── DeviceError (5xxx)
-├── SecurityError (6xxx)
-└── SnapshotError (7xxx)
-```
+MCP tool handlers return `{"error": "message"}` for invalid input or failed operations. The error message includes enough context for the caller to diagnose the problem without leaking implementation detail.
 
 ---
 
-## Part VIII: Precision and Tolerances
+## Part VIII: Precision and Arithmetic
 
-### 8.1 Machine Precision
+### 8.1 Exact vs Approximate
 
-| Constant | Value | Usage |
-|----------|-------|-------|
-| FLOAT64_EPSILON | 2.22e-16 | Double precision unit roundoff |
-| FLOAT32_EPSILON | 1.19e-7 | Single precision unit roundoff |
+| Domain | Representation | Rationale |
+|--------|---------------|-----------|
+| Pitch intervals | Integer semitones | No accumulation error |
+| Rhythmic duration | Exact rational (`Beat`) | Subdivision nests without rounding |
+| Tempo | Exact rational (`PositiveRational`) | BPM comparisons are exact |
+| Frequency | `double` | Physical quantity; precision is bounded by measurement |
+| Roughness/consonance | `double` | Psychoacoustic approximation |
 
-### 8.2 Domain Tolerances
+### 8.2 Floating-Point Boundaries
 
-| Constant | Value | Usage |
-|----------|-------|-------|
-| BEAT_EPSILON | 1e-9 | Beat position equality |
-| DURATION_EPSILON | 1e-6 | Duration positivity check |
-| TOLERANCE_FREQUENCY_RELATIVE | 1e-6 | Frequency comparison |
-| TOLERANCE_PARAMETER_NORMALIZED | 1e-4 | OSC/MIDI parameter roundtrip |
+Floating-point enters the system at three boundaries:
+1. **Acoustic calculations** (frequency, roughness, virtual pitch) — inherently approximate
+2. **Temporal conversion to real time** — `absolute_beat_to_real_time` produces `double` seconds
+3. **MIDI compilation** — tick quantisation uses Bresenham rounding with integer arithmetic; the floating-point BPM is converted to integer microseconds-per-beat before quantisation
 
-### 8.3 Comparison Functions
-
-```python
-def beats_equal(a: float, b: float) -> bool:
-    """Test if two beat positions are equal within tolerance."""
-    return abs(a - b) < BEAT_EPSILON
-
-def duration_positive(d: float) -> bool:
-    """Test if duration is meaningfully positive."""
-    return d > DURATION_EPSILON
-```
+No floating-point appears in the pitch class, interval, scale, or rhythmic arithmetic paths.
 
 ---
 
-## Part IX: Type Conversion Reference
+## Part IX: Serialisation
 
-### 9.1 Pitch Conversions
+### 9.1 JSON Schema Versioning
 
-```python
-def midi_to_pitch_class(midi: int) -> int:
-    """MIDI note to pitch class (0-11)."""
-    return midi % 12
+Each IR document format carries a schema version integer. Deserialisation checks the version and rejects documents with a newer schema than the reader supports.
 
-def midi_to_octave(midi: int) -> int:
-    """MIDI note to octave (-1 to 9)."""
-    return (midi // 12) - 1
+| IR | Current schema version |
+|----|----------------------|
+| Score | 3 |
+| Timbre | 1 |
+| Mix | 1 |
+| Corpus | 1 |
 
-def midi_to_frequency(midi: int) -> float:
-    """MIDI note to frequency in Hz (A4=440)."""
-    return 440.0 * (2.0 ** ((midi - 69) / 12.0))
+### 9.2 Round-Trip Invariant
 
-def frequency_to_midi(freq: float) -> int:
-    """Frequency to nearest MIDI note."""
-    return round(69 + 12 * log2(freq / 440.0))
+For every Score `s`:
+```
+score_from_json(score_to_json(s)) == s
 ```
 
-### 9.2 Time Conversions
-
-```python
-def beats_to_seconds(beats: float, tempo: float) -> float:
-    """Convert beats to seconds at given tempo."""
-    return beats * 60.0 / tempo
-
-def seconds_to_beats(seconds: float, tempo: float) -> float:
-    """Convert seconds to beats at given tempo."""
-    return seconds * tempo / 60.0
-```
-
----
-
-## Conclusion
-
-The type system encodes domain knowledge in the type definitions themselves. A `MidiNote` cannot be negative; a `Duration` cannot be zero; a `TimeSignature` denominator is always a power of two.
-
-These constraints, enforced at the boundary where values enter the system, allow internal code to assume validity. The result is clearer code with fewer defensive checks and better error messages at the source of invalid data.
-
-*That is the type system of Sunny.*
+This invariant is verified by the test suite for representative fixtures covering all event types, annotation layers, and global maps.
