@@ -9,6 +9,8 @@
  */
 
 #include "TISZ001A.h"
+#include "../Score/SISZ002A.h"
+#include "TIVD001A.h"
 
 namespace Sunny::Core {
 
@@ -27,23 +29,11 @@ EnumT check_enum(int val, EnumT max_val, const char* name, const json& j) {
     return static_cast<EnumT>(val);
 }
 
-json beat_j(const Beat& b) {
-    return json{{"num", b.numerator}, {"den", b.denominator}};
-}
-
-Beat beat_f(const json& j) {
-    return Beat{j.at("num").get<std::int64_t>(),
-                j.at("den").get<std::int64_t>()};
-}
-
-json st_j(const ScoreTime& t) {
-    return json{{"bar", t.bar}, {"beat", beat_j(t.beat)}};
-}
-
-ScoreTime st_f(const json& j) {
-    return ScoreTime{j.at("bar").get<std::uint32_t>(),
-                     beat_f(j.at("beat"))};
-}
+// Shared scheme and guards live in SISZ002A; these aliases keep call sites terse
+json beat_j(const Beat& b) { return beat_to_json(b); }
+Beat beat_f(const json& j) { return beat_from_json(j); }
+json st_j(const ScoreTime& t) { return score_time_to_json(t); }
+ScoreTime st_f(const json& j) { return score_time_from_json(j); }
 
 json sp_j(const SpelledPitch& p) {
     return json{{"letter", p.letter}, {"acc", p.accidental}, {"oct", p.octave}};
@@ -1295,7 +1285,7 @@ json timbre_to_json(const TimbreProfile& profile) {
 Result<TimbreProfile> timbre_from_json(const json& j) {
     try {
         int version = j.at("schema_version").get<int>();
-        if (version != TIMBRE_IR_SCHEMA_VERSION) {
+        if (version < 1 || version > TIMBRE_IR_SCHEMA_VERSION) {
             return std::unexpected(ErrorCode::FormatError);
         }
 
@@ -1314,6 +1304,14 @@ Result<TimbreProfile> timbre_from_json(const json& j) {
         for (const auto& pr : j.at("presets"))
             p.presets.push_back(preset_f(pr));
         p.rendering = render_config_f(j.at("rendering"));
+
+        // Validate on load: structural (Error-severity) violations block
+        for (const auto& diag : validate_timbre(p)) {
+            if (diag.severity == ValidationSeverity::Error) {
+                return std::unexpected(ErrorCode::ValidationOnLoadFailed);
+            }
+        }
+
         return p;
     } catch (const json::exception&) {
         return std::unexpected(ErrorCode::FormatError);

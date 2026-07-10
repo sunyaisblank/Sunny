@@ -9,9 +9,19 @@
  * document model. Supports per-work, per-composer, and full-corpus
  * serialisation.
  *
+ * Schema versions:
+ * - v1: ScoreTime stored flat as {"bar", "beat_n", "beat_d"}; the reader
+ *   fabricated defaults for missing fields. v1 documents still load via
+ *   the lenient back-compat path (no validate-on-load).
+ * - v2 (current): ScoreTime uses the shared nested scheme from SISZ002A
+ *   ({"bar", "beat": {"num", "den"}}); the reader refuses documents with
+ *   missing required fields (ErrorCode::FormatError) and, for the corpus
+ *   database, blocks loading on Error-severity validation diagnostics
+ *   (ErrorCode::ValidationOnLoadFailed).
+ *
  * Invariants:
  * - Round-trip preserves all fields exactly
- * - Schema version is checked on load
+ * - Schema version is checked on load; accepted range is [1, 2]
  */
 
 #pragma once
@@ -23,7 +33,7 @@
 
 namespace Sunny::Core {
 
-constexpr int CORPUS_IR_SCHEMA_VERSION = 1;
+constexpr int CORPUS_IR_SCHEMA_VERSION = 2;
 
 /**
  * @brief Serialise a ComposerProfile to JSON.

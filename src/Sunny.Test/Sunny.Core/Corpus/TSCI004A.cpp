@@ -151,7 +151,8 @@ TEST_CASE("CISZ001A: corpus_to/from_json_string round-trip", "[corpus-ir][serial
 TEST_CASE("CISZ001A: rejects wrong schema version", "[corpus-ir][serialisation]") {
     nlohmann::json j = {{"schema_version", 999}, {"id", 1}, {"name", "X"}};
     auto result = composer_profile_from_json(j);
-    CHECK_FALSE(result.has_value());
+    REQUIRE_FALSE(result.has_value());
+    CHECK(result.error() == ErrorCode::FormatError);
 }
 
 // =============================================================================

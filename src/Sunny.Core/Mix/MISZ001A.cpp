@@ -9,6 +9,8 @@
  */
 
 #include "MISZ001A.h"
+#include "../Score/SISZ002A.h"
+#include "MIVD001A.h"
 
 namespace Sunny::Core {
 
@@ -20,23 +22,9 @@ namespace {
 // Shared low-level helpers
 // =============================================================================
 
-json beat_j(const Beat& b) {
-    return json{{"num", b.numerator}, {"den", b.denominator}};
-}
-
-Beat beat_f(const json& j) {
-    return Beat{j.at("num").get<std::int64_t>(),
-                j.at("den").get<std::int64_t>()};
-}
-
-json st_j(const ScoreTime& t) {
-    return json{{"bar", t.bar}, {"beat", beat_j(t.beat)}};
-}
-
-ScoreTime st_f(const json& j) {
-    return ScoreTime{j.at("bar").get<std::uint32_t>(),
-                     beat_f(j.at("beat"))};
-}
+// Shared scheme and guards live in SISZ002A; these aliases keep call sites terse
+json st_j(const ScoreTime& t) { return score_time_to_json(t); }
+ScoreTime st_f(const json& j) { return score_time_from_json(j); }
 
 // =============================================================================
 // SpatialPosition
@@ -999,7 +987,7 @@ nlohmann::json mix_to_json(const MixGraph& graph) {
 Result<MixGraph> mix_from_json(const nlohmann::json& j) {
     try {
         int version = j.at("schema_version").get<int>();
-        if (version != MIX_IR_SCHEMA_VERSION) {
+        if (version < 1 || version > MIX_IR_SCHEMA_VERSION) {
             return std::unexpected(ErrorCode::FormatError);
         }
 
@@ -1031,6 +1019,13 @@ Result<MixGraph> mix_from_json(const nlohmann::json& j) {
         graph.output_format = static_cast<OutputFormat>(
             j.at("output_format").get<int>());
         graph.max_group_nesting_depth = j.at("max_group_nesting_depth").get<std::uint8_t>();
+
+        // Validate on load: structural (Error-severity) violations block
+        for (const auto& diag : validate_mix(graph)) {
+            if (diag.severity == ValidationSeverity::Error) {
+                return std::unexpected(ErrorCode::ValidationOnLoadFailed);
+            }
+        }
 
         return graph;
     } catch (const json::exception&) {
