@@ -4,7 +4,7 @@ This module provides high-performance music theory computation.
 """
 
 from enum import IntEnum
-from typing import List, Set, Dict, Any
+from typing import Any
 
 __version__: str
 
@@ -46,7 +46,7 @@ class Beat:
 # =============================================================================
 
 class ChordVoicing:
-    notes: List[int]
+    notes: list[int]
     root: int
     quality: str
     inversion: int
@@ -60,7 +60,7 @@ class ChordVoicing:
 # =============================================================================
 
 class VoiceLeadingResult:
-    voiced_notes: List[int]
+    voiced_notes: list[int]
     total_motion: int
     has_parallel_fifths: bool
     has_parallel_octaves: bool
@@ -101,15 +101,15 @@ def closest_pitch_class_midi(reference: int, target_pc: int) -> int:
 # Pitch Class Set Operations
 # =============================================================================
 
-def pcs_transpose(pcs: Set[int], n: int) -> Set[int]:
+def pcs_transpose(pcs: set[int], n: int) -> set[int]:
     """Transpose pitch class set."""
     ...
 
-def pcs_invert(pcs: Set[int], axis: int = 0) -> Set[int]:
+def pcs_invert(pcs: set[int], axis: int = 0) -> set[int]:
     """Invert pitch class set."""
     ...
 
-def pcs_interval_vector(pcs: Set[int]) -> List[int]:
+def pcs_interval_vector(pcs: set[int]) -> list[int]:
     """Get interval vector."""
     ...
 
@@ -117,27 +117,35 @@ def pcs_interval_vector(pcs: Set[int]) -> List[int]:
 # Scale Operations
 # =============================================================================
 
-def generate_scale_notes(root_pc: int, intervals: List[int], octave: int) -> List[int]:
+def generate_scale_notes(root_pc: int, intervals: list[int], octave: int) -> list[int]:
     """Generate scale MIDI notes."""
     ...
 
-def is_note_in_scale(note: int, root_pc: int, intervals: List[int]) -> bool:
+def is_note_in_scale(note: int, root_pc: int, intervals: list[int]) -> bool:
     """Check if note is in scale."""
     ...
 
-def quantize_to_scale(note: int, root_pc: int, intervals: List[int]) -> int:
+def quantize_to_scale(note: int, root_pc: int, intervals: list[int]) -> int:
     """Quantize note to scale."""
+    ...
+
+def list_scale_names() -> list[str]:
+    """List all built-in scale names."""
+    ...
+
+def scale_intervals(name: str) -> list[int]:
+    """Get semitone intervals of a built-in scale."""
     ...
 
 # =============================================================================
 # Rhythm Operations
 # =============================================================================
 
-def euclidean_rhythm(pulses: int, steps: int, rotation: int = 0) -> List[bool]:
+def euclidean_rhythm(pulses: int, steps: int, rotation: int = 0) -> list[bool]:
     """Generate Euclidean rhythm pattern."""
     ...
 
-def euclidean_preset(name: str) -> List[bool]:
+def euclidean_preset(name: str) -> list[bool]:
     """Get named Euclidean preset."""
     ...
 
@@ -145,15 +153,12 @@ def euclidean_preset(name: str) -> List[bool]:
 # Harmony Operations
 # =============================================================================
 
-def negative_harmony(chord_pcs: Set[int], key_root: int) -> Set[int]:
+def negative_harmony(chord_pcs: set[int], key_root: int) -> set[int]:
     """Apply negative harmony transformation."""
     ...
 
 def generate_chord_from_numeral(
-    numeral: str,
-    key_root: int,
-    scale_intervals: List[int],
-    octave: int = 4
+    numeral: str, key_root: int, scale_intervals: list[int], octave: int = 4
 ) -> ChordVoicing:
     """Generate chord from Roman numeral."""
     ...
@@ -167,20 +172,20 @@ def generate_chord(root: int, quality: str, octave: int = 4) -> ChordVoicing:
 # =============================================================================
 
 def voice_lead_nearest_tone(
-    source_pitches: List[int],
-    target_pitch_classes: List[int],
+    source_pitches: list[int],
+    target_pitch_classes: list[int],
     lock_bass: bool = False,
     allow_parallel_fifths: bool = False,
-    allow_parallel_octaves: bool = False
+    allow_parallel_octaves: bool = False,
 ) -> VoiceLeadingResult:
     """Compute optimal voice leading."""
     ...
 
-def generate_close_voicing(pitch_classes: List[int], root_octave: int = 4) -> List[int]:
+def generate_close_voicing(pitch_classes: list[int], root_octave: int = 4) -> list[int]:
     """Generate close voicing."""
     ...
 
-def generate_drop2_voicing(close_voicing: List[int]) -> List[int]:
+def generate_drop2_voicing(close_voicing: list[int]) -> list[int]:
     """Generate drop-2 voicing."""
     ...
 
@@ -248,9 +253,9 @@ class Arpeggiator:
     def set_direction(self, direction: ArpDirection) -> None: ...
     def set_octave_range(self, octaves: int) -> None: ...
     def set_gate(self, gate: float) -> None: ...
-    def set_notes(self, notes: List[int]) -> None: ...
+    def set_notes(self, notes: list[int]) -> None: ...
     def clear(self) -> None: ...
-    def generate_pattern(self) -> List[int]: ...
+    def generate_pattern(self) -> list[int]: ...
     def reset(self) -> None: ...
     def next(self) -> int: ...
     def current(self) -> int: ...
@@ -265,8 +270,8 @@ def generate_arpeggio(
     direction: ArpDirection,
     step_duration: float = 0.25,
     gate: float = 0.5,
-    octaves: int = 1
-) -> List[Dict[str, Any]]:
+    octaves: int = 1,
+) -> list[dict[str, Any]]:
     """Generate arpeggio note events."""
     ...
 
@@ -299,9 +304,7 @@ class Transport:
     def position(self) -> TransportPosition: ...
     def tempo(self) -> float: ...
     def is_playing(self) -> bool: ...
-    def schedule_note(
-        self, tick: int, pitch: int, duration: int, velocity: int = 100
-    ) -> None: ...
+    def schedule_note(self, tick: int, pitch: int, duration: int, velocity: int = 100) -> None: ...
     def clear_scheduled(self) -> None: ...
     def advance(self, ticks: int) -> None: ...
 
@@ -344,7 +347,7 @@ class SessionStateMachine:
 # =============================================================================
 
 class BridgeMessageType(IntEnum):
-    QueryProperty = 0
+    GetProperty = 0
     SetProperty = 1
     CallMethod = 2
     CreateClip = 3
@@ -354,7 +357,7 @@ class BridgeMessageType(IntEnum):
 class BridgeMessage:
     type: BridgeMessageType
     path: str
-    args: List[Any]
+    args: list[Any]
 
 class OrchestratorResult:
     success: bool
@@ -369,9 +372,9 @@ class Orchestrator:
         slot_index: int,
         root: str,
         scale: str,
-        numerals: List[str],
+        numerals: list[str],
         octave: int = 4,
-        duration_beats: float = 4.0
+        duration_beats: float = 4.0,
     ) -> OrchestratorResult: ...
     def apply_euclidean_rhythm(
         self,
@@ -380,21 +383,21 @@ class Orchestrator:
         pulses: int,
         steps: int,
         pitch: int,
-        step_duration: float = 0.25
+        step_duration: float = 0.25,
     ) -> OrchestratorResult: ...
     def apply_arpeggio(
         self,
         track_index: int,
         slot_index: int,
-        numerals: List[str],
-        direction: ArpDirection,
-        step_duration: float = 0.25
+        numerals: list[str],
+        direction: str,
+        step_duration: float = 0.25,
     ) -> OrchestratorResult: ...
     def undo(self) -> bool: ...
     def redo(self) -> bool: ...
     def can_undo(self) -> bool: ...
     def can_redo(self) -> bool: ...
     def clear_history(self) -> None: ...
-    def drain_messages(self) -> List[BridgeMessage]: ...
+    def drain_messages(self) -> list[BridgeMessage]: ...
     def pending_message_count(self) -> int: ...
     def set_max_undo_levels(self, levels: int) -> None: ...

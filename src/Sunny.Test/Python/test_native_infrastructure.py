@@ -5,8 +5,6 @@ Tests the pybind11 bindings for Sunny.Infrastructure.
 
 from __future__ import annotations
 
-import pytest
-
 
 class TestSessionStateMachine:
     """Test session state machine."""

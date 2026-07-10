@@ -106,6 +106,7 @@ class LomHandler:
             # _Framework ControlSurface path
             if hasattr(self._surface, "_c_instance"):
                 import Live
+
                 app = Live.Application.get_application()
                 return app.get_document()
         except Exception:

@@ -141,28 +141,16 @@ class TestEngineEdgeCases:
             assert len(notes) == 7, f"Scale {scale} should have 7 notes"
 
 
-class TestNativeFallback:
-    """Test fallback behavior when native is unavailable."""
+class TestDeclineOverFabricate:
+    """The wrapper declines rather than substituting defaults."""
 
-    def test_fallback_pitch_class(self):
-        """Verify fallback pitch_class works."""
-        from sunny.core import pitch_class
+    def test_unknown_scale_info_raises(self, theory_engine):
+        """get_scale_info declines an unknown scale name."""
+        with pytest.raises(ValueError):
+            theory_engine.get_scale_info("nonexistent_scale")
 
-        # Should work regardless of native availability
-        assert pitch_class(60) == 0
-
-    def test_fallback_transpose(self):
-        """Verify fallback transpose works."""
-        from sunny.core import transpose
-
-        # Should work regardless of native availability
-        assert transpose(0, 7) == 7
-
-    def test_fallback_euclidean(self):
-        """Verify fallback euclidean_rhythm works."""
-        from sunny.core import euclidean_rhythm
-
-        # Should work regardless of native availability
-        pattern = euclidean_rhythm(3, 8)
-        assert len(pattern) == 8
-        assert sum(pattern) == 3
+    def test_scale_names_listed(self, theory_engine):
+        """Built-in scale registry is exposed and non-trivial."""
+        names = theory_engine.get_available_scales()
+        assert "major" in names
+        assert len(names) >= 16

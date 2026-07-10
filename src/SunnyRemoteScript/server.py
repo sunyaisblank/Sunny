@@ -16,7 +16,7 @@ import logging
 import socket
 import struct
 import threading
-from typing import Callable
+from collections.abc import Callable
 
 logger = logging.getLogger("SunnyRemoteScript.server")
 
@@ -54,7 +54,7 @@ class TcpServer:
         while self._running:
             try:
                 client, addr = self._server_socket.accept()
-            except socket.timeout:
+            except TimeoutError:
                 continue
             except OSError:
                 break
@@ -139,7 +139,7 @@ class TcpServer:
         while len(buf) < n:
             try:
                 chunk = sock.recv(n - len(buf))
-            except (socket.timeout, ConnectionResetError):
+            except (TimeoutError, ConnectionResetError):
                 return None
             if not chunk:
                 return None

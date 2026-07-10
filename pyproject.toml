@@ -1,7 +1,7 @@
 [project]
-name = "sunny-mcp"
+name = "sunny"
 version = "0.1.0"
-description = "Professional-grade MCP server for total AI agency over Ableton Live"
+description = "Python scripting facade for the Sunny music theory engine"
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.10"
@@ -29,23 +29,15 @@ classifiers = [
     "Topic :: Multimedia :: Sound/Audio :: MIDI",
 ]
 
-dependencies = [
-    "mcp>=1.0.0",
-    "music21>=9.1.0",
-    "python-osc>=1.8.3",
-]
+dependencies = []
 
 [project.optional-dependencies]
 dev = [
     "pytest>=7.4.0",
-    "pytest-asyncio>=0.21.0",
     "pytest-cov>=4.1.0",
     "ruff>=0.1.0",
     "mypy>=1.5.0",
 ]
-
-[project.scripts]
-sunny = "sunny.host.main:main"
 
 [build-system]
 requires = ["hatchling"]
@@ -75,8 +67,12 @@ ignore = [
 [tool.ruff.lint.pydocstyle]
 convention = "google"
 
+[tool.ruff.lint.per-file-ignores]
+# Ableton-side control surface: runs inside Live's embedded Python and is
+# kept minimal-churn; docstring pedantry and line-length do not apply.
+"src/SunnyRemoteScript/*" = ["D", "E501"]
+
 [tool.pytest.ini_options]
-asyncio_mode = "auto"
 testpaths = ["src/Sunny.Test/Python"]
 python_files = ["test_*.py"]
 python_functions = ["test_*"]
@@ -93,22 +89,10 @@ warn_redundant_casts = true
 warn_unused_ignores = true
 show_error_codes = true
 strict_equality = true
-mypy_path = "src/sunny/stubs"
+mypy_path = "stubs"
 
 [[tool.mypy.overrides]]
 module = "sunny_native.*"
-ignore_missing_imports = true
-
-[[tool.mypy.overrides]]
-module = "mcp.*"
-ignore_missing_imports = true
-
-[[tool.mypy.overrides]]
-module = "music21.*"
-ignore_missing_imports = true
-
-[[tool.mypy.overrides]]
-module = "pythonosc.*"
 ignore_missing_imports = true
 
 [tool.coverage.run]

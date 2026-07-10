@@ -5,8 +5,6 @@ Tests the pybind11 bindings for Sunny.Core.
 
 from __future__ import annotations
 
-import pytest
-
 
 class TestPitchOperations:
     """Test pitch class operations via native backend."""

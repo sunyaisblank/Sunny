@@ -218,6 +218,17 @@ PYBIND11_MODULE(sunny_native, m) {
     }, py::arg("note"), py::arg("root_pc"), py::arg("intervals"),
        "Quantize note to scale");
 
+    m.def("list_scale_names", []() {
+        auto names = list_scale_names();
+        return std::vector<std::string>(names.begin(), names.end());
+    }, "List all built-in scale names");
+
+    m.def("scale_intervals", [](const std::string& name) {
+        auto def = unwrap(find_scale(name), "Unknown scale name");
+        auto iv = def.get_intervals();
+        return std::vector<int>(iv.begin(), iv.end());
+    }, py::arg("name"), "Get semitone intervals of a built-in scale");
+
     // =========================================================================
     // Rhythm Operations
     // =========================================================================

@@ -20,12 +20,19 @@ except ImportError:
     class ControlSurface:  # type: ignore[no-redef]
         def __init__(self, c_instance=None):
             self._c_instance = c_instance
-        def log_message(self, msg): logging.info(msg)
-        def schedule_message(self, delay, callback): callback()
-        def disconnect(self): pass
 
-from .server import TcpServer
+        def log_message(self, msg):
+            logging.info(msg)
+
+        def schedule_message(self, delay, callback):
+            callback()
+
+        def disconnect(self):
+            pass
+
+
 from .handler import LomHandler
+from .server import TcpServer
 
 if TYPE_CHECKING:
     pass
