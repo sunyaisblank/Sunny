@@ -51,6 +51,14 @@ TEST_CASE("RDMD001A: LFO sine waveform", "[modulation][render]") {
         REQUIRE_THAT(min_val, WithinAbs(-1.0, 0.05));
         REQUIRE_THAT(max_val, WithinAbs(1.0, 0.05));
     }
+
+    SECTION("Reset restores initial state: phase and value both zero") {
+        for (int i = 0; i < 100; ++i) {
+            (void)lfo.process(1000.0);
+        }
+        lfo.reset();
+        REQUIRE(lfo.value() == 0.0);
+    }
 }
 
 TEST_CASE("RDMD001A: LFO square waveform", "[modulation][render]") {

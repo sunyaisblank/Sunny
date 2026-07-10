@@ -43,7 +43,7 @@ public:
     void set_frequency(double hz) { frequency_ = hz; }
     void set_waveform(LfoWaveform waveform) { waveform_ = waveform; }
     void set_phase(double phase) { phase_ = phase; }
-    void reset() { phase_ = 0.0; }
+    void reset() { phase_ = 0.0; current_value_ = 0.0; }
 
     /// Process one sample, advance phase
     [[nodiscard]] double process(double sample_rate);

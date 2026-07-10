@@ -5,8 +5,6 @@ Tests the pybind11 bindings for Sunny.Render.
 
 from __future__ import annotations
 
-import pytest
-
 
 class TestLfo:
     """Test LFO modulation source."""
@@ -224,15 +222,13 @@ class TestArpeggiator:
         arp.set_direction(sn.ArpDirection.Up)
         arp.set_notes([60, 64, 67])
 
-        # Step through pattern
+        # next() returns the current note, then advances (pinned by TSAP001A)
         arp.reset()
         assert arp.current() == 60
 
-        note1 = arp.next()
-        assert note1 == 64
-
-        note2 = arp.next()
-        assert note2 == 67
+        assert arp.next() == 60
+        assert arp.next() == 64
+        assert arp.next() == 67
 
 
 class TestTransport:
