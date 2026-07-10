@@ -119,7 +119,7 @@ Result<VoiceLeadingResult> voice_lead_nearest_tone(
     // Fix voice crossings (ensure ascending order)
     for (std::size_t i = 1; i < result.voiced_notes.size(); ++i) {
         while (result.voiced_notes[i] <= result.voiced_notes[i - 1]) {
-            if (result.voiced_notes[i] + 12 <= 127) {
+            if (result.voiced_notes[i] + 12 <= Constants::MIDI_NOTE_MAX) {
                 result.voiced_notes[i] += 12;
             } else if (result.voiced_notes[i - 1] >= 12) {
                 result.voiced_notes[i - 1] -= 12;
@@ -176,7 +176,7 @@ std::vector<MidiNote> generate_close_voicing(
         if (candidate <= last) {
             candidate += 12;
         }
-        if (candidate > 127) {
+        if (candidate > Constants::MIDI_NOTE_MAX) {
             candidate -= 12;  // Wrap if needed
         }
 
@@ -434,7 +434,7 @@ Result<VoiceLeadingResult> voice_lead_optimal(
     // Fix voice crossings (ensure ascending order)
     for (std::size_t i = 1; i < result.voiced_notes.size(); ++i) {
         while (result.voiced_notes[i] <= result.voiced_notes[i - 1]) {
-            if (result.voiced_notes[i] + 12 <= 127) {
+            if (result.voiced_notes[i] + 12 <= Constants::MIDI_NOTE_MAX) {
                 result.voiced_notes[i] += 12;
             } else if (result.voiced_notes[i - 1] >= 12) {
                 result.voiced_notes[i - 1] -= 12;

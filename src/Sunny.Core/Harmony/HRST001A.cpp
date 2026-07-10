@@ -34,11 +34,12 @@ bool is_chord_diatonic(
     auto scale = key_scale(key);
     bool in_scale[12] = {};
     for (Interval iv : scale) {
-        in_scale[(key.root + iv) % 12] = true;
+        in_scale[mod12_positive(key.root + iv)] = true;
     }
 
     for (Interval iv : *intervals_opt) {
-        PitchClass pc = (chord_root + (iv % 12)) % 12;
+        // Interval is signed: euclidean modulo, not %, keeps the index in [0, 11]
+        PitchClass pc = mod12_positive(chord_root + iv);
         if (!in_scale[pc]) return false;
     }
     return true;

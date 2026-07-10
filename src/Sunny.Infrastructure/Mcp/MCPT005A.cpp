@@ -168,7 +168,9 @@ json score_time_j(const ScoreTime& t) {
 json spelled_pitch_j(const SpelledPitch& sp) {
     static constexpr const char* LETTERS[] = {"C","D","E","F","G","A","B"};
     return {
-        {"letter", LETTERS[sp.letter % 7]},
+        // letter > 6 violates the SpelledPitch invariant; emit "?" rather than
+        // aliasing the corrupt value onto a wrong letter name
+        {"letter", sp.letter < 7 ? LETTERS[sp.letter] : "?"},
         {"accidental", sp.accidental},
         {"octave", sp.octave}
     };

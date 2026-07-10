@@ -35,7 +35,7 @@ ChordScaleAnalysis analyze_chord_scale(
     // Build set of chord pitch classes for fast lookup
     bool is_chord[12] = {};
     for (PitchClass pc : chord_pcs) {
-        is_chord[pc % 12] = true;
+        is_chord[mod12_positive(pc)] = true;
     }
 
     // Iterate over scale tones
