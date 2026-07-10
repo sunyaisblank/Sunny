@@ -89,8 +89,8 @@ struct ChordVoicing {
  */
 struct ScaleDefinition {
     std::string_view name;
-    std::array<Interval, 12> intervals;  ///< Semitones from root (max 12)
-    std::uint8_t note_count;              ///< Actual number of notes
+    std::array<Interval, 12> intervals{};  ///< Semitones from root (max 12)
+    std::uint8_t note_count{0};            ///< Actual number of notes
     std::string_view description;
 
     [[nodiscard]] std::span<const Interval> get_intervals() const noexcept {

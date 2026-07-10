@@ -10,9 +10,13 @@
  * 2. Runs incremental validation on the affected region
  * 3. Marks affected annotation layers as stale
  * 4. Increments document version counter
- * 5. Pushes inverse operation onto the undo stack
+ * 5. Pushes a full pre-mutation document snapshot onto the undo stack
  *
- * Invariant: mutation + inverse restores previous state exactly.
+ * Undo and redo swap the live document with a stored snapshot. Multi-part
+ * mutations are atomic: a mid-mutation failure restores the pre-mutation
+ * snapshot before the error propagates.
+ *
+ * Invariant: undo restores the pre-mutation document exactly.
  * Invariant: version counter increases monotonically, never reused.
  */
 
@@ -21,7 +25,8 @@
 #include "SIDC001A.h"
 #include "../Pitch/PTDI001A.h"
 
-#include <functional>
+#include <memory>
+#include <optional>
 #include <vector>
 
 namespace Sunny::Core {
@@ -45,32 +50,32 @@ struct MutationResult {
 // =============================================================================
 
 /**
- * @brief Opaque undo entry stored on the undo stack
+ * @brief Undo entry storing a full document snapshot
  *
- * Contains both a forward callable (re-applies the mutation) and an
- * inverse callable (restores previous state). Undo calls inverse;
- * redo calls forward.
+ * Holds the document state captured before the mutation was applied.
+ * Undo swaps the live document with this snapshot; redo swaps back.
+ * The shared_ptr keeps moves between the undo and redo stacks cheap
+ * and the snapshot immutable once captured.
  */
 struct UndoEntry {
-    std::uint64_t version;                ///< Version when mutation was applied
-    std::function<VoidResult()> forward;  ///< Re-applies the mutation
-    std::function<VoidResult()> inverse;  ///< Restores previous state
-    std::string description;              ///< Human-readable mutation name
+    std::uint64_t version;               ///< Version of the snapshot state
+    std::shared_ptr<const Score> state;  ///< Document before the mutation
+    std::string description;             ///< Human-readable mutation name
 };
 
 /**
  * @brief Undo stack for a Score document
  *
- * Maintains undo and redo stacks. Each mutation pushes its inverse
- * onto the undo stack. Undo pops and applies the inverse, pushing
- * the re-do onto the redo stack.
+ * Maintains undo and redo stacks of document snapshots. Each mutation
+ * pushes its pre-mutation state. Undo saves the live document onto the
+ * redo stack and restores the popped snapshot; redo mirrors this.
  */
 struct UndoStack {
     std::vector<UndoEntry> undo_entries;
     std::vector<UndoEntry> redo_entries;
 
     std::uint32_t group_depth = 0;
-    std::vector<UndoEntry> pending_group;
+    std::optional<UndoEntry> pending_group;
     std::string group_description;
 
     [[nodiscard]] bool can_undo() const noexcept {

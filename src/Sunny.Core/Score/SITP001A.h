@@ -411,7 +411,7 @@ enum class VibratoSpeed : std::uint8_t {
 struct KeySignature {
     SpelledPitch root;          ///< Tonic (letter + accidental; octave ignored)
     ScaleDefinition mode;       ///< Scale type
-    std::int8_t accidentals;    ///< Signed count: +sharps, -flats
+    std::int8_t accidentals{0}; ///< Signed count: +sharps, -flats
 
     constexpr bool operator==(const KeySignature& o) const noexcept {
         return root == o.root && accidentals == o.accidentals;

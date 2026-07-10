@@ -115,17 +115,22 @@ void for_each_event_in_region(Score& score, const ScoreRegion& region, Fn&& fn) 
     }
 }
 
-/// Push an undo entry onto the stack (if provided), clearing redo.
-/// When group_depth > 0, entries accumulate in pending_group instead.
-void push_undo(UndoStack* undo, Score& score, std::string desc,
-               std::function<VoidResult()> forward,
-               std::function<VoidResult()> inverse) {
-    if (!undo) return;
+/// Push a pre-mutation snapshot onto the undo stack (if provided), clearing
+/// redo. When group_depth > 0, only the first snapshot of the group is kept:
+/// the earliest 'before' state covers the whole group.
+void push_snapshot(UndoStack* undo, std::optional<Score>&& before,
+                   std::string desc) {
+    if (!undo || !before) return;
+    const std::uint64_t snapshot_version = before->version;
     UndoEntry entry{
-        score.version, std::move(forward), std::move(inverse), std::move(desc)
+        snapshot_version,
+        std::make_shared<const Score>(std::move(*before)),
+        std::move(desc)
     };
     if (undo->group_depth > 0) {
-        undo->pending_group.push_back(std::move(entry));
+        if (!undo->pending_group) {
+            undo->pending_group = std::move(entry);
+        }
     } else {
         undo->undo_entries.push_back(std::move(entry));
         undo->redo_entries.clear();
@@ -183,12 +188,14 @@ Result<MutationResult> insert_note(
         return std::unexpected(ErrorCode::InvalidMutation);
     }
 
+    std::optional<Score> before;
+    if (undo) before = score;
+
     NoteGroup ng;
     ng.notes.push_back(std::move(note));
     ng.duration = duration;
 
     Event event{allocate_event_id(), offset, std::move(ng)};
-    EventId new_id = event.id;
 
     // Insert in offset order
     auto it = std::lower_bound(
@@ -201,50 +208,7 @@ Result<MutationResult> insert_note(
 
     bump_version(score);
 
-    // Capture the inserted event for forward replay
-    auto inserted_payload = target_voice->events.back().payload;
-    for (const auto& ev : target_voice->events) {
-        if (ev.id == new_id) { inserted_payload = ev.payload; break; }
-    }
-
-    // Shared cell: forward closure writes fresh ID on redo; inverse reads it.
-    auto shared_id = std::make_shared<EventId>(new_id);
-
-    push_undo(undo, score, "insert_note",
-        [&score, part_id, bar, voice_index, offset, inserted_payload, shared_id]() -> VoidResult {
-            // Forward: re-insert a note with the same payload
-            auto* p = find_part(score, part_id);
-            if (!p || bar < 1 || bar > p->measures.size())
-                return std::unexpected(ErrorCode::InvalidMutation);
-            auto& m = p->measures[bar - 1];
-            Voice* v = nullptr;
-            for (auto& vc : m.voices) {
-                if (vc.voice_index == voice_index) { v = &vc; break; }
-            }
-            if (!v) return std::unexpected(ErrorCode::InvalidMutation);
-            EventId fresh = allocate_event_id();
-            *shared_id = fresh;
-            Event event{fresh, offset, inserted_payload};
-            auto it = std::lower_bound(v->events.begin(), v->events.end(), offset,
-                [](const Event& e, const Beat& off) { return e.offset < off; });
-            v->events.insert(it, std::move(event));
-            bump_version(score);
-            return {};
-        },
-        [&score, shared_id]() -> VoidResult {
-            // Erase the event entirely (not delete_event, which replaces with rest)
-            auto loc = find_event(score, *shared_id);
-            if (!loc.event) return std::unexpected(ErrorCode::InvalidMutation);
-            auto& events = loc.voice->events;
-            events.erase(
-                std::remove_if(events.begin(), events.end(),
-                    [&](const Event& e) { return e.id == *shared_id; }),
-                events.end()
-            );
-            bump_version(score);
-            return {};
-        }
-    );
+    push_snapshot(undo, std::move(before), "insert_note");
 
     mark_harmonic_stale(score, bar);
 
@@ -261,12 +225,10 @@ Result<MutationResult> delete_event(
         return std::unexpected(ErrorCode::InvalidMutation);
     }
 
-    // Capture state before mutation for undo
-    auto old_payload = loc.event->payload;
-    auto old_offset = loc.event->offset;
+    std::optional<Score> before;
+    if (undo) before = score;
+
     auto old_bar = loc.measure->bar_number;
-    auto old_voice_index = loc.voice->voice_index;
-    auto old_part_id = loc.part->id;
 
     Beat dur = loc.event->duration();
     if (dur > Beat::zero()) {
@@ -284,35 +246,7 @@ Result<MutationResult> delete_event(
 
     bump_version(score);
 
-    push_undo(undo, score, "delete_event",
-        [&score, event_id]() -> VoidResult {
-            // Forward: re-delete the event
-            auto result = delete_event(score, event_id);
-            if (!result) return std::unexpected(result.error());
-            return {};
-        },
-        [&score, old_payload, old_offset, old_bar, old_voice_index, old_part_id]() -> VoidResult {
-            // Inverse: re-insert the event at the original location
-            Part* part = find_part(score, old_part_id);
-            if (!part) return std::unexpected(ErrorCode::InvalidMutation);
-            if (old_bar < 1 || old_bar > part->measures.size())
-                return std::unexpected(ErrorCode::InvalidMutation);
-            auto& measure = part->measures[old_bar - 1];
-            Voice* voice = nullptr;
-            for (auto& v : measure.voices) {
-                if (v.voice_index == old_voice_index) { voice = &v; break; }
-            }
-            if (!voice) return std::unexpected(ErrorCode::InvalidMutation);
-            Event event{allocate_event_id(), old_offset, old_payload};
-            auto it = std::lower_bound(
-                voice->events.begin(), voice->events.end(), old_offset,
-                [](const Event& e, const Beat& off) { return e.offset < off; }
-            );
-            voice->events.insert(it, std::move(event));
-            bump_version(score);
-            return {};
-        }
-    );
+    push_snapshot(undo, std::move(before), "delete_event");
 
     mark_harmonic_stale(score, old_bar);
 
@@ -334,23 +268,13 @@ Result<MutationResult> modify_pitch(
         return std::unexpected(ErrorCode::InvalidMutation);
     }
 
-    SpelledPitch old_pitch = ng->notes[note_index].pitch;
+    std::optional<Score> before;
+    if (undo) before = score;
 
     ng->notes[note_index].pitch = new_pitch;
     bump_version(score);
 
-    push_undo(undo, score, "modify_pitch",
-        [&score, event_id, note_index, new_pitch]() -> VoidResult {
-            auto result = modify_pitch(score, event_id, note_index, new_pitch);
-            if (!result) return std::unexpected(result.error());
-            return {};
-        },
-        [&score, event_id, note_index, old_pitch]() -> VoidResult {
-            auto result = modify_pitch(score, event_id, note_index, old_pitch);
-            if (!result) return std::unexpected(result.error());
-            return {};
-        }
-    );
+    push_snapshot(undo, std::move(before), "modify_pitch");
 
     mark_harmonic_stale(score, loc.measure->bar_number);
 
@@ -366,7 +290,8 @@ Result<MutationResult> modify_duration(
     auto loc = find_event(score, event_id);
     if (!loc.event) return std::unexpected(ErrorCode::InvalidMutation);
 
-    Beat old_dur = loc.event->duration();
+    std::optional<Score> before;
+    if (undo) before = score;
 
     if (auto* ng = std::get_if<NoteGroup>(&loc.event->payload)) {
         ng->duration = new_duration;
@@ -378,18 +303,7 @@ Result<MutationResult> modify_duration(
 
     bump_version(score);
 
-    push_undo(undo, score, "modify_duration",
-        [&score, event_id, new_duration]() -> VoidResult {
-            auto result = modify_duration(score, event_id, new_duration);
-            if (!result) return std::unexpected(result.error());
-            return {};
-        },
-        [&score, event_id, old_dur]() -> VoidResult {
-            auto result = modify_duration(score, event_id, old_dur);
-            if (!result) return std::unexpected(result.error());
-            return {};
-        }
-    );
+    push_snapshot(undo, std::move(before), "modify_duration");
 
     mark_harmonic_stale(score, loc.measure->bar_number);
 
@@ -411,23 +325,13 @@ Result<MutationResult> modify_velocity(
         return std::unexpected(ErrorCode::InvalidMutation);
     }
 
-    VelocityValue old_vel = ng->notes[note_index].velocity;
+    std::optional<Score> before;
+    if (undo) before = score;
 
     ng->notes[note_index].velocity = new_velocity;
     bump_version(score);
 
-    push_undo(undo, score, "modify_velocity",
-        [&score, event_id, note_index, new_velocity]() -> VoidResult {
-            auto result = modify_velocity(score, event_id, note_index, new_velocity);
-            if (!result) return std::unexpected(result.error());
-            return {};
-        },
-        [&score, event_id, note_index, old_vel]() -> VoidResult {
-            auto result = modify_velocity(score, event_id, note_index, old_vel);
-            if (!result) return std::unexpected(result.error());
-            return {};
-        }
-    );
+    push_snapshot(undo, std::move(before), "modify_velocity");
 
     return MutationResult{{}};
 }
@@ -447,23 +351,13 @@ Result<MutationResult> set_articulation(
         return std::unexpected(ErrorCode::InvalidMutation);
     }
 
-    auto old_art = ng->notes[note_index].articulation;
+    std::optional<Score> before;
+    if (undo) before = score;
 
     ng->notes[note_index].articulation = articulation;
     bump_version(score);
 
-    push_undo(undo, score, "set_articulation",
-        [&score, event_id, note_index, articulation]() -> VoidResult {
-            auto result = set_articulation(score, event_id, note_index, articulation);
-            if (!result) return std::unexpected(result.error());
-            return {};
-        },
-        [&score, event_id, note_index, old_art]() -> VoidResult {
-            auto result = set_articulation(score, event_id, note_index, old_art);
-            if (!result) return std::unexpected(result.error());
-            return {};
-        }
-    );
+    push_snapshot(undo, std::move(before), "set_articulation");
 
     return MutationResult{{}};
 }
@@ -493,34 +387,11 @@ Result<MutationResult> set_dynamic(
         if (event.offset == position.beat) {
             auto* ng = std::get_if<NoteGroup>(&event.payload);
             if (ng && !ng->notes.empty()) {
-                auto old_dynamic = ng->notes[0].dynamic;
+                std::optional<Score> before;
+                if (undo) before = score;
                 ng->notes[0].dynamic = level;
                 bump_version(score);
-                push_undo(undo, score, "set_dynamic",
-                    [&score, part_id, position, level]() -> VoidResult {
-                        auto result = set_dynamic(score, part_id, position, level);
-                        if (!result) return std::unexpected(result.error());
-                        return {};
-                    },
-                    [&score, part_id, position, old_dynamic]() -> VoidResult {
-                        Part* p = find_part(score, part_id);
-                        if (!p || position.bar < 1 || position.bar > p->measures.size())
-                            return std::unexpected(ErrorCode::InvalidMutation);
-                        auto& m = p->measures[position.bar - 1];
-                        if (m.voices.empty()) return std::unexpected(ErrorCode::InvalidMutation);
-                        for (auto& ev : m.voices[0].events) {
-                            if (ev.offset == position.beat) {
-                                auto* g = std::get_if<NoteGroup>(&ev.payload);
-                                if (g && !g->notes.empty()) {
-                                    g->notes[0].dynamic = old_dynamic;
-                                    bump_version(score);
-                                    return {};
-                                }
-                            }
-                        }
-                        return std::unexpected(ErrorCode::InvalidMutation);
-                    }
-                );
+                push_snapshot(undo, std::move(before), "set_dynamic");
                 return MutationResult{{}};
             }
         }
@@ -541,25 +412,12 @@ Result<MutationResult> insert_hairpin(
     Part* part = find_part(score, part_id);
     if (!part) return std::unexpected(ErrorCode::InvalidMutation);
 
-    auto hairpin_index = part->hairpins.size();
+    std::optional<Score> before;
+    if (undo) before = score;
+
     part->hairpins.push_back(Hairpin{start, end, type, target});
     bump_version(score);
-    push_undo(undo, score, "insert_hairpin",
-        [&score, part_id, start, end, type, target]() -> VoidResult {
-            auto result = insert_hairpin(score, part_id, start, end, type, target);
-            if (!result) return std::unexpected(result.error());
-            return {};
-        },
-        [&score, part_id, hairpin_index]() -> VoidResult {
-            Part* p = find_part(score, part_id);
-            if (!p || hairpin_index >= p->hairpins.size())
-                return std::unexpected(ErrorCode::InvalidMutation);
-            p->hairpins.erase(p->hairpins.begin() +
-                static_cast<std::ptrdiff_t>(hairpin_index));
-            bump_version(score);
-            return {};
-        }
-    );
+    push_snapshot(undo, std::move(before), "insert_hairpin");
     return MutationResult{{}};
 }
 
@@ -578,23 +436,13 @@ Result<MutationResult> set_tie(
         return std::unexpected(ErrorCode::InvalidMutation);
     }
 
-    bool old_tie = ng->notes[note_index].tie_forward;
+    std::optional<Score> before;
+    if (undo) before = score;
 
     ng->notes[note_index].tie_forward = tied;
     bump_version(score);
 
-    push_undo(undo, score, "set_tie",
-        [&score, event_id, note_index, tied]() -> VoidResult {
-            auto result = set_tie(score, event_id, note_index, tied);
-            if (!result) return std::unexpected(result.error());
-            return {};
-        },
-        [&score, event_id, note_index, old_tie]() -> VoidResult {
-            auto result = set_tie(score, event_id, note_index, old_tie);
-            if (!result) return std::unexpected(result.error());
-            return {};
-        }
-    );
+    push_snapshot(undo, std::move(before), "set_tie");
 
     return MutationResult{{}};
 }
@@ -611,24 +459,16 @@ Result<MutationResult> transpose_event(
     auto* ng = std::get_if<NoteGroup>(&loc.event->payload);
     if (!ng) return std::unexpected(ErrorCode::InvalidMutation);
 
+    std::optional<Score> before;
+    if (undo) before = score;
+
     for (auto& note : ng->notes) {
         note.pitch = apply_interval(note.pitch, interval);
     }
 
     bump_version(score);
 
-    push_undo(undo, score, "transpose_event",
-        [&score, event_id, interval]() -> VoidResult {
-            auto result = transpose_event(score, event_id, interval);
-            if (!result) return std::unexpected(result.error());
-            return {};
-        },
-        [&score, event_id, interval]() -> VoidResult {
-            auto result = transpose_event(score, event_id, interval_negate(interval));
-            if (!result) return std::unexpected(result.error());
-            return {};
-        }
-    );
+    push_snapshot(undo, std::move(before), "transpose_event");
 
     mark_harmonic_stale(score, loc.measure->bar_number);
 
@@ -654,6 +494,9 @@ Result<MutationResult> insert_measures(
         if (after_bar > part.measures.size())
             return std::unexpected(ErrorCode::InvalidMutation);
     }
+
+    std::optional<Score> before;
+    if (undo) before = score;
 
     // Determine time signature for new measures
     TimeSignature ts{{4}, 4};  // Default 4/4
@@ -720,18 +563,7 @@ Result<MutationResult> insert_measures(
     score.metadata.total_bars += count;
     bump_version(score);
 
-    push_undo(undo, score, "insert_measures",
-        [&score, after_bar, count]() -> VoidResult {
-            auto result = insert_measures(score, after_bar, count);
-            if (!result) return std::unexpected(result.error());
-            return {};
-        },
-        [&score, after_bar, count]() -> VoidResult {
-            auto result = delete_measures(score, after_bar + 1, count);
-            if (!result) return std::unexpected(result.error());
-            return {};
-        }
-    );
+    push_snapshot(undo, std::move(before), "insert_measures");
 
     return MutationResult{{}};
 }
@@ -751,72 +583,8 @@ Result<MutationResult> delete_measures(
 
     std::uint32_t first = bar - 1;  // 0-indexed
 
-    // Capture deleted measures per part for undo
-    struct PartMeasures {
-        PartId part_id;
-        std::vector<Measure> measures;
-    };
-    std::vector<PartMeasures> saved_measures;
-    for (const auto& part : score.parts) {
-        PartMeasures pm{part.id, {}};
-        for (std::uint32_t i = first; i < first + count && i < part.measures.size(); ++i) {
-            pm.measures.push_back(part.measures[i]);
-        }
-        saved_measures.push_back(std::move(pm));
-    }
-
-    // Capture deleted map entries
-    std::vector<TempoEvent> saved_tempo;
-    for (const auto& e : score.tempo_map) {
-        if (e.position.bar >= bar && e.position.bar < bar + count)
-            saved_tempo.push_back(e);
-    }
-    std::vector<KeySignatureEntry> saved_keys;
-    for (const auto& e : score.key_map) {
-        if (e.position.bar >= bar && e.position.bar < bar + count)
-            saved_keys.push_back(e);
-    }
-    std::vector<TimeSignatureEntry> saved_time;
-    for (const auto& e : score.time_map) {
-        if (e.bar >= bar && e.bar < bar + count)
-            saved_time.push_back(e);
-    }
-
-    // Save annotation entries in the deleted range for undo
-    std::vector<ScoreSection> saved_sections;
-    for (const auto& s : score.section_map) {
-        if (s.start.bar >= bar && s.start.bar < bar + count)
-            saved_sections.push_back(s);
-    }
-    std::vector<HarmonicAnnotation> saved_harmony;
-    for (const auto& ha : score.harmonic_annotations) {
-        if (ha.position.bar >= bar && ha.position.bar < bar + count)
-            saved_harmony.push_back(ha);
-    }
-    std::vector<OrchestrationAnnotation> saved_orch;
-    for (const auto& oa : score.orchestration_annotations) {
-        if (oa.start.bar >= bar && oa.start.bar < bar + count)
-            saved_orch.push_back(oa);
-    }
-    std::vector<RehearsalMark> saved_marks;
-    for (const auto& rm : score.rehearsal_marks) {
-        if (rm.position.bar >= bar && rm.position.bar < bar + count)
-            saved_marks.push_back(rm);
-    }
-    // Hairpins saved per-part alongside measures
-    struct PartHairpins {
-        PartId part_id;
-        std::vector<Hairpin> hairpins;
-    };
-    std::vector<PartHairpins> saved_hairpins;
-    for (const auto& part : score.parts) {
-        PartHairpins ph{part.id, {}};
-        for (const auto& hp : part.hairpins) {
-            if (hp.start.bar >= bar && hp.start.bar < bar + count)
-                ph.hairpins.push_back(hp);
-        }
-        saved_hairpins.push_back(std::move(ph));
-    }
+    std::optional<Score> before;
+    if (undo) before = score;
 
     for (auto& part : score.parts) {
         part.measures.erase(
@@ -926,113 +694,7 @@ Result<MutationResult> delete_measures(
     score.metadata.total_bars -= count;
     bump_version(score);
 
-    push_undo(undo, score, "delete_measures",
-        [&score, bar, count]() -> VoidResult {
-            auto result = delete_measures(score, bar, count);
-            if (!result) return std::unexpected(result.error());
-            return {};
-        },
-        [&score, bar, count, saved_measures, saved_tempo, saved_keys, saved_time,
-         saved_sections, saved_harmony, saved_orch, saved_marks, saved_hairpins]() -> VoidResult {
-            std::uint32_t ins = bar - 1;
-            // Re-insert measures into each part
-            for (const auto& pm : saved_measures) {
-                Part* part = find_part(score, pm.part_id);
-                if (!part) continue;
-                part->measures.insert(
-                    part->measures.begin() + static_cast<std::ptrdiff_t>(ins),
-                    pm.measures.begin(), pm.measures.end()
-                );
-                for (std::size_t m = 0; m < part->measures.size(); ++m) {
-                    part->measures[m].bar_number = static_cast<std::uint32_t>(m + 1);
-                }
-            }
-            // Re-insert map entries and shift later entries back
-            for (auto& entry : score.tempo_map) {
-                if (entry.position.bar >= bar) entry.position.bar += count;
-            }
-            for (const auto& e : saved_tempo) score.tempo_map.push_back(e);
-            std::sort(score.tempo_map.begin(), score.tempo_map.end(),
-                [](const TempoEvent& a, const TempoEvent& b) {
-                    return a.position < b.position;
-                });
-
-            for (auto& entry : score.key_map) {
-                if (entry.position.bar >= bar) entry.position.bar += count;
-            }
-            for (const auto& e : saved_keys) score.key_map.push_back(e);
-            std::sort(score.key_map.begin(), score.key_map.end(),
-                [](const KeySignatureEntry& a, const KeySignatureEntry& b) {
-                    return a.position < b.position;
-                });
-
-            for (auto& entry : score.time_map) {
-                if (entry.bar >= bar) entry.bar += count;
-            }
-            for (const auto& e : saved_time) score.time_map.push_back(e);
-            std::sort(score.time_map.begin(), score.time_map.end(),
-                [](const TimeSignatureEntry& a, const TimeSignatureEntry& b) {
-                    return a.bar < b.bar;
-                });
-
-            // Restore annotation structures
-            for (auto& s : score.section_map) {
-                if (s.start.bar >= bar) s.start.bar += count;
-                if (s.end.bar >= bar) s.end.bar += count;
-            }
-            for (const auto& s : saved_sections) score.section_map.push_back(s);
-            std::sort(score.section_map.begin(), score.section_map.end(),
-                [](const ScoreSection& a, const ScoreSection& b) {
-                    return a.start < b.start;
-                });
-
-            for (auto& ha : score.harmonic_annotations) {
-                if (ha.position.bar >= bar) ha.position.bar += count;
-            }
-            for (const auto& ha : saved_harmony) score.harmonic_annotations.push_back(ha);
-            std::sort(score.harmonic_annotations.begin(), score.harmonic_annotations.end(),
-                [](const HarmonicAnnotation& a, const HarmonicAnnotation& b) {
-                    return a.position < b.position;
-                });
-
-            for (auto& oa : score.orchestration_annotations) {
-                if (oa.start.bar >= bar) oa.start.bar += count;
-                if (oa.end.bar >= bar) oa.end.bar += count;
-            }
-            for (const auto& oa : saved_orch) score.orchestration_annotations.push_back(oa);
-            std::sort(score.orchestration_annotations.begin(), score.orchestration_annotations.end(),
-                [](const OrchestrationAnnotation& a, const OrchestrationAnnotation& b) {
-                    return a.start < b.start;
-                });
-
-            for (auto& rm : score.rehearsal_marks) {
-                if (rm.position.bar >= bar) rm.position.bar += count;
-            }
-            for (const auto& rm : saved_marks) score.rehearsal_marks.push_back(rm);
-            std::sort(score.rehearsal_marks.begin(), score.rehearsal_marks.end(),
-                [](const RehearsalMark& a, const RehearsalMark& b) {
-                    return a.position < b.position;
-                });
-
-            for (const auto& ph : saved_hairpins) {
-                Part* part = find_part(score, ph.part_id);
-                if (!part) continue;
-                for (auto& hp : part->hairpins) {
-                    if (hp.start.bar >= bar) hp.start.bar += count;
-                    if (hp.end.bar >= bar) hp.end.bar += count;
-                }
-                for (const auto& hp : ph.hairpins) part->hairpins.push_back(hp);
-                std::sort(part->hairpins.begin(), part->hairpins.end(),
-                    [](const Hairpin& a, const Hairpin& b) {
-                        return a.start < b.start;
-                    });
-            }
-
-            score.metadata.total_bars += count;
-            bump_version(score);
-            return {};
-        }
-    );
+    push_snapshot(undo, std::move(before), "delete_measures");
 
     return MutationResult{{}};
 }
@@ -1047,11 +709,8 @@ Result<MutationResult> set_time_signature(
         return std::unexpected(ErrorCode::InvalidMutation);
     }
 
-    // Capture old state for undo
-    std::optional<TimeSignature> old_ts;
-    for (const auto& entry : score.time_map) {
-        if (entry.bar == bar) { old_ts = entry.time_signature; break; }
-    }
+    std::optional<Score> before;
+    if (undo) before = score;
 
     bool found = false;
     for (auto& entry : score.time_map) {
@@ -1073,26 +732,7 @@ Result<MutationResult> set_time_signature(
     }
 
     bump_version(score);
-    push_undo(undo, score, "set_time_signature",
-        [&score, bar, time_sig]() -> VoidResult {
-            auto result = set_time_signature(score, bar, time_sig);
-            if (!result) return std::unexpected(result.error());
-            return {};
-        },
-        [&score, bar, old_ts]() -> VoidResult {
-            if (old_ts) {
-                for (auto& entry : score.time_map) {
-                    if (entry.bar == bar) { entry.time_signature = *old_ts; break; }
-                }
-            } else {
-                auto it = std::remove_if(score.time_map.begin(), score.time_map.end(),
-                    [bar](const TimeSignatureEntry& e) { return e.bar == bar; });
-                score.time_map.erase(it, score.time_map.end());
-            }
-            bump_version(score);
-            return {};
-        }
-    );
+    push_snapshot(undo, std::move(before), "set_time_signature");
     return MutationResult{{}};
 }
 
@@ -1102,10 +742,8 @@ Result<MutationResult> set_key_signature(
     KeySignature key,
     UndoStack* undo
 ) {
-    std::optional<KeySignature> old_key;
-    for (const auto& entry : score.key_map) {
-        if (entry.position == position) { old_key = entry.key; break; }
-    }
+    std::optional<Score> before;
+    if (undo) before = score;
 
     bool found = false;
     for (auto& entry : score.key_map) {
@@ -1127,26 +765,7 @@ Result<MutationResult> set_key_signature(
     }
 
     bump_version(score);
-    push_undo(undo, score, "set_key_signature",
-        [&score, position, key]() -> VoidResult {
-            auto result = set_key_signature(score, position, key);
-            if (!result) return std::unexpected(result.error());
-            return {};
-        },
-        [&score, position, old_key]() -> VoidResult {
-            if (old_key) {
-                for (auto& entry : score.key_map) {
-                    if (entry.position == position) { entry.key = *old_key; break; }
-                }
-            } else {
-                auto it = std::remove_if(score.key_map.begin(), score.key_map.end(),
-                    [&position](const KeySignatureEntry& e) { return e.position == position; });
-                score.key_map.erase(it, score.key_map.end());
-            }
-            bump_version(score);
-            return {};
-        }
-    );
+    push_snapshot(undo, std::move(before), "set_key_signature");
     return MutationResult{{}};
 }
 
@@ -1160,6 +779,9 @@ Result<MutationResult> add_part(
     std::size_t position_in_order,
     UndoStack* undo
 ) {
+    std::optional<Score> before;
+    if (undo) before = score;
+
     // Determine time signature for empty measures
     TimeSignature ts{{4}, 4};
     if (!score.time_map.empty()) {
@@ -1180,8 +802,6 @@ Result<MutationResult> add_part(
         new_part.measures.push_back(make_empty_measure(bar, ts));
     }
 
-    PartId new_part_id = new_part.id;
-
     if (position_in_order >= score.parts.size()) {
         score.parts.push_back(std::move(new_part));
     } else {
@@ -1193,22 +813,7 @@ Result<MutationResult> add_part(
     }
 
     bump_version(score);
-    push_undo(undo, score, "add_part",
-        [&score, definition, position_in_order]() -> VoidResult {
-            auto result = add_part(score, definition, position_in_order);
-            if (!result) return std::unexpected(result.error());
-            return {};
-        },
-        [&score, new_part_id]() -> VoidResult {
-            auto it = std::find_if(score.parts.begin(), score.parts.end(),
-                [new_part_id](const Part& p) { return p.id == new_part_id; });
-            if (it == score.parts.end())
-                return std::unexpected(ErrorCode::InvalidMutation);
-            score.parts.erase(it);
-            bump_version(score);
-            return {};
-        }
-    );
+    push_snapshot(undo, std::move(before), "add_part");
     return MutationResult{{}};
 }
 
@@ -1229,15 +834,8 @@ Result<MutationResult> remove_part(
         return std::unexpected(ErrorCode::InvalidMutation);
     }
 
-    // Capture state for undo
-    Part saved_part = *it;
-    auto position = static_cast<std::size_t>(
-        std::distance(score.parts.begin(), it));
-
-    std::vector<OrchestrationAnnotation> saved_orch;
-    for (const auto& a : score.orchestration_annotations) {
-        if (a.part_id == part_id) saved_orch.push_back(a);
-    }
+    std::optional<Score> before;
+    if (undo) before = score;
 
     score.parts.erase(it);
 
@@ -1253,29 +851,7 @@ Result<MutationResult> remove_part(
     );
 
     bump_version(score);
-    push_undo(undo, score, "remove_part",
-        [&score, part_id]() -> VoidResult {
-            auto result = remove_part(score, part_id);
-            if (!result) return std::unexpected(result.error());
-            return {};
-        },
-        [&score, saved_part, position, saved_orch]() -> VoidResult {
-            if (position <= score.parts.size()) {
-                score.parts.insert(
-                    score.parts.begin() +
-                        static_cast<std::ptrdiff_t>(position),
-                    saved_part
-                );
-            } else {
-                score.parts.push_back(saved_part);
-            }
-            for (const auto& oa : saved_orch) {
-                score.orchestration_annotations.push_back(oa);
-            }
-            bump_version(score);
-            return {};
-        }
-    );
+    push_snapshot(undo, std::move(before), "remove_part");
     return MutationResult{{}};
 }
 
@@ -1289,6 +865,9 @@ Result<MutationResult> transpose_region(
     DiatonicInterval interval,
     UndoStack* undo
 ) {
+    std::optional<Score> before;
+    if (undo) before = score;
+
     for (auto& part : score.parts) {
         // Check if this part is in the region
         if (!region.parts.empty()) {
@@ -1323,18 +902,7 @@ Result<MutationResult> transpose_region(
 
     bump_version(score);
 
-    push_undo(undo, score, "transpose_region",
-        [&score, region, interval]() -> VoidResult {
-            auto result = transpose_region(score, region, interval);
-            if (!result) return std::unexpected(result.error());
-            return {};
-        },
-        [&score, region, interval]() -> VoidResult {
-            auto result = transpose_region(score, region, interval_negate(interval));
-            if (!result) return std::unexpected(result.error());
-            return {};
-        }
-    );
+    push_snapshot(undo, std::move(before), "transpose_region");
 
     score.stale_harmonic_regions.push_back(region);
 
@@ -1346,12 +914,8 @@ Result<MutationResult> delete_region(
     const ScoreRegion& region,
     UndoStack* undo
 ) {
-    // Capture events that will be replaced for undo
-    struct SavedEvent {
-        EventId event_id;
-        EventPayload old_payload;
-    };
-    std::vector<SavedEvent> saved;
+    std::optional<Score> before;
+    if (undo) before = score;
 
     for (auto& part : score.parts) {
         if (!region.parts.empty()) {
@@ -1375,7 +939,6 @@ Result<MutationResult> delete_region(
 
                     Beat dur = event.duration();
                     if (dur > Beat::zero()) {
-                        saved.push_back({event.id, event.payload});
                         event.payload = RestEvent{dur, true};
                     }
                 }
@@ -1384,22 +947,7 @@ Result<MutationResult> delete_region(
     }
 
     bump_version(score);
-    push_undo(undo, score, "delete_region",
-        [&score, region]() -> VoidResult {
-            auto result = delete_region(score, region);
-            if (!result) return std::unexpected(result.error());
-            return {};
-        },
-        [&score, saved]() -> VoidResult {
-            for (const auto& s : saved) {
-                auto loc = find_event(score, s.event_id);
-                if (!loc.event) continue;
-                loc.event->payload = s.old_payload;
-            }
-            bump_version(score);
-            return {};
-        }
-    );
+    push_snapshot(undo, std::move(before), "delete_region");
 
     score.stale_harmonic_regions.push_back(region);
 
@@ -1433,6 +981,9 @@ Result<MutationResult> add_voice(
         }
     }
 
+    std::optional<Score> before;
+    if (undo) before = score;
+
     // Determine measure duration from time_map
     const auto* ts_entry = find_time_signature(score, bar);
     Beat dur = ts_entry ? ts_entry->time_signature.measure_duration()
@@ -1444,18 +995,7 @@ Result<MutationResult> add_voice(
     measure.voices.push_back(std::move(new_voice));
 
     bump_version(score);
-    push_undo(undo, score, "add_voice",
-        [&score, bar, part_id, voice_number]() -> VoidResult {
-            auto result = add_voice(score, bar, part_id, voice_number);
-            if (!result) return std::unexpected(result.error());
-            return {};
-        },
-        [&score, bar, part_id, voice_number]() -> VoidResult {
-            auto result = remove_voice(score, bar, part_id, voice_number);
-            if (!result) return std::unexpected(result.error());
-            return {};
-        }
-    );
+    push_snapshot(undo, std::move(before), "add_voice");
     return MutationResult{{}};
 }
 
@@ -1487,25 +1027,13 @@ Result<MutationResult> remove_voice(
         return std::unexpected(ErrorCode::InvalidMutation);
     }
 
-    Voice saved_voice = *it;
+    std::optional<Score> before;
+    if (undo) before = score;
+
     measure.voices.erase(it);
 
     bump_version(score);
-    push_undo(undo, score, "remove_voice",
-        [&score, bar, part_id, voice_number]() -> VoidResult {
-            auto result = remove_voice(score, bar, part_id, voice_number);
-            if (!result) return std::unexpected(result.error());
-            return {};
-        },
-        [&score, bar, part_id, saved_voice]() -> VoidResult {
-            Part* p = find_part(score, part_id);
-            if (!p || bar < 1 || bar > p->measures.size())
-                return std::unexpected(ErrorCode::InvalidMutation);
-            p->measures[bar - 1].voices.push_back(saved_voice);
-            bump_version(score);
-            return {};
-        }
-    );
+    push_snapshot(undo, std::move(before), "remove_voice");
     return MutationResult{{}};
 }
 
@@ -1541,12 +1069,8 @@ Result<MutationResult> reorder_parts(
         if (!found) return std::unexpected(ErrorCode::InvalidMutation);
     }
 
-    // Capture old order before reordering
-    std::vector<PartId> old_order;
-    old_order.reserve(score.parts.size());
-    for (const auto& part : score.parts) {
-        old_order.push_back(part.id);
-    }
+    std::optional<Score> before;
+    if (undo) before = score;
 
     // Build reordered vector
     std::vector<Part> reordered;
@@ -1562,18 +1086,7 @@ Result<MutationResult> reorder_parts(
     score.parts = std::move(reordered);
 
     bump_version(score);
-    push_undo(undo, score, "reorder_parts",
-        [&score, new_order]() -> VoidResult {
-            auto result = reorder_parts(score, new_order);
-            if (!result) return std::unexpected(result.error());
-            return {};
-        },
-        [&score, old_order]() -> VoidResult {
-            auto result = reorder_parts(score, old_order);
-            if (!result) return std::unexpected(result.error());
-            return {};
-        }
-    );
+    push_snapshot(undo, std::move(before), "reorder_parts");
     return MutationResult{{}};
 }
 
@@ -1586,28 +1099,13 @@ Result<MutationResult> set_part_directive(
     Part* part = find_part(score, part_id);
     if (!part) return std::unexpected(ErrorCode::InvalidMutation);
 
-    auto directive_copy = directive;
+    std::optional<Score> before;
+    if (undo) before = score;
+
     part->part_directives.push_back(std::move(directive));
-    auto dir_index = part->part_directives.size() - 1;
 
     bump_version(score);
-    push_undo(undo, score, "set_part_directive",
-        [&score, part_id, directive_copy]() -> VoidResult {
-            auto result = set_part_directive(score, part_id, directive_copy);
-            if (!result) return std::unexpected(result.error());
-            return {};
-        },
-        [&score, part_id, dir_index]() -> VoidResult {
-            Part* p = find_part(score, part_id);
-            if (!p || dir_index >= p->part_directives.size())
-                return std::unexpected(ErrorCode::InvalidMutation);
-            p->part_directives.erase(
-                p->part_directives.begin() +
-                    static_cast<std::ptrdiff_t>(dir_index));
-            bump_version(score);
-            return {};
-        }
-    );
+    push_snapshot(undo, std::move(before), "set_part_directive");
     return MutationResult{{}};
 }
 
@@ -1620,22 +1118,13 @@ Result<MutationResult> assign_instrument(
     Part* part = find_part(score, part_id);
     if (!part) return std::unexpected(ErrorCode::InvalidMutation);
 
-    auto old_instrument = part->definition.instrument_type;
+    std::optional<Score> before;
+    if (undo) before = score;
+
     part->definition.instrument_type = instrument;
 
     bump_version(score);
-    push_undo(undo, score, "assign_instrument",
-        [&score, part_id, instrument]() -> VoidResult {
-            auto result = assign_instrument(score, part_id, instrument);
-            if (!result) return std::unexpected(result.error());
-            return {};
-        },
-        [&score, part_id, old_instrument]() -> VoidResult {
-            auto result = assign_instrument(score, part_id, old_instrument);
-            if (!result) return std::unexpected(result.error());
-            return {};
-        }
-    );
+    push_snapshot(undo, std::move(before), "assign_instrument");
     return MutationResult{{}};
 }
 
@@ -1649,6 +1138,9 @@ Result<MutationResult> copy_region(
     ScoreTime dest,
     UndoStack* undo
 ) {
+    std::optional<Score> before;
+    if (undo) before = score;
+
     // Collect events to copy: (part_id, bar_offset, event_clone)
     struct EventRecord {
         PartId part_id;
@@ -1707,49 +1199,8 @@ Result<MutationResult> copy_region(
         target_voice->events.insert(it, std::move(rec.event));
     }
 
-    // Shared cell: forward closure writes fresh IDs on redo; inverse reads them.
-    auto shared_ids = std::make_shared<std::vector<EventId>>();
-    for (const auto& rec : records) {
-        shared_ids->push_back(rec.event.id);
-    }
-
     bump_version(score);
-    push_undo(undo, score, "copy_region",
-        [&score, src, dest, shared_ids]() -> VoidResult {
-            auto id_before = next_event_id;
-            auto result = copy_region(score, src, dest);
-            if (!result) return std::unexpected(result.error());
-            // Re-scan for freshly inserted IDs
-            shared_ids->clear();
-            for (const auto& part : score.parts) {
-                for (const auto& measure : part.measures) {
-                    for (const auto& voice : measure.voices) {
-                        for (const auto& event : voice.events) {
-                            if (event.id.value >= id_before &&
-                                event.id.value < next_event_id) {
-                                shared_ids->push_back(event.id);
-                            }
-                        }
-                    }
-                }
-            }
-            return {};
-        },
-        [&score, shared_ids]() -> VoidResult {
-            for (const auto& eid : *shared_ids) {
-                auto loc = find_event(score, eid);
-                if (!loc.event || !loc.voice) continue;
-                auto& events = loc.voice->events;
-                events.erase(
-                    std::remove_if(events.begin(), events.end(),
-                        [eid](const Event& e) { return e.id == eid; }),
-                    events.end()
-                );
-            }
-            bump_version(score);
-            return {};
-        }
-    );
+    push_snapshot(undo, std::move(before), "copy_region");
 
     score.stale_harmonic_regions.push_back(src);
 
@@ -1762,42 +1213,14 @@ Result<MutationResult> move_region(
     ScoreTime dest,
     UndoStack* undo
 ) {
-    // Capture source events before the move for undo
-    struct SavedSourceEvent {
-        EventId event_id;
-        EventPayload old_payload;
-    };
-    std::vector<SavedSourceEvent> saved_source;
+    std::optional<Score> before;
+    if (undo) before = score;
 
-    for_each_event_in_region(score, src,
-        [&](Part&, Measure&, Voice&, Event& event) {
-            auto* ng = std::get_if<NoteGroup>(&event.payload);
-            if (ng) {
-                saved_source.push_back({event.id, event.payload});
-            }
-        }
-    );
-
-    // Track event IDs allocated by the copy for undo.
-    // Capture the ID boundary before copying so we can identify new events.
-    auto id_before_copy = next_event_id;
     auto copy_result = copy_region(score, src, dest);
-    if (!copy_result) return copy_result;
-
-    // Collect the explicit IDs of events inserted by copy_region,
-    // rather than relying on an ID-range filter that could delete unrelated events.
-    std::vector<EventId> move_inserted_ids;
-    for (auto& part : score.parts) {
-        for (auto& measure : part.measures) {
-            for (auto& voice : measure.voices) {
-                for (const auto& event : voice.events) {
-                    if (event.id.value >= id_before_copy &&
-                        event.id.value < next_event_id) {
-                        move_inserted_ids.push_back(event.id);
-                    }
-                }
-            }
-        }
+    if (!copy_result) {
+        // Mid-mutation failure: restore the pre-mutation snapshot
+        if (before) score = *before;
+        return copy_result;
     }
 
     // Delete source region (replace with rests), but do not double-bump
@@ -1828,53 +1251,8 @@ Result<MutationResult> move_region(
         }
     }
 
-    // Shared cell for move-inserted IDs: forward writes on redo, inverse reads.
-    auto shared_move_ids = std::make_shared<std::vector<EventId>>(std::move(move_inserted_ids));
-
     // copy_region already bumped version; no extra bump needed
-    push_undo(undo, score, "move_region",
-        [&score, src, dest, shared_move_ids]() -> VoidResult {
-            auto id_before = next_event_id;
-            auto result = move_region(score, src, dest);
-            if (!result) return std::unexpected(result.error());
-            // Re-scan for freshly inserted IDs
-            shared_move_ids->clear();
-            for (const auto& part : score.parts) {
-                for (const auto& measure : part.measures) {
-                    for (const auto& voice : measure.voices) {
-                        for (const auto& event : voice.events) {
-                            if (event.id.value >= id_before &&
-                                event.id.value < next_event_id) {
-                                shared_move_ids->push_back(event.id);
-                            }
-                        }
-                    }
-                }
-            }
-            return {};
-        },
-        [&score, saved_source, shared_move_ids]() -> VoidResult {
-            // Remove events inserted by the copy, using explicit IDs
-            for (const auto& eid : *shared_move_ids) {
-                auto loc = find_event(score, eid);
-                if (!loc.event || !loc.voice) continue;
-                auto& events = loc.voice->events;
-                events.erase(
-                    std::remove_if(events.begin(), events.end(),
-                        [eid](const Event& e) { return e.id == eid; }),
-                    events.end()
-                );
-            }
-            // Restore source events from saved payloads
-            for (const auto& s : saved_source) {
-                auto loc = find_event(score, s.event_id);
-                if (!loc.event) continue;
-                loc.event->payload = s.old_payload;
-            }
-            bump_version(score);
-            return {};
-        }
-    );
+    push_snapshot(undo, std::move(before), "move_region");
 
     score.stale_harmonic_regions.push_back(src);
 
@@ -1887,43 +1265,20 @@ Result<MutationResult> set_dynamic_region(
     DynamicLevel level,
     UndoStack* undo
 ) {
-    // Capture old dynamics for undo
-    struct SavedDynamic {
-        EventId event_id;
-        std::optional<DynamicLevel> old_dynamic;
-    };
-    std::vector<SavedDynamic> saved;
+    std::optional<Score> before;
+    if (undo) before = score;
 
     for_each_event_in_region(score, region,
         [&](Part&, Measure&, Voice&, Event& event) {
             auto* ng = std::get_if<NoteGroup>(&event.payload);
             if (ng && !ng->notes.empty()) {
-                saved.push_back({event.id, ng->notes[0].dynamic});
                 ng->notes[0].dynamic = level;
             }
         }
     );
 
     bump_version(score);
-    push_undo(undo, score, "set_dynamic_region",
-        [&score, region, level]() -> VoidResult {
-            auto result = set_dynamic_region(score, region, level);
-            if (!result) return std::unexpected(result.error());
-            return {};
-        },
-        [&score, saved]() -> VoidResult {
-            for (const auto& s : saved) {
-                auto loc = find_event(score, s.event_id);
-                if (!loc.event) continue;
-                auto* ng = std::get_if<NoteGroup>(&loc.event->payload);
-                if (ng && !ng->notes.empty()) {
-                    ng->notes[0].dynamic = s.old_dynamic;
-                }
-            }
-            bump_version(score);
-            return {};
-        }
-    );
+    push_snapshot(undo, std::move(before), "set_dynamic_region");
     return MutationResult{{}};
 }
 
@@ -1933,51 +1288,25 @@ Result<MutationResult> scale_velocity_region(
     double factor,
     UndoStack* undo
 ) {
-    // Capture old velocities for undo
-    struct SavedVelocity {
-        EventId event_id;
-        std::vector<std::uint8_t> old_values;
-    };
-    std::vector<SavedVelocity> saved;
+    std::optional<Score> before;
+    if (undo) before = score;
 
     for_each_event_in_region(score, region,
         [&](Part&, Measure&, Voice&, Event& event) {
             auto* ng = std::get_if<NoteGroup>(&event.payload);
             if (!ng) return;
 
-            SavedVelocity sv{event.id, {}};
             for (auto& note : ng->notes) {
-                sv.old_values.push_back(note.velocity.value);
                 double scaled = static_cast<double>(note.velocity.value) * factor;
                 if (scaled < 0.0) scaled = 0.0;
                 if (scaled > 127.0) scaled = 127.0;
                 note.velocity.value = static_cast<std::uint8_t>(scaled);
             }
-            saved.push_back(std::move(sv));
         }
     );
 
     bump_version(score);
-    push_undo(undo, score, "scale_velocity_region",
-        [&score, region, factor]() -> VoidResult {
-            auto result = scale_velocity_region(score, region, factor);
-            if (!result) return std::unexpected(result.error());
-            return {};
-        },
-        [&score, saved]() -> VoidResult {
-            for (const auto& sv : saved) {
-                auto loc = find_event(score, sv.event_id);
-                if (!loc.event) continue;
-                auto* ng = std::get_if<NoteGroup>(&loc.event->payload);
-                if (!ng) continue;
-                for (std::size_t i = 0; i < sv.old_values.size() && i < ng->notes.size(); ++i) {
-                    ng->notes[i].velocity.value = sv.old_values[i];
-                }
-            }
-            bump_version(score);
-            return {};
-        }
-    );
+    push_snapshot(undo, std::move(before), "scale_velocity_region");
     return MutationResult{{}};
 }
 
@@ -1986,6 +1315,9 @@ Result<MutationResult> retrograde_region(
     const ScoreRegion& region,
     UndoStack* undo
 ) {
+    std::optional<Score> before;
+    if (undo) before = score;
+
     // For each part/voice, collect events in the region, reverse their
     // order, and reassign offsets to match the reversed sequence.
     for (auto& part : score.parts) {
@@ -2036,18 +1368,7 @@ Result<MutationResult> retrograde_region(
     }
 
     bump_version(score);
-    push_undo(undo, score, "retrograde_region",
-        [&score, region]() -> VoidResult {
-            auto result = retrograde_region(score, region);
-            if (!result) return std::unexpected(result.error());
-            return {};
-        },
-        [&score, region]() -> VoidResult {
-            auto result = retrograde_region(score, region);
-            if (!result) return std::unexpected(result.error());
-            return {};
-        }
-    );
+    push_snapshot(undo, std::move(before), "retrograde_region");
 
     score.stale_harmonic_regions.push_back(region);
 
@@ -2060,6 +1381,9 @@ Result<MutationResult> invert_region(
     SpelledPitch axis,
     UndoStack* undo
 ) {
+    std::optional<Score> before;
+    if (undo) before = score;
+
     int axis_midi = midi_value(axis);
 
     for_each_event_in_region(score, region,
@@ -2098,18 +1422,7 @@ Result<MutationResult> invert_region(
     );
 
     bump_version(score);
-    push_undo(undo, score, "invert_region",
-        [&score, region, axis]() -> VoidResult {
-            auto result = invert_region(score, region, axis);
-            if (!result) return std::unexpected(result.error());
-            return {};
-        },
-        [&score, region, axis]() -> VoidResult {
-            auto result = invert_region(score, region, axis);
-            if (!result) return std::unexpected(result.error());
-            return {};
-        }
-    );
+    push_snapshot(undo, std::move(before), "invert_region");
 
     score.stale_harmonic_regions.push_back(region);
 
@@ -2126,6 +1439,9 @@ Result<MutationResult> augment_region(
         return std::unexpected(ErrorCode::InvalidMutation);
     }
 
+    std::optional<Score> before;
+    if (undo) before = score;
+
     for_each_event_in_region(score, region,
         [&](Part&, Measure&, Voice&, Event& event) {
             if (auto* ng = std::get_if<NoteGroup>(&event.payload)) {
@@ -2137,18 +1453,7 @@ Result<MutationResult> augment_region(
     );
 
     bump_version(score);
-    push_undo(undo, score, "augment_region",
-        [&score, region, factor]() -> VoidResult {
-            auto result = augment_region(score, region, factor);
-            if (!result) return std::unexpected(result.error());
-            return {};
-        },
-        [&score, region, factor]() -> VoidResult {
-            auto result = diminute_region(score, region, factor);
-            if (!result) return std::unexpected(result.error());
-            return {};
-        }
-    );
+    push_snapshot(undo, std::move(before), "augment_region");
 
     score.stale_harmonic_regions.push_back(region);
 
@@ -2165,6 +1470,9 @@ Result<MutationResult> diminute_region(
         return std::unexpected(ErrorCode::InvalidMutation);
     }
 
+    std::optional<Score> before;
+    if (undo) before = score;
+
     for_each_event_in_region(score, region,
         [&](Part&, Measure&, Voice&, Event& event) {
             if (auto* ng = std::get_if<NoteGroup>(&event.payload)) {
@@ -2176,18 +1484,7 @@ Result<MutationResult> diminute_region(
     );
 
     bump_version(score);
-    push_undo(undo, score, "diminute_region",
-        [&score, region, factor]() -> VoidResult {
-            auto result = diminute_region(score, region, factor);
-            if (!result) return std::unexpected(result.error());
-            return {};
-        },
-        [&score, region, factor]() -> VoidResult {
-            auto result = augment_region(score, region, factor);
-            if (!result) return std::unexpected(result.error());
-            return {};
-        }
-    );
+    push_snapshot(undo, std::move(before), "diminute_region");
 
     score.stale_harmonic_regions.push_back(region);
 
@@ -2206,6 +1503,9 @@ Result<MutationResult> reorchestrate(
 ) {
     Part* target_part = find_part(score, target);
     if (!target_part) return std::unexpected(ErrorCode::InvalidMutation);
+
+    std::optional<Score> before;
+    if (undo) before = score;
 
     // Collect note events from the region (excluding the target part itself)
     struct EventRecord {
@@ -2256,34 +1556,8 @@ Result<MutationResult> reorchestrate(
         target_voice->events.insert(it, std::move(rec.event));
     }
 
-    // Collect IDs of inserted events for undo
-    std::vector<EventId> inserted_ids;
-    for (const auto& rec : records) {
-        inserted_ids.push_back(rec.event.id);
-    }
-
     bump_version(score);
-    push_undo(undo, score, "reorchestrate",
-        [&score, region, target]() -> VoidResult {
-            auto result = reorchestrate(score, region, target);
-            if (!result) return std::unexpected(result.error());
-            return {};
-        },
-        [&score, inserted_ids]() -> VoidResult {
-            for (const auto& eid : inserted_ids) {
-                auto loc = find_event(score, eid);
-                if (!loc.event || !loc.voice) continue;
-                auto& events = loc.voice->events;
-                events.erase(
-                    std::remove_if(events.begin(), events.end(),
-                        [eid](const Event& e) { return e.id == eid; }),
-                    events.end()
-                );
-            }
-            bump_version(score);
-            return {};
-        }
-    );
+    push_snapshot(undo, std::move(before), "reorchestrate");
 
     mark_orchestration_stale(score, region);
 
@@ -2299,6 +1573,9 @@ Result<MutationResult> double_at_interval(
 ) {
     Part* target_part = find_part(score, target);
     if (!target_part) return std::unexpected(ErrorCode::InvalidMutation);
+
+    std::optional<Score> before;
+    if (undo) before = score;
 
     struct EventRecord {
         std::uint32_t bar_number;
@@ -2368,34 +1645,8 @@ Result<MutationResult> double_at_interval(
         target_voice->events.insert(it, std::move(rec.event));
     }
 
-    // Collect IDs of inserted events for undo
-    std::vector<EventId> dbl_inserted_ids;
-    for (const auto& rec : records) {
-        dbl_inserted_ids.push_back(rec.event.id);
-    }
-
     bump_version(score);
-    push_undo(undo, score, "double_at_interval",
-        [&score, region, target, interval]() -> VoidResult {
-            auto result = double_at_interval(score, region, target, interval);
-            if (!result) return std::unexpected(result.error());
-            return {};
-        },
-        [&score, dbl_inserted_ids]() -> VoidResult {
-            for (const auto& eid : dbl_inserted_ids) {
-                auto loc = find_event(score, eid);
-                if (!loc.event || !loc.voice) continue;
-                auto& events = loc.voice->events;
-                events.erase(
-                    std::remove_if(events.begin(), events.end(),
-                        [eid](const Event& e) { return e.id == eid; }),
-                    events.end()
-                );
-            }
-            bump_version(score);
-            return {};
-        }
-    );
+    push_snapshot(undo, std::move(before), "double_at_interval");
 
     mark_orchestration_stale(score, region);
 
@@ -2412,17 +1663,14 @@ Result<MutationResult> set_texture_role(
     Part* part = find_part(score, part_id);
     if (!part) return std::unexpected(ErrorCode::InvalidMutation);
 
-    // Capture old annotation for undo
-    std::optional<TexturalRole> old_role;
-    bool was_existing = false;
+    std::optional<Score> before;
+    if (undo) before = score;
 
     // Update existing annotation if one overlaps, otherwise add new
     bool found = false;
     for (auto& ann : score.orchestration_annotations) {
         if (ann.part_id == part_id &&
             ann.start == region.start && ann.end == region.end) {
-            old_role = ann.role;
-            was_existing = true;
             ann.role = role;
             found = true;
             break;
@@ -2439,37 +1687,7 @@ Result<MutationResult> set_texture_role(
     }
 
     bump_version(score);
-    push_undo(undo, score, "set_texture_role",
-        [&score, region, part_id, role]() -> VoidResult {
-            auto result = set_texture_role(score, region, part_id, role);
-            if (!result) return std::unexpected(result.error());
-            return {};
-        },
-        [&score, region, part_id, old_role, was_existing]() -> VoidResult {
-            if (was_existing && old_role) {
-                for (auto& ann : score.orchestration_annotations) {
-                    if (ann.part_id == part_id &&
-                        ann.start == region.start && ann.end == region.end) {
-                        ann.role = *old_role;
-                        break;
-                    }
-                }
-            } else {
-                auto it = std::remove_if(
-                    score.orchestration_annotations.begin(),
-                    score.orchestration_annotations.end(),
-                    [&](const OrchestrationAnnotation& a) {
-                        return a.part_id == part_id &&
-                               a.start == region.start && a.end == region.end;
-                    }
-                );
-                score.orchestration_annotations.erase(
-                    it, score.orchestration_annotations.end());
-            }
-            bump_version(score);
-            return {};
-        }
-    );
+    push_snapshot(undo, std::move(before), "set_texture_role");
 
     mark_orchestration_stale(score, region);
 
@@ -2496,13 +1714,8 @@ Result<MutationResult> apply_voice_leading(
     bool allow_par_octaves = (style == VoiceLeadingStyle::NearestTone ||
                               style == VoiceLeadingStyle::ParallelMotion);
 
-    // Capture pre-mutation pitches for undo
-    struct SavedPitch {
-        EventId event_id;
-        std::uint8_t note_index;
-        SpelledPitch old_pitch;
-    };
-    std::vector<SavedPitch> saved;
+    std::optional<Score> before;
+    if (undo) before = score;
 
     // Process consecutive annotation pairs: for each transition from
     // one chord to the next, voice-lead the notes at the boundary.
@@ -2571,10 +1784,6 @@ Result<MutationResult> apply_voice_leading(
                 int old_midi = midi_value(ng->notes[ni].pitch);
                 if (new_midi == old_midi) continue;
 
-                saved.push_back({event.id,
-                                 static_cast<std::uint8_t>(ni),
-                                 ng->notes[ni].pitch});
-
                 // Reconstruct SpelledPitch from MIDI value
                 // Preserve the letter name; adjust octave and accidental
                 auto& note = ng->notes[ni];
@@ -2596,24 +1805,7 @@ Result<MutationResult> apply_voice_leading(
 
     bump_version(score);
 
-    push_undo(undo, score, "apply_voice_leading",
-        [&score, region, style]() -> VoidResult {
-            auto result = apply_voice_leading(score, region, style);
-            if (!result) return std::unexpected(result.error());
-            return {};
-        },
-        [&score, saved]() -> VoidResult {
-            for (const auto& s : saved) {
-                auto loc = find_event(score, s.event_id);
-                if (!loc.event) continue;
-                auto* ng = std::get_if<NoteGroup>(&loc.event->payload);
-                if (!ng || s.note_index >= ng->notes.size()) continue;
-                ng->notes[s.note_index].pitch = s.old_pitch;
-            }
-            bump_version(score);
-            return {};
-        }
-    );
+    push_snapshot(undo, std::move(before), "apply_voice_leading");
 
     mark_orchestration_stale(score, region);
 
@@ -2626,7 +1818,7 @@ Result<MutationResult> apply_voice_leading(
 
 void UndoStack::begin_group(std::string description) {
     if (group_depth == 0) {
-        pending_group.clear();
+        pending_group.reset();
         group_description = std::move(description);
     }
     ++group_depth;
@@ -2637,63 +1829,14 @@ void UndoStack::end_group() {
     --group_depth;
     if (group_depth > 0) return;
 
-    if (pending_group.empty()) return;
+    if (!pending_group) return;
 
-    // Capture pending entries by value for the composite lambdas
-    auto forwards = std::move(pending_group);
-    pending_group.clear();
-
-    std::uint64_t version = forwards.front().version;
-    std::string desc = std::move(group_description);
-
-    // Build copies of forward/inverse function lists for capture
-    std::vector<std::function<VoidResult()>> fwd_fns;
-    std::vector<std::function<VoidResult()>> inv_fns;
-    fwd_fns.reserve(forwards.size());
-    inv_fns.reserve(forwards.size());
-    for (auto& entry : forwards) {
-        fwd_fns.push_back(std::move(entry.forward));
-        inv_fns.push_back(std::move(entry.inverse));
-    }
-
-    UndoEntry composite;
-    composite.version = version;
-    composite.description = std::move(desc);
-    composite.forward = [fwd_fns]() -> VoidResult {
-        for (std::size_t i = 0; i < fwd_fns.size(); ++i) {
-            auto r = fwd_fns[i]();
-            if (!r) {
-                // Best-effort rollback: reverse the sub-operations that succeeded
-                for (std::size_t j = i; j > 0; --j) {
-                    // We cannot call inverse here because we only have fwd_fns;
-                    // partial forward failure propagates the error.
-                }
-                return r;
-            }
-        }
-        return {};
-    };
-    // Inverse replays in reverse order. On partial failure, attempt to
-    // re-apply the forward functions for sub-operations already undone,
-    // restoring the state that existed before the inverse began.
-    composite.inverse = [inv_fns, fwd_fns]() -> VoidResult {
-        for (std::size_t i = inv_fns.size(); i > 0; --i) {
-            auto r = inv_fns[i - 1]();
-            if (!r) {
-                // Best-effort rollback: re-apply the forward functions for
-                // sub-operations that were already successfully reversed.
-                for (std::size_t j = i; j < inv_fns.size(); ++j) {
-                    auto fwd_r = fwd_fns[j]();
-                    if (!fwd_r) return std::unexpected(ErrorCode::InvariantViolation);
-                }
-                return r;
-            }
-        }
-        return {};
-    };
-
-    undo_entries.push_back(std::move(composite));
+    // The first snapshot of the group is the pre-group state; publishing
+    // it as one entry makes the whole group a single undo step.
+    pending_group->description = std::move(group_description);
+    undo_entries.push_back(std::move(*pending_group));
     redo_entries.clear();
+    pending_group.reset();
 }
 
 // =============================================================================
@@ -2705,20 +1848,20 @@ VoidResult undo(Score& score, UndoStack& stack) {
         return std::unexpected(ErrorCode::InvalidMutation);
     }
 
-    // Execute inverse WITHOUT popping first — if it fails, the entry
-    // stays on the undo stack and nothing is lost.
-    auto& entry = stack.undo_entries.back();
-    auto result = entry.inverse();
-    if (!result) {
-        return result;
-    }
-
-    // Inverse succeeded — now move to redo stack.
-    auto moved = std::move(stack.undo_entries.back());
+    UndoEntry entry = std::move(stack.undo_entries.back());
     stack.undo_entries.pop_back();
-    stack.redo_entries.push_back(std::move(moved));
 
-    bump_version(score);
+    // Save the live document for redo, then restore the snapshot.
+    // Restoration cannot fail, so the swap needs no failure path.
+    stack.redo_entries.push_back(UndoEntry{
+        score.version,
+        std::make_shared<const Score>(score),
+        entry.description
+    });
+
+    const std::uint64_t next_version = score.version + 1;
+    score = *entry.state;
+    score.version = next_version;
 
     return {};
 }
@@ -2728,20 +1871,19 @@ VoidResult redo(Score& score, UndoStack& stack) {
         return std::unexpected(ErrorCode::InvalidMutation);
     }
 
-    // Execute forward WITHOUT popping first — if it fails, the entry
-    // stays on the redo stack and nothing is lost.
-    auto& entry = stack.redo_entries.back();
-    auto result = entry.forward();
-    if (!result) {
-        return result;
-    }
-
-    // Forward succeeded — now move to undo stack.
-    auto moved = std::move(stack.redo_entries.back());
+    UndoEntry entry = std::move(stack.redo_entries.back());
     stack.redo_entries.pop_back();
-    stack.undo_entries.push_back(std::move(moved));
 
-    bump_version(score);
+    // Save the live document for undo, then restore the snapshot.
+    stack.undo_entries.push_back(UndoEntry{
+        score.version,
+        std::make_shared<const Score>(score),
+        entry.description
+    });
+
+    const std::uint64_t next_version = score.version + 1;
+    score = *entry.state;
+    score.version = next_version;
 
     return {};
 }

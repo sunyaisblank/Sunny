@@ -905,7 +905,8 @@ TEST_CASE("SIMT001A: UndoGroup RAII produces single entry after scope exit",
 // Mutation Atomicity and Undo Correctness (RC-D audit remediation)
 // =============================================================================
 
-TEST_CASE("SIMT001A: undo preserves entry on inverse failure",
+TEST_CASE("SIMT001A: undo restores the snapshot despite external corruption; "
+          "only an empty stack fails",
           "[score-ir][undo][atomicity]") {
     auto score = make_valid_score(1);
     UndoStack stack;
@@ -923,19 +924,30 @@ TEST_CASE("SIMT001A: undo preserves entry on inverse failure",
     CHECK(stack.can_undo());
     CHECK(stack.undo_entries.size() == 1);
 
-    // Corrupt state: remove all events so the inverse (which tries to
-    // find the event by ID) will fail.
-    voice.events.clear();
+    // Corrupt state out-of-band: remove all events. Under the closure
+    // engine the inverse failed here; snapshot restoration is infallible,
+    // so undo succeeds and rebuilds the exact pre-mutation document.
+    score.parts[0].measures[0].voices[0].events.clear();
 
     auto undo_result = undo(score, stack);
-    CHECK_FALSE(undo_result.has_value());
+    REQUIRE(undo_result.has_value());
 
-    // The entry must still be on the undo stack, not lost
-    CHECK(stack.undo_entries.size() == 1);
-    CHECK_FALSE(stack.can_redo());
+    auto* restored = score.parts[0].measures[0].voices[0].events[0].as_note_group();
+    REQUIRE(restored != nullptr);
+    CHECK(restored->notes[0].pitch == SpelledPitch{0, 0, 4});
+    CHECK(stack.can_redo());
+
+    // The only remaining failure mode is an empty undo stack; a failed
+    // undo leaves both stacks untouched.
+    CHECK(stack.undo_entries.empty());
+    auto second = undo(score, stack);
+    CHECK_FALSE(second.has_value());
+    CHECK(stack.undo_entries.empty());
+    CHECK(stack.redo_entries.size() == 1);
 }
 
-TEST_CASE("SIMT001A: redo preserves entry on forward failure",
+TEST_CASE("SIMT001A: redo restores the snapshot despite external corruption; "
+          "only an empty stack fails",
           "[score-ir][undo][atomicity]") {
     auto score = make_valid_score(1);
     UndoStack stack;
@@ -950,15 +962,25 @@ TEST_CASE("SIMT001A: redo preserves entry on forward failure",
     CHECK(stack.can_redo());
     CHECK(stack.redo_entries.size() == 1);
 
-    // Corrupt state: remove all events so the forward will fail
+    // Corrupt state out-of-band: remove all events. Under the closure
+    // engine the forward replay failed here; snapshot restoration is
+    // infallible, so redo succeeds and rebuilds the post-mutation state.
     score.parts[0].measures[0].voices[0].events.clear();
 
     auto rr = redo(score, stack);
-    CHECK_FALSE(rr.has_value());
+    REQUIRE(rr.has_value());
 
-    // The entry must still be on the redo stack, not lost
-    CHECK(stack.redo_entries.size() == 1);
-    CHECK_FALSE(stack.can_undo());
+    REQUIRE_FALSE(score.parts[0].measures[0].voices[0].events.empty());
+    CHECK(score.parts[0].measures[0].voices[0].events[0].duration() == Beat{1, 2});
+    CHECK(stack.can_undo());
+
+    // The only remaining failure mode is an empty redo stack; a failed
+    // redo leaves both stacks untouched.
+    CHECK(stack.redo_entries.empty());
+    auto second = redo(score, stack);
+    CHECK_FALSE(second.has_value());
+    CHECK(stack.redo_entries.empty());
+    CHECK(stack.undo_entries.size() == 1);
 }
 
 TEST_CASE("SIMT001A: reorder_parts rejects duplicate PartIds",
@@ -1014,8 +1036,8 @@ TEST_CASE("SIMT001A: undo-redo-undo cycle does not accumulate events",
     auto score = make_valid_score(1);
     UndoStack stack;
 
-    // Use modify_pitch, which preserves EventId through undo-redo cycles
-    // (unlike insert_note, which allocates a fresh EventId on forward replay).
+    // modify_pitch preserves EventId through undo-redo cycles; under the
+    // snapshot engine every mutation does.
     auto& voice = score.parts[0].measures[0].voices[0];
     NoteGroup ng;
     ng.notes.push_back(Note{SpelledPitch{0, 0, 4}, VelocityValue{{}, 80}});
@@ -1051,17 +1073,40 @@ TEST_CASE("SIMT001A: undo-redo-undo cycle does not accumulate events",
     CHECK(restored->notes[0].pitch == original_pitch);
 }
 
-TEST_CASE("SIMT001A: move_region undo does not delete unrelated events",
+TEST_CASE("SIMT001A: move_region undo restores the exact pre-move document, "
+          "unrelated events included",
           "[score-ir][undo][atomicity]") {
     auto score = make_valid_score(4);
     UndoStack stack;
 
-    // Place a C4 note in bar 1
+    // Place a C4 note in bar 1 (the region to be moved)
     auto& voice1 = score.parts[0].measures[0].voices[0];
     NoteGroup ng1;
     ng1.notes.push_back(Note{SpelledPitch{0, 0, 4}, VelocityValue{{}, 80}});
     ng1.duration = Beat{1, 1};
     voice1.events[0].payload = ng1;
+
+    // Place an unrelated E5 note in bar 2 before the move. Its identity
+    // must survive the move_region undo untouched — the historical defect
+    // deleted unrelated events via an ID-range filter.
+    Note unrelated_note;
+    unrelated_note.pitch = SpelledPitch{2, 0, 5};  // E5
+    unrelated_note.velocity = VelocityValue{{}, 90};
+
+    auto ins_result = insert_note(
+        score, PartId{100}, 2, 0,
+        Beat::zero(), unrelated_note, Beat{1, 4}, nullptr
+    );
+    REQUIRE(ins_result.has_value());
+
+    EventId unrelated_id{0};
+    for (const auto& ev : score.parts[0].measures[1].voices[0].events) {
+        if (ev.is_note_group()) {
+            unrelated_id = ev.id;
+            break;
+        }
+    }
+    REQUIRE(unrelated_id.value != 0);
 
     ScoreRegion src;
     src.start = SCORE_START;
@@ -1069,81 +1114,42 @@ TEST_CASE("SIMT001A: move_region undo does not delete unrelated events",
 
     ScoreTime dest{3, Beat::zero()};
 
-    // Move bar 1 content to bar 3
+    // Move bar 1 content to bar 3, then undo
     auto mr = move_region(score, src, dest, &stack);
     REQUIRE(mr.has_value());
 
-    // Insert an unrelated note in bar 2, after the move but before undo.
-    // This note has its own ID that should survive the move_region undo.
-    Note unrelated_note;
-    unrelated_note.pitch = SpelledPitch{2, 0, 5};  // E5
-    unrelated_note.velocity = VelocityValue{{}, 90};
+    auto ur = undo(score, stack);
+    REQUIRE(ur.has_value());
 
-    auto ins_result = insert_note(
-        score, PartId{100}, 2, 0,
-        Beat::zero(), unrelated_note, Beat{1, 4}, &stack
-    );
-    REQUIRE(ins_result.has_value());
-
-    // Find the unrelated note's EventId
-    EventId unrelated_id{0};
-    for (const auto& ev : score.parts[0].measures[1].voices[0].events) {
-        if (ev.is_note_group()) {
-            auto* ng = ev.as_note_group();
-            if (ng && !ng->notes.empty() && ng->notes[0].pitch.letter == 2 &&
-                ng->notes[0].pitch.octave == 5) {
-                unrelated_id = ev.id;
-                break;
-            }
-        }
-    }
-    REQUIRE(unrelated_id.value != 0);
-
-    // Undo the insert_note first (it was pushed after move_region)
-    auto ur1 = undo(score, stack);
-    REQUIRE(ur1.has_value());
-
-    // Re-insert the unrelated note (simulating it being added independently)
-    auto ins2 = insert_note(
-        score, PartId{100}, 2, 0,
-        Beat::zero(), unrelated_note, Beat{1, 4}, nullptr
-    );
-    REQUIRE(ins2.has_value());
-
-    // Capture the unrelated event ID after re-insertion
-    EventId unrelated_id2{0};
-    for (const auto& ev : score.parts[0].measures[1].voices[0].events) {
-        if (ev.is_note_group()) {
-            auto* ng = ev.as_note_group();
-            if (ng && !ng->notes.empty() && ng->notes[0].pitch.letter == 2 &&
-                ng->notes[0].pitch.octave == 5) {
-                unrelated_id2 = ev.id;
-                break;
-            }
-        }
-    }
-    REQUIRE(unrelated_id2.value != 0);
-
-    // Undo the move_region
-    auto ur2 = undo(score, stack);
-    REQUIRE(ur2.has_value());
-
-    // The unrelated note in bar 2 should still exist
+    // The unrelated note in bar 2 still exists with its original id
     bool found_unrelated = false;
     for (const auto& ev : score.parts[0].measures[1].voices[0].events) {
-        if (ev.id == unrelated_id2) {
+        if (ev.id == unrelated_id) {
             found_unrelated = true;
             break;
         }
     }
     CHECK(found_unrelated);
+
+    // The moved-to bar holds no copied note after undo
+    bool bar3_has_note = false;
+    for (const auto& ev : score.parts[0].measures[2].voices[0].events) {
+        if (ev.is_note_group()) bar3_has_note = true;
+    }
+    CHECK_FALSE(bar3_has_note);
+
+    // The moved-from bar has its C4 note back
+    auto* restored = score.parts[0].measures[0].voices[0].events[0].as_note_group();
+    REQUIRE(restored != nullptr);
+    CHECK(restored->notes[0].pitch == SpelledPitch{0, 0, 4});
 }
 
 // =============================================================================
 // Undo-redo-undo: insert_note cycle does not orphan events
 // =============================================================================
 
-TEST_CASE("SIMT001A: insert_note undo-redo-undo returns to original event count",
+TEST_CASE("SIMT001A: insert_note undo-redo-undo preserves the EventId and "
+          "returns to original event count",
           "[score-ir][undo][stale-id]") {
     auto score = make_valid_score(1);
     UndoStack stack;
@@ -1162,22 +1168,41 @@ TEST_CASE("SIMT001A: insert_note undo-redo-undo returns to original event count"
     REQUIRE(r.has_value());
     CHECK(voice.events.size() == original_count + 1);
 
+    // Capture the inserted note's identity
+    EventId inserted_id{0};
+    for (const auto& ev : score.parts[0].measures[0].voices[0].events) {
+        if (ev.is_note_group() && ev.offset == Beat{3, 4}) {
+            inserted_id = ev.id;
+        }
+    }
+    REQUIRE(inserted_id.value != 0);
+
     // Undo
     auto ur = undo(score, stack);
     REQUIRE(ur.has_value());
 
-    // Redo (allocates a fresh EventId internally)
+    // Redo restores the exact post-mutation state, including the original
+    // EventId — the snapshot engine never reallocates ids on redo.
     auto rr = redo(score, stack);
     REQUIRE(rr.has_value());
-    CHECK(voice.events.size() == original_count + 1);
+    CHECK(score.parts[0].measures[0].voices[0].events.size() == original_count + 1);
 
-    // Undo again — inverse must use the fresh ID, not the stale original
+    bool found_same_id = false;
+    for (const auto& ev : score.parts[0].measures[0].voices[0].events) {
+        if (ev.id == inserted_id && ev.is_note_group() &&
+            ev.offset == Beat{3, 4}) {
+            found_same_id = true;
+        }
+    }
+    CHECK(found_same_id);
+
+    // Undo again — the preserved id is removed cleanly
     auto ur2 = undo(score, stack);
     REQUIRE(ur2.has_value());
 
     // Verify no note group remains at offset 3/4
     bool has_note_at_34 = false;
-    for (const auto& ev : voice.events) {
+    for (const auto& ev : score.parts[0].measures[0].voices[0].events) {
         if (ev.is_note_group() && ev.offset == Beat{3, 4}) {
             has_note_at_34 = true;
         }
@@ -1189,7 +1214,8 @@ TEST_CASE("SIMT001A: insert_note undo-redo-undo returns to original event count"
 // Undo-redo-undo: copy_region cycle does not orphan events
 // =============================================================================
 
-TEST_CASE("SIMT001A: copy_region undo-redo-undo leaves no orphan events",
+TEST_CASE("SIMT001A: copy_region undo-redo-undo preserves the copied EventId "
+          "and leaves no orphan events",
           "[score-ir][undo][stale-id]") {
     auto score = make_valid_score(4);
     UndoStack stack;
@@ -1221,17 +1247,31 @@ TEST_CASE("SIMT001A: copy_region undo-redo-undo leaves no orphan events",
     REQUIRE(r.has_value());
     CHECK(count_bar3_notes() == 1);
 
+    // Capture the copied note's identity in bar 3
+    EventId copied_id{0};
+    for (const auto& ev : score.parts[0].measures[2].voices[0].events) {
+        if (ev.is_note_group()) copied_id = ev.id;
+    }
+    REQUIRE(copied_id.value != 0);
+
     // Undo
     auto ur = undo(score, stack);
     REQUIRE(ur.has_value());
     CHECK(count_bar3_notes() == 0);
 
-    // Redo
+    // Redo restores the exact post-copy state, including the copied note's
+    // original EventId — the snapshot engine never reallocates ids on redo.
     auto rr = redo(score, stack);
     REQUIRE(rr.has_value());
     CHECK(count_bar3_notes() == 1);
 
-    // Undo again
+    bool found_same_id = false;
+    for (const auto& ev : score.parts[0].measures[2].voices[0].events) {
+        if (ev.id == copied_id && ev.is_note_group()) found_same_id = true;
+    }
+    CHECK(found_same_id);
+
+    // Undo again — the preserved id is removed cleanly
     auto ur2 = undo(score, stack);
     REQUIRE(ur2.has_value());
     CHECK(count_bar3_notes() == 0);

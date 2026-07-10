@@ -28,13 +28,23 @@ std::uint64_t g_wf_section_id = 1;
 EventId next_wf_event_id() { return EventId{g_wf_event_id++}; }
 PartId  next_wf_part_id()  { return PartId{g_wf_part_id++}; }
 
-void push_undo(UndoStack* undo, Score& score, std::string desc,
-               std::function<VoidResult()> forward,
-               std::function<VoidResult()> inverse) {
-    if (!undo) return;
-    UndoEntry entry{score.version, std::move(forward), std::move(inverse), std::move(desc)};
+/// Push a pre-mutation snapshot onto the undo stack (if provided), clearing
+/// redo. Mirrors the SIMT001A helper: when group_depth > 0, only the first
+/// snapshot of the group is kept because the earliest 'before' state covers
+/// the whole group.
+void push_snapshot(UndoStack* undo, std::optional<Score>&& before,
+                   std::string desc) {
+    if (!undo || !before) return;
+    const std::uint64_t snapshot_version = before->version;
+    UndoEntry entry{
+        snapshot_version,
+        std::make_shared<const Score>(std::move(*before)),
+        std::move(desc)
+    };
     if (undo->group_depth > 0) {
-        undo->pending_group.push_back(std::move(entry));
+        if (!undo->pending_group) {
+            undo->pending_group = std::move(entry);
+        }
     } else {
         undo->undo_entries.push_back(std::move(entry));
         undo->redo_entries.clear();
@@ -124,9 +134,6 @@ Result<MutationResult> set_formal_plan(
     std::vector<SectionDefinition> sections,
     UndoStack* undo
 ) {
-    // Capture old section map for undo
-    auto old_map = score.section_map;
-
     // Build new section map
     SectionMap new_map;
     for (const auto& def : sections) {
@@ -144,20 +151,13 @@ Result<MutationResult> set_formal_plan(
         new_map.push_back(std::move(sec));
     }
 
-    score.section_map = new_map;
+    std::optional<Score> before;
+    if (undo) before = score;
+
+    score.section_map = std::move(new_map);
     ++score.version;
 
-    push_undo(undo, score, "set_formal_plan",
-        [&score, new_map]() -> VoidResult {
-            score.section_map = new_map;
-            ++score.version;
-            return {};
-        },
-        [&score, old_map]() -> VoidResult {
-            score.section_map = old_map;
-            ++score.version;
-            return {};
-        });
+    push_snapshot(undo, std::move(before), "set_formal_plan");
 
     return MutationResult{{}};
 }
@@ -172,22 +172,18 @@ Result<MutationResult> set_section_harmony(
     std::vector<ChordSymbolEntry> progression,
     UndoStack* undo
 ) {
-    // Capture old annotations in the region for undo
-    std::vector<HarmonicAnnotation> old_annotations;
-    std::vector<std::size_t> old_indices;
-    for (std::size_t i = 0; i < score.harmonic_annotations.size(); ++i) {
-        const auto& ha = score.harmonic_annotations[i];
-        if (ha.position >= region.start && ha.position < region.end) {
-            old_annotations.push_back(ha);
-            old_indices.push_back(i);
-        }
-    }
+    std::optional<Score> before;
+    if (undo) before = score;
 
-    // Remove old annotations in the region (reverse order to preserve indices)
-    for (auto it = old_indices.rbegin(); it != old_indices.rend(); ++it) {
-        score.harmonic_annotations.erase(score.harmonic_annotations.begin()
-                                         + static_cast<std::ptrdiff_t>(*it));
-    }
+    // Remove old annotations in the region
+    score.harmonic_annotations.erase(
+        std::remove_if(score.harmonic_annotations.begin(),
+                       score.harmonic_annotations.end(),
+                       [&region](const HarmonicAnnotation& ha) {
+                           return ha.position >= region.start &&
+                                  ha.position < region.end;
+                       }),
+        score.harmonic_annotations.end());
 
     // Determine key context for Roman numeral computation
     KeySignature key_ctx{};
@@ -277,33 +273,7 @@ Result<MutationResult> set_section_harmony(
 
     ++score.version;
 
-    // Capture the full post-mutation state for forward replay
-    auto post_state = score.harmonic_annotations;
-
-    push_undo(undo, score, "set_section_harmony",
-        [&score, post_state]() -> VoidResult {
-            score.harmonic_annotations = post_state;
-            ++score.version;
-            return {};
-        },
-        [&score, old_annotations, region]() -> VoidResult {
-            // Inverse: remove annotations in region, restore old ones
-            auto& annotations = score.harmonic_annotations;
-            annotations.erase(
-                std::remove_if(annotations.begin(), annotations.end(),
-                    [&region](const HarmonicAnnotation& ha) {
-                        return ha.position >= region.start && ha.position < region.end;
-                    }),
-                annotations.end());
-            for (const auto& ha : old_annotations)
-                annotations.push_back(ha);
-            std::sort(annotations.begin(), annotations.end(),
-                [](const HarmonicAnnotation& a, const HarmonicAnnotation& b) {
-                    return a.position < b.position;
-                });
-            ++score.version;
-            return {};
-        });
+    push_snapshot(undo, std::move(before), "set_section_harmony");
 
     return MutationResult{{}};
 }

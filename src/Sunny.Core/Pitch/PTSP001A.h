@@ -37,9 +37,9 @@ namespace Sunny::Core {
  * key signature handling, and score notation.
  */
 struct SpelledPitch {
-    uint8_t letter;     ///< 0=C, 1=D, 2=E, 3=F, 4=G, 5=A, 6=B
-    int8_t accidental;  ///< negative=flats, 0=natural, positive=sharps
-    int8_t octave;      ///< -1..9 for MIDI-bounded, unbounded for theoretical
+    uint8_t letter{0};     ///< 0=C, 1=D, 2=E, 3=F, 4=G, 5=A, 6=B
+    int8_t accidental{0};  ///< negative=flats, 0=natural, positive=sharps
+    int8_t octave{4};      ///< -1..9 for MIDI-bounded, unbounded for theoretical
 
     [[nodiscard]] constexpr bool operator==(const SpelledPitch&) const noexcept = default;
 };
