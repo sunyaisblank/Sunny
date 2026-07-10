@@ -72,7 +72,14 @@ using Interval = std::int8_t;
  * Layout:
  * - 2xxx: Validation errors
  * - 3xxx: Theory computation errors
- * - 4xxx: Infrastructure errors
+ * - 4xxx: Infrastructure and format errors
+ * - 5xxx: Score IR
+ * - 6xxx: Timbre IR
+ * - 7xxx: Mix IR
+ * - 8xxx: Corpus IR
+ *
+ * This enum is the single error taxonomy: every value crossing a
+ * Result<T> boundary or stored in a Diagnostic is an enumerator here.
  */
 enum class ErrorCode : int {
     Ok = 0,
@@ -144,13 +151,93 @@ enum class ErrorCode : int {
     InvalidMidiTempo  = 4506,
     InvalidMidiTimeSig = 4507,
 
-    // Score IR errors (5xxx)
-    InvalidScoreTime  = 5200,
-    InvalidMutation   = 5400,
-    InvariantViolation = 5401,
-    InvalidRegion     = 5402,
-    PartNotFound      = 5403,
-    EmptyVoice        = 5003,
+    // Score IR errors (5xxx, structure §14.3)
+    DocumentStructure   = 5000,
+    MissingParts        = 5001,
+    MeasureCountMismatch = 5002,
+    EmptyVoice          = 5003,
+    InvalidOffset       = 5100,
+    OverlappingEvents   = 5101,
+    TieMismatch         = 5102,
+    MeasureFillError    = 5103,
+    TupletSpanError     = 5104,
+    InvalidScoreTime    = 5200,
+    TempoMapGap         = 5201,
+    TickConversionError = 5202,
+    KeyMapGap           = 5203,
+    TimeMapGap          = 5204,
+    StaleHarmonicLayer  = 5300,
+    InconsistentOrch    = 5301,
+    OverlappingAnnotation = 5302,
+    InconsistentOrchField = 5303,
+    InvalidMutation     = 5400,
+    InvariantViolation  = 5401,
+    InvalidRegion       = 5402,
+    PartNotFound        = 5403,
+    MissingPreset       = 5500,
+    UnmappedArticulation = 5501,
+    SchemaVersionMismatch = 5600,
+    CorruptDocument     = 5601,
+    ValidationOnLoadFailed = 5602,
+
+    // Timbre IR errors (6xxx)
+    MissingProfile      = 6000,
+    InvalidSource       = 6001,
+    CutoffAboveNyquist  = 6010,
+    ExcessiveDetune     = 6011,
+    FMFeedbackUnstable  = 6012,
+    EffectChainCycle    = 6020,
+    InvalidModTarget    = 6021,
+    TimbreInvalidParameter = 6022,
+    TimbreNotFound      = 6023,
+    TimbreDuplicateId   = 6024,
+    StaleDescriptors    = 6030,
+    UnmappedParameters  = 6031,
+
+    // Mix IR errors (7xxx)
+    MissingChannel      = 7000,
+    SignalFlowCycle     = 7001,
+    UnreachableMaster   = 7002,
+    NoInsertProcessing  = 7003,
+    SilentNotMuted      = 7004,
+    InvalidSidechain    = 7005,
+    MasterClipping      = 7010,
+    LoudnessExceeded    = 7011,
+    LowCorrelation      = 7012,
+    SubBassPhase        = 7013,
+    LoudnessRangeWide   = 7014,
+    ChannelClipping     = 7015,
+    SpectralDeviation   = 7016,
+    NoChannelIntent     = 7020,
+    NoGroupIntent       = 7021,
+    LeadTooQuiet        = 7022,
+    FoundationNoSubBass = 7023,
+    FlatDepthStaging    = 7024,
+    MixInvalidParameter = 7030,
+    MixNotFound         = 7031,
+    MixDuplicateId      = 7032,
+    InvalidPath         = 7033,
+    NestingDepthExceeded = 7034,
+
+    // Corpus IR errors (8xxx)
+    LowIngestionConfidence = 8000,
+    ScoreValidationFailed  = 8001,
+    LowKeyConfidence       = 8002,
+    InferredTimeSig        = 8003,
+    ExcessiveVoices        = 8004,
+    LowHarmonicCoverage    = 8010,
+    OverSegmentation       = 8011,
+    NoThematicUnits        = 8012,
+    SingleInstrument       = 8013,
+    SmallCorpus            = 8020,
+    ModerateCorpus         = 8021,
+    SmallPeriodCorpus      = 8022,
+    WeakSignature          = 8023,
+    CorpusNotFound         = 8030,
+    CorpusDuplicateId      = 8031,
+    CorpusInvalidParameter = 8032,
+    IngestionFailed        = 8033,
+    AnalysisFailed         = 8034,
 };
 
 /**

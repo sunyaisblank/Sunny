@@ -28,7 +28,7 @@ void add_diagnostic(std::vector<Diagnostic>& out,
                     ValidationSeverity sev,
                     const char* rule,
                     const std::string& msg,
-                    int code) {
+                    ErrorCode code) {
     out.push_back({sev, rule, msg, std::nullopt, std::nullopt, code});
 }
 
@@ -86,7 +86,7 @@ void check_dag_acyclicity(const MixGraph& graph,
     if (processed < in_degree.size()) {
         add_diagnostic(out, ValidationSeverity::Error, "X2",
             "Signal flow graph contains a cycle among group buses",
-            MixError::SignalFlowCycle);
+            ErrorCode::SignalFlowCycle);
     }
 }
 
@@ -127,7 +127,7 @@ void check_reachability(const MixGraph& graph,
                 add_diagnostic(out, ValidationSeverity::Error, "X3",
                     "Channel (part " + std::to_string(ch.part_id.value) +
                     ") does not reach the master bus",
-                    MixError::UnreachableMaster);
+                    ErrorCode::UnreachableMaster);
             }
         }
         // Ungrouped channels route directly to master — always reachable
@@ -161,7 +161,7 @@ void check_nesting_depth(const MixGraph& graph,
                 "Group bus '" + g.name + "' nesting depth (" +
                 std::to_string(depth) + ") exceeds maximum (" +
                 std::to_string(graph.max_group_nesting_depth) + ")",
-                MixError::NestingDepthExceeded);
+                ErrorCode::NestingDepthExceeded);
         }
     }
 }
@@ -177,7 +177,7 @@ void check_no_insert(const MixGraph& graph,
             add_diagnostic(out, ValidationSeverity::Warning, "X4",
                 "Channel (part " + std::to_string(ch.part_id.value) +
                 ") has no insert processing",
-                MixError::NoInsertProcessing);
+                ErrorCode::NoInsertProcessing);
         }
     }
 }
@@ -195,7 +195,7 @@ void check_silent_not_muted(const MixGraph& graph,
             add_diagnostic(out, ValidationSeverity::Warning, "X5",
                 "Channel (part " + std::to_string(ch.part_id.value) +
                 ") fader is effectively silent but not muted",
-                MixError::SilentNotMuted);
+                ErrorCode::SilentNotMuted);
         }
     }
 }
@@ -222,7 +222,7 @@ void check_sidechain_refs(const MixGraph& graph,
                             add_diagnostic(out, ValidationSeverity::Error, "X6",
                                 context + " sidechain references non-existent channel " +
                                 std::to_string(p.sidechain.channel_id.value),
-                                MixError::InvalidSidechain);
+                                ErrorCode::InvalidSidechain);
                         }
                     }
                     if (p.sidechain.source == SidechainSourceType::ExternalBus) {
@@ -230,7 +230,7 @@ void check_sidechain_refs(const MixGraph& graph,
                             add_diagnostic(out, ValidationSeverity::Error, "X6",
                                 context + " sidechain references non-existent bus " +
                                 std::to_string(p.sidechain.bus_id.value),
-                                MixError::InvalidSidechain);
+                                ErrorCode::InvalidSidechain);
                         }
                     }
                 }
@@ -240,7 +240,7 @@ void check_sidechain_refs(const MixGraph& graph,
                             add_diagnostic(out, ValidationSeverity::Error, "X6",
                                 context + " gate sidechain references non-existent channel " +
                                 std::to_string(p.sidechain.channel_id.value),
-                                MixError::InvalidSidechain);
+                                ErrorCode::InvalidSidechain);
                         }
                     }
                     if (p.sidechain.source == SidechainSourceType::ExternalBus) {
@@ -248,7 +248,7 @@ void check_sidechain_refs(const MixGraph& graph,
                             add_diagnostic(out, ValidationSeverity::Error, "X6",
                                 context + " gate sidechain references non-existent bus " +
                                 std::to_string(p.sidechain.bus_id.value),
-                                MixError::InvalidSidechain);
+                                ErrorCode::InvalidSidechain);
                         }
                     }
                 }
@@ -277,7 +277,7 @@ void check_intent_annotations(const MixGraph& graph,
             add_diagnostic(out, ValidationSeverity::Info, "I1",
                 "Channel (part " + std::to_string(ch.part_id.value) +
                 ") has no ChannelIntent annotation",
-                MixError::NoChannelIntent);
+                ErrorCode::NoChannelIntent);
         }
     }
 
@@ -285,7 +285,7 @@ void check_intent_annotations(const MixGraph& graph,
         if (!g.intent.has_value()) {
             add_diagnostic(out, ValidationSeverity::Info, "I2",
                 "GroupBus '" + g.name + "' has no GroupIntent annotation",
-                MixError::NoGroupIntent);
+                ErrorCode::NoGroupIntent);
         }
     }
 }
@@ -319,7 +319,7 @@ void check_lead_level(const MixGraph& graph,
                 std::to_string(static_cast<int>(ch.fader.level_db)) +
                 " dB) is below average (" +
                 std::to_string(static_cast<int>(avg)) + " dB)",
-                MixError::LeadTooQuiet);
+                ErrorCode::LeadTooQuiet);
         }
     }
 }
@@ -350,7 +350,7 @@ void check_foundation_hpf(const MixGraph& graph,
                                 ") marked Foundation has HPF at " +
                                 std::to_string(static_cast<int>(band.frequency)) +
                                 " Hz removing sub-bass",
-                                MixError::FoundationNoSubBass);
+                                ErrorCode::FoundationNoSubBass);
                         }
                     }
                 }
@@ -386,7 +386,7 @@ void check_depth_staging(const MixGraph& graph,
     if (has_intent && all_same) {
         add_diagnostic(out, ValidationSeverity::Info, "I5",
             "All channel depth positions are identical (flat depth staging)",
-            MixError::FlatDepthStaging);
+            ErrorCode::FlatDepthStaging);
     }
 }
 
@@ -406,7 +406,7 @@ void check_aux_send_targets(const MixGraph& graph,
                     "Channel (part " + std::to_string(ch.part_id.value) +
                     ") sends to non-existent aux bus " +
                     std::to_string(send.aux_bus_id.value),
-                    MixError::InvalidSidechain);
+                    ErrorCode::InvalidSidechain);
             }
         }
     }
@@ -460,7 +460,7 @@ std::vector<Diagnostic> validate_mix_correspondence(
             add_diagnostic(diags, ValidationSeverity::Error, "X1",
                 "Part '" + part.definition.name +
                 "' has no corresponding ChannelStrip",
-                MixError::MissingChannel);
+                ErrorCode::MissingChannel);
         }
     }
 

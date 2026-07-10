@@ -480,7 +480,7 @@ struct Diagnostic {
     std::string message;
     std::optional<ScoreTime> location;
     std::optional<PartId> part;
-    int error_code;             ///< From Score IR error code range (5000–5699)
+    ErrorCode error_code;       ///< Domain-ranged: 5xxx Score, 6xxx Timbre, 7xxx Mix, 8xxx Corpus
 };
 
 /// Technical direction (§4.12)
@@ -506,45 +506,6 @@ struct TechnicalDirection {
     std::int16_t bend_cents;               ///< For Bend
     VibratoSpeed vibrato_speed;             ///< For Vibrato
 };
-
-// =============================================================================
-// Score IR Error Codes (§14.3)
-// =============================================================================
-
-namespace ScoreError {
-    constexpr int DocumentStructure   = 5000;
-    constexpr int MissingParts        = 5001;
-    constexpr int MeasureCountMismatch = 5002;
-    constexpr int EmptyVoice          = 5003;
-
-    constexpr int InvalidOffset       = 5100;
-    constexpr int OverlappingEvents   = 5101;
-    constexpr int TieMismatch         = 5102;
-    constexpr int MeasureFillError    = 5103;
-    constexpr int TupletSpanError     = 5104;
-
-    constexpr int InvalidScoreTime    = 5200;
-    constexpr int TempoMapGap         = 5201;
-    constexpr int TickConversionError = 5202;
-    constexpr int KeyMapGap           = 5203;
-    constexpr int TimeMapGap          = 5204;
-
-    constexpr int StaleHarmonicLayer  = 5300;
-    constexpr int InconsistentOrch    = 5301;
-
-    constexpr int InvalidMutation     = 5400;
-    constexpr int InvariantViolation  = 5401;
-
-    constexpr int MissingPreset       = 5500;
-    constexpr int UnmappedArticulation = 5501;
-
-    constexpr int OverlappingAnnotation = 5302;
-    constexpr int InconsistentOrchField = 5303;
-
-    constexpr int SchemaVersionMismatch = 5600;
-    constexpr int CorruptDocument      = 5601;
-    constexpr int ValidationOnLoadFailed = 5602;
-}  // namespace ScoreError
 
 // =============================================================================
 // Default velocity ranges (§4.5.3)

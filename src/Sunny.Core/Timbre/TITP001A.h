@@ -45,25 +45,6 @@ using EffectId        = Id<EffectTag>;
 using TimbrePresetId  = Id<TimbrePresetTag>;
 
 // =============================================================================
-// Error Codes (6000–6099)
-// =============================================================================
-
-namespace TimbreError {
-    constexpr int MissingProfile       = 6000;  // T1: Part without TimbreProfile
-    constexpr int InvalidSource        = 6001;  // T2: Malformed SoundSource
-    constexpr int CutoffAboveNyquist   = 6010;  // T3: Filter cutoff > Nyquist
-    constexpr int ExcessiveDetune      = 6011;  // T4: Oscillator detune > ±100ct
-    constexpr int FMFeedbackUnstable   = 6012;  // T5: FM feedback exceeds threshold
-    constexpr int EffectChainCycle     = 6020;  // T6: Cycle in effect chain
-    constexpr int InvalidModTarget     = 6021;  // T7: Bad modulation target path
-    constexpr int InvalidParameter     = 6022;  // Parameter value rejected by validation
-    constexpr int NotFound             = 6023;  // Effect, macro, or preset not found
-    constexpr int DuplicateId          = 6024;  // Duplicate effect or macro index
-    constexpr int StaleDescriptors     = 6030;  // T8: Descriptors out of date
-    constexpr int UnmappedParameters   = 6031;  // T9: Rendering config gaps
-}  // namespace TimbreError
-
-// =============================================================================
 // Opaque references to external audio data
 // =============================================================================
 

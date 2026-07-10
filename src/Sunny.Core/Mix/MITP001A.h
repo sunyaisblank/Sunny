@@ -50,43 +50,6 @@ using MixEffectId       = Id<MixEffectTag>;
 using ReferenceProfileId = Id<ReferenceProfileTag>;
 
 // =============================================================================
-// Error Codes (7000–7099)
-// =============================================================================
-
-namespace MixError {
-    // Structural (X-rules)
-    constexpr int MissingChannel       = 7000;  // X1: Part without ChannelStrip
-    constexpr int SignalFlowCycle      = 7001;  // X2: DAG cycle detected
-    constexpr int UnreachableMaster    = 7002;  // X3: Channel cannot reach master bus
-    constexpr int NoInsertProcessing   = 7003;  // X4: Channel has no insert chain
-    constexpr int SilentNotMuted       = 7004;  // X5: Fader at -inf but not muted
-    constexpr int InvalidSidechain     = 7005;  // X6: Sidechain references non-existent source
-
-    // Audio quality (A-rules)
-    constexpr int MasterClipping       = 7010;  // A1: Master exceeds 0 dBFS true peak
-    constexpr int LoudnessExceeded     = 7011;  // A2: Master exceeds target by >1 LU
-    constexpr int LowCorrelation       = 7012;  // A3: Stereo correlation below 0.0
-    constexpr int SubBassPhase         = 7013;  // A4: Sub-bass correlation below 0.5
-    constexpr int LoudnessRangeWide    = 7014;  // A5: LRA exceeds reference by >3 LU
-    constexpr int ChannelClipping      = 7015;  // A6: Channel clips before bus
-    constexpr int SpectralDeviation    = 7016;  // A7: Spectral deviation >3 dB from ref
-
-    // Intent (I-rules)
-    constexpr int NoChannelIntent      = 7020;  // I1: No ChannelIntent annotation
-    constexpr int NoGroupIntent        = 7021;  // I2: No GroupIntent annotation
-    constexpr int LeadTooQuiet         = 7022;  // I3: Lead role below average level
-    constexpr int FoundationNoSubBass  = 7023;  // I4: Foundation with HPF removing sub
-    constexpr int FlatDepthStaging     = 7024;  // I5: All depth positions identical
-
-    // General
-    constexpr int InvalidParameter     = 7030;  // Parameter value rejected
-    constexpr int NotFound             = 7031;  // Bus, channel, or effect not found
-    constexpr int DuplicateId          = 7032;  // Duplicate identifier
-    constexpr int InvalidPath          = 7033;  // Invalid automation target path
-    constexpr int NestingDepthExceeded = 7034;  // Group bus nesting > max depth
-}  // namespace MixError
-
-// =============================================================================
 // §1.2 OutputFormat
 // =============================================================================
 

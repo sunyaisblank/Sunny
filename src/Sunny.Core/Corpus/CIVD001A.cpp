@@ -18,7 +18,7 @@ namespace Sunny::Core {
 namespace {
 
 Diagnostic make_diag(ValidationSeverity sev, const std::string& rule,
-                     const std::string& msg, int code) {
+                     const std::string& msg, ErrorCode code) {
     return {sev, rule, msg, std::nullopt, std::nullopt, code};
 }
 
@@ -33,14 +33,14 @@ std::vector<Diagnostic> validate_ingested_work(const IngestedWork& work) {
         ic.spelling_confidence < 0.7f || ic.voice_separation_confidence < 0.7f) {
         diags.push_back(make_diag(ValidationSeverity::Warning, "C1",
             "Ingestion confidence below 0.7 in one or more dimensions",
-            CorpusError::LowIngestionConfidence));
+            ErrorCode::LowIngestionConfidence));
     }
 
     // C3: Key estimation confidence below 0.5
     if (ic.key_confidence < 0.5f) {
         diags.push_back(make_diag(ValidationSeverity::Warning, "C3",
             "Key estimation confidence below 0.5; key may be incorrect",
-            CorpusError::LowKeyConfidence));
+            ErrorCode::LowKeyConfidence));
     }
 
     // C2: Score validation failed (when Score is present)
@@ -50,7 +50,7 @@ std::vector<Diagnostic> validate_ingested_work(const IngestedWork& work) {
             if (sd.severity == ValidationSeverity::Error) {
                 diags.push_back(make_diag(ValidationSeverity::Error, "C2",
                     "Embedded Score fails structural validation: " + sd.message,
-                    CorpusError::ScoreValidationFailed));
+                    ErrorCode::ScoreValidationFailed));
                 break;
             }
         }
@@ -60,7 +60,7 @@ std::vector<Diagnostic> validate_ingested_work(const IngestedWork& work) {
     if (ic.metre_confidence < 1.0f && ic.source_format == "midi") {
         diags.push_back(make_diag(ValidationSeverity::Info, "C4",
             "Time signature inferred from content (MIDI source)",
-            CorpusError::InferredTimeSig));
+            ErrorCode::InferredTimeSig));
     }
 
     // C5: Excessive voices (when Score is present, > 6 voices in any measure)
@@ -71,7 +71,7 @@ std::vector<Diagnostic> validate_ingested_work(const IngestedWork& work) {
                     diags.push_back(make_diag(ValidationSeverity::Warning, "C5",
                         "Measure " + std::to_string(measure.bar_number) +
                         " has " + std::to_string(measure.voices.size()) + " voices (> 6)",
-                        CorpusError::ExcessiveVoices));
+                        ErrorCode::ExcessiveVoices));
                     goto c5_done;
                 }
             }
@@ -93,7 +93,7 @@ std::vector<Diagnostic> validate_ingested_work(const IngestedWork& work) {
         if (coverage < 0.8f) {
             diags.push_back(make_diag(ValidationSeverity::Error, "C6",
                 "Harmonic analysis coverage below 80% of the work",
-                CorpusError::LowHarmonicCoverage));
+                ErrorCode::LowHarmonicCoverage));
         }
     }
 
@@ -102,7 +102,7 @@ std::vector<Diagnostic> validate_ingested_work(const IngestedWork& work) {
         if (sec.length_bars > 0 && sec.length_bars < 4) {
             diags.push_back(make_diag(ValidationSeverity::Warning, "C7",
                 "Formal section '" + sec.label + "' is shorter than 4 bars",
-                CorpusError::OverSegmentation));
+                ErrorCode::OverSegmentation));
             break;  // report once
         }
     }
@@ -112,7 +112,7 @@ std::vector<Diagnostic> validate_ingested_work(const IngestedWork& work) {
         total_bars > 8) {
         diags.push_back(make_diag(ValidationSeverity::Warning, "C8",
             "No thematic units identified in the work",
-            CorpusError::NoThematicUnits));
+            ErrorCode::NoThematicUnits));
     }
 
     // C9: Single-instrument work (no orchestration analysis possible)
@@ -120,7 +120,7 @@ std::vector<Diagnostic> validate_ingested_work(const IngestedWork& work) {
         work.analysis.melodic_analysis.per_voice_analysis.size() > 1) {
         diags.push_back(make_diag(ValidationSeverity::Info, "C9",
             "Orchestration analysis not available",
-            CorpusError::SingleInstrument));
+            ErrorCode::SingleInstrument));
     }
 
     // Sort by severity: Error < Warning < Info
@@ -139,14 +139,14 @@ std::vector<Diagnostic> validate_composer_profile(const ComposerProfile& profile
         diags.push_back(make_diag(ValidationSeverity::Warning, "C10",
             "Style profile based on fewer than 5 works (" +
                 std::to_string(profile.works.size()) + ")",
-            CorpusError::SmallCorpus));
+            ErrorCode::SmallCorpus));
     }
     // C11: Moderate corpus (fewer than 10 works)
     else if (profile.works.size() < 10) {
         diags.push_back(make_diag(ValidationSeverity::Info, "C11",
             "Style profile based on fewer than 10 works (" +
                 std::to_string(profile.works.size()) + ")",
-            CorpusError::ModerateCorpus));
+            ErrorCode::ModerateCorpus));
     }
 
     // C12: Small period corpus
@@ -155,7 +155,7 @@ std::vector<Diagnostic> validate_composer_profile(const ComposerProfile& profile
             diags.push_back(make_diag(ValidationSeverity::Warning, "C12",
                 "Period '" + period.label + "' has fewer than 3 works (" +
                     std::to_string(period.works.size()) + ")",
-                CorpusError::SmallPeriodCorpus));
+                ErrorCode::SmallPeriodCorpus));
         }
     }
 
@@ -166,7 +166,7 @@ std::vector<Diagnostic> validate_composer_profile(const ComposerProfile& profile
                 "Signature pattern '" + pat.description +
                     "' has low distinctiveness (" +
                     std::to_string(pat.distinctiveness) + " std devs)",
-                CorpusError::WeakSignature));
+                ErrorCode::WeakSignature));
         }
     }
 

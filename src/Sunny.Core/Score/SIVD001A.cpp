@@ -28,7 +28,7 @@ Diagnostic make_diagnostic(
     ValidationSeverity severity,
     const std::string& rule,
     const std::string& message,
-    int error_code,
+    ErrorCode error_code,
     std::optional<ScoreTime> location = std::nullopt,
     std::optional<PartId> part = std::nullopt
 ) {
@@ -47,7 +47,7 @@ void validate_s1(const Score& score, std::vector<Diagnostic>& out) {
                 "Part '" + part.definition.name + "' has " +
                 std::to_string(part.measures.size()) + " measures, expected " +
                 std::to_string(score.metadata.total_bars),
-                ScoreError::MeasureCountMismatch,
+                ErrorCode::MeasureCountMismatch,
                 std::nullopt, part.id
             ));
         }
@@ -86,7 +86,7 @@ void validate_s2(const Score& score, std::vector<Diagnostic>& out) {
                         " of '" + part.definition.name +
                         "' has duration " + std::to_string(total.to_float()) +
                         ", expected " + std::to_string(expected.to_float()),
-                        ScoreError::MeasureFillError,
+                        ErrorCode::MeasureFillError,
                         ScoreTime{measure.bar_number, Beat::zero()}, part.id
                     ));
                 }
@@ -114,7 +114,7 @@ void validate_s3(const Score& score, std::vector<Diagnostic>& out) {
                             "Overlapping events in voice " +
                             std::to_string(voice.voice_index) +
                             ", bar " + std::to_string(measure.bar_number),
-                            ScoreError::OverlappingEvents,
+                            ErrorCode::OverlappingEvents,
                             ScoreTime{measure.bar_number, curr.offset}, part.id
                         ));
                     }
@@ -133,7 +133,7 @@ void validate_s4(const Score& score, std::vector<Diagnostic>& out) {
         out.push_back(make_diagnostic(
             ValidationSeverity::Error, "S4",
             "TempoMap must have an entry at bar 1",
-            ScoreError::TempoMapGap
+            ErrorCode::TempoMapGap
         ));
     }
     for (std::size_t i = 0; i < score.tempo_map.size(); ++i) {
@@ -141,7 +141,7 @@ void validate_s4(const Score& score, std::vector<Diagnostic>& out) {
             out.push_back(make_diagnostic(
                 ValidationSeverity::Error, "S4",
                 "TempoMap entry has bar < 1 at index " + std::to_string(i),
-                ScoreError::TempoMapGap,
+                ErrorCode::TempoMapGap,
                 score.tempo_map[i].position
             ));
         }
@@ -154,7 +154,7 @@ void validate_s4(const Score& score, std::vector<Diagnostic>& out) {
                     ValidationSeverity::Error, "S4",
                     "TempoMap entries not in ascending order at index "
                         + std::to_string(i),
-                    ScoreError::TempoMapGap,
+                    ErrorCode::TempoMapGap,
                     curr
                 ));
             }
@@ -171,7 +171,7 @@ void validate_s5(const Score& score, std::vector<Diagnostic>& out) {
         out.push_back(make_diagnostic(
             ValidationSeverity::Error, "S5",
             "TimeSignatureMap must have an entry at bar 1",
-            ScoreError::TimeMapGap
+            ErrorCode::TimeMapGap
         ));
     }
     for (std::size_t i = 0; i < score.time_map.size(); ++i) {
@@ -179,7 +179,7 @@ void validate_s5(const Score& score, std::vector<Diagnostic>& out) {
             out.push_back(make_diagnostic(
                 ValidationSeverity::Error, "S5",
                 "TimeSignatureMap entry has bar < 1 at index " + std::to_string(i),
-                ScoreError::TimeMapGap,
+                ErrorCode::TimeMapGap,
                 ScoreTime{score.time_map[i].bar, Beat::zero()}
             ));
         }
@@ -188,7 +188,7 @@ void validate_s5(const Score& score, std::vector<Diagnostic>& out) {
                 ValidationSeverity::Error, "S5",
                 "TimeSignatureMap entries not in ascending order at index "
                     + std::to_string(i),
-                ScoreError::TimeMapGap,
+                ErrorCode::TimeMapGap,
                 ScoreTime{score.time_map[i].bar, Beat::zero()}
             ));
         }
@@ -204,7 +204,7 @@ void validate_s6(const Score& score, std::vector<Diagnostic>& out) {
         out.push_back(make_diagnostic(
             ValidationSeverity::Error, "S6",
             "KeySignatureMap must have an entry at bar 1",
-            ScoreError::KeyMapGap
+            ErrorCode::KeyMapGap
         ));
     }
     for (std::size_t i = 0; i < score.key_map.size(); ++i) {
@@ -212,7 +212,7 @@ void validate_s6(const Score& score, std::vector<Diagnostic>& out) {
             out.push_back(make_diagnostic(
                 ValidationSeverity::Error, "S6",
                 "KeySignatureMap entry has bar < 1 at index " + std::to_string(i),
-                ScoreError::KeyMapGap,
+                ErrorCode::KeyMapGap,
                 score.key_map[i].position
             ));
         }
@@ -225,7 +225,7 @@ void validate_s6(const Score& score, std::vector<Diagnostic>& out) {
                     ValidationSeverity::Error, "S6",
                     "KeySignatureMap entries not in ascending order at index "
                         + std::to_string(i),
-                    ScoreError::KeyMapGap,
+                    ErrorCode::KeyMapGap,
                     curr
                 ));
             }
@@ -288,7 +288,7 @@ void validate_s7(const Score& score, std::vector<Diagnostic>& out) {
                                 ValidationSeverity::Error, "S7",
                                 "Tie forward on note with no matching pitch "
                                 "at adjacent position",
-                                ScoreError::TieMismatch,
+                                ErrorCode::TieMismatch,
                                 ScoreTime{measure.bar_number,
                                     voice.events[ei].offset},
                                 part.id
@@ -335,7 +335,7 @@ void validate_s8(const Score& score, std::vector<Diagnostic>& out) {
                         out.push_back(make_diagnostic(
                             ValidationSeverity::Error, "S8",
                             "Tuplet events do not sum to declared span",
-                            ScoreError::TupletSpanError,
+                            ErrorCode::TupletSpanError,
                             ScoreTime{measure.bar_number, Beat::zero()},
                             part.id
                         ));
@@ -360,7 +360,7 @@ void validate_sections_no_overlap(
                 ValidationSeverity::Error, "S9",
                 "Section '" + sections[i].label + "' overlaps with '" +
                 sections[i - 1].label + "'",
-                ScoreError::DocumentStructure,
+                ErrorCode::DocumentStructure,
                 sections[i].start
             ));
         }
@@ -390,7 +390,7 @@ void validate_section_nesting(
                     ValidationSeverity::Error, "S10",
                     "Child section '" + child.label +
                     "' extends beyond parent '" + section.label + "'",
-                    ScoreError::DocumentStructure,
+                    ErrorCode::DocumentStructure,
                     child.start
                 ));
             }
@@ -415,7 +415,7 @@ void validate_s0b(const Score& score, std::vector<Diagnostic>& out) {
                     ValidationSeverity::Error, "S0b",
                     "Measure " + std::to_string(measure.bar_number) +
                     " has no voices",
-                    ScoreError::EmptyVoice,
+                    ErrorCode::EmptyVoice,
                     ScoreTime{measure.bar_number, Beat::zero()}, part.id
                 ));
             }
@@ -457,7 +457,7 @@ void validate_s11(const Score& score, std::vector<Diagnostic>& out) {
         out.push_back(make_diagnostic(
             ValidationSeverity::Error, "S11",
             "Tone row set: score is missing pitch classes: " + missing,
-            ScoreError::InvariantViolation
+            ErrorCode::InvariantViolation
         ));
     }
 }
@@ -488,7 +488,7 @@ void validate_m1(const Score& score, std::vector<Diagnostic>& out) {
                                     ValidationSeverity::Warning, "M1",
                                     "Note outside comfortable range for '" +
                                     part.definition.name + "'",
-                                    ScoreError::InconsistentOrch,
+                                    ErrorCode::InconsistentOrch,
                                     ScoreTime{measure.bar_number, event.offset},
                                     part.id
                                 ));
@@ -523,7 +523,7 @@ void validate_m2(const Score& score, std::vector<Diagnostic>& out) {
                                 ValidationSeverity::Error, "M2",
                                 "Note outside absolute range for '" +
                                 part.definition.name + "'",
-                                ScoreError::InconsistentOrch,
+                                ErrorCode::InconsistentOrch,
                                 ScoreTime{measure.bar_number, event.offset},
                                 part.id
                             ));
@@ -559,7 +559,7 @@ void validate_m8(const Score& score, std::vector<Diagnostic>& out) {
         out.push_back(make_diagnostic(
             ValidationSeverity::Warning, "M8",
             "Score has note content but no harmonic annotations",
-            ScoreError::StaleHarmonicLayer
+            ErrorCode::StaleHarmonicLayer
         ));
     }
 }
@@ -575,7 +575,7 @@ void validate_r1(const Score& score, std::vector<Diagnostic>& out) {
                 ValidationSeverity::Warning, "R1",
                 "Part '" + part.definition.name +
                 "' has no instrument preset configured",
-                ScoreError::MissingPreset,
+                ErrorCode::MissingPreset,
                 std::nullopt, part.id
             ));
         }
@@ -604,7 +604,7 @@ void validate_r2(const Score& score, std::vector<Diagnostic>& out) {
                                 ValidationSeverity::Warning, "R2",
                                 "Articulation not in vocabulary for '" +
                                 part.definition.name + "'",
-                                ScoreError::UnmappedArticulation,
+                                ErrorCode::UnmappedArticulation,
                                 ScoreTime{measure.bar_number, event.offset},
                                 part.id
                             ));
@@ -636,7 +636,7 @@ void validate_r3(const Score& score, std::vector<Diagnostic>& out) {
                                 ValidationSeverity::Warning, "R3",
                                 "No articulation mapping for '" +
                                 part.definition.name + "'",
-                                ScoreError::UnmappedArticulation,
+                                ErrorCode::UnmappedArticulation,
                                 ScoreTime{measure.bar_number, event.offset},
                                 part.id
                             ));
@@ -690,7 +690,7 @@ void validate_m3(const Score& score, std::vector<Diagnostic>& out) {
                                     "Parallel fifth detected in voice " +
                                     std::to_string(voice.voice_index) +
                                     ", bar " + std::to_string(measure.bar_number),
-                                    ScoreError::InvariantViolation,
+                                    ErrorCode::InvariantViolation,
                                     ScoreTime{measure.bar_number, curr_off},
                                     part.id
                                 ));
@@ -704,7 +704,7 @@ void validate_m3(const Score& score, std::vector<Diagnostic>& out) {
                                     "Parallel octave detected in voice " +
                                     std::to_string(voice.voice_index) +
                                     ", bar " + std::to_string(measure.bar_number),
-                                    ScoreError::InvariantViolation,
+                                    ErrorCode::InvariantViolation,
                                     ScoreTime{measure.bar_number, curr_off},
                                     part.id
                                 ));
@@ -767,7 +767,7 @@ void validate_m4(const Score& score, std::vector<Diagnostic>& out) {
                             " and voice " +
                             std::to_string(measure.voices[vi + 1].voice_index) +
                             " in bar " + std::to_string(measure.bar_number),
-                            ScoreError::InvariantViolation,
+                            ErrorCode::InvariantViolation,
                             ScoreTime{measure.bar_number, Beat::zero()},
                             part.id
                         ));
@@ -827,7 +827,7 @@ void validate_m5(const Score& score, std::vector<Diagnostic>& out) {
                                 " semitones) without step recovery in voice " +
                                 std::to_string(voice.voice_index) +
                                 ", bar " + std::to_string(measure.bar_number),
-                                ScoreError::InvariantViolation,
+                                ErrorCode::InvariantViolation,
                                 ScoreTime{measure.bar_number, pitches[i].offset},
                                 part.id
                             ));
@@ -890,7 +890,7 @@ void validate_m6(const Score& score, std::vector<Diagnostic>& out) {
                             "Unresolved leading tone in voice " +
                             std::to_string(voice.voice_index) +
                             ", bar " + std::to_string(measure.bar_number),
-                            ScoreError::InvariantViolation,
+                            ErrorCode::InvariantViolation,
                             ScoreTime{measure.bar_number,
                                 voice.events[ei].offset},
                             part.id
@@ -961,7 +961,7 @@ void validate_m7(const Score& score, std::vector<Diagnostic>& out) {
                             "Unresolved chordal seventh in voice " +
                             std::to_string(voice.voice_index) +
                             ", bar " + std::to_string(measure.bar_number),
-                            ScoreError::InvariantViolation,
+                            ErrorCode::InvariantViolation,
                             ScoreTime{measure.bar_number,
                                 voice.events[ei].offset},
                             part.id
@@ -1017,7 +1017,7 @@ void validate_m9(const Score& score, std::vector<Diagnostic>& out) {
                         "' has " + std::to_string(gap_count) +
                         " consecutive bars without orchestration annotation"
                         " starting at bar " + std::to_string(gap_start),
-                        ScoreError::InconsistentOrch,
+                        ErrorCode::InconsistentOrch,
                         ScoreTime{gap_start, Beat::zero()}, part.id
                     ));
                 }
@@ -1032,7 +1032,7 @@ void validate_m9(const Score& score, std::vector<Diagnostic>& out) {
                 "' has " + std::to_string(gap_count) +
                 " consecutive bars without orchestration annotation"
                 " starting at bar " + std::to_string(gap_start),
-                ScoreError::InconsistentOrch,
+                ErrorCode::InconsistentOrch,
                 ScoreTime{gap_start, Beat::zero()}, part.id
             ));
         }
@@ -1084,7 +1084,7 @@ void validate_m10(const Score& score, std::vector<Diagnostic>& out) {
                         "' has " + std::to_string(gap_count) +
                         " consecutive bars without dynamic marking"
                         " starting at bar " + std::to_string(gap_start),
-                        ScoreError::InconsistentOrch,
+                        ErrorCode::InconsistentOrch,
                         ScoreTime{gap_start, Beat::zero()}, part.id
                     ));
                 }
@@ -1099,7 +1099,7 @@ void validate_m10(const Score& score, std::vector<Diagnostic>& out) {
                 "' has " + std::to_string(gap_count) +
                 " consecutive bars without dynamic marking"
                 " starting at bar " + std::to_string(gap_start),
-                ScoreError::InconsistentOrch,
+                ErrorCode::InconsistentOrch,
                 ScoreTime{gap_start, Beat::zero()}, part.id
             ));
         }
@@ -1132,7 +1132,7 @@ void validate_r4(const Score& score, std::vector<Diagnostic>& out) {
                             ValidationSeverity::Info, "R4",
                             "Grace note group duration exceeds 1/16 in bar " +
                             std::to_string(measure.bar_number),
-                            ScoreError::InvariantViolation,
+                            ErrorCode::InvariantViolation,
                             ScoreTime{measure.bar_number, event.offset},
                             part.id
                         ));
@@ -1171,7 +1171,7 @@ void validate_r5(const Score& score, std::vector<Diagnostic>& out) {
                             std::to_string(measure.bar_number) +
                             " at offset " +
                             std::to_string(event.offset.to_float()),
-                            ScoreError::TickConversionError,
+                            ErrorCode::TickConversionError,
                             st, part.id
                         ));
                     }
@@ -1192,7 +1192,7 @@ void validate_s12(const Score& score, std::vector<Diagnostic>& out) {
             out.push_back(make_diagnostic(
                 ValidationSeverity::Error, "S12",
                 "Beat denominator <= 0 in tempo map position",
-                ScoreError::InvariantViolation,
+                ErrorCode::InvariantViolation,
                 te.position
             ));
         }
@@ -1200,7 +1200,7 @@ void validate_s12(const Score& score, std::vector<Diagnostic>& out) {
             out.push_back(make_diagnostic(
                 ValidationSeverity::Error, "S12",
                 "Beat denominator <= 0 in tempo linear_duration",
-                ScoreError::InvariantViolation,
+                ErrorCode::InvariantViolation,
                 te.position
             ));
         }
@@ -1215,7 +1215,7 @@ void validate_s12(const Score& score, std::vector<Diagnostic>& out) {
                         out.push_back(make_diagnostic(
                             ValidationSeverity::Error, "S12",
                             "Event offset has denominator <= 0",
-                            ScoreError::InvariantViolation,
+                            ErrorCode::InvariantViolation,
                             ScoreTime{m.bar_number, Beat::zero()}, part.id
                         ));
                     }
@@ -1225,7 +1225,7 @@ void validate_s12(const Score& score, std::vector<Diagnostic>& out) {
                             out.push_back(make_diagnostic(
                                 ValidationSeverity::Error, "S12",
                                 "NoteGroup duration has denominator <= 0",
-                                ScoreError::InvariantViolation,
+                                ErrorCode::InvariantViolation,
                                 ScoreTime{m.bar_number, e.offset}, part.id
                             ));
                         }
@@ -1235,7 +1235,7 @@ void validate_s12(const Score& score, std::vector<Diagnostic>& out) {
                             out.push_back(make_diagnostic(
                                 ValidationSeverity::Error, "S12",
                                 "Rest duration has denominator <= 0",
-                                ScoreError::InvariantViolation,
+                                ErrorCode::InvariantViolation,
                                 ScoreTime{m.bar_number, e.offset}, part.id
                             ));
                         }
@@ -1258,7 +1258,7 @@ void validate_s13_sections(const std::vector<ScoreSection>& sections,
             out.push_back(make_diagnostic(
                 ValidationSeverity::Error, "S13",
                 "Duplicate SectionId: " + std::to_string(s.id.value),
-                ScoreError::InvariantViolation,
+                ErrorCode::InvariantViolation,
                 s.start
             ));
         }
@@ -1277,7 +1277,7 @@ void validate_s13(const Score& score, std::vector<Diagnostic>& out) {
                         out.push_back(make_diagnostic(
                             ValidationSeverity::Error, "S13",
                             "Duplicate EventId: " + std::to_string(e.id.value),
-                            ScoreError::InvariantViolation,
+                            ErrorCode::InvariantViolation,
                             ScoreTime{m.bar_number, e.offset}, part.id
                         ));
                     }
@@ -1293,7 +1293,7 @@ void validate_s13(const Score& score, std::vector<Diagnostic>& out) {
             out.push_back(make_diagnostic(
                 ValidationSeverity::Error, "S13",
                 "Duplicate PartId: " + std::to_string(part.id.value),
-                ScoreError::InvariantViolation
+                ErrorCode::InvariantViolation
             ));
         }
     }
@@ -1338,7 +1338,7 @@ void validate_s14(const Score& score, std::vector<Diagnostic>& out) {
                                 ValidationSeverity::Error, "S14",
                                 "BeamGroup references non-existent EventId: " +
                                     std::to_string(eid.value),
-                                ScoreError::InvariantViolation,
+                                ErrorCode::InvariantViolation,
                                 ScoreTime{m.bar_number, Beat::zero()}, part.id
                             ));
                         }
@@ -1362,7 +1362,7 @@ void validate_s14(const Score& score, std::vector<Diagnostic>& out) {
                                 ValidationSeverity::Error, "S14",
                                 "Tuplet nested_in references unknown TupletId: " +
                                     std::to_string(ng->tuplet_context->nested_in->value),
-                                ScoreError::InvariantViolation,
+                                ErrorCode::InvariantViolation,
                                 ScoreTime{m.bar_number, e.offset}, part.id
                             ));
                         }
@@ -1381,7 +1381,7 @@ void validate_s14(const Score& score, std::vector<Diagnostic>& out) {
                     ValidationSeverity::Warning, "S14",
                     "NonChordTone references non-existent EventId: " +
                         std::to_string(nct.event_id.value),
-                    ScoreError::InvariantViolation,
+                    ErrorCode::InvariantViolation,
                     ha.position
                 ));
             } else if (nct.note_index >= it->second) {
@@ -1389,7 +1389,7 @@ void validate_s14(const Score& score, std::vector<Diagnostic>& out) {
                     ValidationSeverity::Warning, "S14",
                     "NonChordTone note_index " + std::to_string(nct.note_index) +
                         " out of bounds for EventId " + std::to_string(nct.event_id.value),
-                    ScoreError::InvariantViolation,
+                    ErrorCode::InvariantViolation,
                     ha.position
                 ));
             }
@@ -1408,7 +1408,7 @@ void validate_s15(const Score& score, std::vector<Diagnostic>& out) {
             out.push_back(make_diagnostic(
                 ValidationSeverity::Error, "S15",
                 "Harmonic annotations not sorted by position",
-                ScoreError::OverlappingAnnotation,
+                ErrorCode::OverlappingAnnotation,
                 anns[i].position
             ));
             break;
@@ -1423,7 +1423,7 @@ void validate_s15(const Score& score, std::vector<Diagnostic>& out) {
             out.push_back(make_diagnostic(
                 ValidationSeverity::Error, "S15",
                 "Harmonic annotations overlap at position",
-                ScoreError::OverlappingAnnotation,
+                ErrorCode::OverlappingAnnotation,
                 anns[i].position
             ));
         }
@@ -1442,7 +1442,7 @@ void validate_s16(const Score& score, std::vector<Diagnostic>& out) {
                     out.push_back(make_diagnostic(
                         ValidationSeverity::Error, "S16",
                         "Doubling role missing doubled_part field",
-                        ScoreError::InconsistentOrchField,
+                        ErrorCode::InconsistentOrchField,
                         ann.start, ann.part_id
                     ));
                 }
@@ -1452,7 +1452,7 @@ void validate_s16(const Score& score, std::vector<Diagnostic>& out) {
                     out.push_back(make_diagnostic(
                         ValidationSeverity::Error, "S16",
                         "PedalTone role missing pedal_pitch field",
-                        ScoreError::InconsistentOrchField,
+                        ErrorCode::InconsistentOrchField,
                         ann.start, ann.part_id
                     ));
                 }
@@ -1462,7 +1462,7 @@ void validate_s16(const Score& score, std::vector<Diagnostic>& out) {
                     out.push_back(make_diagnostic(
                         ValidationSeverity::Error, "S16",
                         "Dialogue role missing dialogue_partner field",
-                        ScoreError::InconsistentOrchField,
+                        ErrorCode::InconsistentOrchField,
                         ann.start, ann.part_id
                     ));
                 }
@@ -1474,7 +1474,7 @@ void validate_s16(const Score& score, std::vector<Diagnostic>& out) {
                     out.push_back(make_diagnostic(
                         ValidationSeverity::Warning, "S16",
                         "doubled_part set on non-Doubling role",
-                        ScoreError::InconsistentOrchField,
+                        ErrorCode::InconsistentOrchField,
                         ann.start, ann.part_id
                     ));
                 }
@@ -1482,7 +1482,7 @@ void validate_s16(const Score& score, std::vector<Diagnostic>& out) {
                     out.push_back(make_diagnostic(
                         ValidationSeverity::Warning, "S16",
                         "pedal_pitch set on non-PedalTone role",
-                        ScoreError::InconsistentOrchField,
+                        ErrorCode::InconsistentOrchField,
                         ann.start, ann.part_id
                     ));
                 }
@@ -1490,7 +1490,7 @@ void validate_s16(const Score& score, std::vector<Diagnostic>& out) {
                     out.push_back(make_diagnostic(
                         ValidationSeverity::Warning, "S16",
                         "dialogue_partner set on non-Dialogue role",
-                        ScoreError::InconsistentOrchField,
+                        ErrorCode::InconsistentOrchField,
                         ann.start, ann.part_id
                     ));
                 }
@@ -1528,7 +1528,7 @@ std::vector<Diagnostic> validate_structural(const Score& score) {
         diags.push_back(make_diagnostic(
             ValidationSeverity::Error, "S0",
             "Score must have at least one part",
-            ScoreError::MissingParts
+            ErrorCode::MissingParts
         ));
         return diags;
     }

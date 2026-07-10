@@ -310,16 +310,16 @@ Result<IngestedWork> ingest_midi(
     // Parse MIDI
     auto midi_result = parse_midi(midi_data);
     if (!midi_result)
-        return std::unexpected(static_cast<ErrorCode>(CorpusError::IngestionFailed));
+        return std::unexpected(ErrorCode::IngestionFailed);
 
     const auto& midi = *midi_result;
     if (midi.notes.empty())
-        return std::unexpected(static_cast<ErrorCode>(CorpusError::IngestionFailed));
+        return std::unexpected(ErrorCode::IngestionFailed);
 
     // Convert to NoteEvents
     auto note_events = midi_to_note_events(midi);
     if (note_events.empty())
-        return std::unexpected(static_cast<ErrorCode>(CorpusError::IngestionFailed));
+        return std::unexpected(ErrorCode::IngestionFailed);
 
     // Build PC histogram for key estimation
     std::array<std::uint32_t, 12> pc_hist{};
@@ -361,7 +361,7 @@ Result<IngestedWork> ingest_midi(
         bpm, time_num, time_den, total_bars);
 
     if (!score_result)
-        return std::unexpected(static_cast<ErrorCode>(CorpusError::IngestionFailed));
+        return std::unexpected(ErrorCode::IngestionFailed);
 
     // Populate IngestedWork
     IngestedWork work;
@@ -402,11 +402,11 @@ Result<IngestedWork> ingest_musicxml(
 ) {
     auto xml_result = parse_musicxml(musicxml);
     if (!xml_result)
-        return std::unexpected(static_cast<ErrorCode>(CorpusError::IngestionFailed));
+        return std::unexpected(ErrorCode::IngestionFailed);
 
     const auto& xml_score = *xml_result;
     if (xml_score.parts.empty())
-        return std::unexpected(static_cast<ErrorCode>(CorpusError::IngestionFailed));
+        return std::unexpected(ErrorCode::IngestionFailed);
 
     // Extract key from first measure if available
     KeyEstimate key_est{0, false, 1.0f};
@@ -476,7 +476,7 @@ Result<IngestedWork> ingest_musicxml(
 
     auto score_result = create_score(spec);
     if (!score_result)
-        return std::unexpected(static_cast<ErrorCode>(CorpusError::IngestionFailed));
+        return std::unexpected(ErrorCode::IngestionFailed);
 
     Score score = std::move(*score_result);
 

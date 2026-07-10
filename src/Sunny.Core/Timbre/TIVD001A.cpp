@@ -26,7 +26,7 @@ void add_diagnostic(std::vector<Diagnostic>& out,
                     ValidationSeverity sev,
                     const char* rule,
                     const std::string& msg,
-                    int code,
+                    ErrorCode code,
                     std::optional<PartId> part = std::nullopt) {
     out.push_back({sev, rule, msg, std::nullopt, part, code});
 }
@@ -45,47 +45,47 @@ void validate_source(const SoundSourceData& src,
             if (s.oscillators.empty()) {
                 add_diagnostic(out, ValidationSeverity::Error, "T2",
                     "SubtractiveSynth requires at least one oscillator",
-                    TimbreError::InvalidSource, part);
+                    ErrorCode::InvalidSource, part);
             }
             if (!s.oscillator_mix.empty() &&
                 s.oscillator_mix.size() != s.oscillators.size()) {
                 add_diagnostic(out, ValidationSeverity::Error, "T2",
                     "oscillator_mix size must match oscillator count",
-                    TimbreError::InvalidSource, part);
+                    ErrorCode::InvalidSource, part);
             }
         }
         else if constexpr (std::is_same_v<T, FMSynth>) {
             if (s.operators.empty()) {
                 add_diagnostic(out, ValidationSeverity::Error, "T2",
                     "FMSynth requires at least one operator",
-                    TimbreError::InvalidSource, part);
+                    ErrorCode::InvalidSource, part);
             }
             if (s.algorithm.use_preset &&
                 (s.algorithm.preset_number < 1 || s.algorithm.preset_number > 32)) {
                 add_diagnostic(out, ValidationSeverity::Error, "T2",
                     "FM algorithm preset number must be 1–32",
-                    TimbreError::InvalidSource, part);
+                    ErrorCode::InvalidSource, part);
             }
         }
         else if constexpr (std::is_same_v<T, AdditiveSynth>) {
             if (s.partials.empty()) {
                 add_diagnostic(out, ValidationSeverity::Error, "T2",
                     "AdditiveSynth requires at least one partial",
-                    TimbreError::InvalidSource, part);
+                    ErrorCode::InvalidSource, part);
             }
         }
         else if constexpr (std::is_same_v<T, SamplerSource>) {
             if (s.library.empty()) {
                 add_diagnostic(out, ValidationSeverity::Error, "T2",
                     "Sampler requires a non-empty library name",
-                    TimbreError::InvalidSource, part);
+                    ErrorCode::InvalidSource, part);
             }
         }
         else if constexpr (std::is_same_v<T, HybridSource>) {
             if (s.layers.empty()) {
                 add_diagnostic(out, ValidationSeverity::Error, "T2",
                     "HybridSource requires at least one layer",
-                    TimbreError::InvalidSource, part);
+                    ErrorCode::InvalidSource, part);
             }
             for (const auto& layer : s.layers) {
                 if (layer) {
@@ -110,7 +110,7 @@ void check_filter_nyquist(const Filter& f, float nyquist,
             "Filter cutoff (" + std::to_string(static_cast<int>(f.cutoff)) +
             " Hz) exceeds Nyquist (" +
             std::to_string(static_cast<int>(nyquist)) + " Hz)",
-            TimbreError::CutoffAboveNyquist, part);
+            ErrorCode::CutoffAboveNyquist, part);
     }
 }
 
@@ -153,7 +153,7 @@ void check_detune(const SoundSourceData& src,
                 if (std::abs(osc.tune_cents) > 100.0f) {
                     add_diagnostic(out, ValidationSeverity::Warning, "T4",
                         "Oscillator detune exceeds +/-100 cents",
-                        TimbreError::ExcessiveDetune, part);
+                        ErrorCode::ExcessiveDetune, part);
                 }
             }
         }
@@ -183,7 +183,7 @@ void check_fm_feedback(const SoundSourceData& src,
                     "FM feedback (" + std::to_string(s.feedback) +
                     ") exceeds stability threshold (" +
                     std::to_string(FM_FEEDBACK_THRESHOLD) + ")",
-                    TimbreError::FMFeedbackUnstable, part);
+                    ErrorCode::FMFeedbackUnstable, part);
             }
         }
         else if constexpr (std::is_same_v<T, HybridSource>) {
@@ -208,12 +208,12 @@ void check_envelope_loop(const Envelope& env, const char* context,
             + std::to_string(env.loop->start_stage) + ", "
             + std::to_string(env.loop->end_stage)
             + ") exceed stage count " + std::to_string(stage_count),
-            TimbreError::InvalidSource, part);
+            ErrorCode::InvalidSource, part);
     }
     if (env.loop->start_stage > env.loop->end_stage) {
         add_diagnostic(out, ValidationSeverity::Error, "T6b",
             std::string(context) + " envelope loop start_stage > end_stage",
-            TimbreError::InvalidSource, part);
+            ErrorCode::InvalidSource, part);
     }
 }
 
@@ -292,7 +292,7 @@ void check_modulation_targets(const ModulationMatrix& matrix,
             add_diagnostic(out, ValidationSeverity::Warning, "T7",
                 "Modulation target '" + routing.target +
                 "' does not match any known parameter path prefix",
-                TimbreError::InvalidModTarget, part);
+                ErrorCode::InvalidModTarget, part);
         }
     }
 }
@@ -310,7 +310,7 @@ void check_rendering_config(const TimbreRenderingConfig& cfg,
     if (!cfg.device_type.device_name.empty() && cfg.parameter_map.empty()) {
         add_diagnostic(out, ValidationSeverity::Warning, "T9",
             "TimbreRenderingConfig specifies a device but has no parameter mappings",
-            TimbreError::UnmappedParameters, part);
+            ErrorCode::UnmappedParameters, part);
     }
 }
 
@@ -394,7 +394,7 @@ std::vector<Diagnostic> validate_timbre_correspondence(
             add_diagnostic(diags, ValidationSeverity::Error, "T1",
                 "Part '" + part.definition.name +
                 "' has no corresponding TimbreProfile",
-                TimbreError::MissingProfile, part.id);
+                ErrorCode::MissingProfile, part.id);
         }
     }
 

@@ -141,7 +141,7 @@ TEST_CASE("TIVD001A: T2 Error for SubtractiveSynth without oscillators", "[timbr
     REQUIRE(!diags.empty());
     CHECK(diags[0].rule == "T2");
     CHECK(diags[0].severity == ValidationSeverity::Error);
-    CHECK(diags[0].error_code == TimbreError::InvalidSource);
+    CHECK(diags[0].error_code == ErrorCode::InvalidSource);
 }
 
 TEST_CASE("TIVD001A: T2 Error for oscillator_mix size mismatch", "[timbre-ir][validation]") {

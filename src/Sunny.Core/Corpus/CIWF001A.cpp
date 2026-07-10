@@ -19,11 +19,11 @@ namespace Sunny::Core {
 namespace {
 
 ErrorCode not_found() {
-    return static_cast<ErrorCode>(CorpusError::NotFound);
+    return ErrorCode::CorpusNotFound;
 }
 
 ErrorCode duplicate_id() {
-    return static_cast<ErrorCode>(CorpusError::DuplicateId);
+    return ErrorCode::CorpusDuplicateId;
 }
 
 ComposerProfile* find_composer(CorpusDatabase& corpus, ComposerProfileId id) {

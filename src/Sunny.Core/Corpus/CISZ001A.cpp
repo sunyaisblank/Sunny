@@ -492,7 +492,7 @@ json composer_profile_to_json(const ComposerProfile& profile) {
 
 Result<ComposerProfile> composer_profile_from_json(const json& j) {
     if (j.value("schema_version", 0) != CORPUS_IR_SCHEMA_VERSION)
-        return std::unexpected(static_cast<ErrorCode>(CorpusError::InvalidParameter));
+        return std::unexpected(ErrorCode::CorpusInvalidParameter);
 
     ComposerProfile profile;
     profile.id = ComposerProfileId{j.at("id").get<std::uint64_t>()};
@@ -529,7 +529,7 @@ json ingested_work_to_json(const IngestedWork& work) {
 
 Result<IngestedWork> ingested_work_from_json(const json& j) {
     if (j.value("schema_version", 0) != CORPUS_IR_SCHEMA_VERSION)
-        return std::unexpected(static_cast<ErrorCode>(CorpusError::InvalidParameter));
+        return std::unexpected(ErrorCode::CorpusInvalidParameter);
 
     IngestedWork work;
     work.id = IngestedWorkId{j.at("id").get<std::uint64_t>()};
@@ -564,7 +564,7 @@ json corpus_to_json(const CorpusDatabase& corpus) {
 
 Result<CorpusDatabase> corpus_from_json(const json& j) {
     if (j.value("schema_version", 0) != CORPUS_IR_SCHEMA_VERSION)
-        return std::unexpected(static_cast<ErrorCode>(CorpusError::InvalidParameter));
+        return std::unexpected(ErrorCode::CorpusInvalidParameter);
 
     CorpusDatabase corpus;
     if (j.contains("composers")) {
@@ -593,7 +593,7 @@ Result<CorpusDatabase> corpus_from_json_string(const std::string& json_str) {
         auto j = json::parse(json_str);
         return corpus_from_json(j);
     } catch (const json::exception&) {
-        return std::unexpected(static_cast<ErrorCode>(CorpusError::InvalidParameter));
+        return std::unexpected(ErrorCode::CorpusInvalidParameter);
     }
 }
 

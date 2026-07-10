@@ -18,15 +18,15 @@ namespace Sunny::Core {
 namespace {
 
 ErrorCode not_found() {
-    return static_cast<ErrorCode>(MixError::NotFound);
+    return ErrorCode::MixNotFound;
 }
 
 ErrorCode invalid_param() {
-    return static_cast<ErrorCode>(MixError::InvalidParameter);
+    return ErrorCode::MixInvalidParameter;
 }
 
 ErrorCode duplicate_id() {
-    return static_cast<ErrorCode>(MixError::DuplicateId);
+    return ErrorCode::MixDuplicateId;
 }
 
 // Locate a channel by its ChannelStripId; returns nullptr if absent

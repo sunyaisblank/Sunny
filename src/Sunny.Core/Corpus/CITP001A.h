@@ -50,38 +50,6 @@ using SignaturePatternId = Id<SignaturePatternTag>;
 using ComposerRef = ComposerProfileId;
 
 // =============================================================================
-// Error Codes (8000–8099)
-// =============================================================================
-
-namespace CorpusError {
-    // Ingestion (C1–C5)
-    constexpr int LowIngestionConfidence  = 8000;  // C1
-    constexpr int ScoreValidationFailed   = 8001;  // C2
-    constexpr int LowKeyConfidence        = 8002;  // C3
-    constexpr int InferredTimeSig         = 8003;  // C4
-    constexpr int ExcessiveVoices         = 8004;  // C5
-
-    // Analysis (C6–C9)
-    constexpr int LowHarmonicCoverage     = 8010;  // C6
-    constexpr int OverSegmentation        = 8011;  // C7
-    constexpr int NoThematicUnits         = 8012;  // C8
-    constexpr int SingleInstrument        = 8013;  // C9
-
-    // Profile (C10–C13)
-    constexpr int SmallCorpus             = 8020;  // C10
-    constexpr int ModerateCorpus          = 8021;  // C11
-    constexpr int SmallPeriodCorpus       = 8022;  // C12
-    constexpr int WeakSignature           = 8023;  // C13
-
-    // General
-    constexpr int NotFound                = 8030;
-    constexpr int DuplicateId             = 8031;
-    constexpr int InvalidParameter        = 8032;
-    constexpr int IngestionFailed         = 8033;
-    constexpr int AnalysisFailed          = 8034;
-}  // namespace CorpusError
-
-// =============================================================================
 // §1.3.2 Ingestion Confidence
 // =============================================================================
 

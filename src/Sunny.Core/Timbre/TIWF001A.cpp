@@ -62,15 +62,15 @@ int parse_index(const std::string& seg) {
 }
 
 ErrorCode invalid_path() {
-    return static_cast<ErrorCode>(TimbreError::InvalidModTarget);
+    return ErrorCode::InvalidModTarget;
 }
 
 ErrorCode not_found() {
-    return static_cast<ErrorCode>(TimbreError::NotFound);
+    return ErrorCode::TimbreNotFound;
 }
 
 ErrorCode duplicate_id() {
-    return static_cast<ErrorCode>(TimbreError::DuplicateId);
+    return ErrorCode::TimbreDuplicateId;
 }
 
 // =============================================================================
@@ -656,7 +656,7 @@ Result<void> wf_set_sound_source(TimbreProfile& profile, SoundSourceData source)
     for (const auto& d : diags) {
         if (d.severity == ValidationSeverity::Error) {
             profile.source = std::move(previous);
-            return std::unexpected(static_cast<ErrorCode>(TimbreError::InvalidParameter));
+            return std::unexpected(ErrorCode::TimbreInvalidParameter);
         }
     }
     return {};
@@ -727,7 +727,7 @@ Result<void> wf_set_parameter(TimbreProfile& profile, const std::string& path,
     for (const auto& d : diags) {
         if (d.severity == ValidationSeverity::Error) {
             **result = previous;
-            return std::unexpected(static_cast<ErrorCode>(TimbreError::InvalidParameter));
+            return std::unexpected(ErrorCode::TimbreInvalidParameter);
         }
     }
 
@@ -778,7 +778,7 @@ Result<void> wf_add_modulation(TimbreProfile& profile, ModulationRouting routing
 
     // Validate depth in [-1, 1]
     if (routing.depth < -1.0f || routing.depth > 1.0f)
-        return std::unexpected(static_cast<ErrorCode>(TimbreError::InvalidParameter));
+        return std::unexpected(ErrorCode::TimbreInvalidParameter);
 
     // Validate source index references an existing LFO, step sequencer, or macro
     bool source_valid = false;
@@ -816,7 +816,7 @@ Result<void> wf_add_modulation(TimbreProfile& profile, ModulationRouting routing
 
 Result<void> wf_add_automation(TimbreProfile& profile, TimbreAutomation automation) {
     if (automation.breakpoints.empty())
-        return std::unexpected(static_cast<ErrorCode>(TimbreError::InvalidParameter));
+        return std::unexpected(ErrorCode::TimbreInvalidParameter);
 
     // TI-7: validate that parameter_path resolves to a real parameter
     auto segs = split_path(automation.parameter_path);
@@ -944,7 +944,7 @@ TimbrePreset wf_save_preset(const TimbreProfile& profile, TimbrePresetId id,
 Result<void> wf_morph_presets(TimbreProfile& profile, PresetMorph morph) {
     // TI-11: morph interval must be non-degenerate (start < end)
     if (!(morph.start < morph.end))
-        return std::unexpected(static_cast<ErrorCode>(TimbreError::InvalidParameter));
+        return std::unexpected(ErrorCode::TimbreInvalidParameter);
 
     profile.preset_morphs.push_back(std::move(morph));
     return {};

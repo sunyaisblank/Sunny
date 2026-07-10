@@ -61,7 +61,7 @@ json diagnostic_j(const Diagnostic& d) {
         {"severity", d.severity == ValidationSeverity::Error ? "error" :
                      d.severity == ValidationSeverity::Warning ? "warning" : "info"},
         {"message", d.message},
-        {"error_code", d.error_code}
+        {"error_code", static_cast<int>(d.error_code)}
     };
     if (d.location) {
         j["location"] = {

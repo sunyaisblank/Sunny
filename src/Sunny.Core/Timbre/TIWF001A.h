@@ -100,7 +100,7 @@ namespace Sunny::Core {
  *   insert_chain.effects[0].mix
  *   modulation.lfos[0].rate.hz
  *
- * Returns TimbreError::InvalidModTarget if the path cannot be resolved.
+ * Returns ErrorCode::InvalidModTarget if the path cannot be resolved.
  */
 [[nodiscard]] Result<void> wf_set_parameter(
     TimbreProfile& profile,

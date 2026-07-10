@@ -43,12 +43,12 @@ TEST_CASE("CITP001A: Identifier equality", "[corpus-ir][types]") {
 // =============================================================================
 
 TEST_CASE("CITP001A: Error codes are in 8000-8099 range", "[corpus-ir][types]") {
-    CHECK(CorpusError::LowIngestionConfidence == 8000);
-    CHECK(CorpusError::ScoreValidationFailed == 8001);
-    CHECK(CorpusError::LowHarmonicCoverage == 8010);
-    CHECK(CorpusError::SmallCorpus == 8020);
-    CHECK(CorpusError::NotFound == 8030);
-    CHECK(CorpusError::AnalysisFailed == 8034);
+    CHECK(static_cast<int>(ErrorCode::LowIngestionConfidence) == 8000);
+    CHECK(static_cast<int>(ErrorCode::ScoreValidationFailed) == 8001);
+    CHECK(static_cast<int>(ErrorCode::LowHarmonicCoverage) == 8010);
+    CHECK(static_cast<int>(ErrorCode::SmallCorpus) == 8020);
+    CHECK(static_cast<int>(ErrorCode::CorpusNotFound) == 8030);
+    CHECK(static_cast<int>(ErrorCode::AnalysisFailed) == 8034);
 }
 
 // =============================================================================
