@@ -7,8 +7,7 @@
 #
 # This library provides application services:
 # - Operation orchestration
-# - Ableton LOM bridge
-# - TCP/UDP/OSC transport
+# - Ableton LOM bridge (protocol, TCP transport, dispatcher)
 # - Session state machine
 # - Python bindings (pybind11)
 #
@@ -19,8 +18,6 @@ file(GLOB_RECURSE INFRA_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/Application/*.h"
     "${CMAKE_CURRENT_SOURCE_DIR}/Bridge/*.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/Bridge/*.h"
-    "${CMAKE_CURRENT_SOURCE_DIR}/Transport/*.cpp"
-    "${CMAKE_CURRENT_SOURCE_DIR}/Transport/*.h"
     "${CMAKE_CURRENT_SOURCE_DIR}/Session/*.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/Session/*.h"
     "${CMAKE_CURRENT_SOURCE_DIR}/Protocol/*.cpp"

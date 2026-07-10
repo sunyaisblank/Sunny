@@ -4,9 +4,9 @@
  *
  * Component: INTP001A
  *
- * CommandBuffer: fully implemented (records commands for testing).
- * TcpTransport: structural placeholder (connect/send return error
- * responses until platform networking is integrated).
+ * CommandBuffer: recording transport (test double and offline compilation).
+ * TcpTransport:   live POSIX-socket connection to the SunnyRemoteScript
+ *                 TCP server (4-byte big-endian length prefix + JSON).
  */
 
 #include "INTP001A.h"

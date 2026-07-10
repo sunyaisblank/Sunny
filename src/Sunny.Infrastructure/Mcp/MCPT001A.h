@@ -13,6 +13,7 @@
 
 #include "MCPS001A.h"
 #include "Application/INOR001A.h"
+#include "Bridge/INBR002A.h"
 
 namespace Sunny::Infrastructure {
 
@@ -28,9 +29,16 @@ namespace Sunny::Infrastructure {
  * - generate_negative_harmony
  * - voice_lead
  *
+ * The three Ableton-mutating tools decline before computing when the
+ * dispatcher is offline, and deliver the orchestrator's queued bridge
+ * messages through it when online; pure theory tools never touch the
+ * transport.
+ *
  * @param server MCP server to register tools with
  * @param orchestrator Orchestrator instance for stateful operations
+ * @param dispatcher Bridge dispatcher (offline dispatcher declines)
  */
-void register_sunny_tools(McpServer& server, Orchestrator& orchestrator);
+void register_sunny_tools(McpServer& server, Orchestrator& orchestrator,
+                          BridgeDispatcher& dispatcher);
 
 }  // namespace Sunny::Infrastructure

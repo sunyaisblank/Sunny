@@ -22,7 +22,38 @@ namespace Sunny::Infrastructure {
 
 using json = nlohmann::json;
 
-void register_sunny_tools(McpServer& server, Orchestrator& orchestrator) {
+namespace {
+
+/// Decline result for Ableton-mutating tools when no transport is connected
+json offline_decline() {
+    return {
+        {"success", false},
+        {"error",
+         "Ableton is not connected. Set SUNNY_ABLETON_HOST (and optionally "
+         "SUNNY_TCP_PORT) and ensure the SunnyRemoteScript control surface "
+         "is active in Live."}
+    };
+}
+
+/// Merge an orchestrator result with the dispatch outcome
+json delivery_result(const OrchestratorResult& result,
+                     const DispatchReport& report) {
+    json out = {
+        {"success", result.success && report.all_ok()},
+        {"operation_id", result.operation_id},
+        {"message", result.message},
+        {"commands_sent", report.sent}
+    };
+    if (!report.all_ok()) {
+        out["errors"] = report.errors;
+    }
+    return out;
+}
+
+}  // namespace
+
+void register_sunny_tools(McpServer& server, Orchestrator& orchestrator,
+                          BridgeDispatcher& dispatcher) {
 
     // =========================================================================
     // create_progression_clip
@@ -44,7 +75,10 @@ void register_sunny_tools(McpServer& server, Orchestrator& orchestrator) {
             }},
             {"required", json::array({"track_index", "slot_index", "root", "scale", "numerals"})}
         },
-        [&orchestrator](const json& params) -> json {
+        [&orchestrator, &dispatcher](const json& params) -> json {
+            if (!dispatcher.online()) {
+                return offline_decline();
+            }
             auto result = orchestrator.create_progression_clip(
                 params.at("track_index").get<int>(),
                 params.at("slot_index").get<int>(),
@@ -54,11 +88,15 @@ void register_sunny_tools(McpServer& server, Orchestrator& orchestrator) {
                 params.value("octave", 4),
                 params.value("duration_beats", 4.0)
             );
-            return {
-                {"success", result.success},
-                {"operation_id", result.operation_id},
-                {"message", result.message}
-            };
+            if (!result.success) {
+                return {
+                    {"success", false},
+                    {"operation_id", result.operation_id},
+                    {"message", result.message}
+                };
+            }
+            return delivery_result(
+                result, dispatcher.dispatch(orchestrator.drain_messages()));
         }
     );
 
@@ -80,7 +118,10 @@ void register_sunny_tools(McpServer& server, Orchestrator& orchestrator) {
             }},
             {"required", json::array({"track_index", "slot_index", "pulses", "steps"})}
         },
-        [&orchestrator](const json& params) -> json {
+        [&orchestrator, &dispatcher](const json& params) -> json {
+            if (!dispatcher.online()) {
+                return offline_decline();
+            }
             auto result = orchestrator.apply_euclidean_rhythm(
                 params.at("track_index").get<int>(),
                 params.at("slot_index").get<int>(),
@@ -89,11 +130,15 @@ void register_sunny_tools(McpServer& server, Orchestrator& orchestrator) {
                 static_cast<Core::MidiNote>(params.value("pitch", 60)),
                 params.value("step_duration", 0.25)
             );
-            return {
-                {"success", result.success},
-                {"operation_id", result.operation_id},
-                {"message", result.message}
-            };
+            if (!result.success) {
+                return {
+                    {"success", false},
+                    {"operation_id", result.operation_id},
+                    {"message", result.message}
+                };
+            }
+            return delivery_result(
+                result, dispatcher.dispatch(orchestrator.drain_messages()));
         }
     );
 
@@ -115,7 +160,10 @@ void register_sunny_tools(McpServer& server, Orchestrator& orchestrator) {
             }},
             {"required", json::array({"track_index", "slot_index", "numerals", "direction"})}
         },
-        [&orchestrator](const json& params) -> json {
+        [&orchestrator, &dispatcher](const json& params) -> json {
+            if (!dispatcher.online()) {
+                return offline_decline();
+            }
             auto result = orchestrator.apply_arpeggio(
                 params.at("track_index").get<int>(),
                 params.at("slot_index").get<int>(),
@@ -123,11 +171,15 @@ void register_sunny_tools(McpServer& server, Orchestrator& orchestrator) {
                 params.at("direction").get<std::string>(),
                 params.value("step_duration", 0.25)
             );
-            return {
-                {"success", result.success},
-                {"operation_id", result.operation_id},
-                {"message", result.message}
-            };
+            if (!result.success) {
+                return {
+                    {"success", false},
+                    {"operation_id", result.operation_id},
+                    {"message", result.message}
+                };
+            }
+            return delivery_result(
+                result, dispatcher.dispatch(orchestrator.drain_messages()));
         }
     );
 

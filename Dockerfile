@@ -1,76 +1,47 @@
 # Sunny MCP Server Docker Image
-# Multi-stage build with uv for fast dependency installation
+# Builds the C++ sunny-mcp binary; the container speaks MCP on stdio and
+# connects out to Ableton's SunnyRemoteScript when SUNNY_ABLETON_HOST is set.
 
 # =============================================================================
 # Build Stage
 # =============================================================================
-FROM python:3.12-slim-bookworm AS builder
+FROM debian:bookworm-slim AS builder
 
-# Install uv
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        g++ cmake ninja-build git ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
 
-# Copy dependency files first for caching
-COPY pyproject.toml uv.lock* ./
-
-# Create virtual environment and install dependencies
-RUN uv venv /opt/venv && \
-    uv pip install --python /opt/venv/bin/python -e . --no-cache
-
-# Copy source code
+COPY CMakeLists.txt CMakePresets.json ./
 COPY src ./src
+
+# Lean server build: no tests, no Python bindings
+RUN cmake -B .bin -G Ninja \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DSUNNY_BUILD_TESTS=OFF \
+        -DSUNNY_BUILD_PYTHON_BINDINGS=OFF \
+    && cmake --build .bin --target sunny-mcp
 
 # =============================================================================
 # Runtime Stage
 # =============================================================================
-FROM python:3.12-slim-bookworm AS runtime
+FROM debian:bookworm-slim AS runtime
 
-# Install runtime dependencies (none needed for Sunny currently)
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-        ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
-
-# Create non-root user
 RUN useradd --create-home --shell /bin/bash sunny
 
-WORKDIR /app
-
-# Copy virtual environment from builder
-COPY --from=builder /opt/venv /opt/venv
-
-# Copy source and config
-COPY --from=builder /build/src /app/src
-COPY sunny.toml.example /app/sunny.toml.example
-
-# Create directories
-RUN mkdir -p /app/snapshots /app/audit && \
-    chown -R sunny:sunny /app
-
-# Set environment
-ENV PATH="/opt/venv/bin:$PATH"
-ENV PYTHONPATH="/app/src"
-ENV SUNNY_SNAPSHOT_DIR="/app/snapshots"
+COPY --from=builder /build/.bin/sunny-mcp /usr/local/bin/sunny-mcp
 
 USER sunny
 
-# Expose default ports (for documentation - not actually used in stdio mode)
-# TCP for Ableton commands
-EXPOSE 9876
-# UDP for OSC modulation
-EXPOSE 9877
-
-# Health check - verify Python can import sunny
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD python -c "import sunny.server.main" || exit 1
-
-# Run the MCP server
-ENTRYPOINT ["python", "-m", "sunny.server"]
+# MCP protocol runs on stdio; the Ableton TCP connection is outbound and
+# opt-in via SUNNY_ABLETON_HOST / SUNNY_TCP_PORT (see .env.example).
+ENTRYPOINT ["sunny-mcp"]
 
 # =============================================================================
 # Labels
 # =============================================================================
 LABEL org.opencontainers.image.title="Sunny"
-LABEL org.opencontainers.image.description="AI MCP Server for Ableton Live"
+LABEL org.opencontainers.image.description="Music theory MCP server with Ableton Live integration"
 LABEL org.opencontainers.image.vendor="Sunny Project"
