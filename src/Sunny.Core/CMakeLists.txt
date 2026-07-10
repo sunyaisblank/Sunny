@@ -49,10 +49,6 @@ file(GLOB_RECURSE TENSOR_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/Tensor/*.h"
 )
 
-file(GLOB_RECURSE CONSTANTS_SOURCES
-    "${CMAKE_CURRENT_SOURCE_DIR}/Constants/*.h"
-)
-
 file(GLOB_RECURSE POSTTONAL_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/PostTonal/*.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/PostTonal/*.h"
@@ -111,7 +107,6 @@ add_library(Sunny.Core STATIC
     ${VOICELEADING_SOURCES}
     ${RHYTHM_SOURCES}
     ${TENSOR_SOURCES}
-    ${CONSTANTS_SOURCES}
     ${POSTTONAL_SOURCES}
     ${TRANSFORM_SOURCES}
     ${MELODY_SOURCES}
@@ -137,7 +132,6 @@ if(TARGET nlohmann_json::nlohmann_json)
     target_include_directories(Sunny.Core PRIVATE ${_json_inc})
 endif()
 
-# C++20 required
 target_compile_features(Sunny.Core PUBLIC cxx_std_23)
 
 # Strict warnings

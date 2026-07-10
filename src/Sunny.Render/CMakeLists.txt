@@ -7,7 +7,6 @@
 #
 # This library provides sample-accurate DSP:
 # - MIDI event scheduling
-# - Euclidean rhythm generation
 # - Modulation (LFO, envelope, S&H)
 # - Arpeggio patterns
 #

@@ -169,11 +169,6 @@ elseif(WIN32)
     set(MAX_PACKAGES_DIR "$ENV{USERPROFILE}/Documents/Max 8/Packages/Sunny")
 endif()
 
-install(DIRECTORY Abstraction/
-    DESTINATION "${MAX_PACKAGES_DIR}/patchers"
-    FILES_MATCHING PATTERN "*.maxpat"
-)
-
 # Install externals
 install(TARGETS sunny.parameter~ sunny.euclidean~ sunny.voicelead
     DESTINATION "${MAX_PACKAGES_DIR}/externals"

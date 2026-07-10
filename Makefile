@@ -318,7 +318,7 @@ info:
 	@echo "  CXX:         $(CXX)"
 	@echo "  Mull CXX:    $(MULL_CXX)"
 	@echo "  CodeQL:      $(shell $(CODEQL) --version 2>/dev/null | head -1 || echo 'not found')"
-	@echo "  Mull:        $(shell $(MULL_RUNNER) --version 2>/dev/null | grep Version || echo 'not found')"
+	@echo "  Mull:        $(shell $(MULL_RUNNER) --version 2>/dev/null | head -1 || echo 'not found')"
 	@echo "  llvm-cov:    $(shell $(LLVM_COV) --version 2>/dev/null | head -1 || echo 'not found')"
 	@echo "  Jobs:        $(JOBS)"
 

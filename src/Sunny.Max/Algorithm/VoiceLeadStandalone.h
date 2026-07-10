@@ -2,8 +2,9 @@
  * @file VoiceLeadStandalone.h
  * @brief Standalone voice leading algorithm
  *
- * Extracted from MXVL001A for testability.
- * Pure C++ with zero Max SDK dependencies.
+ * Deliberately freestanding: Max externals cannot link the full Sunny.Core,
+ * so this re-implements nearest-tone voice leading (see VLNT001A for the
+ * engine version) with zero Max SDK dependencies.
  *
  * Implements nearest-tone voice leading with optional bass locking,
  * max jump constraint, and voice crossing prevention.
