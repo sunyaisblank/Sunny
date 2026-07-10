@@ -66,8 +66,8 @@ file(GLOB_RECURSE RENDER_TEST_SOURCES
 
 if(RENDER_TEST_SOURCES)
     add_executable(Sunny.Test.Render ${RENDER_TEST_SOURCES})
+    # Sunny::Render PUBLIC-links Sunny::Core; the transitive edge suffices
     target_link_libraries(Sunny.Test.Render PRIVATE
-        Sunny::Core
         Sunny::Render
         Catch2::Catch2WithMain
     )
@@ -90,9 +90,8 @@ file(GLOB_RECURSE INFRA_TEST_SOURCES
 
 if(INFRA_TEST_SOURCES)
     add_executable(Sunny.Test.Infrastructure ${INFRA_TEST_SOURCES})
+    # Sunny::Infrastructure PUBLIC-links Sunny::Core and Sunny::Render
     target_link_libraries(Sunny.Test.Infrastructure PRIVATE
-        Sunny::Core
-        Sunny::Render
         Sunny::Infrastructure
         Catch2::Catch2WithMain
     )

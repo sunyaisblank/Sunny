@@ -7,22 +7,10 @@
     },
     "configurePresets": [
         {
-            "name": "linux-debug",
-            "displayName": "Linux Debug",
+            "name": "release",
+            "displayName": "Release",
             "generator": "Ninja",
-            "binaryDir": "${sourceDir}/bin/debug",
-            "cacheVariables": {
-                "CMAKE_BUILD_TYPE": "Debug",
-                "SUNNY_BUILD_TESTS": "ON",
-                "SUNNY_BUILD_PYTHON_BINDINGS": "ON",
-                "SUNNY_BUILD_BENCHMARKS": "ON"
-            }
-        },
-        {
-            "name": "linux-release",
-            "displayName": "Linux Release",
-            "generator": "Ninja",
-            "binaryDir": "${sourceDir}/bin/release",
+            "binaryDir": "${sourceDir}/.bin",
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Release",
                 "SUNNY_BUILD_TESTS": "ON",
@@ -30,12 +18,12 @@
             }
         },
         {
-            "name": "ci",
-            "displayName": "CI",
+            "name": "debug",
+            "displayName": "Debug",
             "generator": "Ninja",
-            "binaryDir": "${sourceDir}/bin",
+            "binaryDir": "${sourceDir}/.bin-debug",
             "cacheVariables": {
-                "CMAKE_BUILD_TYPE": "Release",
+                "CMAKE_BUILD_TYPE": "Debug",
                 "SUNNY_BUILD_TESTS": "ON",
                 "SUNNY_BUILD_PYTHON_BINDINGS": "ON"
             }
@@ -43,36 +31,25 @@
     ],
     "buildPresets": [
         {
-            "name": "linux-debug",
-            "configurePreset": "linux-debug"
+            "name": "release",
+            "configurePreset": "release"
         },
         {
-            "name": "linux-release",
-            "configurePreset": "linux-release"
-        },
-        {
-            "name": "ci",
-            "configurePreset": "ci"
+            "name": "debug",
+            "configurePreset": "debug"
         }
     ],
     "testPresets": [
         {
-            "name": "linux-debug",
-            "configurePreset": "linux-debug",
+            "name": "release",
+            "configurePreset": "release",
             "output": {
                 "outputOnFailure": true
             }
         },
         {
-            "name": "linux-release",
-            "configurePreset": "linux-release",
-            "output": {
-                "outputOnFailure": true
-            }
-        },
-        {
-            "name": "ci",
-            "configurePreset": "ci",
+            "name": "debug",
+            "configurePreset": "debug",
             "output": {
                 "outputOnFailure": true
             }

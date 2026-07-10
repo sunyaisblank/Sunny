@@ -3,7 +3,8 @@
 # =============================================================================
 #
 # All generated output goes to dotfile directories:
-#   .bin/            — CMake build tree (Release)
+#   .bin/            — CMake build tree (Release preset)
+#   .bin-debug/      — CMake build tree (Debug preset)
 #   .mull-build/     — Mull mutation testing build (clang-18, libc++)
 #   .codeql-db/      — CodeQL database
 #   .codeql-results/ — CodeQL SARIF output
@@ -53,9 +54,11 @@ COVERAGE_DIR  := .coverage-cpp
 MULL_REPORT   := .mull-report
 ANALYSIS_DIR  := .analysis
 
-# Build settings
-CMAKE_FLAGS   := -DCMAKE_BUILD_TYPE=Release
-MULL_CMAKE    := -DCMAKE_BUILD_TYPE=Debug \
+# Build settings (the release preset carries build type, generator, options;
+# CMAKE_FLAGS is a pass-through for extra -D arguments)
+CMAKE_FLAGS   :=
+MULL_CMAKE    := -G Ninja \
+                 -DCMAKE_BUILD_TYPE=Debug \
                  -DCMAKE_C_COMPILER=$(MULL_CC) \
                  -DCMAKE_CXX_COMPILER=$(MULL_CXX) \
                  -DCMAKE_CXX_FLAGS="-stdlib=libc++" \
@@ -63,7 +66,8 @@ MULL_CMAKE    := -DCMAKE_BUILD_TYPE=Debug \
                  -DSUNNY_MULL_INSTRUMENT=ON \
                  -DSUNNY_BUILD_PYTHON_BINDINGS=OFF \
                  -DSUNNY_BUILD_MCP_SERVER=OFF
-COV_CMAKE     := -DCMAKE_BUILD_TYPE=Debug \
+COV_CMAKE     := -G Ninja \
+                 -DCMAKE_BUILD_TYPE=Debug \
                  -DCMAKE_C_COMPILER=$(MULL_CC) \
                  -DCMAKE_CXX_COMPILER=$(MULL_CXX) \
                  -DCMAKE_CXX_FLAGS="-stdlib=libc++ -fprofile-instr-generate -fcoverage-mapping" \
@@ -92,8 +96,8 @@ all: build test
 
 configure: $(BUILD_DIR)/CMakeCache.txt
 
-$(BUILD_DIR)/CMakeCache.txt: CMakeLists.txt
-	cmake -B $(BUILD_DIR) $(CMAKE_FLAGS)
+$(BUILD_DIR)/CMakeCache.txt: CMakeLists.txt CMakePresets.json
+	cmake --preset release $(CMAKE_FLAGS)
 
 compile: configure
 	cmake --build $(BUILD_DIR) -j$(JOBS)
