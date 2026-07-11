@@ -135,3 +135,10 @@ that can reach a serialiser must be fully default-initialised.
   dispatch logic instead of exercising `McpServer::handle_request`;
   the duplicated dispatch can drift from the real one. Expose a test
   seam instead.
+- **Mutation-testing baseline (2026-07-11, post-programme).** Full Mull
+  run over the rewritten tree: surviving mutants Core 2030,
+  Infrastructure 2684 of 3269, Render 44 of 88, Max 90 of 114. CodeQL
+  custom queries: zero findings. Mutation-score improvement was not a
+  programme goal; these counts are the reference for future
+  mutation-killing waves (the previous reports predated the rewrite and
+  were not comparable).
