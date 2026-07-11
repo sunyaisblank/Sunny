@@ -370,7 +370,7 @@ MelodicAnalysisRecord analyze_melodic(const Score& score) {
             diatonic.insert(current);
             scale_pcs.push_back(current);
             for (auto iv : ints) {
-                current = static_cast<PitchClass>((current + iv) % 12);
+                current = PitchClass::wrapped(current + iv);
                 diatonic.insert(current);
                 scale_pcs.push_back(current);
             }
@@ -378,7 +378,7 @@ MelodicAnalysisRecord analyze_melodic(const Score& score) {
             std::uint32_t total_notes = 0;
             for (int i = 0; i < 12; ++i) {
                 total_notes += stats->pitch_class_histogram[i];
-                if (diatonic.find(static_cast<PitchClass>(i)) == diatonic.end())
+                if (diatonic.find(PitchClass::wrapped(i)) == diatonic.end())
                     chromatic_count += stats->pitch_class_histogram[i];
             }
             if (total_notes > 0)

@@ -50,6 +50,16 @@ T unwrap(const Result<T>& result, const char* msg) {
     return *result;
 }
 
+// Validated conversions at the Python boundary: out-of-range input raises
+// instead of truncating into a value that violates the type invariant.
+PitchClass to_pitch_class(int pc) {
+    return unwrap(PitchClass::from_int(pc), "Pitch class must be in [0, 11]");
+}
+
+MidiNote to_midi_note(int note) {
+    return unwrap(MidiNote::from_int(note), "MIDI note must be in [0, 127]");
+}
+
 PYBIND11_MODULE(sunny_native, m) {
     m.doc() = R"doc(
         Sunny Native Backend
@@ -102,8 +112,19 @@ PYBIND11_MODULE(sunny_native, m) {
     // =========================================================================
     py::class_<ChordVoicing>(m, "ChordVoicing")
         .def(py::init<>())
-        .def_readwrite("notes", &ChordVoicing::notes)
-        .def_readwrite("root", &ChordVoicing::root)
+        .def_property("notes",
+            [](const ChordVoicing& cv) {
+                return std::vector<int>(cv.notes.begin(), cv.notes.end());
+            },
+            [](ChordVoicing& cv, const std::vector<int>& notes) {
+                std::vector<MidiNote> cpp_notes;
+                cpp_notes.reserve(notes.size());
+                for (int n : notes) cpp_notes.push_back(to_midi_note(n));
+                cv.notes = std::move(cpp_notes);
+            })
+        .def_property("root",
+            [](const ChordVoicing& cv) { return static_cast<int>(cv.root); },
+            [](ChordVoicing& cv, int root) { cv.root = to_pitch_class(root); })
         .def_readwrite("quality", &ChordVoicing::quality)
         .def_readwrite("inversion", &ChordVoicing::inversion)
         .def("empty", &ChordVoicing::empty)
@@ -113,7 +134,10 @@ PYBIND11_MODULE(sunny_native, m) {
     // VoiceLeadingResult
     // =========================================================================
     py::class_<VoiceLeadingResult>(m, "VoiceLeadingResult")
-        .def_readonly("voiced_notes", &VoiceLeadingResult::voiced_notes)
+        .def_property_readonly("voiced_notes",
+            [](const VoiceLeadingResult& vlr) {
+                return std::vector<int>(vlr.voiced_notes.begin(), vlr.voiced_notes.end());
+            })
         .def_readonly("total_motion", &VoiceLeadingResult::total_motion)
         .def_readonly("has_parallel_fifths", &VoiceLeadingResult::has_parallel_fifths)
         .def_readonly("has_parallel_octaves", &VoiceLeadingResult::has_parallel_octaves);
@@ -122,33 +146,33 @@ PYBIND11_MODULE(sunny_native, m) {
     // Pitch Operations
     // =========================================================================
     m.def("pitch_class", [](int midi) {
-        return pitch_class(static_cast<MidiNote>(midi));
+        return static_cast<int>(pitch_class(to_midi_note(midi)));
     }, py::arg("midi"), "Get pitch class from MIDI note");
 
     m.def("transpose", [](int pc, int interval) {
-        return transpose(static_cast<PitchClass>(pc), interval);
+        return static_cast<int>(transpose(to_pitch_class(pc), interval));
     }, py::arg("pc"), py::arg("interval"), "Transpose pitch class");
 
     m.def("invert", [](int pc, int axis) {
-        return invert(static_cast<PitchClass>(pc), axis);
+        return static_cast<int>(invert(to_pitch_class(pc), axis));
     }, py::arg("pc"), py::arg("axis") = 0, "Invert pitch class");
 
     m.def("interval_class", &interval_class, py::arg("semitones"),
           "Get interval class [0-6]");
 
     m.def("note_name", [](int pc, bool flats) {
-        return std::string(note_name(static_cast<PitchClass>(pc), flats));
+        return std::string(note_name(to_pitch_class(pc), flats));
     }, py::arg("pc"), py::arg("prefer_flats") = false, "Get note name");
 
     m.def("note_to_pitch_class", [](const std::string& name) {
-        return unwrap(note_to_pitch_class(name), "Invalid note name");
+        return static_cast<int>(unwrap(note_to_pitch_class(name), "Invalid note name"));
     }, py::arg("name"), "Parse note name to pitch class");
 
     m.def("closest_pitch_class_midi", [](int ref, int target_pc) {
-        return closest_pitch_class_midi(
-            static_cast<MidiNote>(ref),
-            static_cast<PitchClass>(target_pc)
-        );
+        return static_cast<int>(closest_pitch_class_midi(
+            to_midi_note(ref),
+            to_pitch_class(target_pc)
+        ));
     }, py::arg("reference"), py::arg("target_pc"),
        "Find closest MIDI note with target pitch class");
 
@@ -157,7 +181,7 @@ PYBIND11_MODULE(sunny_native, m) {
     // =========================================================================
     m.def("pcs_transpose", [](const std::set<int>& pcs, int n) {
         PitchClassSet cpp_pcs;
-        for (int pc : pcs) cpp_pcs.insert(static_cast<PitchClass>(pc));
+        for (int pc : pcs) cpp_pcs.insert(to_pitch_class(pc));
         auto result = pcs_transpose(cpp_pcs, n);
         std::set<int> py_result;
         for (auto pc : result) py_result.insert(pc);
@@ -166,7 +190,7 @@ PYBIND11_MODULE(sunny_native, m) {
 
     m.def("pcs_invert", [](const std::set<int>& pcs, int axis) {
         PitchClassSet cpp_pcs;
-        for (int pc : pcs) cpp_pcs.insert(static_cast<PitchClass>(pc));
+        for (int pc : pcs) cpp_pcs.insert(to_pitch_class(pc));
         auto result = pcs_invert(cpp_pcs, axis);
         std::set<int> py_result;
         for (auto pc : result) py_result.insert(pc);
@@ -175,7 +199,7 @@ PYBIND11_MODULE(sunny_native, m) {
 
     m.def("pcs_interval_vector", [](const std::set<int>& pcs) {
         PitchClassSet cpp_pcs;
-        for (int pc : pcs) cpp_pcs.insert(static_cast<PitchClass>(pc));
+        for (int pc : pcs) cpp_pcs.insert(to_pitch_class(pc));
         auto iv = pcs_interval_vector(cpp_pcs);
         return std::vector<int>(iv.begin(), iv.end());
     }, py::arg("pcs"), "Get interval vector");
@@ -188,9 +212,10 @@ PYBIND11_MODULE(sunny_native, m) {
                                       int octave) {
         std::vector<Interval> cpp_intervals;
         for (int i : intervals) cpp_intervals.push_back(static_cast<Interval>(i));
-        return unwrap(generate_scale_notes(
-            static_cast<PitchClass>(root_pc), cpp_intervals, octave
+        auto notes = unwrap(generate_scale_notes(
+            to_pitch_class(root_pc), cpp_intervals, octave
         ), "Scale generation failed");
+        return std::vector<int>(notes.begin(), notes.end());
     }, py::arg("root_pc"), py::arg("intervals"), py::arg("octave"),
        "Generate scale MIDI notes");
 
@@ -199,8 +224,8 @@ PYBIND11_MODULE(sunny_native, m) {
         std::vector<Interval> cpp_intervals;
         for (int i : intervals) cpp_intervals.push_back(static_cast<Interval>(i));
         return is_note_in_scale(
-            static_cast<MidiNote>(note),
-            static_cast<PitchClass>(root_pc),
+            to_midi_note(note),
+            to_pitch_class(root_pc),
             cpp_intervals
         );
     }, py::arg("note"), py::arg("root_pc"), py::arg("intervals"),
@@ -210,11 +235,11 @@ PYBIND11_MODULE(sunny_native, m) {
                                    const std::vector<int>& intervals) {
         std::vector<Interval> cpp_intervals;
         for (int i : intervals) cpp_intervals.push_back(static_cast<Interval>(i));
-        return quantize_to_scale(
-            static_cast<MidiNote>(note),
-            static_cast<PitchClass>(root_pc),
+        return static_cast<int>(quantize_to_scale(
+            to_midi_note(note),
+            to_pitch_class(root_pc),
             cpp_intervals
-        );
+        ));
     }, py::arg("note"), py::arg("root_pc"), py::arg("intervals"),
        "Quantize note to scale");
 
@@ -247,8 +272,8 @@ PYBIND11_MODULE(sunny_native, m) {
     // =========================================================================
     m.def("negative_harmony", [](const std::set<int>& pcs, int key_root) {
         PitchClassSet cpp_pcs;
-        for (int pc : pcs) cpp_pcs.insert(static_cast<PitchClass>(pc));
-        auto result = negative_harmony(cpp_pcs, static_cast<PitchClass>(key_root));
+        for (int pc : pcs) cpp_pcs.insert(to_pitch_class(pc));
+        auto result = negative_harmony(cpp_pcs, to_pitch_class(key_root));
         std::set<int> py_result;
         for (auto pc : result) py_result.insert(pc);
         return py_result;
@@ -262,7 +287,7 @@ PYBIND11_MODULE(sunny_native, m) {
         std::vector<Interval> cpp_intervals;
         for (int i : scale_intervals) cpp_intervals.push_back(static_cast<Interval>(i));
         return unwrap(generate_chord_from_numeral(
-            numeral, static_cast<PitchClass>(key_root), cpp_intervals, octave
+            numeral, to_pitch_class(key_root), cpp_intervals, octave
         ), "Chord generation failed");
     }, py::arg("numeral"), py::arg("key_root"),
        py::arg("scale_intervals"), py::arg("octave") = 4,
@@ -270,7 +295,7 @@ PYBIND11_MODULE(sunny_native, m) {
 
     m.def("generate_chord", [](int root, const std::string& quality, int octave) {
         return unwrap(generate_chord(
-            static_cast<PitchClass>(root), quality, octave
+            to_pitch_class(root), quality, octave
         ), "Chord generation failed");
     }, py::arg("root"), py::arg("quality"), py::arg("octave") = 4,
        "Generate chord from root and quality");
@@ -284,9 +309,9 @@ PYBIND11_MODULE(sunny_native, m) {
                                          bool allow_p5,
                                          bool allow_p8) {
         std::vector<MidiNote> cpp_source;
-        for (int n : source) cpp_source.push_back(static_cast<MidiNote>(n));
+        for (int n : source) cpp_source.push_back(to_midi_note(n));
         std::vector<PitchClass> cpp_target;
-        for (int pc : target_pcs) cpp_target.push_back(static_cast<PitchClass>(pc));
+        for (int pc : target_pcs) cpp_target.push_back(to_pitch_class(pc));
         return unwrap(voice_lead_nearest_tone(
             cpp_source, cpp_target, lock_bass, allow_p5, allow_p8
         ), "Voice leading failed");
@@ -298,7 +323,7 @@ PYBIND11_MODULE(sunny_native, m) {
 
     m.def("generate_close_voicing", [](const std::vector<int>& pcs, int octave) {
         std::vector<PitchClass> cpp_pcs;
-        for (int pc : pcs) cpp_pcs.push_back(static_cast<PitchClass>(pc));
+        for (int pc : pcs) cpp_pcs.push_back(to_pitch_class(pc));
         auto result = generate_close_voicing(cpp_pcs, octave);
         return std::vector<int>(result.begin(), result.end());
     }, py::arg("pitch_classes"), py::arg("root_octave") = 4,
@@ -306,7 +331,7 @@ PYBIND11_MODULE(sunny_native, m) {
 
     m.def("generate_drop2_voicing", [](const std::vector<int>& close) {
         std::vector<MidiNote> cpp_close;
-        for (int n : close) cpp_close.push_back(static_cast<MidiNote>(n));
+        for (int n : close) cpp_close.push_back(to_midi_note(n));
         auto result = generate_drop2_voicing(cpp_close);
         if (!result) throw std::runtime_error("Drop-2 voicing requires >= 4 notes");
         return std::vector<int>(result->begin(), result->end());
@@ -381,7 +406,7 @@ PYBIND11_MODULE(sunny_native, m) {
         .def("set_gate", &Arpeggiator::set_gate, py::arg("gate"))
         .def("set_notes", [](Arpeggiator& self, const std::vector<int>& notes) {
             std::vector<MidiNote> cpp_notes;
-            for (int n : notes) cpp_notes.push_back(static_cast<MidiNote>(n));
+            for (int n : notes) cpp_notes.push_back(to_midi_note(n));
             self.set_notes(cpp_notes);
         }, py::arg("notes"))
         .def("clear", &Arpeggiator::clear)
@@ -521,7 +546,13 @@ PYBIND11_MODULE(sunny_native, m) {
              py::arg("track_index"), py::arg("slot_index"),
              py::arg("root"), py::arg("scale"), py::arg("numerals"),
              py::arg("octave") = 4, py::arg("duration_beats") = 4.0)
-        .def("apply_euclidean_rhythm", &Orchestrator::apply_euclidean_rhythm,
+        .def("apply_euclidean_rhythm",
+             [](Orchestrator& self, int track_index, int slot_index,
+                int pulses, int steps, int pitch, double step_duration) {
+                 return self.apply_euclidean_rhythm(
+                     track_index, slot_index, pulses, steps,
+                     to_midi_note(pitch), step_duration);
+             },
              py::arg("track_index"), py::arg("slot_index"),
              py::arg("pulses"), py::arg("steps"), py::arg("pitch"),
              py::arg("step_duration") = 0.25)

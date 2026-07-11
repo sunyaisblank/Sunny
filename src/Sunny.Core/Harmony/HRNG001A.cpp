@@ -25,8 +25,7 @@ PitchClassSet negative_harmony(
     int doubled_axis = 7 + 2 * static_cast<int>(key_root);
 
     for (auto pc : chord_pcs) {
-        int transformed = (doubled_axis - static_cast<int>(pc) + 24) % 12;
-        result.insert(static_cast<PitchClass>(transformed));
+        result.insert(PitchClass::wrapped(doubled_axis - static_cast<int>(pc)));
     }
 
     return result;

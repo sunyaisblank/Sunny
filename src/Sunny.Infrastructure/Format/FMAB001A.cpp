@@ -22,7 +22,7 @@ namespace {
 /// Returns an array where index = pitch class, value = accidental offset (-1, 0, or +1).
 std::array<int, 12> key_accidentals(Sunny::Core::PitchClass root, bool is_minor) {
     // Convert minor root to relative major
-    int major_root = is_minor ? (root + 3) % 12 : root;
+    int major_root = is_minor ? (root + 3) % 12 : static_cast<int>(root);
 
     // Number of sharps/flats based on major key root
     // C=0, G=1#, D=2#, A=3#, E=4#, B=5#, F#=6#, Gb=6b, Db=5b, Ab=4b, Eb=3b, Bb=2b, F=1b
@@ -101,7 +101,8 @@ Sunny::Core::Result<std::pair<Sunny::Core::PitchClass, bool>> parse_key(std::str
         }
     }
 
-    return std::pair{static_cast<Sunny::Core::PitchClass>(base_pc), is_minor};
+    // base_pc stays in [0, 11] through the mod-12 accidental steps above.
+    return std::pair{Sunny::Core::PitchClass::wrapped(base_pc), is_minor};
 }
 
 /// ABC note letter to base MIDI note
@@ -334,6 +335,12 @@ Sunny::Core::Result<AbcParseResult> parse_abc(std::string_view text) {
                     // Clamp to MIDI range
                     if (final_midi < 0) final_midi = 0;
                     if (final_midi > 127) final_midi = 127;
+                    auto pitch = Sunny::Core::MidiNote::from_int(final_midi);
+                    if (!pitch) {
+                        // Unreachable after the clamp; kept as the reader's
+                        // refusal path rather than an unchecked store.
+                        return std::unexpected(Sunny::Core::ErrorCode::InvalidAbcFile);
+                    }
 
                     // Parse duration multiplier
                     int64_t num = 1, den = 1;
@@ -365,7 +372,7 @@ Sunny::Core::Result<AbcParseResult> parse_abc(std::string_view text) {
                     };
 
                     result.notes.push_back(Sunny::Core::NoteEvent{
-                        static_cast<Sunny::Core::MidiNote>(final_midi),
+                        *pitch,
                         current_time,
                         dur,
                         80,

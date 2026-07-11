@@ -37,12 +37,12 @@ Result<std::vector<MidiNote>> generate_scale_notes(
     notes.reserve(intervals.size());
 
     for (Interval interval : intervals) {
-        int midi = *base_midi + interval;
-        if (midi < 0 || midi > 127) {
+        auto note = MidiNote::from_int(*base_midi + interval);
+        if (!note) {
             // Skip notes outside MIDI range
             continue;
         }
-        notes.push_back(static_cast<MidiNote>(midi));
+        notes.push_back(*note);
     }
 
     return notes;
@@ -70,9 +70,8 @@ Result<std::vector<MidiNote>> generate_scale_range(
         if (!base_midi) continue;
 
         for (Interval interval : intervals) {
-            int midi = *base_midi + interval;
-            if (midi >= 0 && midi <= 127) {
-                notes.push_back(static_cast<MidiNote>(midi));
+            if (auto note = MidiNote::from_int(*base_midi + interval)) {
+                notes.push_back(*note);
             }
         }
     }

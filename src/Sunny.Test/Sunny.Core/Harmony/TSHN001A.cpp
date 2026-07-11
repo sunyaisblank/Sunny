@@ -29,7 +29,7 @@ TEST_CASE("HRNG001A: negative_harmony_axis", "[harmony][core]") {
 
     SECTION("Axis is transposition-consistent") {
         for (int root = 0; root < 12; ++root) {
-            int axis = negative_harmony_axis(static_cast<PitchClass>(root));
+            int axis = negative_harmony_axis(PitchClass::wrapped(root));
             REQUIRE(axis == 7 + 2 * root);
         }
     }
@@ -69,8 +69,8 @@ TEST_CASE("HRNG001A: Involution property", "[harmony][core]") {
         PitchClassSet chord = {0, 4, 7};
 
         for (int key = 0; key < 12; ++key) {
-            auto neg1 = negative_harmony(chord, static_cast<PitchClass>(key));
-            auto neg2 = negative_harmony(neg1, static_cast<PitchClass>(key));
+            auto neg1 = negative_harmony(chord, PitchClass::wrapped(key));
+            auto neg2 = negative_harmony(neg1, PitchClass::wrapped(key));
             REQUIRE(neg2 == chord);
         }
     }
@@ -177,7 +177,7 @@ TEST_CASE("HRNG001A: All 12 pitch classes", "[harmony][core]") {
     SECTION("Chromatic set inverts to chromatic set") {
         PitchClassSet chromatic;
         for (int i = 0; i < 12; ++i) {
-            chromatic.insert(static_cast<PitchClass>(i));
+            chromatic.insert(PitchClass::wrapped(i));
         }
 
         auto result = negative_harmony(chromatic, 0);
@@ -185,7 +185,7 @@ TEST_CASE("HRNG001A: All 12 pitch classes", "[harmony][core]") {
 
         // All pitch classes should still be present
         for (int i = 0; i < 12; ++i) {
-            REQUIRE(result.count(static_cast<PitchClass>(i)) == 1);
+            REQUIRE(result.count(PitchClass::wrapped(i)) == 1);
         }
     }
 }

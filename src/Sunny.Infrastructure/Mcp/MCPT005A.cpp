@@ -1033,8 +1033,14 @@ void register_score_tools(McpServer& server) {
             if (!params.contains("region")) return error_response("region is required");
 
             std::vector<PitchClass> pattern;
-            for (const auto& p : params["pattern"])
-                pattern.push_back(static_cast<PitchClass>(p.get<int>()));
+            for (const auto& p : params["pattern"]) {
+                int val = p.get<int>();
+                auto pc = PitchClass::from_int(val);
+                if (!pc)
+                    return error_response(
+                        "pattern pitch class must be 0-11, got " + std::to_string(val));
+                pattern.push_back(*pc);
+            }
 
             auto region = region_from_json(params["region"]);
             auto occurrences = query_find_motif(*score, pattern, region);

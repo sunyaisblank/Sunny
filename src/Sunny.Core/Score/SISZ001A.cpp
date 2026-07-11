@@ -698,13 +698,16 @@ ChordVoicing chord_voicing_from_json(const json& j) {
     ChordVoicing cv;
     if (j.contains("notes")) {
         for (const auto& n : j.at("notes")) {
-            cv.notes.push_back(static_cast<MidiNote>(n.get<int>()));
+            auto note = MidiNote::from_int(n.get<int>());
+            if (!note)
+                throw json::other_error::create(604, "MidiNote out of range [0,127]", &j);
+            cv.notes.push_back(*note);
         }
     }
-    auto root_val = j.value("root", 0);
-    if (root_val < 0 || root_val > 11)
+    auto root = PitchClass::from_int(j.value("root", 0));
+    if (!root)
         throw json::other_error::create(604, "PitchClass root out of range [0,11]", &j);
-    cv.root = static_cast<PitchClass>(root_val);
+    cv.root = *root;
     cv.quality = j.value("quality", std::string{});
     cv.inversion = j.value("inversion", 0);
     return cv;
@@ -834,14 +837,17 @@ ScoreRegion score_region_from_json(const json& j) {
 
 json tone_row_to_json(const ToneRow& tr) {
     json arr = json::array();
-    for (const auto& pc : tr.elements) arr.push_back(pc);
+    for (const auto& pc : tr.elements) arr.push_back(pc.value());
     return arr;
 }
 
 ToneRow tone_row_from_json(const json& arr) {
     ToneRow tr;
     for (std::size_t i = 0; i < 12 && i < arr.size(); ++i) {
-        tr.elements[i] = arr[i].get<PitchClass>();
+        auto pc = PitchClass::from_int(arr[i].get<int>());
+        if (!pc)
+            throw json::other_error::create(604, "PitchClass out of range [0,11]", &arr);
+        tr.elements[i] = *pc;
     }
     return tr;
 }

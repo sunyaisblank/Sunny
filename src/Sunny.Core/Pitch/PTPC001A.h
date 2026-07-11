@@ -57,7 +57,7 @@ constexpr std::array<std::string_view, 12> INTERVAL_NAMES = {
  * @return Pitch class [0, 11]
  */
 [[nodiscard]] constexpr PitchClass pitch_class(MidiNote midi) noexcept {
-    return midi % 12;
+    return PitchClass::wrapped(midi);
 }
 
 /**
@@ -70,8 +70,7 @@ constexpr std::array<std::string_view, 12> INTERVAL_NAMES = {
  * @return Transposed pitch class [0, 11]
  */
 [[nodiscard]] constexpr PitchClass transpose(PitchClass pc, int interval) noexcept {
-    int result = (static_cast<int>(pc) + interval % 12 + 12) % 12;
-    return static_cast<PitchClass>(result);
+    return PitchClass::wrapped(static_cast<int>(pc) + interval % 12);
 }
 
 /**
@@ -84,8 +83,7 @@ constexpr std::array<std::string_view, 12> INTERVAL_NAMES = {
  * @return Inverted pitch class [0, 11]
  */
 [[nodiscard]] constexpr PitchClass invert(PitchClass pc, int axis = 0) noexcept {
-    int result = (2 * axis - static_cast<int>(pc) % 12 + 24) % 12;
-    return static_cast<PitchClass>(result);
+    return PitchClass::wrapped(2 * axis - static_cast<int>(pc));
 }
 
 /**

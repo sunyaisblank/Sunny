@@ -27,12 +27,12 @@ Result<ChordVoicing> neapolitan_sixth(
         return std::unexpected(chord.error());
     }
 
-    // First inversion: move the root up an octave
+    // First inversion: move the root up an octave; the factory refuses a
+    // raise past MIDI 127, matching the old guard.
     chord->inversion = 1;
     if (chord->notes.size() >= 3) {
-        MidiNote bass = chord->notes[0];
-        if (bass + 12 <= 127) {
-            chord->notes[0] = bass + 12;
+        if (auto raised = MidiNote::from_int(chord->notes[0] + 12)) {
+            chord->notes[0] = *raised;
             std::sort(chord->notes.begin(), chord->notes.end());
         }
     }
@@ -69,12 +69,25 @@ Result<ChordVoicing> augmented_sixth(
     int sharp4_midi = bass + ((static_cast<int>(sharp4) - static_cast<int>(b6) + 12) % 12);
     if (sharp4_midi <= bass) sharp4_midi += 12;
 
+    // Store upper voices through the validated factory; an upper voice
+    // pushed past MIDI 127 (octave at the top of the range) is refused
+    // where it previously truncated silently.
+    auto push_note = [&voicing](int midi_val) -> bool {
+        auto note = MidiNote::from_int(midi_val);
+        if (!note) {
+            return false;
+        }
+        voicing.notes.push_back(*note);
+        return true;
+    };
+
     switch (type) {
         case AugSixthType::Italian: {
             voicing.quality = "It+6";
-            voicing.notes.push_back(static_cast<MidiNote>(bass));
-            voicing.notes.push_back(static_cast<MidiNote>(tonic_midi));
-            voicing.notes.push_back(static_cast<MidiNote>(sharp4_midi));
+            if (!push_note(bass) || !push_note(tonic_midi) ||
+                !push_note(sharp4_midi)) {
+                return std::unexpected(ErrorCode::ChordGenerationFailed);
+            }
             break;
         }
         case AugSixthType::French: {
@@ -82,10 +95,10 @@ Result<ChordVoicing> augmented_sixth(
             PitchClass scale_2 = transpose(key_root, 2);  // D in C
             int d_midi = bass + ((static_cast<int>(scale_2) - static_cast<int>(b6) + 12) % 12);
             if (d_midi <= bass) d_midi += 12;
-            voicing.notes.push_back(static_cast<MidiNote>(bass));
-            voicing.notes.push_back(static_cast<MidiNote>(tonic_midi));
-            voicing.notes.push_back(static_cast<MidiNote>(d_midi));
-            voicing.notes.push_back(static_cast<MidiNote>(sharp4_midi));
+            if (!push_note(bass) || !push_note(tonic_midi) ||
+                !push_note(d_midi) || !push_note(sharp4_midi)) {
+                return std::unexpected(ErrorCode::ChordGenerationFailed);
+            }
             break;
         }
         case AugSixthType::German: {
@@ -95,10 +108,10 @@ Result<ChordVoicing> augmented_sixth(
             PitchClass b3 = transpose(key_root, 3);
             int b3_midi = bass + ((static_cast<int>(b3) - static_cast<int>(b6) + 12) % 12);
             if (b3_midi <= bass) b3_midi += 12;
-            voicing.notes.push_back(static_cast<MidiNote>(bass));
-            voicing.notes.push_back(static_cast<MidiNote>(tonic_midi));
-            voicing.notes.push_back(static_cast<MidiNote>(b3_midi));
-            voicing.notes.push_back(static_cast<MidiNote>(sharp4_midi));
+            if (!push_note(bass) || !push_note(tonic_midi) ||
+                !push_note(b3_midi) || !push_note(sharp4_midi)) {
+                return std::unexpected(ErrorCode::ChordGenerationFailed);
+            }
             break;
         }
     }

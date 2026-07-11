@@ -81,7 +81,7 @@ struct PitchClassGIS {
     }
 
     [[nodiscard]] static constexpr Element transpose(Element s, Interval i) noexcept {
-        return static_cast<Element>(((static_cast<int>(s) + i) % 12 + 12) % 12);
+        return PitchClass::wrapped(static_cast<int>(s) + i);
     }
 
     [[nodiscard]] static constexpr Interval identity() noexcept { return 0; }

@@ -99,12 +99,12 @@ KeyEstimate estimate_key(const std::array<std::uint32_t, 12>& pc_hist) {
 
         if (r_major > best_r) {
             best_r = r_major;
-            best_tonic = static_cast<PitchClass>(rotation);
+            best_tonic = PitchClass::wrapped(rotation);
             best_minor = false;
         }
         if (r_minor > best_r) {
             best_r = r_minor;
-            best_tonic = static_cast<PitchClass>(rotation);
+            best_tonic = PitchClass::wrapped(rotation);
             best_minor = true;
         }
     }
@@ -271,7 +271,7 @@ Result<Score> build_score_from_notes(
 
         Beat offset = Beat::from_float(offset_wn);
         SpelledPitch sp = default_spelling(
-            static_cast<PitchClass>(vn.pitch % 12),
+            PitchClass::wrapped(vn.pitch),
             key_lof,
             static_cast<std::int8_t>(vn.pitch / 12 - 1));
 

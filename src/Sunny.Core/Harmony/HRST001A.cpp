@@ -65,18 +65,18 @@ bool is_applied_chord(
 
     // Check each diatonic degree as potential target
     for (std::size_t deg = 0; deg < scale.size(); ++deg) {
-        PitchClass target_root = (key.root + scale[deg]) % 12;
+        PitchClass target_root = PitchClass::wrapped(key.root + scale[deg]);
 
         if (is_dominant) {
             // V/X: chord root is P5 above target root
-            PitchClass expected = (target_root + 7) % 12;
+            PitchClass expected = PitchClass::wrapped(target_root + 7);
             if (chord_root == expected && target_root != key.root) {
                 return true;
             }
         }
         if (is_leading_tone) {
             // vii°/X: chord root is a semitone below target root
-            PitchClass expected = (target_root + 11) % 12;
+            PitchClass expected = PitchClass::wrapped(target_root + 11);
             if (chord_root == expected && target_root != key.root) {
                 return true;
             }
@@ -122,7 +122,7 @@ HarmonicFunction determine_function(
 
     // Find which degree the root falls on
     for (std::size_t deg = 0; deg < scale.size(); ++deg) {
-        PitchClass degree_pc = (key.root + scale[deg]) % 12;
+        PitchClass degree_pc = PitchClass::wrapped(key.root + scale[deg]);
         if (degree_pc == chord_root) {
             // T: I(0), iii(2), vi(5)
             // S: ii(1), IV(3)

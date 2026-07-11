@@ -183,7 +183,7 @@ Result<GeneratedScaleResult> generate_scale_from_generator(
     std::vector<PitchClass> pcs;
 
     for (int j = 0; j < cardinality; ++j) {
-        PitchClass pc = static_cast<PitchClass>((static_cast<int>(root) + j * g) % 12);
+        PitchClass pc = PitchClass::wrapped(static_cast<int>(root) + j * g);
         if (!seen.insert(pc).second) {
             return std::unexpected(ErrorCode::InvalidGeneratedScale);
         }

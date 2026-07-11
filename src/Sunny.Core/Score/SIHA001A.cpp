@@ -52,8 +52,7 @@ PitchClassSet collect_sounding_pcs(const Score& score, ScoreTime position) {
                 Beat event_end = event.offset + ng->duration;
                 if (event.offset <= position.beat && position.beat < event_end) {
                     for (const auto& note : ng->notes) {
-                        int mv = midi_value(note.pitch);
-                        pcs.insert(static_cast<PitchClass>(((mv % 12) + 12) % 12));
+                        pcs.insert(PitchClass::wrapped(midi_value(note.pitch)));
                     }
                 }
             }
@@ -79,9 +78,8 @@ std::vector<MidiNote> collect_sounding_midi(const Score& score, ScoreTime positi
                 Beat event_end = event.offset + ng->duration;
                 if (event.offset <= position.beat && position.beat < event_end) {
                     for (const auto& note : ng->notes) {
-                        int mv = midi_value(note.pitch);
-                        if (mv >= 0 && mv <= 127) {
-                            notes.push_back(static_cast<MidiNote>(mv));
+                        if (auto mv = MidiNote::from_int(midi_value(note.pitch))) {
+                            notes.push_back(*mv);
                         }
                     }
                 }
@@ -106,13 +104,12 @@ ChordVoicing build_voicing(
     voicing.inversion = 0;
 
     if (!midi_notes.empty()) {
-        PitchClass bass_pc = static_cast<PitchClass>(midi_notes.front() % 12);
+        PitchClass bass_pc = PitchClass::wrapped(midi_notes.front());
         if (bass_pc != root) {
             auto intervals = chord_quality_intervals(quality);
             if (intervals) {
                 for (std::size_t i = 1; i < intervals->size(); ++i) {
-                    PitchClass member = static_cast<PitchClass>(
-                        (root + (*intervals)[i]) % 12);
+                    PitchClass member = PitchClass::wrapped(root + (*intervals)[i]);
                     if (member == bass_pc) {
                         voicing.inversion = static_cast<int>(i);
                         break;
@@ -144,7 +141,9 @@ HarmonicAnnotationLayer derive_for_range(
     HarmonicAnnotationLayer layer;
     PitchClassSet prev_pcs;
     std::optional<std::size_t> current_idx;
-    PitchClass prev_key_root = 255;  // sentinel — no previous key
+    // "No previous key" is a real state, not a smuggled out-of-range
+    // sentinel; the PitchClass invariant no longer admits 255.
+    std::optional<PitchClass> prev_key_root;
 
     for (std::uint32_t bar = start_bar; bar <= end_bar; ++bar) {
         TimeSignature ts = query_time_signature_at(score, bar);
@@ -174,7 +173,7 @@ HarmonicAnnotationLayer derive_for_range(
 
             // Force a new annotation when the key context changes, even
             // if the pitch class set is identical.
-            bool key_changed = (key_root != prev_key_root);
+            bool key_changed = (!prev_key_root || key_root != *prev_key_root);
             prev_key_root = key_root;
 
             if (pcs == prev_pcs && current_idx && !key_changed) {

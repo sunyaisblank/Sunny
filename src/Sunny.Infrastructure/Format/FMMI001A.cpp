@@ -387,12 +387,18 @@ std::vector<Sunny::Core::NoteEvent> midi_to_note_events(const MidiFile& file) {
     result.reserve(file.notes.size());
 
     for (const auto& n : file.notes) {
+        // A note byte outside [0, 127] can only come from a malformed
+        // stream; refuse it (drop the event) rather than storing a value
+        // that violates the MidiNote invariant.
+        auto pitch = Sunny::Core::MidiNote::from_int(n.note);
+        if (!pitch) continue;
+
         // Convert ticks to beats: tick / ppq = beats (as fraction)
         Sunny::Core::Beat start{static_cast<int64_t>(n.tick), static_cast<int64_t>(file.ppq)};
         Sunny::Core::Beat dur{static_cast<int64_t>(n.duration_ticks), static_cast<int64_t>(file.ppq)};
 
         result.push_back({
-            n.note,
+            *pitch,
             start.reduce(),
             dur.reduce(),
             n.velocity > 0 ? n.velocity : static_cast<uint8_t>(80),

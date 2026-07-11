@@ -95,9 +95,8 @@ void Arpeggiator::rebuild_pattern() const {
     std::vector<Core::MidiNote> expanded;
     for (int oct = 0; oct < octave_range_; ++oct) {
         for (auto note : sorted) {
-            int transposed = note + oct * 12;
-            if (transposed <= 127) {
-                expanded.push_back(static_cast<Core::MidiNote>(transposed));
+            if (auto transposed = Core::MidiNote::from_int(note + oct * 12)) {
+                expanded.push_back(*transposed);
             }
         }
     }
@@ -142,9 +141,8 @@ void Arpeggiator::rebuild_pattern() const {
             pattern_cache_.clear();
             for (int oct = 0; oct < octave_range_; ++oct) {
                 for (auto note : input_notes_) {
-                    int transposed = note + oct * 12;
-                    if (transposed <= 127) {
-                        pattern_cache_.push_back(static_cast<Core::MidiNote>(transposed));
+                    if (auto transposed = Core::MidiNote::from_int(note + oct * 12)) {
+                        pattern_cache_.push_back(*transposed);
                     }
                 }
             }

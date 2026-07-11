@@ -168,7 +168,7 @@ std::vector<ConstraintViolation> check_voice_leading(
     PitchClass seventh_m = transpose(prev_root, 10);
     PitchClass seventh_M = transpose(prev_root, 11);
     for (std::size_t i = 0; i < voices; ++i) {
-        PitchClass pc = prev[i] % 12;
+        PitchClass pc = PitchClass::wrapped(prev[i]);
         if (pc == seventh_m || pc == seventh_M) {
             // Should resolve down by step (1 or 2 semitones)
             int motion = static_cast<int>(next[i]) - static_cast<int>(prev[i]);

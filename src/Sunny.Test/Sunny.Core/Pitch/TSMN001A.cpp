@@ -77,10 +77,10 @@ TEST_CASE("TSMN001A: pitch_octave_to_midi out-of-range", "[pitch][midi]") {
 
 TEST_CASE("TSMN001A: Round-trip invariant for all MIDI notes", "[pitch][midi]") {
     for (int n = 0; n <= 127; ++n) {
-        auto [pc, oct] = midi_to_pitch_octave(static_cast<MidiNote>(n));
+        auto [pc, oct] = midi_to_pitch_octave(MidiNote::from_int(n).value());
         auto result = pitch_octave_to_midi(pc, oct);
         REQUIRE(result.has_value());
-        REQUIRE(*result == static_cast<MidiNote>(n));
+        REQUIRE(*result == MidiNote::from_int(n).value());
     }
 }
 

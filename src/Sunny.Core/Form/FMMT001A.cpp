@@ -24,10 +24,10 @@ Result<std::vector<MidiNote>> motif_transpose(
     std::vector<MidiNote> result;
     result.reserve(pitches.size());
     for (auto p : pitches) {
-        int transposed = static_cast<int>(p) + semitones;
-        if (transposed < 0 || transposed > 127)
-            return std::unexpected(ErrorCode::InvalidMidiNote);
-        result.push_back(static_cast<MidiNote>(transposed));
+        auto transposed = MidiNote::from_int(static_cast<int>(p) + semitones);
+        if (!transposed)
+            return std::unexpected(transposed.error());
+        result.push_back(*transposed);
     }
     return result;
 }
@@ -42,10 +42,10 @@ Result<std::vector<MidiNote>> motif_invert(
     MidiNote axis = pitches[0];
     for (auto p : pitches) {
         int interval = static_cast<int>(p) - static_cast<int>(axis);
-        int inverted = static_cast<int>(axis) - interval;
-        if (inverted < 0 || inverted > 127)
-            return std::unexpected(ErrorCode::InvalidMidiNote);
-        result.push_back(static_cast<MidiNote>(inverted));
+        auto inverted = MidiNote::from_int(static_cast<int>(axis) - interval);
+        if (!inverted)
+            return std::unexpected(inverted.error());
+        result.push_back(*inverted);
     }
     return result;
 }

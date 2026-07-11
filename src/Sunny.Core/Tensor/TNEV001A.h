@@ -58,14 +58,14 @@ struct ChordVoicing {
      * @brief Get bass note (lowest)
      */
     [[nodiscard]] MidiNote bass() const noexcept {
-        return notes.empty() ? 0 : notes.front();
+        return notes.empty() ? MidiNote{0} : notes.front();
     }
 
     /**
      * @brief Get soprano note (highest)
      */
     [[nodiscard]] MidiNote soprano() const noexcept {
-        return notes.empty() ? 0 : notes.back();
+        return notes.empty() ? MidiNote{0} : notes.back();
     }
 
     /**
@@ -75,7 +75,7 @@ struct ChordVoicing {
         std::vector<PitchClass> pcs;
         pcs.reserve(notes.size());
         for (auto note : notes) {
-            pcs.push_back(note % 12);
+            pcs.push_back(PitchClass::wrapped(note));
         }
         return pcs;
     }

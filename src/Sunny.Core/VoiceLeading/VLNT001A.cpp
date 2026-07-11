@@ -116,13 +116,15 @@ Result<VoiceLeadingResult> voice_lead_nearest_tone(
         used_targets.insert(best_target_idx);
     }
 
-    // Fix voice crossings (ensure ascending order)
+    // Fix voice crossings (ensure ascending order). The factory calls
+    // encode the old range guards: raising fails iff note + 12 > 127,
+    // lowering fails iff note - 12 < 0.
     for (std::size_t i = 1; i < result.voiced_notes.size(); ++i) {
         while (result.voiced_notes[i] <= result.voiced_notes[i - 1]) {
-            if (result.voiced_notes[i] + 12 <= Constants::MIDI_NOTE_MAX) {
-                result.voiced_notes[i] += 12;
-            } else if (result.voiced_notes[i - 1] >= 12) {
-                result.voiced_notes[i - 1] -= 12;
+            if (auto raised = MidiNote::from_int(result.voiced_notes[i] + 12)) {
+                result.voiced_notes[i] = *raised;
+            } else if (auto lowered = MidiNote::from_int(result.voiced_notes[i - 1] - 12)) {
+                result.voiced_notes[i - 1] = *lowered;
             } else {
                 break;  // Can't fix
             }
@@ -171,16 +173,21 @@ std::vector<MidiNote> generate_close_voicing(
         MidiNote last = voicing.back();
         PitchClass target_pc = pitch_classes[i];
 
-        // Find next occurrence of this PC above the last note
+        // Find next occurrence of this PC above the last note; adjust in
+        // int space, then store through the validated factory. The +12/-12
+        // steps keep the value within [0, 139] and the final correction
+        // returns it to [0, 127], so the fallback to the uncorrected
+        // candidate is unreachable.
         MidiNote candidate = closest_pitch_class_midi(last, target_pc);
-        if (candidate <= last) {
-            candidate += 12;
+        int candidate_val = candidate;
+        if (candidate_val <= last) {
+            candidate_val += 12;
         }
-        if (candidate > Constants::MIDI_NOTE_MAX) {
-            candidate -= 12;  // Wrap if needed
+        if (candidate_val > Constants::MIDI_NOTE_MAX) {
+            candidate_val -= 12;  // Wrap if needed
         }
 
-        voicing.push_back(candidate);
+        voicing.push_back(MidiNote::from_int(candidate_val).value_or(candidate));
     }
 
     return voicing;
@@ -193,10 +200,11 @@ Result<std::vector<MidiNote>> generate_drop2_voicing(std::span<const MidiNote> c
 
     std::vector<MidiNote> result(close_voicing.begin(), close_voicing.end());
 
-    // Drop the second-from-top note down an octave
+    // Drop the second-from-top note down an octave; the factory refuses
+    // the drop below MIDI 0, matching the old >= 12 guard.
     std::size_t drop_idx = result.size() - 2;
-    if (result[drop_idx] >= 12) {
-        result[drop_idx] -= 12;
+    if (auto dropped = MidiNote::from_int(result[drop_idx] - 12)) {
+        result[drop_idx] = *dropped;
     }
 
     // Re-sort to maintain ascending order
@@ -212,10 +220,11 @@ Result<std::vector<MidiNote>> generate_drop3_voicing(std::span<const MidiNote> c
 
     std::vector<MidiNote> result(close_voicing.begin(), close_voicing.end());
 
-    // Drop the third-from-top note down an octave
+    // Drop the third-from-top note down an octave; the factory refuses
+    // the drop below MIDI 0, matching the old >= 12 guard.
     std::size_t drop_idx = result.size() - 3;
-    if (result[drop_idx] >= 12) {
-        result[drop_idx] -= 12;
+    if (auto dropped = MidiNote::from_int(result[drop_idx] - 12)) {
+        result[drop_idx] = *dropped;
     }
 
     std::sort(result.begin(), result.end());
@@ -230,10 +239,11 @@ std::vector<MidiNote> generate_open_voicing(std::span<const MidiNote> close_voic
 
     std::vector<MidiNote> result(close_voicing.begin(), close_voicing.end());
 
-    // Drop every other voice (index 1, 3, 5, ...) down an octave
+    // Drop every other voice (index 1, 3, 5, ...) down an octave; the
+    // factory refuses drops below MIDI 0, matching the old >= 12 guard.
     for (std::size_t i = 1; i < result.size(); i += 2) {
-        if (result[i] >= 12) {
-            result[i] -= 12;
+        if (auto dropped = MidiNote::from_int(result[i] - 12)) {
+            result[i] = *dropped;
         }
     }
 
@@ -253,11 +263,11 @@ Result<std::vector<MidiNote>> generate_drop24_voicing(std::span<const MidiNote> 
     std::size_t drop2_idx = result.size() - 2;
     std::size_t drop4_idx = result.size() - 4;
 
-    if (result[drop2_idx] >= 12) {
-        result[drop2_idx] -= 12;
+    if (auto dropped = MidiNote::from_int(result[drop2_idx] - 12)) {
+        result[drop2_idx] = *dropped;
     }
-    if (result[drop4_idx] >= 12) {
-        result[drop4_idx] -= 12;
+    if (auto dropped = MidiNote::from_int(result[drop4_idx] - 12)) {
+        result[drop4_idx] = *dropped;
     }
 
     std::sort(result.begin(), result.end());
@@ -273,10 +283,11 @@ Result<std::vector<MidiNote>> generate_spread_voicing(std::span<const MidiNote> 
     std::vector<MidiNote> result(close_voicing.begin(), close_voicing.end());
 
     // Bass note must be >= octave below the next voice.
-    // Drop bass until the gap is at least 12 semitones.
+    // Drop bass until the gap is at least 12 semitones; the factory
+    // refuses drops below MIDI 0, matching the old >= 12 guard.
     while (result.size() >= 2 && (result[1] - result[0]) < 12) {
-        if (result[0] >= 12) {
-            result[0] -= 12;
+        if (auto dropped = MidiNote::from_int(result[0] - 12)) {
+            result[0] = *dropped;
         } else {
             break;  // Cannot drop further
         }
@@ -431,13 +442,14 @@ Result<VoiceLeadingResult> voice_lead_optimal(
         result.total_motion += cost[i][assignment[i]];
     }
 
-    // Fix voice crossings (ensure ascending order)
+    // Fix voice crossings (ensure ascending order). The factory calls
+    // encode the old range guards, as in resolve_voices above.
     for (std::size_t i = 1; i < result.voiced_notes.size(); ++i) {
         while (result.voiced_notes[i] <= result.voiced_notes[i - 1]) {
-            if (result.voiced_notes[i] + 12 <= Constants::MIDI_NOTE_MAX) {
-                result.voiced_notes[i] += 12;
-            } else if (result.voiced_notes[i - 1] >= 12) {
-                result.voiced_notes[i - 1] -= 12;
+            if (auto raised = MidiNote::from_int(result.voiced_notes[i] + 12)) {
+                result.voiced_notes[i] = *raised;
+            } else if (auto lowered = MidiNote::from_int(result.voiced_notes[i - 1] - 12)) {
+                result.voiced_notes[i - 1] = *lowered;
             } else {
                 break;
             }

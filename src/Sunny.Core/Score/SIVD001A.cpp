@@ -449,7 +449,7 @@ void validate_s11(const Score& score, std::vector<Diagnostic>& out) {
     if (used_pcs.size() < 12) {
         std::string missing;
         for (int pc = 0; pc < 12; ++pc) {
-            if (!used_pcs.contains(static_cast<PitchClass>(pc))) {
+            if (!used_pcs.contains(PitchClass::wrapped(pc))) {
                 if (!missing.empty()) missing += ", ";
                 missing += std::to_string(pc);
             }
@@ -673,14 +673,24 @@ void validate_m3(const Score& score, std::vector<Diagnostic>& out) {
 
                     for (std::size_t i = 0; i < min_notes; ++i) {
                         for (std::size_t j = i + 1; j < min_notes; ++j) {
-                            MidiNote prev_lo = static_cast<MidiNote>(
+                            // Spellings outside MIDI range cannot form real
+                            // voice pairs; skip them instead of analysing
+                            // truncated values.
+                            auto prev_lo_r = MidiNote::from_int(
                                 midi_value(prev_ng->notes[i].pitch));
-                            MidiNote prev_hi = static_cast<MidiNote>(
+                            auto prev_hi_r = MidiNote::from_int(
                                 midi_value(prev_ng->notes[j].pitch));
-                            MidiNote curr_lo = static_cast<MidiNote>(
+                            auto curr_lo_r = MidiNote::from_int(
                                 midi_value(curr_ng->notes[i].pitch));
-                            MidiNote curr_hi = static_cast<MidiNote>(
+                            auto curr_hi_r = MidiNote::from_int(
                                 midi_value(curr_ng->notes[j].pitch));
+                            if (!prev_lo_r || !prev_hi_r || !curr_lo_r || !curr_hi_r) {
+                                continue;
+                            }
+                            MidiNote prev_lo = *prev_lo_r;
+                            MidiNote prev_hi = *prev_hi_r;
+                            MidiNote curr_lo = *curr_lo_r;
+                            MidiNote curr_hi = *curr_hi_r;
 
                             // Check parallel fifths (interval class 7)
                             if (has_parallel_motion(

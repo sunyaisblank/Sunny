@@ -81,11 +81,9 @@ struct TILabel {
      */
     [[nodiscard]] constexpr PitchClass apply(PitchClass pc) const noexcept {
         if (kind == Kind::T) {
-            return static_cast<PitchClass>(
-                (static_cast<int>(pc) + index) % 12);
+            return PitchClass::wrapped(static_cast<int>(pc) + index);
         }
-        return static_cast<PitchClass>(
-            ((index - static_cast<int>(pc)) % 12 + 12) % 12);
+        return PitchClass::wrapped(index - static_cast<int>(pc));
     }
 
     /**

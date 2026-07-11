@@ -64,8 +64,7 @@ std::vector<PitchClass> find_normal_form_sorted(std::vector<PitchClass> sorted) 
         std::vector<PitchClass> rotated;
         rotated.reserve(n);
         for (std::size_t i = 0; i < n; ++i) {
-            int pc = (sorted[(r + i) % n] - sorted[r] + 12) % 12;
-            rotated.push_back(static_cast<PitchClass>(pc));
+            rotated.push_back(PitchClass::wrapped(sorted[(r + i) % n] - sorted[r]));
         }
 
         int span = rotated.back();  // Already transposed to start at 0
@@ -338,8 +337,9 @@ std::optional<int> forte_lookup_in_table(uint16_t mask, std::span<const uint16_t
 PitchClassSet pcs_complement(const PitchClassSet& pcs) {
     PitchClassSet result;
     for (int pc = 0; pc < 12; ++pc) {
-        if (pcs.find(static_cast<PitchClass>(pc)) == pcs.end()) {
-            result.insert(static_cast<PitchClass>(pc));
+        PitchClass candidate = PitchClass::wrapped(pc);
+        if (pcs.find(candidate) == pcs.end()) {
+            result.insert(candidate);
         }
     }
     return result;

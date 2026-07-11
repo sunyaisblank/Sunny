@@ -27,11 +27,9 @@ std::array<PitchClass, 3> triad_pitch_classes(const Triad& t) {
 }
 
 Result<Triad> triad_from_pitch_classes(PitchClass a, PitchClass b, PitchClass c) {
-    std::array<PitchClass, 3> pcs = {
-        static_cast<PitchClass>(a % 12),
-        static_cast<PitchClass>(b % 12),
-        static_cast<PitchClass>(c % 12)
-    };
+    // The PitchClass invariant already bounds a, b, c to [0, 11]; the old
+    // defensive % 12 re-wrap is redundant.
+    std::array<PitchClass, 3> pcs = {a, b, c};
     std::sort(pcs.begin(), pcs.end());
 
     // Try each pitch class as root
@@ -96,7 +94,7 @@ int triad_index(const Triad& t) {
 
 Triad triad_from_index(int idx) {
     return Triad{
-        static_cast<PitchClass>(idx / 2),
+        PitchClass::wrapped(idx / 2),
         (idx % 2 == 1) ? TriadQuality::Minor : TriadQuality::Major
     };
 }

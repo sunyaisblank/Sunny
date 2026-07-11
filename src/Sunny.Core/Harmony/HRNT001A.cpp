@@ -35,8 +35,8 @@ Result<ChordVoicing> chord_by_stacking(
 
     int midi = *base_midi;
     for (int i = 0; i < count; ++i) {
-        if (midi >= 0 && midi <= 127) {
-            voicing.notes.push_back(static_cast<MidiNote>(midi));
+        if (auto note = MidiNote::from_int(midi)) {
+            voicing.notes.push_back(*note);
         }
         midi += stack_interval;
     }
@@ -76,9 +76,8 @@ Result<ChordVoicing> tone_cluster(PitchClass root, int width, int octave) {
     voicing.inversion = 0;
 
     for (int i = 0; i <= width; ++i) {
-        int midi = *base_midi + i;
-        if (midi >= 0 && midi <= 127) {
-            voicing.notes.push_back(static_cast<MidiNote>(midi));
+        if (auto note = MidiNote::from_int(*base_midi + i)) {
+            voicing.notes.push_back(*note);
         }
     }
 

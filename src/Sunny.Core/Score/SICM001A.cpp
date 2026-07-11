@@ -385,7 +385,8 @@ Result<NoteEventResult> compile_to_note_events(const Score& score) {
                         if (note.grace) continue;
 
                         int mv = midi_value(note.pitch);
-                        if (mv < 0 || mv > 127) {
+                        auto pitch = MidiNote::from_int(mv);
+                        if (!pitch) {
                             report.dropped_notes++;
                             report.diagnostics.push_back({
                                 "Note dropped: MIDI note " + std::to_string(mv)
@@ -397,7 +398,7 @@ Result<NoteEventResult> compile_to_note_events(const Score& score) {
                         }
 
                         NoteEvent ne;
-                        ne.pitch = static_cast<MidiNote>(mv);
+                        ne.pitch = *pitch;
                         ne.start_time = *abs_beat;
                         ne.duration = ng->duration;
                         ne.velocity = note.velocity.value;

@@ -22,7 +22,7 @@ TEST_CASE("TSDG001A: Z/12Z group axioms", "[diagnostic][pitch]") {
     SECTION("Closure: T_n(x) is in [0,11]") {
         for (int pc = 0; pc < 12; ++pc) {
             for (int n = -24; n <= 24; ++n) {
-                auto result = transpose(pc, n);
+                auto result = transpose(PitchClass::wrapped(pc), n);
                 CHECK(result >= 0);
                 CHECK(result < 12);
             }
@@ -33,8 +33,8 @@ TEST_CASE("TSDG001A: Z/12Z group axioms", "[diagnostic][pitch]") {
         for (int x = 0; x < 12; ++x) {
             for (int a = 0; a < 12; ++a) {
                 for (int b = 0; b < 12; ++b) {
-                    auto left = transpose(transpose(x, a), b);
-                    auto right = transpose(x, a + b);
+                    auto left = transpose(transpose(PitchClass::wrapped(x), a), b);
+                    auto right = transpose(PitchClass::wrapped(x), a + b);
                     CHECK(left == right);
                 }
             }
@@ -43,14 +43,14 @@ TEST_CASE("TSDG001A: Z/12Z group axioms", "[diagnostic][pitch]") {
 
     SECTION("Identity: T_0(x) = x") {
         for (int x = 0; x < 12; ++x) {
-            CHECK(transpose(x, 0) == x);
+            CHECK(transpose(PitchClass::wrapped(x), 0) == x);
         }
     }
 
     SECTION("Inverse: T_{-n}(T_n(x)) = x") {
         for (int x = 0; x < 12; ++x) {
             for (int n = 0; n < 12; ++n) {
-                auto result = transpose(transpose(x, n), -n);
+                auto result = transpose(transpose(PitchClass::wrapped(x), n), -n);
                 CHECK(result == x);
             }
         }
@@ -58,7 +58,7 @@ TEST_CASE("TSDG001A: Z/12Z group axioms", "[diagnostic][pitch]") {
 
     SECTION("Cyclic: T_12(x) = x") {
         for (int x = 0; x < 12; ++x) {
-            CHECK(transpose(x, 12) == x);
+            CHECK(transpose(PitchClass::wrapped(x), 12) == x);
         }
     }
 }
@@ -67,7 +67,7 @@ TEST_CASE("TSDG001A: Dihedral group D_12 properties", "[diagnostic][pitch]") {
     SECTION("I_n is involution: I_n(I_n(x)) = x") {
         for (int x = 0; x < 12; ++x) {
             for (int n = 0; n < 12; ++n) {
-                auto result = invert(invert(x, n), n);
+                auto result = invert(invert(PitchClass::wrapped(x), n), n);
                 CHECK(result == x);
             }
         }
@@ -76,7 +76,7 @@ TEST_CASE("TSDG001A: Dihedral group D_12 properties", "[diagnostic][pitch]") {
     SECTION("Inversion closure: I_n(x) is in [0,11]") {
         for (int x = 0; x < 12; ++x) {
             for (int n = 0; n < 12; ++n) {
-                auto result = invert(x, n);
+                auto result = invert(PitchClass::wrapped(x), n);
                 CHECK(result >= 0);
                 CHECK(result < 12);
             }

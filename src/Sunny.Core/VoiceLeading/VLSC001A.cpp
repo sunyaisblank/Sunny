@@ -611,7 +611,14 @@ bool solve_bt(
         return position == CounterpointPosition::Above ? cantus[i] : cp[i];
     };
 
-    for (MidiNote pitch = lo; pitch <= hi; ++pitch) {
+    for (int pitch_val = lo; pitch_val <= hi; ++pitch_val) {
+        // [lo, hi] ⊆ [0, 127] by the MidiNote invariant, so the factory
+        // cannot refuse; skipping keeps the search sound if it ever did.
+        auto pitch_result = MidiNote::from_int(pitch_val);
+        if (!pitch_result) {
+            continue;
+        }
+        MidiNote pitch = *pitch_result;
         cp[idx] = pitch;
 
         // Voice crossing check

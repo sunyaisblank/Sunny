@@ -17,7 +17,6 @@
 #include "../Tensor/TNTP001A.h"
 #include "PTPC001A.h"
 
-#include <cassert>
 #include <optional>
 #include <utility>
 
@@ -32,7 +31,7 @@ namespace Sunny::Core {
 [[nodiscard]] constexpr std::pair<PitchClass, int> midi_to_pitch_octave(
     MidiNote midi
 ) noexcept {
-    return {midi % 12, (midi / 12) - 1};
+    return {PitchClass::wrapped(midi), (midi / 12) - 1};
 }
 
 /**
@@ -56,23 +55,11 @@ namespace Sunny::Core {
     PitchClass pc,
     int octave
 ) noexcept {
-    int midi = (octave + 1) * 12 + pc;
-    if (midi < 0 || midi > 127) {
+    auto midi = MidiNote::from_int((octave + 1) * 12 + pc);
+    if (!midi) {
         return std::nullopt;
     }
-    return static_cast<MidiNote>(midi);
-}
-
-/**
- * @brief Construct MIDI note (unchecked version)
- *
- * @pre octave in [-1, 9] and result in [0, 127]
- */
-[[nodiscard]] constexpr MidiNote pitch_octave_to_midi_unchecked(
-    PitchClass pc,
-    int octave
-) noexcept {
-    return static_cast<MidiNote>((octave + 1) * 12 + pc);
+    return *midi;
 }
 
 /**
@@ -86,7 +73,6 @@ namespace Sunny::Core {
     MidiNote reference,
     PitchClass target_pc
 ) noexcept {
-    assert(target_pc <= 11 && "closest_pitch_class_midi: target_pc must be in [0, 11]");
     int ref_octave = reference / 12;
 
     int candidates[3] = {
@@ -108,7 +94,10 @@ namespace Sunny::Core {
         }
     }
 
-    return static_cast<MidiNote>(best);
+    // A valid candidate always exists for reference ∈ [0, 127], so the
+    // fallback to the reference note is unreachable; it preserves the
+    // MidiNote invariant without an unchecked construction path.
+    return MidiNote::from_int(best).value_or(reference);
 }
 
 /**
@@ -122,11 +111,11 @@ namespace Sunny::Core {
     MidiNote midi,
     int interval
 ) noexcept {
-    int result = midi + interval;
-    if (result < 0 || result > 127) {
+    auto result = MidiNote::from_int(midi + interval);
+    if (!result) {
         return std::nullopt;
     }
-    return static_cast<MidiNote>(result);
+    return *result;
 }
 
 }  // namespace Sunny::Core

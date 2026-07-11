@@ -550,7 +550,7 @@ Result<LilyPondCompilationResult> compile_score_to_lilypond(const Score& score) 
             SpelledPitch concert_c{0, 0, 4};  // C4
             int sounding_midi = midi_value(concert_c) + def.transposition;
             int8_t sounding_octave = static_cast<int8_t>(sounding_midi / 12 - 1);
-            auto sounding_pc = static_cast<PitchClass>(((sounding_midi % 12) + 12) % 12);
+            auto sounding_pc = PitchClass::wrapped(sounding_midi);
             SpelledPitch sounding_pitch = default_spelling(sounding_pc, 0, sounding_octave);
 
             out << "\\transpose " << ly_pitch(sounding_pitch) << " "

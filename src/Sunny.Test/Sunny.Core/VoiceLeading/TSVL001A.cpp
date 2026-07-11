@@ -584,7 +584,7 @@ TEST_CASE("VLNT001A: voice_lead_optimal (§7.2)", "[voiceleading][core]") {
         REQUIRE(result.has_value());
         std::set<PitchClass> result_pcs;
         for (auto note : result->voiced_notes) {
-            result_pcs.insert(note % 12);
+            result_pcs.insert(PitchClass::wrapped(note));
         }
         for (auto pc : target) {
             REQUIRE(result_pcs.count(pc) > 0);

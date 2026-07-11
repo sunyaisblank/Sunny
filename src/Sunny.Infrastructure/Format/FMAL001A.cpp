@@ -54,10 +54,15 @@ double tick_to_ableton_beats(std::int64_t tick, int ppq) {
     return static_cast<double>(tick) / static_cast<double>(ppq);
 }
 
-/// Convert MidiNoteData to LomNoteData
-LomNoteData to_lom_note(const MidiNoteData& n, int ppq) {
+/// Convert MidiNoteData to LomNoteData; refuses a note byte outside
+/// [0, 127] rather than smuggling it past the MidiNote invariant.
+Result<LomNoteData> to_lom_note(const MidiNoteData& n, int ppq) {
+    auto pitch = Core::MidiNote::from_int(n.note);
+    if (!pitch) {
+        return std::unexpected(ErrorCode::InvalidMidiNote);
+    }
     LomNoteData data;
-    data.pitch = n.note;
+    data.pitch = *pitch;
     data.start_time = tick_to_ableton_beats(n.tick, ppq);
     data.duration = tick_to_ableton_beats(n.duration_ticks, ppq);
     data.velocity = n.velocity;
@@ -181,7 +186,9 @@ Result<AbletonCompilationResult> compile_to_ableton(
             std::vector<LomNoteData> lom_notes;
             lom_notes.reserve(ch_it->second.size());
             for (const auto* n : ch_it->second) {
-                lom_notes.push_back(to_lom_note(*n, ppq));
+                auto lom_note = to_lom_note(*n, ppq);
+                if (!lom_note) return std::unexpected(lom_note.error());
+                lom_notes.push_back(*lom_note);
             }
             resp = transport.send_notes(
                 LomPaths::clip(ti.track_index, 0),

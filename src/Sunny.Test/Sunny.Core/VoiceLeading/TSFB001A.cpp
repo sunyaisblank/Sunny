@@ -189,11 +189,13 @@ TEST_CASE("VLFB001A: accidental flat lowers pitch class", "[figured-bass][core]"
     REQUIRE(pitch_class(result->upper[0]) == 3);  // Eb
 }
 
-TEST_CASE("VLFB001A: invalid bass note rejected", "[figured-bass][core]") {
-    FiguredBassSymbol symbol;
-    symbol.figures.push_back({3, FigureAccidental::Natural});
-    auto result = realise_figured_bass(200, symbol, 0, SCALE_MAJOR);
-    REQUIRE_FALSE(result.has_value());
+TEST_CASE("VLFB001A: invalid bass note is unrepresentable", "[figured-bass][core]") {
+    // The old runtime rejection (bass 200 → error) has moved to the type
+    // boundary: an out-of-range bass cannot be constructed at all, so
+    // realise_figured_bass can no longer receive one.
+    auto bass = MidiNote::from_int(200);
+    REQUIRE_FALSE(bass.has_value());
+    REQUIRE(bass.error() == ErrorCode::InvalidMidiNote);
 }
 
 TEST_CASE("VLFB001A: second inversion 6/4", "[figured-bass][core]") {

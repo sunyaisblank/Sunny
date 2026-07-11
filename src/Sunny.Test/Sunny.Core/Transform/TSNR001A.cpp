@@ -87,7 +87,8 @@ TEST_CASE("NRPL001A: L on C major -> E minor", "[neo-riemannian][core]") {
 }
 
 TEST_CASE("NRPL001A: involution property for all 24 triads", "[neo-riemannian][core]") {
-    for (PitchClass root = 0; root < 12; ++root) {
+    for (int root_val = 0; root_val < 12; ++root_val) {
+        PitchClass root = PitchClass::wrapped(root_val);
         for (auto q : {TriadQuality::Major, TriadQuality::Minor}) {
             Triad t{root, q};
             for (auto op : {NROperation::P, NROperation::R, NROperation::L}) {

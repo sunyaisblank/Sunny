@@ -45,9 +45,7 @@ ToneRow row_prime(const ToneRow& row, int n) {
 ToneRow row_inversion(const ToneRow& row, int n) {
     ToneRow result{};
     for (std::size_t i = 0; i < 12; ++i) {
-        result.elements[i] = static_cast<PitchClass>(
-            (n - static_cast<int>(row.elements[i]) + 24) % 12
-        );
+        result.elements[i] = PitchClass::wrapped(n - static_cast<int>(row.elements[i]));
     }
     return result;
 }
@@ -122,7 +120,8 @@ PitchClassSet hexachord(const ToneRow& row, bool first_half) {
 
 PitchClassSet hexachord_complement(const PitchClassSet& hex) {
     PitchClassSet result;
-    for (PitchClass pc = 0; pc < 12; ++pc) {
+    for (int pc_val = 0; pc_val < 12; ++pc_val) {
+        PitchClass pc = PitchClass::wrapped(pc_val);
         if (hex.find(pc) == hex.end()) {
             result.insert(pc);
         }
@@ -136,7 +135,7 @@ namespace {
 PitchClassSet serial_invert_set(const PitchClassSet& pcs, int n) {
     PitchClassSet result;
     for (auto pc : pcs) {
-        result.insert(static_cast<PitchClass>((n - static_cast<int>(pc) + 24) % 12));
+        result.insert(PitchClass::wrapped(n - static_cast<int>(pc)));
     }
     return result;
 }

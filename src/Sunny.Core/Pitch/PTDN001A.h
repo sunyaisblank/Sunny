@@ -91,9 +91,9 @@ struct D12Element {
 /// Apply element to a pitch class: Tₖ(x) = x+k, Iₖ(x) = k-x
 [[nodiscard]] constexpr PitchClass d12_apply(D12Element g, PitchClass x) noexcept {
     if (g.is_inversion) {
-        return static_cast<PitchClass>((g.k - x + 12) % 12);
+        return PitchClass::wrapped(g.k - x);
     }
-    return static_cast<PitchClass>((x + g.k) % 12);
+    return PitchClass::wrapped(x + g.k);
 }
 
 /// Apply element to a pitch class set

@@ -1753,9 +1753,8 @@ Result<MutationResult> apply_voice_leading(
             std::vector<MidiNote> source;
             source.reserve(ng->notes.size());
             for (const auto& note : ng->notes) {
-                int mv = midi_value(note.pitch);
-                if (mv >= 0 && mv <= 127) {
-                    source.push_back(static_cast<MidiNote>(mv));
+                if (auto mv = MidiNote::from_int(midi_value(note.pitch))) {
+                    source.push_back(*mv);
                 }
             }
             if (source.empty()) return;

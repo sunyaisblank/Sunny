@@ -155,7 +155,7 @@ PitchClass diatonic_above(
     int raw = bass_degree + generic_interval - 1;
     int target_degree = ((raw % scale_size) + scale_size) % scale_size;
     int target_offset = scale[target_degree];
-    return static_cast<PitchClass>((static_cast<int>(key_root) + target_offset) % 12);
+    return PitchClass::wrapped(static_cast<int>(key_root) + target_offset);
 }
 
 }  // namespace
@@ -167,9 +167,8 @@ Result<FiguredBassRealisation> realise_figured_bass(
     std::span<const Interval> key_scale,
     int upper_octave
 ) {
-    if (bass_note > 127) {
-        return std::unexpected(ErrorCode::InvalidMidiNote);
-    }
+    // bass_note ∈ [0, 127] is enforced by the MidiNote invariant; the old
+    // defensive range check here was redundant and has been removed.
     if (key_scale.empty()) {
         return std::unexpected(ErrorCode::InvalidScaleName);
     }
@@ -197,13 +196,19 @@ Result<FiguredBassRealisation> realise_figured_bass(
             pc_val = (pc_val + 11) % 12;
         }
 
-        // Place in upper octave, ensuring above bass
-        MidiNote note = static_cast<MidiNote>((upper_octave + 1) * 12 + pc_val);
-        while (note <= bass_note && note < 120) {
-            note += 12;
+        // Place in upper octave, ensuring above bass. Octave shifts run in
+        // int space; the validated store refuses an upper voice outside
+        // MIDI range (an octave request beyond 9 used to truncate silently).
+        int note_val = (upper_octave + 1) * 12 + pc_val;
+        while (note_val <= bass_note && note_val < 120) {
+            note_val += 12;
         }
 
-        result.upper.push_back(note);
+        auto note = MidiNote::from_int(note_val);
+        if (!note) {
+            return std::unexpected(ErrorCode::InvalidMidiNote);
+        }
+        result.upper.push_back(*note);
     }
 
     // Sort upper voices ascending

@@ -39,7 +39,7 @@ constexpr PitchClass PC_B  = 11;
 
 TEST_CASE("GIST001A: PitchClassGIS interval(s,s) == identity", "[gis][core]") {
     for (int i = 0; i < 12; ++i) {
-        auto pc = static_cast<PitchClass>(i);
+        auto pc = PitchClass::wrapped(i);
         REQUIRE(PitchClassGIS::interval(pc, pc) == PitchClassGIS::identity());
     }
 }
@@ -208,8 +208,8 @@ TEST_CASE("GIST001A: TimePointGIS interval_sequence", "[gis][core]") {
 TEST_CASE("GIST001A: PitchClassGIS all pairs satisfy axioms", "[gis][core]") {
     for (int si = 0; si < 12; ++si) {
         for (int ti = 0; ti < 12; ++ti) {
-            auto s = static_cast<PitchClass>(si);
-            auto t = static_cast<PitchClass>(ti);
+            auto s = PitchClass::wrapped(si);
+            auto t = PitchClass::wrapped(ti);
             auto iv = PitchClassGIS::interval(s, t);
 
             // A3: transpose(s, interval(s,t)) == t

@@ -38,7 +38,7 @@ TEST_CASE("SCGN001A: generate_scale_notes basic", "[scale][core]") {
         // result[0] % 12 == root_pc
         for (int root = 0; root < 12; ++root) {
             auto result = generate_scale_notes(
-                static_cast<PitchClass>(root), SCALE_MAJOR, 4
+                PitchClass::wrapped(root), SCALE_MAJOR, 4
             );
             REQUIRE(result.has_value());
             REQUIRE((*result)[0] % 12 == root);

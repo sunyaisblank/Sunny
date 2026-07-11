@@ -77,8 +77,7 @@ constexpr std::array<int, 7> LOF_BASE = {0, 2, 4, -1, 1, 3, 5};
  * @return Pitch class [0, 11]
  */
 [[nodiscard]] constexpr PitchClass pc(SpelledPitch sp) noexcept {
-    int raw = static_cast<int>(nat(sp.letter)) + sp.accidental;
-    return static_cast<PitchClass>(((raw % 12) + 12) % 12);
+    return PitchClass::wrapped(static_cast<int>(nat(sp.letter)) + sp.accidental);
 }
 
 /**
@@ -100,11 +99,7 @@ constexpr std::array<int, 7> LOF_BASE = {0, 2, 4, -1, 1, 3, 5};
  * @return MidiNote or InvalidMidiNote error
  */
 [[nodiscard]] constexpr Result<MidiNote> midi(SpelledPitch sp) noexcept {
-    int val = midi_value(sp);
-    if (val < 0 || val > 127) {
-        return std::unexpected(ErrorCode::InvalidMidiNote);
-    }
-    return static_cast<MidiNote>(val);
+    return MidiNote::from_int(midi_value(sp));
 }
 
 /**

@@ -21,8 +21,10 @@
 #pragma once
 
 #include <array>
+#include <compare>
 #include <cstdint>
 #include <expected>
+#include <functional>
 #include <optional>
 #include <span>
 #include <string>
@@ -30,37 +32,6 @@
 #include <vector>
 
 namespace Sunny::Core {
-
-// =============================================================================
-// Fundamental Types
-// =============================================================================
-
-/**
- * @brief Pitch class in Z/12Z (exact integer arithmetic)
- *
- * Invariant: value ∈ [0, 11]
- */
-using PitchClass = std::uint8_t;
-
-/**
- * @brief MIDI note number
- *
- * Invariant: value ∈ [0, 127]
- * MIDI 60 = C4 (Middle C)
- */
-using MidiNote = std::uint8_t;
-
-/**
- * @brief MIDI velocity
- *
- * Invariant: value ∈ [1, 127] (0 is note-off)
- */
-using Velocity = std::uint8_t;
-
-/**
- * @brief Interval in semitones
- */
-using Interval = std::int8_t;
 
 // =============================================================================
 // Error Codes
@@ -249,6 +220,102 @@ using Result = std::expected<T, ErrorCode>;
 using VoidResult = std::expected<void, ErrorCode>;
 
 // =============================================================================
+// Fundamental Types
+// =============================================================================
+
+/**
+ * @brief Pitch class in Z/12Z (exact integer arithmetic)
+ *
+ * Invariant: value ∈ [0, 11], enforced at construction. Three entry points:
+ * - integer literals construct at compile time (consteval, range-checked);
+ * - PitchClass::wrapped(v) applies euclidean mod 12 where wrap-around is the
+ *   intended semantic (transposition arithmetic, interval sums);
+ * - PitchClass::from_int(v) refuses out-of-range input with
+ *   ErrorCode::InvalidPitchClass at validated trust boundaries.
+ * Reads convert implicitly to std::uint8_t, so arithmetic, indexing, and
+ * comparison against integers work unchanged.
+ */
+class PitchClass {
+public:
+    constexpr PitchClass() noexcept = default;                       // 0
+    consteval PitchClass(int v) : v_(static_cast<std::uint8_t>(v)) { // literals, compile-time checked
+        if (v < 0 || v > 11) throw "PitchClass literal out of range [0, 11]";
+    }
+    [[nodiscard]] static constexpr Result<PitchClass> from_int(int v) noexcept {
+        if (v < 0 || v > 11) return std::unexpected(ErrorCode::InvalidPitchClass);
+        PitchClass pc;
+        pc.v_ = static_cast<std::uint8_t>(v);
+        return pc;
+    }
+    [[nodiscard]] static constexpr PitchClass wrapped(int v) noexcept {  // euclidean mod 12
+        PitchClass pc;
+        pc.v_ = static_cast<std::uint8_t>(((v % 12) + 12) % 12);
+        return pc;
+    }
+    constexpr operator std::uint8_t() const noexcept { return v_; }     // implicit read
+    [[nodiscard]] constexpr std::uint8_t value() const noexcept { return v_; }
+    constexpr auto operator<=>(const PitchClass&) const noexcept = default;
+    constexpr bool operator==(const PitchClass&) const noexcept = default;
+    // Heterogeneous comparisons against int: without these, `pc == 5` is
+    // ambiguous between the member operator (int -> PitchClass) and the
+    // built-in operator (PitchClass -> uint8_t -> int).
+    friend constexpr bool operator==(PitchClass lhs, int rhs) noexcept { return lhs.v_ == rhs; }
+    friend constexpr std::strong_ordering operator<=>(PitchClass lhs, int rhs) noexcept {
+        return lhs.v_ <=> rhs;
+    }
+private:
+    std::uint8_t v_{0};
+};
+
+/**
+ * @brief MIDI note number
+ *
+ * Invariant: value ∈ [0, 127], enforced at construction. MIDI 60 = C4
+ * (Middle C). Integer literals construct at compile time (consteval,
+ * range-checked); runtime values enter through MidiNote::from_int, which
+ * refuses out-of-range input with ErrorCode::InvalidMidiNote. No wrapping
+ * factory exists: unlike pitch classes, MIDI numbers have no modular
+ * semantics, so out-of-range values are refused, never folded into range.
+ * Reads convert implicitly to std::uint8_t.
+ */
+class MidiNote {
+public:
+    constexpr MidiNote() noexcept = default;                       // 0
+    consteval MidiNote(int v) : v_(static_cast<std::uint8_t>(v)) { // literals, compile-time checked
+        if (v < 0 || v > 127) throw "MidiNote literal out of range [0, 127]";
+    }
+    [[nodiscard]] static constexpr Result<MidiNote> from_int(int v) noexcept {
+        if (v < 0 || v > 127) return std::unexpected(ErrorCode::InvalidMidiNote);
+        MidiNote note;
+        note.v_ = static_cast<std::uint8_t>(v);
+        return note;
+    }
+    constexpr operator std::uint8_t() const noexcept { return v_; }   // implicit read
+    [[nodiscard]] constexpr std::uint8_t value() const noexcept { return v_; }
+    constexpr auto operator<=>(const MidiNote&) const noexcept = default;
+    constexpr bool operator==(const MidiNote&) const noexcept = default;
+    // Heterogeneous comparisons against int: see PitchClass.
+    friend constexpr bool operator==(MidiNote lhs, int rhs) noexcept { return lhs.v_ == rhs; }
+    friend constexpr std::strong_ordering operator<=>(MidiNote lhs, int rhs) noexcept {
+        return lhs.v_ <=> rhs;
+    }
+private:
+    std::uint8_t v_{0};
+};
+
+/**
+ * @brief MIDI velocity
+ *
+ * Invariant: value ∈ [1, 127] (0 is note-off)
+ */
+using Velocity = std::uint8_t;
+
+/**
+ * @brief Interval in semitones
+ */
+using Interval = std::int8_t;
+
+// =============================================================================
 // Constants
 // =============================================================================
 
@@ -291,8 +358,28 @@ constexpr int EUCLIDEAN_MAX_STEPS = 64;
  * operands. This function returns a value in [0, 11] for any integer input.
  */
 [[nodiscard]] constexpr PitchClass mod12_positive(int value) noexcept {
-    int r = value % 12;
-    return static_cast<PitchClass>(r < 0 ? r + 12 : r);
+    return PitchClass::wrapped(value);
 }
 
 }  // namespace Sunny::Core
+
+// =============================================================================
+// Hashing
+// =============================================================================
+
+// Hash support mirrors the underlying integer so unordered containers
+// (e.g. PitchClassSet) behave exactly as they did for the raw alias.
+
+template <>
+struct std::hash<Sunny::Core::PitchClass> {
+    [[nodiscard]] std::size_t operator()(Sunny::Core::PitchClass pc) const noexcept {
+        return std::hash<std::uint8_t>{}(pc.value());
+    }
+};
+
+template <>
+struct std::hash<Sunny::Core::MidiNote> {
+    [[nodiscard]] std::size_t operator()(Sunny::Core::MidiNote note) const noexcept {
+        return std::hash<std::uint8_t>{}(note.value());
+    }
+};

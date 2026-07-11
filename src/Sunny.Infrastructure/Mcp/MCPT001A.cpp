@@ -122,12 +122,17 @@ void register_sunny_tools(McpServer& server, Orchestrator& orchestrator,
             if (!dispatcher.online()) {
                 return offline_decline();
             }
+            int pitch_val = params.value("pitch", 60);
+            auto pitch = Core::MidiNote::from_int(pitch_val);
+            if (!pitch) {
+                return {{"error", "pitch must be 0-127, got " + std::to_string(pitch_val)}};
+            }
             auto result = orchestrator.apply_euclidean_rhythm(
                 params.at("track_index").get<int>(),
                 params.at("slot_index").get<int>(),
                 params.at("pulses").get<int>(),
                 params.at("steps").get<int>(),
-                static_cast<Core::MidiNote>(params.value("pitch", 60)),
+                *pitch,
                 params.value("step_duration", 0.25)
             );
             if (!result.success) {
@@ -246,17 +251,19 @@ void register_sunny_tools(McpServer& server, Orchestrator& orchestrator,
             Core::PitchClassSet pcs;
             for (auto pc : params.at("chord_notes")) {
                 int val = pc.get<int>();
-                if (val < 0 || val > 11) return {{"error", "Pitch class must be 0-11, got " + std::to_string(val)}};
-                pcs.insert(static_cast<Core::PitchClass>(val));
+                auto pc_val = Core::PitchClass::from_int(val);
+                if (!pc_val) return {{"error", "Pitch class must be 0-11, got " + std::to_string(val)}};
+                pcs.insert(*pc_val);
             }
 
             int key_root_val = params.at("key_root").get<int>();
-            if (key_root_val < 0 || key_root_val > 11)
+            auto key_root = Core::PitchClass::from_int(key_root_val);
+            if (!key_root)
                 return {{"error", "key_root must be 0-11, got " + std::to_string(key_root_val)}};
 
             auto analysis = Core::analyze_chord_function(
                 pcs,
-                static_cast<Core::PitchClass>(key_root_val),
+                *key_root,
                 params.value("is_minor", false)
             );
 
@@ -289,17 +296,19 @@ void register_sunny_tools(McpServer& server, Orchestrator& orchestrator,
             Core::PitchClassSet pcs;
             for (auto pc : params.at("chord_notes")) {
                 int val = pc.get<int>();
-                if (val < 0 || val > 11) return {{"error", "Pitch class must be 0-11, got " + std::to_string(val)}};
-                pcs.insert(static_cast<Core::PitchClass>(val));
+                auto pc_val = Core::PitchClass::from_int(val);
+                if (!pc_val) return {{"error", "Pitch class must be 0-11, got " + std::to_string(val)}};
+                pcs.insert(*pc_val);
             }
 
             int key_root_val = params.at("key_root").get<int>();
-            if (key_root_val < 0 || key_root_val > 11)
+            auto key_root = Core::PitchClass::from_int(key_root_val);
+            if (!key_root)
                 return {{"error", "key_root must be 0-11, got " + std::to_string(key_root_val)}};
 
             auto result = Core::negative_harmony(
                 pcs,
-                static_cast<Core::PitchClass>(key_root_val)
+                *key_root
             );
 
             json notes = json::array();
@@ -334,15 +343,17 @@ void register_sunny_tools(McpServer& server, Orchestrator& orchestrator,
             std::vector<Core::MidiNote> source;
             source.reserve(source_vec.size());
             for (auto n : source_vec) {
-                if (n < 0 || n > 127) return {{"error", "MIDI note must be 0-127, got " + std::to_string(n)}};
-                source.push_back(static_cast<Core::MidiNote>(n));
+                auto note = Core::MidiNote::from_int(n);
+                if (!note) return {{"error", "MIDI note must be 0-127, got " + std::to_string(n)}};
+                source.push_back(*note);
             }
 
             std::vector<Core::PitchClass> target;
             target.reserve(target_vec.size());
             for (auto pc : target_vec) {
-                if (pc < 0 || pc > 11) return {{"error", "Pitch class must be 0-11, got " + std::to_string(pc)}};
-                target.push_back(static_cast<Core::PitchClass>(pc));
+                auto pc_val = Core::PitchClass::from_int(pc);
+                if (!pc_val) return {{"error", "Pitch class must be 0-11, got " + std::to_string(pc)}};
+                target.push_back(*pc_val);
             }
 
             auto result = Core::voice_lead_nearest_tone(

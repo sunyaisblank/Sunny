@@ -319,7 +319,7 @@ TEST_CASE("PTSP001A: default_spelling heuristic", "[pitch][spelled]") {
         // For every pitch class, default_spelling should produce a note
         // whose pc matches the input
         for (int p = 0; p < 12; ++p) {
-            auto sp = default_spelling(static_cast<PitchClass>(p), 0, 4);
+            auto sp = default_spelling(PitchClass::wrapped(p), 0, 4);
             CHECK(pc(sp) == p);
         }
     }

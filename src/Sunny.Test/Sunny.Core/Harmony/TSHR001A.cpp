@@ -808,7 +808,7 @@ TEST_CASE("HRRN001A: recognize_chord (§16.1.5)", "[harmony][core]") {
 
         PitchClassSet pcs;
         for (auto note : chord->notes) {
-            pcs.insert(note % 12);
+            pcs.insert(PitchClass::wrapped(note));
         }
 
         auto recognized = recognize_chord(pcs);
@@ -830,7 +830,7 @@ TEST_CASE("HRRN001A: recognize_chord (§16.1.5)", "[harmony][core]") {
 
             PitchClassSet pcs;
             for (auto note : chord->notes) {
-                pcs.insert(note % 12);
+                pcs.insert(PitchClass::wrapped(note));
             }
 
             auto recognized = recognize_chord(pcs);
@@ -899,13 +899,14 @@ TEST_CASE("HRRN001A: chord recognition round-trip all roots (§16.1.5)", "[harmo
     };
 
     for (auto quality : qualities) {
-        for (PitchClass root = 0; root < 12; ++root) {
+        for (int root_val = 0; root_val < 12; ++root_val) {
+            PitchClass root = PitchClass::wrapped(root_val);
             auto chord = generate_chord(root, quality, 4);
             REQUIRE(chord.has_value());
 
             PitchClassSet pcs;
             for (auto note : chord->notes) {
-                pcs.insert(note % 12);
+                pcs.insert(PitchClass::wrapped(note));
             }
 
             auto recognized = recognize_chord(pcs);

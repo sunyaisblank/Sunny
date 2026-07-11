@@ -391,8 +391,8 @@ Result<ChordVoicing> generate_chord_from_numeral(
         // Rotate: move 'inv' lowest notes up an octave
         int to_move = std::min(inv, static_cast<int>(chord.notes.size()) - 1);
         for (int i = 0; i < to_move; ++i) {
-            if (chord.notes[i] + 12 <= 127) {
-                chord.notes[i] += 12;
+            if (auto raised = MidiNote::from_int(chord.notes[i] + 12)) {
+                chord.notes[i] = *raised;
             }
         }
         std::sort(chord.notes.begin(), chord.notes.end());
@@ -425,9 +425,8 @@ Result<ChordVoicing> generate_chord(
     voicing.inversion = 0;
 
     for (Interval interval : intervals) {
-        int midi = *base_midi + interval;
-        if (midi >= 0 && midi <= 127) {
-            voicing.notes.push_back(static_cast<MidiNote>(midi));
+        if (auto note = MidiNote::from_int(*base_midi + interval)) {
+            voicing.notes.push_back(*note);
         }
     }
 
@@ -521,7 +520,8 @@ Result<std::pair<PitchClass, std::string>> recognize_chord(
     std::string best_quality;
     std::size_t best_match_size = 0;
 
-    for (PitchClass candidate = 0; candidate < 12; ++candidate) {
+    for (int candidate_val = 0; candidate_val < 12; ++candidate_val) {
+        PitchClass candidate = PitchClass::wrapped(candidate_val);
         // Compute intervals above candidate root (mod 12), sorted
         std::vector<Interval> intervals;
         for (auto pc : pcs) {

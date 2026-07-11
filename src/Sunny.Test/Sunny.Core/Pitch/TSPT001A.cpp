@@ -26,7 +26,7 @@ TEST_CASE("PTPC001A: pitch_class extracts mod 12", "[pitch][core]") {
 
     SECTION("All pitch classes at octave 4") {
         for (int pc = 0; pc < 12; ++pc) {
-            CHECK(pitch_class(60 + pc) == pc);
+            CHECK(pitch_class(MidiNote::from_int(60 + pc).value()) == pc);
         }
     }
 
@@ -39,15 +39,15 @@ TEST_CASE("PTPC001A: pitch_class extracts mod 12", "[pitch][core]") {
 TEST_CASE("PTPC001A: transpose is T_n operation", "[pitch][core]") {
     SECTION("Identity: T_0(x) = x") {
         for (int pc = 0; pc < 12; ++pc) {
-            CHECK(transpose(pc, 0) == pc);
+            CHECK(transpose(PitchClass::wrapped(pc), 0) == pc);
         }
     }
 
     SECTION("Periodicity: T_12(x) = x") {
         for (int pc = 0; pc < 12; ++pc) {
-            CHECK(transpose(pc, 12) == pc);
-            CHECK(transpose(pc, 24) == pc);
-            CHECK(transpose(pc, -12) == pc);
+            CHECK(transpose(PitchClass::wrapped(pc), 12) == pc);
+            CHECK(transpose(PitchClass::wrapped(pc), 24) == pc);
+            CHECK(transpose(PitchClass::wrapped(pc), -12) == pc);
         }
     }
 
@@ -74,7 +74,7 @@ TEST_CASE("PTPC001A: invert is I_n operation", "[pitch][core]") {
     SECTION("Self-inverse: I_n(I_n(x)) = x") {
         for (int axis = 0; axis < 12; ++axis) {
             for (int pc = 0; pc < 12; ++pc) {
-                CHECK(invert(invert(pc, axis), axis) == pc);
+                CHECK(invert(invert(PitchClass::wrapped(pc), axis), axis) == pc);
             }
         }
     }

@@ -42,8 +42,7 @@ Result<PitchClass> note_to_pitch_class(std::string_view name) noexcept {
         }
     }
 
-    int pc = (base_pc + modifier % 12 + 12) % 12;
-    return static_cast<PitchClass>(pc);
+    return PitchClass::wrapped(base_pc + modifier % 12);
 }
 
 }  // namespace Sunny::Core
