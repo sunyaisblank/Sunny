@@ -2,7 +2,7 @@
 
 **Version:** 0.2.0-draft
 **Date:** 2026-02-12
-**Status:** Revised specification; misspecifications corrected, missing types defined, invariants expanded
+**Status:** Implemented (normative; source cites sections by number)
 **Dependency:** Sunny Engine Formal Specification v0.1.0 (the "Theory Spec")
 
 ---

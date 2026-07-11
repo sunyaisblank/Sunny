@@ -1,6 +1,6 @@
 [project]
 name = "sunny"
-version = "0.1.0"
+version = "0.4.0"
 description = "Python scripting facade for the Sunny music theory engine"
 readme = "README.md"
 license = { text = "MIT" }

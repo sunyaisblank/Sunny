@@ -2,7 +2,7 @@
 
 **Version:** 0.1.0-draft  
 **Date:** 2026-02-08  
-**Status:** Initial specification; subject to iterative refinement  
+**Status:** Implemented (normative; source cites sections by number)
 **Substrate:** 12-TET (twelve-tone equal temperament); generalisable by design
 
 ---

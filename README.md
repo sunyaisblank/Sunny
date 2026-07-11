@@ -1,122 +1,151 @@
 # Sunny
 
-*An MCP server for AI-assisted music production*
+*A music theory engine that gives AI agents compositional agency over
+Ableton Live.*
 
-Sunny provides AI agents with structured control over Ableton Live. The system combines a music theory engine with real-time transport, enabling operations from chord generation through parameter modulation.
+Sunny is a C++23 engine that makes musical knowledge executable and a
+DAW controllable. An AI agent connected over MCP can reason in musical
+terms (a dominant chord, a Lydian melody, a crescendo into bar 17) and
+have those intentions realised as structured documents, standard
+notation formats, or clips in a running Ableton Live session.
 
-## Motivation
+## How it works
 
-Music production involves two kinds of knowledge: theoretical and practical. Theoretical knowledge concerns scales, harmony, voice leading, and orchestration. Practical knowledge concerns the DAW: where controls are, what parameters do, how sessions are structured.
+The engine models music as typed documents with formal contracts. Four
+intermediate representations each own one concern:
 
-AI models possess general knowledge but lack the specific interface to apply it. They cannot press buttons, turn knobs, or hear results. Sunny bridges this gap. The theory engine makes musical knowledge executable. The transport layer makes the DAW controllable. Together they enable AI participation in music production.
+| IR | Concern | Compiles to |
+|---|---|---|
+| Score | Notes, rhythm, harmony, form | MIDI, MusicXML, LilyPond, Ableton clips |
+| Timbre | Sound design: sources, effects, modulation | Ableton device chains |
+| Mix | Signal flow, levels, spatialisation | Ableton mixer configuration |
+| Corpus | Ingested works and style analysis | Composer profiles |
 
-## Principles
+Underneath sits a theory library covering pitch (as Z/12Z group
+operations, with spelled pitches on the line of fifths), scales,
+functional and chromatic harmony, voice leading, rhythm, tuning
+systems, post-tonal techniques, and acoustics. Arithmetic on pitch and
+time is exact: pitch classes are group elements, durations are
+rationals, and overflow is checked. The engine prefers refusing an
+invalid operation to guessing at a plausible one.
 
-**Theory first.** Musical operations should be expressed in musical terms. The AI requests a dominant chord, not MIDI notes 67, 71, 74. The theory engine translates between musical intention and technical implementation.
+Everything is exposed as 93 MCP tools by the `sunny-mcp` binary, a
+JSON-RPC server on stdio. When `SUNNY_ABLETON_HOST` is set, the server
+connects to a Remote Script inside Ableton Live over TCP and the
+Ableton-mutating tools go live; without it, the server runs offline and
+those tools decline with a clear error while the theory and document
+tools keep working.
 
-**Real-time response.** Parameter modulation requires low latency. The hybrid transport layer uses UDP for time-critical operations, achieving sub-5ms response.
-
-**Reversibility.** Creative exploration requires the freedom to make mistakes. The snapshot system captures state before destructive operations, enabling recovery.
-
-**Bounded agency.** The AI operates within defined limits. Operations that could cause irreversible harm require explicit confirmation.
-
-## Architecture
-
-| Component | Purpose |
-|-----------|---------|
-| `src/sunny/server/` | MCP interface and transport layer |
-| `src/sunny/theory/` | Music theory engine |
-| `src/sunny/test/` | Test suite |
-| `lib/remotescript/` | Ableton Live extension |
-| `docs/` | Documentation |
-
-## Theory Engine
-
-The theory engine encodes musical knowledge in executable form.
-
-**Scales.** Over forty tonalities: church modes, symmetric scales, bebop scales, exotic modes. Given a root and scale type, returns constituent pitches.
-
-**Functional harmony.** Chords classified by role: tonic, subdominant, dominant. Given a key and function, returns appropriate chords.
-
-**Voice leading.** The nearest-tone algorithm for smooth progressions. Given two chords, computes optimal voice distribution minimising aggregate motion.
-
-**Orchestration.** Instrument suggestions by emotional intent and register. Given a mood, returns characteristic instrument combinations.
-
-## Transport Layer
-
-Communication with Ableton Live uses a hybrid protocol.
-
-**TCP** for structural commands: track creation, device insertion, clip manipulation. These operations must complete reliably.
-
-**UDP** for parameter modulation: filter sweeps, volume automation, send adjustments. These operations must occur with minimal latency.
-
-The remote script translates protocol messages to Live API calls. It runs within Ableton's Python environment and accesses the Live Object Model directly.
-
-## Installation
-
-```bash
-# Clone and install
-git clone https://github.com/averagestudentdontfail/Sunny.git
-cd Sunny
-make install
-
-# Install remote script
-cp -r lib/remotescript ~/Music/Ableton/User\ Library/Remote\ Scripts/Sunny
+```
+AI client ──MCP/stdio──▶ sunny-mcp ──TCP 9001──▶ SunnyRemoteScript ──▶ Ableton Live
+                           │
+                           └── Sunny.Core (theory + IR documents)
 ```
 
-Configure Ableton: Preferences → Link, Tempo & MIDI → Control Surface → Sunny
+## Status
 
-## Configuration
+The engine, the four IRs, the compilation targets, and the MCP surface
+are implemented and covered by more than 1,500 tests, with mutation
+testing and static analysis in the harness. The transport and the
+Remote Script are verified against each other by loopback tests; the
+remaining milestone is end-to-end validation against a live Ableton
+session. `docs/decisions.md` records the engineering decisions and
+their evidence.
 
-Add to your AI assistant's MCP configuration:
+## Building
+
+Requires CMake 3.20+, a C++23 compiler (GCC 13+ or Clang 16+), and
+Python 3.11+ with development headers for the optional bindings.
+
+```bash
+cmake --preset release
+cmake --build --preset release
+ctest --preset release
+```
+
+Or via the Makefile, which also drives the analysis harness:
+
+```bash
+make            # build + all tests
+make coverage   # llvm-cov line/branch coverage
+make analysis   # CodeQL static analysis + Mull mutation testing
+make help       # everything else
+```
+
+## Connecting an AI client
+
+Add the server to your MCP client configuration:
 
 ```json
 {
   "mcpServers": {
-    "Sunny": {
-      "command": "python",
-      "args": ["-m", "sunny.server"],
-      "cwd": "/path/to/Sunny"
+    "sunny": {
+      "command": "/path/to/Sunny/.bin/sunny-mcp",
+      "env": {
+        "SUNNY_ABLETON_HOST": "127.0.0.1",
+        "SUNNY_TCP_PORT": "9001"
+      }
     }
   }
 }
 ```
 
-Environment variables (see `.env.example`):
+Omit the `env` block to run offline. Under WSL2 with Ableton on the
+Windows host, use the host IP from `/etc/resolv.conf` as
+`SUNNY_ABLETON_HOST`.
 
-| Variable | Purpose | Default |
-|----------|---------|---------|
-| `SUNNY_LOG_LEVEL` | Logging verbosity | `INFO` |
-| `SUNNY_SNAPSHOT_DIR` | Snapshot storage | `~/.sunny/snapshots` |
-| `SUNNY_TCP_PORT` | Reliable transport | `9000` |
-| `SUNNY_UDP_PORT` | Low-latency transport | `9001` |
+## Connecting Ableton Live
+
+Copy the Remote Script into Ableton's user library and select it as a
+control surface:
+
+```bash
+cp -r src/SunnyRemoteScript "~/Music/Ableton/User Library/Remote Scripts/Sunny"
+```
+
+Then in Live: Preferences → Link, Tempo & MIDI → Control Surface →
+Sunny. The script listens on TCP 9001 and translates length-prefixed
+JSON requests into Live Object Model calls.
+
+## Python scripting
+
+The optional `sunny` package is a thin facade over the same engine via
+pybind11 — useful for notebooks and scripts, not required for the MCP
+server:
+
+```python
+from sunny.core.engine import TheoryEngine
+
+engine = TheoryEngine()
+engine.get_scale_notes("C", "lydian", octave=4)
+engine.generate_progression("C", "major", ["I", "vi", "IV", "V"])
+```
+
+The package raises rather than falling back to approximations when the
+native module is absent; build with the `release` preset first.
 
 ## Development
 
 ```bash
-make check      # Run all checks
-make test       # Run tests with coverage
-make lint       # Run linter
-make typecheck  # Run type checker
-make format     # Format code
+make test           # C++ suite (Catch2)
+make python-check   # ruff + mypy + pytest for the Python facade
+make mull           # mutation testing (clang-18 + libc++)
+make codeql         # custom CodeQL queries
 ```
+
+Sources follow a codename scheme (`HRCD001A` = Harmony domain, Cadence
+category, component 001, revision A); the registry lives in
+[docs/reference.md](docs/reference.md). The five formal specifications
+in [docs/formal/](docs/formal/) are normative — source files cite them
+by section number.
 
 ## Documentation
 
-The `docs/` directory contains comprehensive documentation:
-
-| Document | Purpose |
-|----------|---------|
-| [philosophy.md](docs/philosophy.md) | Design worldview |
-| [foundations.md](docs/foundations.md) | Technical foundations |
-| [guide.md](docs/guide.md) | Practical operation |
-| [standard.md](docs/standard.md) | Coding conventions |
-
-## Requirements
-
-- Python 3.10 or later
-- Ableton Live 11 or later
-- Dependencies: mcp, music21, python-osc
+| Document | Contents |
+|---|---|
+| [docs/formal/](docs/formal/) | Formal specifications: music theory, and the Score, Timbre, Mix, and Corpus IRs |
+| [docs/reference.md](docs/reference.md) | Codename registry, error-code ranges, operation contracts, schema versions, wire protocol |
+| [docs/decisions.md](docs/decisions.md) | Decision record and audit history |
 
 ## Licence
 

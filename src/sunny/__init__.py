@@ -5,4 +5,4 @@ constants, note-name maps, and the TheoryEngine convenience wrapper.
 The MCP server is the C++ binary sunny-mcp, not this package.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.4.0"

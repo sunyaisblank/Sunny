@@ -2,8 +2,8 @@
 
 **Version:** 0.1.0-draft  
 **Date:** 2026-02-08  
-**Status:** Initial specification; subject to iterative refinement  
-**Dependencies:** Sunny Engine Formal Specification v0.1.0 (the "Theory Spec"); Sunny Score IR Specification v0.1.0 (the "Score IR Spec")
+**Status:** Implemented (normative; source cites sections by number)
+**Dependencies:** Sunny Engine Formal Specification v0.1.0 (the "Theory Spec"); Sunny Score IR Specification v0.2.0 (the "Score IR Spec")
 
 ---
 

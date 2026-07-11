@@ -100,7 +100,7 @@ nlohmann::json McpServer::handle_initialize(const nlohmann::json& id) {
         }},
         {"serverInfo", {
             {"name", "sunny-mcp"},
-            {"version", "0.1.0"}
+            {"version", "0.4.0"}
         }}
     };
     return make_response(id, result);
