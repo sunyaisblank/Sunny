@@ -8,6 +8,7 @@
 #include "version.hpp"
 
 #include <algorithm>
+#include <array>
 #include <limits>
 #include <set>
 #include <sunny/core/harmony/roman_numeral.hpp>
@@ -389,6 +390,26 @@ Result<MutationResult> set_section_harmony(Score& score,
     push_snapshot(undo, std::move(before), "set_section_harmony");
 
     return MutationResult{{}};
+}
+
+// =============================================================================
+// default_midi_channel
+// =============================================================================
+
+std::uint8_t default_midi_channel(InstrumentType instrument,
+                                  const std::vector<std::uint8_t>& channels_in_use) {
+    if (uses_gm_percussion_channel(instrument)) return GM_PERCUSSION_CHANNEL;
+
+    std::array<std::size_t, 17> occupancy{};
+    for (const auto channel : channels_in_use) {
+        if (channel >= 1 && channel <= 16) ++occupancy[channel];
+    }
+    std::uint8_t best = 1;
+    for (std::uint8_t channel = 1; channel <= 16; ++channel) {
+        if (channel == GM_PERCUSSION_CHANNEL) continue;
+        if (occupancy[channel] < occupancy[best]) best = channel;
+    }
+    return best;
 }
 
 // =============================================================================

@@ -137,6 +137,7 @@ target_sources(
         infrastructure/formats/score_to_lilypond_test.cpp
         infrastructure/formats/score_to_musicxml_test.cpp
         infrastructure/mcp/ir_tools_test.cpp
+        infrastructure/mcp/score_tools_test.cpp
         infrastructure/mcp/server_test.cpp
         infrastructure/orchestrator_test.cpp
 )

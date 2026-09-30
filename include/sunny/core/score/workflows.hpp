@@ -155,6 +155,32 @@ struct HarmonyEntry {
 };
 
 // =============================================================================
+// Default rendering channels
+// =============================================================================
+
+/// General MIDI reserves channel 10 for unpitched percussion key maps.
+inline constexpr std::uint8_t GM_PERCUSSION_CHANNEL = 10;
+
+/// True for instruments whose sound is a General MIDI percussion key map.
+[[nodiscard]] constexpr bool uses_gm_percussion_channel(InstrumentType instrument) noexcept {
+    return instrument_subfamily(instrument) == InstrumentSubfamily::UnpitchedPercussion ||
+           instrument == InstrumentType::DrumMachine;
+}
+
+/**
+ * @brief Channel a newly created Part receives when its creator names none
+ *
+ * Postcondition: unpitched percussion receives channel 10. Any other
+ * instrument receives the lowest channel in 1..16, other than 10, that no
+ * entry of @p channels_in_use occupies; when all fifteen are occupied it
+ * shares the least-occupied one (lowest number on ties). Distinct channels
+ * keep same-key notes of different Parts from contending for one SMF
+ * channel/key pair.
+ */
+[[nodiscard]] std::uint8_t default_midi_channel(InstrumentType instrument,
+                                                const std::vector<std::uint8_t>& channels_in_use);
+
+// =============================================================================
 // Composition Tool (§12.2.5)
 // =============================================================================
 

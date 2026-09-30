@@ -376,6 +376,7 @@ void register_score_tools(McpServer& server,
             }
 
             if (params.contains("parts") && params["parts"].is_array()) {
+                std::vector<std::uint8_t> channels_in_use;
                 for (const auto& pj : params["parts"]) {
                     if (!pj.is_object() || !pj.contains("name") || !pj["name"].is_string() ||
                         !pj.contains("instrument_type") ||
@@ -392,6 +393,9 @@ void register_score_tools(McpServer& server,
                         if (!cl) return error_response("invalid clef");
                         pd.clef = *cl;
                     }
+                    pd.rendering.midi_channel =
+                        default_midi_channel(pd.instrument_type, channels_in_use);
+                    channels_in_use.push_back(pd.rendering.midi_channel);
                     spec.parts.push_back(std::move(pd));
                 }
             }
@@ -528,6 +532,10 @@ void register_score_tools(McpServer& server,
                 if (!cl) return error_response("invalid clef");
                 pd.clef = *cl;
             }
+            std::vector<std::uint8_t> channels_in_use;
+            for (const auto& part : score->parts)
+                channels_in_use.push_back(part.definition.rendering.midi_channel);
+            pd.rendering.midi_channel = default_midi_channel(pd.instrument_type, channels_in_use);
 
             auto result = add_part(*score, std::move(pd), session->undo_for(sid));
             if (!result) return error_response("add_part failed");
