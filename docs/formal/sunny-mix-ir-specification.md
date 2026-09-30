@@ -927,7 +927,7 @@ nor reads that target fact.
    Master-routing postcondition. With no explicit binding, Sunny writes and verifies zero such
    edges rather than trusting a default. A caller may admit an exact named-target type/channel pair
    plus provenance for a materialisable Channel/Aux-to-Master edge; the compiler then performs the
-   protocol-v42 two-stage membership/readback transaction. Group and unbound edges remain
+   current-protocol two-stage membership/readback transaction. Group and unbound edges remain
    residuals, and verification remains conditional on the admitted mapping.
 
 5. **Levels and spatial**: Set each statically resolved channel/master value; for
@@ -953,7 +953,7 @@ nor reads that target fact.
 
 8. **Readback**: For return names, faders, pan, activators, mute, solo, sends, Main pan mode, and
    master level, require the
-   protocol-v41 bridge to return the property, echoed request, and immediate observed value. Retain
+   current-protocol bridge to return the property, echoed request, and immediate observed value. Retain
    one `property_deployments` record per write and report a divergent observation.
 
 9. **Automation**: Preserve MixAutomation in the IR and report it as unsupported by the current public-LOM target. Return `automation_lanes_requested = |automation|` and `automation_lanes_written = 0` as distinct 64-bit evidence counters, so absence of a request cannot be confused with failure to deploy one.
@@ -982,7 +982,7 @@ successful-call counters remain distinct from verified target state.
   guess Rack chains, zones, selectors, chain mixers, pads, return chains, or nested devices.
 - Public LOM cannot create or assign Group Tracks, configure all sidechain relationships, or author automation envelopes.
 - Public Track `output_routing_type` and `output_routing_channel` are get/set dictionaries whose
-  values must come from the target's available-routing collections. Protocol v43/schema 34 retains
+  values must come from the target's available-routing collections. The current protocol and snapshot schema retains
   both exact selected dictionaries and the exact one-key available type/channel wrappers on every
   normal and Return Track. With no binding, every output edge remains an explicit residual. A
   caller may conditionally bind a materialisable Channel or Aux-to-Master edge to one exact
@@ -1002,11 +1002,11 @@ successful-call counters remain distinct from verified target state.
   explicit external obligations; `has_audio_output` remains signal-type classification rather than
   destination evidence.
 - Normal Track input routing is retained as a separate target-state boundary for generated Parts.
-  Protocol v43/schema 34 requires exact audio/MIDI-input Booleans and, when input-capable, selected
+  The current protocol and snapshot schema requires exact audio/MIDI-input Booleans and, when input-capable, selected
   type/channel dictionaries that occur in the corresponding exact available-option arrays. The
   Mix IR has no input-source carrier, so membership is not promoted to source identity or external
   input neutrality and no input-routing write is admitted.
-- Protocol v43/schema 34 also retains exact `[0,1]` floating input/output one-second hold peaks on
+- The current protocol and snapshot schema also retains exact `[0,1]` floating input/output one-second hold peaks on
   audio/MIDI normal Tracks. It retains exact left/right momentary input/output meter floats only
   when the normal Track reports audio output, with explicit nulls otherwise. Generated Parts
   require both hold peaks and all four channel values to be exactly zero, under separate hold,

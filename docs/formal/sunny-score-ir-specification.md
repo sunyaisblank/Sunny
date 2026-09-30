@@ -1276,7 +1276,7 @@ configures Score, Timbre, and Mix in the same session using the identity and ord
 
 ### 9.2 AbletonCompiler
 
-**Definition 9.2.1**. The *AbletonCompiler* emits the supported Live Object Model operations for a Score IR and returns a compilation summary. The summary distinguishes transport success from completeness: `success` means all emitted operations were accepted and every evidence payload required from a real protocol-v41 transport was well formed; `complete` means no requested feature was outside the supported LOM surface and no observed scalar diverged from its request.
+**Definition 9.2.1**. The *AbletonCompiler* emits the supported Live Object Model operations for a Score IR and returns a compilation summary. The summary distinguishes transport success from completeness: `success` means all emitted operations were accepted and every evidence payload required from a real current-protocol transport was well formed; `complete` means no requested feature was outside the supported LOM surface and no observed scalar diverged from its request.
 
 Before emitting mutations, the production transport performs the versioned target-profile handshake
 defined in the bridge contract (`remote_script/Sunny/bridge_contract.json`). The compiler records the observed Live version and
@@ -1424,7 +1424,7 @@ public Clip note dictionaries expose no curves or expression-clear operation. Th
 generated-Clip evidence retains false `mpe_note_expression_state_observed` and
 `mpe_note_expression_neutrality_verified`; the selected ordinary note-property verdict cannot
 imply neutral expression.
-Current protocol-v41 project evidence can retain each top-level Device's reported sample/millisecond
+Current-protocol project evidence can retain each top-level Device's reported sample/millisecond
 latency, but those values do not close delay compensation/monitoring mode, Track Delay, routing,
 buffers/drivers, external hardware, or an audible reference event; they therefore do not change
 this false timing verdict.

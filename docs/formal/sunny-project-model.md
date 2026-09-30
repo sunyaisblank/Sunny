@@ -157,7 +157,7 @@ capability warnings, requested/observed/verified post-apply Song/Scene/Cue state
 generated Session Clip state, and inserted-device chain records, and separate
 requested/written automation-lane counts for each Timbre result and the Mix result. `success` means
 every planned command was issued in order, accepted, and
-all protocol-v43 evidence required from a real transport was well formed. `complete` means no
+all current-protocol evidence required from a real transport was well formed. `complete` means no
 requested semantic property was left unapplied or observably divergent. These are not synonyms,
 and neither establishes audible equivalence.
 The Score sub-result includes its complete MIDI compilation report; any dropped event or tuning
@@ -202,7 +202,7 @@ The aggregate model assumes only the target operations admitted by the bridge co
 - return allocation begins at the observed existing `Song.return_tracks` count;
 - every Sunny device count, snapshot list, and `devices/N` path uses the same mixer-excluding
   insertable-chain index domain rather than the raw documented `Track.devices` list;
-- protocol-v43 requests and responses carry exact versioned envelopes; every nested target-evidence
+- current-protocol requests and responses carry exact versioned envelopes; every nested target-evidence
   object is closed as well, including the three-member generic property, thirteen-member named
   DeviceParameter setter records, and twelve-member read-only parameter observations, including
   the conditional continuous-default or quantized-label domain, so an unknown
@@ -211,7 +211,7 @@ The aggregate model assumes only the target operations admitted by the bridge co
   are validated before Live object traversal, so the bridge cannot be used as an unmodelled
   reflection tunnel; native path parsing is lossless and both native transports reject
   noncanonical ASCII spellings as `not_sent`;
-- plan preconditions use protocol-v43 snapshot schema 34 over documented Song tempo/signature,
+- plan preconditions use current-protocol snapshot schema 34 over documented Song tempo/signature,
   exact Boolean Song transport-running, count-in, Arrangement Record, Session Overdub, Automation
   Arm, and both documented Arrangement-overdub properties, exact Boolean Link enablement, Link
   start/stop sync, Tempo Follower, tempo-nudge, Back to Arrangement, and Re-Enable Automation
@@ -392,12 +392,12 @@ The aggregate model assumes only the target operations admitted by the bridge co
   Track count. Send-level requests/configurations remain separate from the independent pre/post-mode
   requests/configurations, so a scalar level write never counts as a complete configured send;
 - every mapped Timbre/Mix native DeviceParameter retains a self-contained logical obligation and,
-  after its containing Device verifies structurally, receives a protocol-v43 exact-name read-only
+  after its containing Device verifies structurally, receives a current-protocol exact-name read-only
   observation. Final verification requires resolved identity, selected value, enabled state,
   active state, and no automation; internal-value mappings also require final `min`/`max` equality,
   while display-value mappings retain those internal bounds with a null range-equivalence verdict;
 - selected Score properties, mapped Timbre/Mix parameters, and Mix scalar properties require immediate set/readback evidence from
-  a real protocol-v43 bridge; mapped Mix insertion also requires observed pre-insert device counts,
+  a real current-protocol bridge; mapped Mix insertion also requires observed pre-insert device counts,
   while mapped parameters additionally retain active and automation states and recording transports
   retain the plan with null observations;
 - channel/group relative faders are solved as exact additive-dB constraints before Score creates
@@ -452,7 +452,7 @@ same preflight guarantee.
 | Order-independent downstream targeting | Fully tractable with command-buffer tests | None |
 | Wire request syntax and capability skips | Contract-testable without Live | Official LOM documentation |
 | Live acknowledgement of issued commands | Observable through the bridge | Running named Live build |
-| Selected Score/Timbre/Mix scalar target state | Contract-testable; immediately observable through protocol-v43 readback on a live target, including finite bounds, quantisation, enablement, activity, and automation state | Named Live build and retained deployment evidence |
+| Selected Score/Timbre/Mix scalar target state | Contract-testable; immediately observable through current-protocol readback on a live target, including finite bounds, quantisation, enablement, activity, and automation state | Named Live build and retained deployment evidence |
 | Generated Part Track output/gate state | Post-snapshot name, audio/MIDI-output role, exact own mute/solo, ordinary and Push arm states false, Main-crossfader assignment 1, Stereo Pan mode 0, in-range quantised enabled/active/unautomated Track Activator lowering, unfrozen and observed ungrouped state, and absence of derived solo-mute when Mix expects the channel enabled | Named Live build and retained postcondition evidence; disarming does not observe Monitor In, and Group processing, routing, and current public-LOM monitoring state remain outside the selected gate |
 | Generated Aux Return Track output/gate state | AuxBus-ID/index binding, post-snapshot name, exact own mute/solo false, absence of derived solo-mute, crossfade assignment 1, Stereo Pan mode 0, Track Activator 1.0, and correct-domain enabled/active/unautomated equality for activator, return level, and pan | Named Live build and retained postcondition evidence; non-pan spatial fields, output routing, later changes, signal, and sound remain outside the claim |
 | Main Track neutral output stage | In-range quantised enabled/active/unautomated Track Activator 1.0; Stereo Pan mode 0; in-range unquantised enabled/active/unautomated pan 0.0 | Named Live build and retained postcondition evidence; output routing, cue/crossfader behavior, later changes, signal, and sound remain outside the claim |
@@ -462,7 +462,7 @@ same preflight guarantee.
 | Final channel/return/master mixer scalar state | Snapshot-schema-34 selected internal/display value, finite internal bounds, quantisation, enabled, active, and unautomated state for every final volume, pan, activator, and enabled-send intent, with exact panning mode retained | Named Live build and retained postcondition evidence; generated Part, Aux Return, and Main Tracks require final Stereo Pan mode, while routing/destination and audible signal remain separate |
 | Planned native-device final chain state | Post-snapshot exact chain size and per-index display identity, public type, activity, false Rack-chain capability, and bounded sample/millisecond latency report for every insertion deployment | Named Live build and retained postcondition evidence; Rack support requires an explicit recursive source/target contract, and the report does not prove compensation, total path latency, routing, or sound |
 | Complete rendered timing | Not derivable by summing Device reports; public Song/Track LOM omits compensation/monitoring mode and Track Delay, while routing, buffers/drivers, external hardware, and acoustic propagation remain open | Explicit named-build playback/render experiment with a defined reference event and complete path conditions |
-| Mapped native-device parameter durability | Sequential protocol-v43 exact-name query after structural Device verification; identity/value/enabled/active/unautomated equality, plus internal range equality where applicable | Named Live build and retained postcondition evidence; observation is non-atomic and does not prove modulation, signal, or sound |
+| Mapped native-device parameter durability | Sequential current-protocol exact-name query after structural Device verification; identity/value/enabled/active/unautomated equality, plus internal range equality where applicable | Named Live build and retained postcondition evidence; observation is non-atomic and does not prove modulation, signal, or sound |
 | Global pitch context | Snapshot-schema-34 current-scale tuple plus every documented TuningSystem property, with the four dictionaries retained exactly but opaquely, version-gated and stale-plan compared | Dictionary semantics and Score mapping, mutation, Track bypass, device/MPE support, and audible pitch remain unverified |
 | Mix output destination edges | X10 validates intent; explicit Part/Aux-to-Master bindings admit ordered type/channel set/readback with mapping provenance; unbound and Group edges remain residuals | Named-Live dictionary membership and exact set/readback evidence; signal and sound remain separate |
 | Resulting audible timbre/mix equivalence | Not established by scalar readback | Rendered audio plus listening/measurement criteria |
