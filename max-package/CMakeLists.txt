@@ -6,6 +6,11 @@ endif()
 
 set(MAX_SDK_PACKAGE_OUT_OF_TREE ON CACHE BOOL "Stage a distributable Max package" FORCE)
 
+# Sunny's C++23 render objects use over-aligned new/delete, which the macOS C++ runtime provides
+# from 10.13; the pinned SDK would otherwise default the deployment target to 10.11. Set before
+# project() so the SDK's own default does not apply.
+set(CMAKE_OSX_DEPLOYMENT_TARGET "10.13" CACHE STRING "Minimum macOS version")
+
 include(FetchContent)
 FetchContent_Declare(
     max-sdk-base
