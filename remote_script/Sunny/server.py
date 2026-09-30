@@ -128,7 +128,7 @@ class TcpServer:
                 while not self._stop_requested.is_set():
                     try:
                         client, addr = server_socket.accept()
-                    except TimeoutError:
+                    except socket.timeout:
                         continue
                     except OSError:
                         break
@@ -250,7 +250,7 @@ class TcpServer:
         while not self._stop_requested.is_set():
             try:
                 first = client.recv(1)
-            except TimeoutError:
+            except socket.timeout:
                 continue
             except ConnectionResetError:
                 return None
@@ -295,7 +295,7 @@ class TcpServer:
         while len(buf) < n:
             try:
                 chunk = sock.recv(n - len(buf))
-            except (TimeoutError, ConnectionResetError):
+            except (socket.timeout, ConnectionResetError):
                 return None
             if not chunk:
                 return None

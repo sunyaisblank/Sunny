@@ -75,9 +75,10 @@ ignore = [
 convention = "google"
 
 [tool.ruff.lint.per-file-ignores]
-# Ableton-side control surface: runs inside Live's embedded Python and is
-# kept minimal-churn; docstring pedantry and line-length do not apply.
-"remote_script/Sunny/*" = ["D", "E501"]
+# Ableton-side control surface: runs inside Live's embedded Python (3.7 in
+# Live 11), so pyupgrade rewrites for the 3.10 target would break it there;
+# docstring pedantry and line-length do not apply either.
+"remote_script/Sunny/*" = ["D", "E501", "UP"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests/python"]
