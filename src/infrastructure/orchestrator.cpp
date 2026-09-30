@@ -71,18 +71,16 @@ OrchestratorResult Orchestrator::create_progression_clip(int track_index,
         return {false, "", "Unknown scale: " + scale};
     }
 
-    // Generate chords
+    // A numeral that names no degree of this scale is rejected rather than
+    // dropped, so the clip always holds exactly the progression requested.
     std::vector<sunny::core::ChordVoicing> chords;
     for (const auto& numeral : numerals) {
         auto chord_result = sunny::core::generate_chord_from_numeral(
-            numeral, root_pc, scale_def->intervals, octave);
-        if (chord_result) {
-            chords.push_back(*chord_result);
+            numeral, root_pc, scale_def->get_intervals(), octave);
+        if (!chord_result) {
+            return {false, "", "Numeral " + numeral + " is not a chord of scale " + scale};
         }
-    }
-
-    if (chords.empty()) {
-        return {false, "", "No valid chords generated"};
+        chords.push_back(*chord_result);
     }
 
     // Apply voice leading. Pad or trim target pitch classes to match
@@ -256,7 +254,7 @@ OrchestratorResult Orchestrator::apply_arpeggio(int track_index,
     sunny::core::ChordVoicing combined;
     for (const auto& numeral : numerals) {
         auto chord_result =
-            sunny::core::generate_chord_from_numeral(numeral, 0, scale_def->intervals, 4);
+            sunny::core::generate_chord_from_numeral(numeral, 0, scale_def->get_intervals(), 4);
         if (chord_result) {
             for (auto note : chord_result->notes) {
                 combined.notes.push_back(note);

@@ -212,7 +212,7 @@ void register_sunny_tools(McpServer& server,
             int octave =
                 sunny::core::detail::checked_integer_or<int>(params, "octave", 4, "octave");
             auto notes =
-                sunny::core::generate_scale_notes(*root_result, scale_def->intervals, octave);
+                sunny::core::generate_scale_notes(*root_result, scale_def->get_intervals(), octave);
             if (!notes) {
                 return {{"error", "Scale generation failed"}};
             }

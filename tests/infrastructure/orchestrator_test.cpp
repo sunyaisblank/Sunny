@@ -64,6 +64,32 @@ TEST_CASE("create_progression_clip with invalid scale", "[infrastructure][orches
     REQUIRE(orch.pending_message_count() == 0);
 }
 
+TEST_CASE("create_progression_clip rejects a numeral beyond the scale's degree count",
+          "[infrastructure][orchestrator][scale]") {
+    Orchestrator orch;
+
+    // Pentatonic major has five degrees, so VI has no scale root; it must not
+    // resolve to the tonic through the unused slots of the interval array.
+    auto result = orch.create_progression_clip(0, 0, "C", "pentatonic_major", {"I", "VI"}, 4, 4.0);
+
+    CHECK_FALSE(result.success);
+    CHECK(result.message.find("VI") != std::string::npos);
+    CHECK(orch.pending_message_count() == 0);
+    CHECK_FALSE(orch.can_undo());
+}
+
+TEST_CASE("create_progression_clip roots each numeral on the scale degree",
+          "[infrastructure][orchestrator][scale]") {
+    Orchestrator orch;
+
+    // Pentatonic major on C: degrees C D E G A, so V is rooted on A (69).
+    REQUIRE(orch.create_progression_clip(0, 0, "C", "pentatonic_major", {"V"}, 4, 4.0).success);
+    const auto messages = orch.drain_messages();
+    REQUIRE(messages.size() == 2);
+    REQUIRE_FALSE(messages[1].notes.empty());
+    CHECK(static_cast<int>(messages[1].notes[0].pitch) == 69);
+}
+
 // =============================================================================
 // apply_euclidean_rhythm
 // =============================================================================

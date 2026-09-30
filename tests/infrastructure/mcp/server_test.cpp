@@ -23,6 +23,7 @@
 #include <sstream>
 #include <string>
 #include <sunny/core/detail/serialization_integer.hpp>
+#include <sunny/core/scale/definitions.hpp>
 #include <sunny/infrastructure/mcp/core_tools.hpp>
 #include <sunny/infrastructure/mcp/corpus_tools.hpp>
 #include <sunny/infrastructure/mcp/mix_tools.hpp>
@@ -867,6 +868,33 @@ TEST_CASE("real MCP progression call reaches note transport", "[mcp][integration
     REQUIRE(transport.entries().size() == 5);
     CHECK(transport.entries()[3].request.property_or_method == "create_clip");
     CHECK(transport.entries()[4].request.property_or_method == "add_new_notes");
+}
+
+TEST_CASE("get_scale_notes returns exactly the scale's notes for every built-in scale",
+          "[mcp][tools][scale]") {
+    Orchestrator orchestrator;
+    BridgeDispatcher dispatcher(nullptr);
+    McpServer server;
+    register_sunny_tools(server, orchestrator, dispatcher);
+
+    const auto major =
+        call_tool(server, "get_scale_notes", {{"root", "C"}, {"scale", "major"}}, 60);
+    CHECK(major["notes"] == json::array({60, 62, 64, 65, 67, 69, 71}));
+
+    const auto names = sunny::core::list_scale_names();
+    REQUIRE(names.size() == 37);
+    int id = 61;
+    for (const auto name : names) {
+        CAPTURE(name);
+        const auto definition = sunny::core::find_scale(name);
+        REQUIRE(definition);
+        const auto result = call_tool(
+            server, "get_scale_notes", {{"root", "D"}, {"scale", std::string(name)}}, id++);
+        REQUIRE(result["notes"].size() == definition->note_count);
+        for (std::size_t degree = 0; degree < definition->note_count; ++degree) {
+            CHECK(result["notes"][degree] == 62 + definition->intervals[degree]);
+        }
+    }
 }
 
 TEST_CASE("session-state tool exposes live perception", "[mcp][integration][bridge]") {
