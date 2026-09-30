@@ -2785,7 +2785,7 @@ TEST_CASE("Ableton MCP results distinguish requested and written automation",
                 server,
                 "add_mix_automation",
                 {{"graph_id", graph["graph_id"]},
-                 {"target", "channels[0].fader.level_db"},
+                 {"target", "channels[1].fader.level_db"},
                  {"breakpoints", {{{"bar", 1}, {"value", -12.0}}, {{"bar", 2}, {"value", -6.0}}}}},
                 604)["success"] == true);
     const auto mix =

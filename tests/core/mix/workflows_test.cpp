@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
+#include <cmath>
 #include <sunny/core/mix/validation.hpp>
 #include <sunny/core/mix/workflows.hpp>
 
@@ -257,6 +258,24 @@ TEST_CASE("set_channel_send rejects non-existent aux", "[mix-ir][workflow]") {
     auto graph = create_mix_graph(MixGraphId{1}, {PartId{1}});
     auto result = set_channel_send(graph, graph.channels[0].id, AuxBusId{999}, -6.0f);
     CHECK_FALSE(result.has_value());
+}
+
+TEST_CASE("set_channel_send bounds the level to the model's gain ceiling",
+          "[mix-ir][workflow][regression]") {
+    auto graph = create_mix_graph(MixGraphId{1}, {PartId{1}});
+    REQUIRE(create_aux_bus(graph, AuxBusId{200}, "Reverb").has_value());
+    const auto channel = graph.channels[0].id;
+    CHECK_FALSE(set_channel_send(graph, channel, AuxBusId{200}, 200.0f).has_value());
+    CHECK_FALSE(set_channel_send(graph, channel, AuxBusId{200}, std::nanf("")).has_value());
+    CHECK(graph.channels[0].sends.empty());
+    CHECK(set_channel_send(graph, channel, AuxBusId{200}, MIX_LEVEL_CEILING_DB).has_value());
+
+    // A document carrying an out-of-domain send fails X11.
+    graph.channels[0].sends[0].level_db = 200.0f;
+    const auto diagnostics = validate_mix(graph);
+    CHECK(std::ranges::any_of(diagnostics, [](const Diagnostic& diagnostic) {
+        return diagnostic.rule == "X11" && diagnostic.severity == ValidationSeverity::Error;
+    }));
 }
 
 // =============================================================================
@@ -575,11 +594,32 @@ TEST_CASE("set_group_intent assigns intent", "[mix-ir][workflow]") {
 
 TEST_CASE("set_loudness_target configures master bus", "[mix-ir][workflow]") {
     auto graph = create_mix_graph(MixGraphId{1}, {PartId{1}});
-    set_loudness_target(graph, {-16.0f, -1.0f, 8.0f, LoudnessStandard::StreamingDynamic});
+    REQUIRE(set_loudness_target(graph, {-16.0f, -1.0f, 8.0f, LoudnessStandard::StreamingDynamic})
+                .has_value());
 
     REQUIRE(graph.master_bus.target_loudness.has_value());
     CHECK(graph.master_bus.target_loudness->integrated_lufs == Catch::Approx(-16.0f));
     CHECK(graph.master_bus.target_loudness->standard == LoudnessStandard::StreamingDynamic);
+}
+
+TEST_CASE("loudness targets above full scale are rejected without mutation",
+          "[mix-ir][workflow][regression]") {
+    auto graph = create_mix_graph(MixGraphId{1}, {PartId{1}});
+    CHECK_FALSE(set_loudness_target(graph, {5.0f, -1.0f, std::nullopt, LoudnessStandard::Custom})
+                    .has_value());
+    CHECK_FALSE(set_loudness_target(graph, {-14.0f, 3.0f, std::nullopt, LoudnessStandard::Custom})
+                    .has_value());
+    CHECK_FALSE(
+        set_loudness_target(graph, {-14.0f, -1.0f, -2.0f, LoudnessStandard::Custom}).has_value());
+    CHECK_FALSE(graph.master_bus.target_loudness.has_value());
+    // The boundary itself is reachable.
+    CHECK(set_loudness_target(graph, {0.0f, 0.0f, 0.0f, LoudnessStandard::Custom}).has_value());
+
+    graph.master_bus.target_loudness->integrated_lufs = 5.0f;
+    const auto diagnostics = validate_mix(graph);
+    CHECK(std::ranges::any_of(diagnostics, [](const Diagnostic& diagnostic) {
+        return diagnostic.rule == "X13" && diagnostic.severity == ValidationSeverity::Error;
+    }));
 }
 
 TEST_CASE("set_output_format updates both graph and master bus", "[mix-ir][workflow]") {
@@ -596,15 +636,88 @@ TEST_CASE("set_output_format updates both graph and master bus", "[mix-ir][workf
 
 TEST_CASE("add_automation appends automation lane", "[mix-ir][workflow]") {
     auto graph = create_mix_graph(MixGraphId{1}, {PartId{1}});
-    add_automation(graph,
-                   {"channels[0].fader.level_db",
-                    {{ScoreTime{1, Beat{0, 1}}, -6.0f}, {ScoreTime{5, Beat{0, 1}}, 0.0f}},
-                    InterpolationMode::Linear,
-                    "Fade in"});
+    REQUIRE(add_automation(graph,
+                           {"channels[1].fader.level_db",
+                            {{ScoreTime{1, Beat{0, 1}}, -6.0f}, {ScoreTime{5, Beat{0, 1}}, 0.0f}},
+                            InterpolationMode::Linear,
+                            "Fade in"})
+                .has_value());
 
     REQUIRE(graph.automation.size() == 1);
-    CHECK(graph.automation[0].target == "channels[0].fader.level_db");
+    CHECK(graph.automation[0].target == "channels[1].fader.level_db");
     CHECK(graph.automation[0].breakpoints.size() == 2);
+}
+
+TEST_CASE("Mix automation targets resolve every structural path family of spec 9.2",
+          "[mix-ir][workflow][automation]") {
+    auto graph = create_mix_graph(MixGraphId{1}, {PartId{7}});
+    REQUIRE(create_aux_bus(graph, AuxBusId{30}, "Reverb").has_value());
+    REQUIRE(create_group_bus(graph, GroupBusId{20}, "Strings", {graph.channels[0].id}).has_value());
+    REQUIRE(set_channel_send(graph, graph.channels[0].id, AuxBusId{30}, -9.0f).has_value());
+    REQUIRE(set_channel_level(graph, graph.channels[0].id, -3.0f).has_value());
+    MixCompressor compressor;
+    compressor.threshold = -18.0f;
+    REQUIRE(add_channel_effect(graph, graph.channels[0].id, {MixEffectId{1}, compressor, true})
+                .has_value());
+    MixLimiter limiter;
+    limiter.ceiling = -1.0f;
+    add_master_effect(graph, {MixEffectId{2}, limiter, true});
+
+    const auto read = [&](const std::string& path) {
+        return get_mix_automation_target(graph, path);
+    };
+    // Channels are keyed by Score Part ID (7), not by position or ChannelStrip ID.
+    CHECK(read("channels[7].fader.level_db") == -3.0f);
+    CHECK(read("channels[7].sends[30].level_db") == -9.0f);
+    CHECK(read("channels[7].spatial.pan") == 0.0f);
+    CHECK(read("channels[7].insert_chain.effects[0].parameters.threshold") == -18.0f);
+    CHECK(read("group_buses[20].fader.level_db") == 0.0f);
+    CHECK(read("master_bus.fader.level_db") == 0.0f);
+    CHECK(read("master_bus.insert_chain.effects[0].parameters.ceiling") == -1.0f);
+    CHECK(read("aux_buses[30].return_level") == 0.0f);
+    CHECK(read("aux_sends[30].return_level") == 0.0f);
+
+    for (const auto* unresolved : {"channels[0].fader.level_db",
+                                   "channels[1].fader.level_db",
+                                   "channels[7].fader",
+                                   "channels[7].fader.level_db.extra",
+                                   "channels[7]..fader.level_db",
+                                   "channels[07].fader.level_db",
+                                   "channels[7].sends[31].level_db",
+                                   "channels[7].insert_chain.effects[1].parameters.threshold",
+                                   "channels[7].insert_chain.effects[0].parameters.ceiling",
+                                   "master_bus.spatial.pan",
+                                   "aux_buses[31].return_level",
+                                   ""})
+        CHECK_FALSE(read(unresolved).has_value());
+}
+
+TEST_CASE("add_automation rejects lanes violating spec 15.3(9) without mutation",
+          "[mix-ir][workflow][automation][regression]") {
+    auto graph = create_mix_graph(MixGraphId{1}, {PartId{1}});
+    const auto lane = [](std::string target, std::vector<MixAutomationBreakpoint> points) {
+        return MixAutomation{std::move(target), std::move(points), InterpolationMode::Linear, {}};
+    };
+    CHECK_FALSE(add_automation(graph, lane("channels[1].fader.level_db", {})));
+    CHECK_FALSE(add_automation(
+        graph, lane("channels[1].fader.level_db", {{ScoreTime{0, Beat::zero()}, 0.0f}})));
+    CHECK_FALSE(add_automation(
+        graph, lane("channels[1].fader.level_db", {{ScoreTime{1, Beat{-1, 4}}, 0.0f}})));
+    CHECK_FALSE(add_automation(
+        graph,
+        lane("channels[1].fader.level_db",
+             {{ScoreTime{2, Beat::zero()}, 0.0f}, {ScoreTime{2, Beat::zero()}, 1.0f}})));
+    CHECK_FALSE(add_automation(
+        graph, lane("channels[1].fader.level_db", {{ScoreTime{1, Beat::zero()}, std::nanf("")}})));
+    CHECK_FALSE(add_automation(graph, lane("channels[2].fader.level_db", {{SCORE_START, 0.0f}})));
+    CHECK(graph.automation.empty());
+
+    // A lane loaded from a document is held to the same rule.
+    graph.automation.push_back(lane("channels[2].fader.level_db", {{SCORE_START, 0.0f}}));
+    const auto diagnostics = validate_mix(graph);
+    CHECK(std::ranges::any_of(diagnostics, [](const Diagnostic& diagnostic) {
+        return diagnostic.rule == "X12" && diagnostic.severity == ValidationSeverity::Error;
+    }));
 }
 
 // =============================================================================
@@ -621,12 +734,33 @@ TEST_CASE("add_reference_profile and compare", "[mix-ir][workflow]") {
     ref.dynamic_profile.loudness_range = 6.0f;
     add_reference_profile(graph, ref);
 
-    set_loudness_target(graph, {-16.0f, -1.0f, 10.0f, LoudnessStandard::StreamingDynamic});
+    REQUIRE(set_loudness_target(graph, {-16.0f, -1.0f, 10.0f, LoudnessStandard::StreamingDynamic})
+                .has_value());
 
     auto result = compare_to_reference(graph, ReferenceProfileId{300});
     REQUIRE(result.has_value());
-    CHECK(result->loudness_difference == Catch::Approx(-2.0f));
-    CHECK(result->dynamic_range_difference == Catch::Approx(4.0f));
+    REQUIRE(result->loudness_difference.has_value());
+    CHECK(*result->loudness_difference == Catch::Approx(-2.0f));
+    REQUIRE(result->dynamic_range_difference.has_value());
+    CHECK(*result->dynamic_range_difference == Catch::Approx(4.0f));
+}
+
+TEST_CASE("compare_to_reference never fabricates an unmeasured difference",
+          "[mix-ir][workflow][regression]") {
+    auto graph = create_mix_graph(MixGraphId{1}, {PartId{1}});
+    ReferenceProfile ref;
+    ref.id = ReferenceProfileId{300};
+    ref.tonal_balance_curve = {{100.0f, -20.0f}, {1000.0f, -30.0f}};
+    ref.spatial_profile.average_width = 0.7f;
+    add_reference_profile(graph, ref);
+
+    const auto result = compare_to_reference(graph, ReferenceProfileId{300});
+    REQUIRE(result.has_value());
+    // The mix has no measured spectrum or width and no configured loudness target.
+    CHECK_FALSE(result->spectral_deviation.has_value());
+    CHECK_FALSE(result->width_difference.has_value());
+    CHECK_FALSE(result->loudness_difference.has_value());
+    CHECK_FALSE(result->dynamic_range_difference.has_value());
 }
 
 TEST_CASE("compare_to_reference rejects non-existent ref", "[mix-ir][workflow]") {
@@ -639,38 +773,86 @@ TEST_CASE("compare_to_reference rejects non-existent ref", "[mix-ir][workflow]")
 // Seating Templates
 // =============================================================================
 
-TEST_CASE("apply_seating_template American distributes positions", "[mix-ir][workflow]") {
-    auto graph = create_mix_graph(MixGraphId{1}, {PartId{1}, PartId{2}, PartId{3}, PartId{4}});
-    apply_seating_template(graph, SeatingTemplate::American);
+TEST_CASE("seating positions lie inside every spec 6.4 American interval",
+          "[mix-ir][workflow][seating]") {
+    struct Interval {
+        OrchestralSection section;
+        float pan_low, pan_high, depth_low, depth_high;
+    };
+    // Transcribed from the §6.4 American table.
+    const Interval table[] = {
+        {OrchestralSection::ViolinI, -0.6f, -0.2f, 0.2f, 0.4f},
+        {OrchestralSection::ViolinII, -0.2f, 0.2f, 0.2f, 0.4f},
+        {OrchestralSection::Viola, 0.2f, 0.5f, 0.3f, 0.5f},
+        {OrchestralSection::Cello, 0.5f, 0.7f, 0.3f, 0.5f},
+        {OrchestralSection::DoubleBass, 0.7f, 0.9f, 0.4f, 0.6f},
+        {OrchestralSection::Flutes, -0.3f, -0.1f, 0.4f, 0.5f},
+        {OrchestralSection::Oboes, -0.1f, 0.1f, 0.4f, 0.5f},
+        {OrchestralSection::Clarinets, 0.1f, 0.3f, 0.4f, 0.5f},
+        {OrchestralSection::Bassoons, 0.3f, 0.5f, 0.4f, 0.6f},
+        {OrchestralSection::Horns, -0.5f, -0.2f, 0.5f, 0.7f},
+        {OrchestralSection::Trumpets, -0.2f, 0.2f, 0.6f, 0.7f},
+        {OrchestralSection::Trombones, 0.2f, 0.5f, 0.6f, 0.7f},
+        {OrchestralSection::Tuba, 0.4f, 0.4f, 0.6f, 0.7f},
+        {OrchestralSection::Timpani, 0.3f, 0.5f, 0.7f, 0.8f},
+        {OrchestralSection::Percussion, -0.5f, 0.5f, 0.7f, 0.8f},
+        {OrchestralSection::Harp, -0.7f, -0.7f, 0.3f, 0.5f},
+    };
+    for (const auto& row : table) {
+        const auto seat = seating_position(SeatingTemplate::American, row.section);
+        INFO("section " << static_cast<int>(row.section));
+        CHECK(seat.pan >= row.pan_low - 1e-6f);
+        CHECK(seat.pan <= row.pan_high + 1e-6f);
+        CHECK(seat.depth >= row.depth_low - 1e-6f);
+        CHECK(seat.depth <= row.depth_high + 1e-6f);
+    }
+}
 
-    // First channel should be left, last should be right
+TEST_CASE("European seating moves violin II right and cellos left only",
+          "[mix-ir][workflow][seating][regression]") {
+    const auto violin_2 = seating_position(SeatingTemplate::European, OrchestralSection::ViolinII);
+    CHECK(violin_2.pan >= 0.2f);
+    CHECK(violin_2.pan <= 0.6f);
+    CHECK(seating_position(SeatingTemplate::European, OrchestralSection::Cello).pan < 0.0f);
+    for (const auto section : {OrchestralSection::ViolinI,
+                               OrchestralSection::Viola,
+                               OrchestralSection::DoubleBass,
+                               OrchestralSection::Horns}) {
+        CHECK(seating_position(SeatingTemplate::European, section).pan ==
+              seating_position(SeatingTemplate::American, section).pan);
+    }
+}
+
+TEST_CASE("apply_seating_template seats channels by section, not by position",
+          "[mix-ir][workflow][seating][regression]") {
+    // Channel order deliberately differs from seating order.
+    auto graph = create_mix_graph(MixGraphId{1}, {PartId{1}, PartId{2}, PartId{3}});
+    graph.channels[2].spatial.pan = 0.9f; // unassigned: must stay put
+    REQUIRE(apply_seating_template(graph,
+                                   SeatingTemplate::European,
+                                   {{graph.channels[0].id, OrchestralSection::Cello},
+                                    {graph.channels[1].id, OrchestralSection::ViolinII}})
+                .has_value());
     CHECK(graph.channels[0].spatial.pan < 0.0f);
-    CHECK(graph.channels[3].spatial.pan > 0.0f);
-
-    // Depth should increase left to right
-    CHECK(graph.channels[0].spatial.depth < graph.channels[3].spatial.depth);
+    CHECK(graph.channels[1].spatial.pan >= 0.2f);
+    CHECK(graph.channels[2].spatial.pan == 0.9f);
 }
 
-TEST_CASE("apply_seating_template European wider spread", "[mix-ir][workflow]") {
-    auto graph = create_mix_graph(MixGraphId{1}, {PartId{1}, PartId{2}});
-    apply_seating_template(graph, SeatingTemplate::European);
-
-    // European seating should have wider pan range
-    CHECK(graph.channels[0].spatial.pan == Catch::Approx(-0.9f));
-    CHECK(graph.channels[1].spatial.pan == Catch::Approx(0.9f));
-}
-
-TEST_CASE("apply_seating_template handles single channel", "[mix-ir][workflow]") {
+TEST_CASE("apply_seating_template rejects unknown or repeated channels without mutation",
+          "[mix-ir][workflow][seating]") {
     auto graph = create_mix_graph(MixGraphId{1}, {PartId{1}});
-    apply_seating_template(graph, SeatingTemplate::American);
-    // Should centre the single channel
-    CHECK(graph.channels[0].spatial.pan == Catch::Approx(0.0f));
-}
-
-TEST_CASE("apply_seating_template handles empty graph", "[mix-ir][workflow]") {
-    auto graph = create_mix_graph(MixGraphId{1}, {});
-    apply_seating_template(graph, SeatingTemplate::American);
-    CHECK(graph.channels.empty());
+    CHECK_FALSE(apply_seating_template(graph,
+                                       SeatingTemplate::American,
+                                       {{graph.channels[0].id, OrchestralSection::Harp},
+                                        {ChannelStripId{99}, OrchestralSection::Viola}})
+                    .has_value());
+    CHECK_FALSE(apply_seating_template(graph,
+                                       SeatingTemplate::American,
+                                       {{graph.channels[0].id, OrchestralSection::Harp},
+                                        {graph.channels[0].id, OrchestralSection::Viola}})
+                    .has_value());
+    CHECK(graph.channels[0].spatial.pan == 0.0f);
+    CHECK(apply_seating_template(graph, SeatingTemplate::American, {}).has_value());
 }
 
 // =============================================================================

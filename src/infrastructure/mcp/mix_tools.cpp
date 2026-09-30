@@ -59,6 +59,29 @@ constexpr int LoudnessStandard_Max = 5;    // Custom
 constexpr int SeatingTemplate_Max = 1;     // European
 constexpr int MappingCurveType_Max = 5;    // Custom
 
+std::optional<OrchestralSection> orchestral_section(const std::string& name) {
+    static const std::map<std::string, OrchestralSection> sections{
+        {"violin_1", OrchestralSection::ViolinI},
+        {"violin_2", OrchestralSection::ViolinII},
+        {"viola", OrchestralSection::Viola},
+        {"cello", OrchestralSection::Cello},
+        {"double_bass", OrchestralSection::DoubleBass},
+        {"flutes", OrchestralSection::Flutes},
+        {"oboes", OrchestralSection::Oboes},
+        {"clarinets", OrchestralSection::Clarinets},
+        {"bassoons", OrchestralSection::Bassoons},
+        {"horns", OrchestralSection::Horns},
+        {"trumpets", OrchestralSection::Trumpets},
+        {"trombones", OrchestralSection::Trombones},
+        {"tuba", OrchestralSection::Tuba},
+        {"timpani", OrchestralSection::Timpani},
+        {"percussion", OrchestralSection::Percussion},
+        {"harp", OrchestralSection::Harp}};
+    const auto found = sections.find(name);
+    if (found == sections.end()) return std::nullopt;
+    return found->second;
+}
+
 json error_response(const std::string& msg) {
     return {{"error", msg}};
 }
@@ -548,7 +571,13 @@ void register_mix_tools(McpServer& server,
                 AuxBusId{detail::checked_integer<std::uint64_t>(params.at("aux_id"), "aux bus id")},
                 static_cast<float>(params.at("level_db").get<double>()),
                 params.value("pre_fader", false));
-            if (!r) return error_response("Channel or aux bus not found");
+            if (!r) {
+                if (r.error() == ErrorCode::MixNotFound)
+                    return error_response("Channel or aux bus not found");
+                return error_response("Send level must be finite and at most +" +
+                                      std::to_string(static_cast<int>(MIX_LEVEL_CEILING_DB)) +
+                                      " dB");
+            }
             return {{"success", true}};
         });
 
@@ -561,8 +590,14 @@ void register_mix_tools(McpServer& server,
         {{"type", "object"},
          {"properties",
           {{"graph_id", {{"type", "integer"}, {"description", "Mix graph ID"}}},
-           {"template", {{"type", "integer"}, {"description", "0=American, 1=European"}}}}},
-         {"required", json::array({"graph_id"})}},
+           {"template", {{"type", "integer"}, {"description", "0=American, 1=European"}}},
+           {"sections",
+            {{"type", "array"},
+             {"description",
+              "Array of {channel_id, section}; section is one of violin_1, violin_2, viola, "
+              "cello, double_bass, flutes, oboes, clarinets, bassoons, horns, trumpets, "
+              "trombones, tuba, timpani, percussion, harp. Unlisted channels are unchanged."}}}}},
+         {"required", json::array({"graph_id", "sections"})}},
         [session](const json& params) -> json {
             const auto graph_id =
                 detail::checked_integer<std::uint64_t>(params.at("graph_id"), "mix graph id");
@@ -571,8 +606,25 @@ void register_mix_tools(McpServer& server,
             auto tmpl =
                 checked_enum_or<SeatingTemplate>(params, "template", 0, SeatingTemplate_Max);
             if (!tmpl) return error_response("Invalid seating template");
-            apply_seating_template(*g, *tmpl);
-            return {{"success", true}};
+            std::vector<SeatingAssignment> assignments;
+            for (const auto& encoded : params.at("sections")) {
+                const auto section = orchestral_section(encoded.at("section").get<std::string>());
+                if (!section)
+                    return error_response("Unknown orchestral section: " +
+                                          encoded.at("section").get<std::string>());
+                assignments.push_back({ChannelStripId{detail::checked_integer<std::uint64_t>(
+                                           encoded.at("channel_id"), "channel id")},
+                                       *section});
+            }
+            auto r = apply_seating_template(*g, *tmpl, assignments);
+            if (!r) {
+                if (r.error() == ErrorCode::MixNotFound) return error_response("Channel not found");
+                return error_response("Each channel may be seated only once");
+            }
+            json placed = json::array();
+            for (const auto& assignment : assignments)
+                placed.push_back(assignment.channel_id.value);
+            return {{"success", true}, {"placed_channels", placed}};
         });
 
     // =========================================================================
@@ -1168,7 +1220,10 @@ void register_mix_tools(McpServer& server,
                 checked_enum_or<LoudnessStandard>(params, "standard", 0, LoudnessStandard_Max);
             if (!std) return error_response("Invalid loudness standard");
             target.standard = *std;
-            set_loudness_target(*g, target);
+            if (!set_loudness_target(*g, target))
+                return error_response(
+                    "Loudness target requires integrated_lufs <= 0 LUFS, true_peak_dbfs <= 0 "
+                    "dBTP and a finite non-negative loudness_range_lu");
             return {{"success", true}};
         });
 
@@ -1208,14 +1263,20 @@ void register_mix_tools(McpServer& server,
             for (const auto& bp : params.at("breakpoints")) {
                 MixAutomationBreakpoint b;
                 b.time.bar = detail::checked_integer<std::uint32_t>(bp.at("bar"), "automation bar");
-                b.time.beat = Beat{detail::checked_integer_or<std::int64_t>(
-                                       bp, "beat_num", 0, "automation beat numerator"),
-                                   detail::checked_integer_or<std::int64_t>(
-                                       bp, "beat_den", 1, "automation beat denominator")};
+                const auto beat =
+                    Beat::from_ratio(detail::checked_integer_or<std::int64_t>(
+                                         bp, "beat_num", 0, "automation beat numerator"),
+                                     detail::checked_integer_or<std::int64_t>(
+                                         bp, "beat_den", 1, "automation beat denominator"));
+                if (!beat) return error_response("Invalid automation beat offset");
+                b.time.beat = *beat;
                 b.value = static_cast<float>(bp.at("value").get<double>());
                 automation.breakpoints.push_back(b);
             }
-            add_automation(*g, std::move(automation));
+            if (!add_automation(*g, std::move(automation)))
+                return error_response(
+                    "Automation requires a resolvable target, at least one breakpoint, finite "
+                    "values, and strictly increasing times at or after bar 1 beat 0");
             return {{"success", true}};
         });
 
@@ -1293,14 +1354,40 @@ void register_mix_tools(McpServer& server,
                                               params.at("reference_id"), "reference id")});
             if (!r) return error_response("Reference profile not found");
 
-            json spectral = json::array();
-            for (const auto& [hz, db] : r->spectral_deviation)
-                spectral.push_back({{"frequency", hz}, {"deviation_db", db}});
+            // A null difference is unavailable: its mix side has not been
+            // measured or configured, so reporting a number would invent one.
+            const auto optional_number = [](const std::optional<float>& value) -> json {
+                return value ? json(*value) : json(nullptr);
+            };
+            json spectral = nullptr;
+            if (r->spectral_deviation) {
+                spectral = json::array();
+                for (const auto& [hz, db] : *r->spectral_deviation)
+                    spectral.push_back({{"frequency", hz}, {"deviation_db", db}});
+            }
+            json unavailable = json::array();
+            if (!r->spectral_deviation)
+                unavailable.push_back(
+                    {{"field", "spectral_deviation"},
+                     {"reason",
+                      "requires a measured mix spectrum; Sunny performs no audio analysis"}});
+            if (!r->width_difference)
+                unavailable.push_back({{"field", "width_difference"},
+                                       {"reason", "requires a measured mix stereo width"}});
+            if (!r->loudness_difference)
+                unavailable.push_back({{"field", "loudness_difference"},
+                                       {"reason", "no master loudness target is configured"}});
+            if (!r->dynamic_range_difference)
+                unavailable.push_back(
+                    {{"field", "dynamic_range_difference"},
+                     {"reason", "no master loudness-range target is configured"}});
 
-            return {{"loudness_difference", r->loudness_difference},
-                    {"dynamic_range_difference", r->dynamic_range_difference},
-                    {"width_difference", r->width_difference},
-                    {"spectral_deviation", spectral}};
+            return {{"loudness_difference", optional_number(r->loudness_difference)},
+                    {"dynamic_range_difference", optional_number(r->dynamic_range_difference)},
+                    {"width_difference", optional_number(r->width_difference)},
+                    {"spectral_deviation", spectral},
+                    {"basis", "configured targets versus reference measurements"},
+                    {"unavailable", unavailable}};
         });
 
     // =========================================================================

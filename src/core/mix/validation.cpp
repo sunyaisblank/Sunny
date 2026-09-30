@@ -8,6 +8,8 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <optional>
+#include <string>
 #include <sunny/core/mix/validation.hpp>
 #include <sunny/core/mix/workflows.hpp>
 #include <unordered_map>
@@ -597,11 +599,12 @@ void check_aux_send_targets(const MixGraph& graph, std::vector<Diagnostic>& out)
                                    std::to_string(send.aux_bus_id.value),
                                ErrorCode::InvalidAuxSend);
             }
-            if (!std::isfinite(send.level_db)) {
+            if (!std::isfinite(send.level_db) || send.level_db > MIX_LEVEL_CEILING_DB) {
                 add_diagnostic(out,
                                ValidationSeverity::Error,
                                "X11",
-                               label + " has a non-finite send level for aux bus " +
+                               label + " has a send level outside (-inf, " +
+                                   std::to_string(MIX_LEVEL_CEILING_DB) + "] dB for aux bus " +
                                    std::to_string(send.aux_bus_id.value),
                                ErrorCode::InvalidAuxSend);
             }
@@ -611,6 +614,66 @@ void check_aux_send_targets(const MixGraph& graph, std::vector<Diagnostic>& out)
         check(channel, "Channel " + std::to_string(channel.id.value));
     for (const auto& group : graph.group_buses)
         check(group, "Group " + std::to_string(group.id.value));
+}
+
+// -------------------------------------------------------------------------
+// X12: automation lanes reference valid targets and ScoreTime positions
+// -------------------------------------------------------------------------
+
+struct AutomationFailure {
+    ErrorCode code;
+    std::string message;
+};
+
+std::optional<AutomationFailure> automation_failure(const MixGraph& graph,
+                                                    const MixAutomation& automation) {
+    if (!get_mix_automation_target(graph, automation.target))
+        return AutomationFailure{ErrorCode::InvalidPath,
+                                 "Automation target '" + automation.target +
+                                     "' does not resolve to a parameter in this MixGraph"};
+    if (static_cast<std::uint8_t>(automation.interpolation) >
+        static_cast<std::uint8_t>(InterpolationMode::Exponential))
+        return AutomationFailure{ErrorCode::MixInvalidParameter,
+                                 "Automation interpolation is not a defined value"};
+    if (automation.breakpoints.empty())
+        return AutomationFailure{ErrorCode::MixInvalidParameter,
+                                 "Automation must contain at least one breakpoint"};
+    for (std::size_t i = 0; i < automation.breakpoints.size(); ++i) {
+        const auto& breakpoint = automation.breakpoints[i];
+        const auto label = "Automation breakpoint[" + std::to_string(i) + "]";
+        if (breakpoint.time < SCORE_START)
+            return AutomationFailure{ErrorCode::InvalidScoreTime,
+                                     label + " precedes the first valid ScoreTime"};
+        if (!std::isfinite(breakpoint.value))
+            return AutomationFailure{ErrorCode::MixInvalidParameter,
+                                     label + " has a non-finite value"};
+        if (i != 0 && breakpoint.time <= automation.breakpoints[i - 1].time)
+            return AutomationFailure{ErrorCode::InvalidScoreTime,
+                                     "Automation breakpoint times must be strictly increasing"};
+    }
+    return std::nullopt;
+}
+
+void check_automation(const MixGraph& graph, std::vector<Diagnostic>& out) {
+    for (const auto& automation : graph.automation) {
+        if (auto failure = automation_failure(graph, automation))
+            add_diagnostic(out, ValidationSeverity::Error, "X12", failure->message, failure->code);
+    }
+}
+
+// -------------------------------------------------------------------------
+// X13: the master loudness target lies inside the BS.1770 domain
+// -------------------------------------------------------------------------
+
+void check_loudness_target(const MixGraph& graph, std::vector<Diagnostic>& out) {
+    const auto& target = graph.master_bus.target_loudness;
+    if (target && !is_loudness_target_valid(*target))
+        add_diagnostic(out,
+                       ValidationSeverity::Error,
+                       "X13",
+                       "Master loudness target requires integrated loudness <= 0 LUFS, true "
+                       "peak <= 0 dBTP and a finite non-negative loudness range",
+                       ErrorCode::MixInvalidParameter);
 }
 
 // -------------------------------------------------------------------------
@@ -898,6 +961,8 @@ std::vector<Diagnostic> validate_mix(const MixGraph& graph) {
     check_effect_parameters(graph, diags);
     check_parameter_mappings(graph, diags);
     check_relative_levels(graph, diags);
+    check_automation(graph, diags);
+    check_loudness_target(graph, diags);
 
     // Intent rules
     check_intent_annotations(graph, diags);
@@ -955,6 +1020,20 @@ std::vector<Diagnostic> validate_mix_correspondence(const Score& score, const Mi
     }
 
     return diags;
+}
+
+Result<void> validate_mix_automation(const MixGraph& graph, const MixAutomation& automation) {
+    if (auto failure = automation_failure(graph, automation)) return std::unexpected(failure->code);
+    return {};
+}
+
+bool is_loudness_target_valid(const LoudnessTarget& target) {
+    if (!std::isfinite(target.integrated_lufs) || target.integrated_lufs > 0.0f) return false;
+    if (!std::isfinite(target.true_peak_dbfs) || target.true_peak_dbfs > 0.0f) return false;
+    if (target.loudness_range_lu &&
+        (!std::isfinite(*target.loudness_range_lu) || *target.loudness_range_lu < 0.0f))
+        return false;
+    return true;
 }
 
 bool is_mix_valid(const MixGraph& graph) {

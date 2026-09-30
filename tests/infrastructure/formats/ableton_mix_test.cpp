@@ -1229,7 +1229,8 @@ TEST_CASE("master fader set", "[ableton][mix]") {
 TEST_CASE("unsupported Ableton mix automation is reported", "[ableton][mix]") {
     auto graph = make_test_graph();
     MixAutomation ma;
-    ma.target = "channels[0].fader.level_db";
+    ma.target = "channels[1].fader.level_db";
+    ma.breakpoints = {{SCORE_START, -6.0f}};
     graph.automation.push_back(ma);
     graph.automation.push_back(ma);
 

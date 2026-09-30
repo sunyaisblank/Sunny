@@ -593,11 +593,16 @@ struct MixRecommendation {
     float confidence = 0.0f; // 0.0–1.0
 };
 
+/**
+ * Mix-minus-reference differences (§8.7). An absent value means the mix side
+ * has not been measured or configured, so no difference exists to report;
+ * zero would instead assert that mix and reference agree.
+ */
 struct ReferenceComparison {
-    std::vector<std::pair<float, float>> spectral_deviation; // (Hz, dB diff)
-    float loudness_difference = 0.0f;                        // LUFS
-    float dynamic_range_difference = 0.0f;                   // LU
-    float width_difference = 0.0f;
+    std::optional<std::vector<std::pair<float, float>>> spectral_deviation; // (Hz, dB diff)
+    std::optional<float> loudness_difference;                               // LU
+    std::optional<float> dynamic_range_difference;                          // LU
+    std::optional<float> width_difference;
     std::vector<MixRecommendation> recommendations;
 };
 

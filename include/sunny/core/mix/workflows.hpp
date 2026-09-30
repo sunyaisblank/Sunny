@@ -27,6 +27,15 @@
 
 namespace sunny::core {
 
+/**
+ * Upper bound of every Mix IR gain stage (faders and aux sends), in dB.
+ *
+ * The IR is target-independent, so this is the model's representable ceiling
+ * (§2.2), not a DAW's. Target compilers refuse values their mixer cannot
+ * represent (Live's faders stop at +6 dB and its sends at 0 dB).
+ */
+inline constexpr float MIX_LEVEL_CEILING_DB = 12.0f;
+
 // =============================================================================
 // Graph Construction (§12.1: create_mix_graph)
 // =============================================================================
@@ -83,6 +92,9 @@ assign_group_to_group(MixGraph& graph, GroupBusId child_group_id, GroupBusId par
 
 /**
  * @brief Set a channel's send level to an aux bus.
+ *
+ * Rejects a non-finite level or one above MIX_LEVEL_CEILING_DB without
+ * mutating the graph.
  */
 [[nodiscard]] Result<void> set_channel_send(MixGraph& graph,
                                             ChannelStripId channel_id,
@@ -198,8 +210,13 @@ set_group_intent(MixGraph& graph, GroupBusId group_id, GroupIntent intent);
 
 /**
  * @brief Set the master bus loudness target.
+ *
+ * Loudness is measured in LUFS relative to digital full scale (ITU-R BS.1770),
+ * so a programme target above 0 LUFS or a true-peak ceiling above 0 dBTP is
+ * unreachable; a loudness range is a non-negative LU span. Out-of-domain
+ * targets are rejected without mutating the graph.
  */
-void set_loudness_target(MixGraph& graph, LoudnessTarget target);
+[[nodiscard]] Result<void> set_loudness_target(MixGraph& graph, LoudnessTarget target);
 
 /**
  * @brief Set the output format (stereo, surround, etc.)
@@ -211,9 +228,31 @@ void set_output_format(MixGraph& graph, OutputFormat format);
 // =============================================================================
 
 /**
- * @brief Add parameter automation to the mix graph.
+ * @brief Read the current value of a Mix automation target path (§9.2).
+ *
+ * Grammar, where bracketed numbers are identities except for effect positions:
+ *   channels[<part_id>].{fader.level_db | input_trim | spatial.<axis> |
+ *                        sends[<aux_id>].level_db | insert_chain.effects[<i>].parameters.<p>}
+ *   group_buses[<group_id>].{fader.level_db | spatial.<axis> | sends[<aux_id>].level_db |
+ *                            insert_chain.effects[<i>].parameters.<p>}
+ *   master_bus.{fader.level_db | insert_chain.effects[<i>].parameters.<p>}
+ *   aux_buses[<aux_id>] (alias aux_sends[<aux_id>]).{return_level | return_spatial.<axis> |
+ *                            effect_chain.effects[<i>].parameters.<p>}
+ * where <axis> is pan, depth, elevation or width and <p> is a scalar effect
+ * parameter path accepted by get_mix_effect_parameter.
  */
-void add_automation(MixGraph& graph, MixAutomation automation);
+[[nodiscard]] Result<float> get_mix_automation_target(const MixGraph& graph,
+                                                      const std::string& path);
+
+/**
+ * @brief Add parameter automation to the mix graph.
+ *
+ * The lane must satisfy rule X12 (§15.3(9)): a resolvable target, a defined
+ * interpolation, at least one breakpoint, every breakpoint at or after
+ * SCORE_START with a finite value, and strictly increasing times. A rejected
+ * lane leaves the graph unchanged.
+ */
+[[nodiscard]] Result<void> add_automation(MixGraph& graph, MixAutomation automation);
 
 // =============================================================================
 // Reference Profiles (§12.1: create_reference_profile, compare_to_reference)
@@ -227,9 +266,12 @@ void add_reference_profile(MixGraph& graph, ReferenceProfile profile);
 /**
  * @brief Compare current mix parameters against a reference profile.
  *
- * Performs static comparison of configured values (loudness target,
- * spectral shape from EQ curves) against caller-supplied reference
- * measurements. Sunny currently performs no runtime audio analysis.
+ * Each difference is mix minus reference (§8.7). Sunny performs no runtime
+ * audio analysis, so only differences whose mix side is a configured value
+ * are reported: loudness from the master loudness target and dynamic range
+ * from its loudness-range target. Spectral deviation and width difference
+ * need a measured mix and are reported as unavailable (std::nullopt), as is
+ * any difference whose configured mix value is absent.
  */
 [[nodiscard]] Result<ReferenceComparison> compare_to_reference(const MixGraph& graph,
                                                                ReferenceProfileId ref_id);
@@ -244,13 +286,52 @@ enum class SeatingTemplate : std::uint8_t {
 };
 
 /**
- * @brief Apply an orchestral seating template to channel spatial positions.
+ * Orchestral sections of the §6.4 seating tables.
  *
- * Maps instrument families to pan/depth positions based on the selected
- * arrangement. Requires channels to have ChannelIntent with frequency
- * allocation data for mapping.
+ * Violin I and Violin II are distinct sections with the same instrument, so
+ * seating cannot be derived from InstrumentType; the caller names each
+ * channel's section.
  */
-void apply_seating_template(MixGraph& graph, SeatingTemplate seating);
+enum class OrchestralSection : std::uint8_t {
+    ViolinI,
+    ViolinII,
+    Viola,
+    Cello,
+    DoubleBass,
+    Flutes,
+    Oboes,
+    Clarinets,
+    Bassoons,
+    Horns,
+    Trumpets,
+    Trombones,
+    Tuba,
+    Timpani,
+    Percussion,
+    Harp
+};
+
+inline constexpr std::uint8_t ORCHESTRAL_SECTION_MAX =
+    static_cast<std::uint8_t>(OrchestralSection::Harp);
+
+/** One channel's section assignment for apply_seating_template. */
+struct SeatingAssignment {
+    ChannelStripId channel_id{};
+    OrchestralSection section = OrchestralSection::ViolinI;
+};
+
+/** Pan and depth the §6.4 table assigns to a section under a seating template. */
+[[nodiscard]] SpatialPosition seating_position(SeatingTemplate seating, OrchestralSection section);
+
+/**
+ * @brief Position the named channels according to an orchestral seating template.
+ *
+ * Each assigned channel receives the pan and depth that §6.4 gives its
+ * section; other spatial fields and unassigned channels are unchanged.
+ * Rejects an unknown or repeated channel without mutating the graph.
+ */
+[[nodiscard]] Result<void> apply_seating_template(
+    MixGraph& graph, SeatingTemplate seating, const std::vector<SeatingAssignment>& assignments);
 
 // =============================================================================
 // Validation (§12.1: validate_mix)

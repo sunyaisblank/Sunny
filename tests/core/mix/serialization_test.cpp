@@ -152,7 +152,7 @@ MixGraph make_full_graph() {
 
     // Automation
     graph.automation.push_back(
-        {"channels[0].fader.level_db",
+        {"channels[1].fader.level_db",
          {{ScoreTime{1, Beat{0, 1}}, -6.0f}, {ScoreTime{5, Beat{0, 1}}, 0.0f}},
          InterpolationMode::Linear,
          "Fade in"});
@@ -292,7 +292,7 @@ TEST_CASE("full MixGraph round-trip preserves all fields", "[mix-ir][serialisati
 
     // Automation
     REQUIRE(rt.automation.size() == 1);
-    CHECK(rt.automation[0].target == "channels[0].fader.level_db");
+    CHECK(rt.automation[0].target == "channels[1].fader.level_db");
     CHECK(rt.automation[0].breakpoints.size() == 2);
     REQUIRE(rt.automation[0].intent.has_value());
     CHECK(*rt.automation[0].intent == "Fade in");

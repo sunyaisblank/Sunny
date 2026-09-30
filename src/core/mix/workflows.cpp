@@ -97,6 +97,21 @@ std::optional<std::size_t> parameter_index(const std::string& segment) {
     return index;
 }
 
+/// Rejoin split segments; a path is canonical only if it survives the round trip.
+std::string canonical_parameter_path(const std::vector<std::string>& segments) {
+    std::string path;
+    for (const auto& segment : segments) {
+        if (!segment.empty() && segment.front() == '[') {
+            if (segment.size() > 3 && segment[1] == '0') return {};
+            path += segment;
+        } else {
+            if (!path.empty()) path += '.';
+            path += segment;
+        }
+    }
+    return path;
+}
+
 bool leaf(const std::vector<std::string>& segments, std::size_t position, const char* name) {
     return position + 1 == segments.size() && segments[position] == name;
 }
@@ -478,6 +493,8 @@ Result<void> create_aux_bus(MixGraph& graph, AuxBusId id, const std::string& nam
 
 Result<void> set_channel_send(
     MixGraph& graph, ChannelStripId channel_id, AuxBusId aux_id, float level_db, bool pre_fader) {
+    if (!std::isfinite(level_db) || level_db > MIX_LEVEL_CEILING_DB)
+        return std::unexpected(invalid_param());
     auto* ch = find_channel(graph, channel_id);
     if (!ch) return std::unexpected(not_found());
 
@@ -694,7 +711,8 @@ Result<void> map_mix_effect_parameter(MixGraph& graph,
 // =============================================================================
 
 Result<void> set_channel_level(MixGraph& graph, ChannelStripId channel_id, float level_db) {
-    if (!std::isfinite(level_db) || level_db > 12.0f) return std::unexpected(invalid_param());
+    if (!std::isfinite(level_db) || level_db > MIX_LEVEL_CEILING_DB)
+        return std::unexpected(invalid_param());
     auto* ch = find_channel(graph, channel_id);
     if (!ch) return std::unexpected(not_found());
     ch->fader.level_db = level_db;
@@ -750,7 +768,7 @@ Result<RelativeLevelResolution> resolve_relative_levels(const MixGraph& graph) {
 
     for (const auto key : order) {
         const auto& fader = *nodes.at(key);
-        if (!std::isfinite(fader.level_db) || fader.level_db > 12.0f)
+        if (!std::isfinite(fader.level_db) || fader.level_db > MIX_LEVEL_CEILING_DB)
             return std::unexpected(invalid_param());
 
         if (!fader.relative_level) {
@@ -801,7 +819,7 @@ Result<RelativeLevelResolution> resolve_relative_levels(const MixGraph& graph) {
                 statuses[dependant] = FaderLevelResolutionStatus::BlockedByUnresolvedReference;
             } else {
                 const float derived = *values.at(key) + relative.offset_db;
-                if (!std::isfinite(derived) || derived > 12.0f)
+                if (!std::isfinite(derived) || derived > MIX_LEVEL_CEILING_DB)
                     return std::unexpected(invalid_param());
                 values[dependant] = derived;
                 statuses[dependant] = FaderLevelResolutionStatus::Resolved;
@@ -889,8 +907,10 @@ Result<void> set_group_intent(MixGraph& graph, GroupBusId group_id, GroupIntent 
 // Loudness and Output
 // =============================================================================
 
-void set_loudness_target(MixGraph& graph, LoudnessTarget target) {
+Result<void> set_loudness_target(MixGraph& graph, LoudnessTarget target) {
+    if (!is_loudness_target_valid(target)) return std::unexpected(invalid_param());
     graph.master_bus.target_loudness = target;
+    return {};
 }
 
 void set_output_format(MixGraph& graph, OutputFormat format) {
@@ -902,8 +922,107 @@ void set_output_format(MixGraph& graph, OutputFormat format) {
 // Automation
 // =============================================================================
 
-void add_automation(MixGraph& graph, MixAutomation automation) {
+Result<float> get_mix_automation_target(const MixGraph& graph, const std::string& path) {
+    const auto segments = split_parameter_path(path);
+    if (segments.empty() || canonical_parameter_path(segments) != path)
+        return std::unexpected(ErrorCode::InvalidPath);
+
+    // Resolve the owner, then the owner-relative tail. Identity-addressed
+    // collections take their key from the bracket; effect chains are ordered
+    // and take a position, exactly as in the §9.2 examples.
+    const auto key = [&](std::size_t position) -> std::optional<std::uint64_t> {
+        if (position >= segments.size()) return std::nullopt;
+        const auto value = parameter_index(segments[position]);
+        if (!value) return std::nullopt;
+        return static_cast<std::uint64_t>(*value);
+    };
+    const auto unresolved = [] { return Result<float>{std::unexpected(ErrorCode::InvalidPath)}; };
+    const auto spatial_axis = [&](const SpatialPosition& spatial,
+                                  std::size_t position) -> Result<float> {
+        if (leaf(segments, position, "pan")) return spatial.pan;
+        if (leaf(segments, position, "depth")) return spatial.depth;
+        if (leaf(segments, position, "elevation")) return spatial.elevation;
+        if (leaf(segments, position, "width")) return spatial.width;
+        return unresolved();
+    };
+    const auto chain_parameter = [&](const MixEffectChain& chain,
+                                     std::size_t position) -> Result<float> {
+        const auto index = key(position + 1);
+        if (position + 3 >= segments.size() || segments[position] != "effects" || !index ||
+            *index >= chain.effects.size() || segments[position + 2] != "parameters")
+            return unresolved();
+        const std::vector<std::string> tail(
+            segments.begin() + static_cast<std::ptrdiff_t>(position + 3), segments.end());
+        auto value = resolve_mix_effect_parameter(chain.effects[*index], tail);
+        if (!value) return unresolved();
+        return value;
+    };
+    const auto send_level = [&](const std::vector<AuxSendLevel>& sends,
+                                std::size_t position) -> Result<float> {
+        const auto aux = key(position);
+        if (!aux || !leaf(segments, position + 1, "level_db")) return unresolved();
+        for (const auto& send : sends)
+            if (send.aux_bus_id.value == *aux) return send.level_db;
+        return unresolved();
+    };
+    const auto strip = [&](const auto& owner, std::size_t position) -> Result<float> {
+        if (position >= segments.size()) return unresolved();
+        const auto& field = segments[position];
+        if (field == "fader" && leaf(segments, position + 1, "level_db"))
+            return owner.fader.level_db;
+        if (field == "spatial") return spatial_axis(owner.spatial, position + 1);
+        if (field == "sends") return send_level(owner.sends, position + 1);
+        if (field == "insert_chain") return chain_parameter(owner.insert_chain, position + 1);
+        return unresolved();
+    };
+
+    const auto& root = segments[0];
+    if (root == "channels") {
+        const auto part = key(1);
+        if (!part) return unresolved();
+        for (const auto& channel : graph.channels) {
+            if (channel.part_id.value != *part) continue;
+            if (leaf(segments, 2, "input_trim")) return channel.input_trim;
+            return strip(channel, 2);
+        }
+        return unresolved();
+    }
+    if (root == "group_buses") {
+        const auto id = key(1);
+        if (!id) return unresolved();
+        for (const auto& group : graph.group_buses)
+            if (group.id.value == *id) return strip(group, 2);
+        return unresolved();
+    }
+    if (root == "master_bus") {
+        if (leaf(segments, 2, "level_db") && segments[1] == "fader")
+            return graph.master_bus.fader.level_db;
+        if (segments.size() > 1 && segments[1] == "insert_chain")
+            return chain_parameter(graph.master_bus.insert_chain, 2);
+        return unresolved();
+    }
+    if (root == "aux_buses" || root == "aux_sends") {
+        const auto id = key(1);
+        if (!id) return unresolved();
+        for (const auto& aux : graph.aux_buses) {
+            if (aux.id.value != *id) continue;
+            if (leaf(segments, 2, "return_level")) return aux.return_level;
+            if (segments.size() > 2 && segments[2] == "return_spatial")
+                return spatial_axis(aux.return_spatial, 3);
+            if (segments.size() > 2 && segments[2] == "effect_chain")
+                return chain_parameter(aux.effect_chain, 3);
+            return unresolved();
+        }
+        return unresolved();
+    }
+    return unresolved();
+}
+
+Result<void> add_automation(MixGraph& graph, MixAutomation automation) {
+    if (auto valid = validate_mix_automation(graph, automation); !valid)
+        return std::unexpected(valid.error());
     graph.automation.push_back(std::move(automation));
+    return {};
 }
 
 // =============================================================================
@@ -926,23 +1045,16 @@ Result<ReferenceComparison> compare_to_reference(const MixGraph& graph, Referenc
 
     ReferenceComparison comparison;
 
-    // Loudness comparison
-    if (graph.master_bus.target_loudness) {
-        comparison.loudness_difference =
-            graph.master_bus.target_loudness->integrated_lufs - ref->loudness_profile.integrated;
+    // Only configured intent can stand in for the mix side of a difference.
+    // Loudness and loudness range have configured targets; the spectrum and
+    // stereo width have no mix-side value until rendered audio is measured,
+    // so those differences stay absent rather than being invented.
+    if (const auto& target = graph.master_bus.target_loudness) {
+        comparison.loudness_difference = target->integrated_lufs - ref->loudness_profile.integrated;
+        if (target->loudness_range_lu)
+            comparison.dynamic_range_difference =
+                *target->loudness_range_lu - ref->dynamic_profile.loudness_range;
     }
-
-    // Width comparison (from spatial profiles)
-    comparison.width_difference = 0.0f; // Requires runtime analysis
-
-    // Dynamic range comparison
-    if (graph.master_bus.target_loudness && graph.master_bus.target_loudness->loudness_range_lu) {
-        comparison.dynamic_range_difference = *graph.master_bus.target_loudness->loudness_range_lu -
-                                              ref->dynamic_profile.loudness_range;
-    }
-
-    // Spectral deviation from tonal balance curve — static approximation
-    comparison.spectral_deviation = ref->tonal_balance_curve;
 
     return comparison;
 }
@@ -951,29 +1063,83 @@ Result<ReferenceComparison> compare_to_reference(const MixGraph& graph, Referenc
 // Orchestral Seating Templates
 // =============================================================================
 
-void apply_seating_template(MixGraph& graph, SeatingTemplate seating) {
-    // Apply heuristic spatial positions based on channel index.
-    // A production implementation would map instrument families from
-    // the ChannelIntent's frequency allocation. This provides
-    // even distribution as a starting point.
-
-    if (graph.channels.empty()) return;
-
-    auto n = graph.channels.size();
-    for (std::size_t i = 0; i < n; ++i) {
-        auto& ch = graph.channels[i];
-        float t = (n > 1) ? static_cast<float>(i) / static_cast<float>(n - 1) : 0.5f;
-
-        if (seating == SeatingTemplate::American) {
-            // Spread left-to-right, with graduated depth
-            ch.spatial.pan = -0.8f + t * 1.6f;
-            ch.spatial.depth = 0.2f + t * 0.3f;
-        } else {
-            // European: wider spread, second violins on the right
-            ch.spatial.pan = -0.9f + t * 1.8f;
-            ch.spatial.depth = 0.2f + t * 0.4f;
+SpatialPosition seating_position(SeatingTemplate seating, OrchestralSection section) {
+    // Each §6.4 interval is represented by its midpoint so a section sits in
+    // the middle of its seat rather than at an arbitrary edge.
+    struct Seat {
+        float pan;
+        float depth;
+    };
+    const auto american = [](OrchestralSection value) -> Seat {
+        switch (value) {
+        case OrchestralSection::ViolinI:
+            return {-0.4f, 0.3f};
+        case OrchestralSection::ViolinII:
+            return {0.0f, 0.3f};
+        case OrchestralSection::Viola:
+            return {0.35f, 0.4f};
+        case OrchestralSection::Cello:
+            return {0.6f, 0.4f};
+        case OrchestralSection::DoubleBass:
+            return {0.8f, 0.5f};
+        case OrchestralSection::Flutes:
+            return {-0.2f, 0.45f};
+        case OrchestralSection::Oboes:
+            return {0.0f, 0.45f};
+        case OrchestralSection::Clarinets:
+            return {0.2f, 0.45f};
+        case OrchestralSection::Bassoons:
+            return {0.4f, 0.5f};
+        case OrchestralSection::Horns:
+            return {-0.35f, 0.6f};
+        case OrchestralSection::Trumpets:
+            return {0.0f, 0.65f};
+        case OrchestralSection::Trombones:
+            return {0.35f, 0.65f};
+        case OrchestralSection::Tuba:
+            return {0.4f, 0.65f};
+        case OrchestralSection::Timpani:
+            return {0.4f, 0.75f};
+        case OrchestralSection::Percussion:
+            return {0.0f, 0.75f};
+        case OrchestralSection::Harp:
+            return {-0.7f, 0.4f};
         }
+        return {0.0f, 0.0f};
+    };
+
+    Seat seat = american(section);
+    if (seating == SeatingTemplate::European) {
+        // §6.4 moves only two sections: Violin II to +0.2..+0.6, and the
+        // cellos to the left, taken as the mirror image of their American
+        // seat (-0.7..-0.5).
+        if (section == OrchestralSection::ViolinII) seat.pan = 0.4f;
+        if (section == OrchestralSection::Cello) seat.pan = -0.6f;
     }
+    SpatialPosition position;
+    position.pan = seat.pan;
+    position.depth = seat.depth;
+    return position;
+}
+
+Result<void> apply_seating_template(MixGraph& graph,
+                                    SeatingTemplate seating,
+                                    const std::vector<SeatingAssignment>& assignments) {
+    std::unordered_set<std::uint64_t> seen;
+    for (const auto& assignment : assignments) {
+        if (static_cast<std::uint8_t>(assignment.section) > ORCHESTRAL_SECTION_MAX)
+            return std::unexpected(invalid_param());
+        if (!find_channel(graph, assignment.channel_id)) return std::unexpected(not_found());
+        if (!seen.insert(assignment.channel_id.value).second)
+            return std::unexpected(duplicate_id());
+    }
+    for (const auto& assignment : assignments) {
+        const auto seat = seating_position(seating, assignment.section);
+        auto* channel = find_channel(graph, assignment.channel_id);
+        channel->spatial.pan = seat.pan;
+        channel->spatial.depth = seat.depth;
+    }
+    return {};
 }
 
 // =============================================================================
