@@ -1,9 +1,10 @@
-"""Loopback tests for Sunny's Remote Script TCP server.
+"""Tests for Sunny's Remote Script: TCP framing, the control surface, and the LOM handler.
 
-Pins the wire protocol used by the C++ ``TcpTransport``:
+The server tests pin the wire protocol used by the C++ ``TcpTransport``:
 4-byte big-endian length prefix followed by UTF-8 JSON, request/response
-over a single connection. These tests run the real TcpServer with a stub
-handler; no Ableton instance is required.
+over a single connection. The handler tests run against ``live_model``, the
+shared offline model of Live's Python API, so that no Ableton instance is
+required and no test can accept a host shape Live itself would reject.
 """
 
 from __future__ import annotations
@@ -12,12 +13,33 @@ import json
 import math
 import socket
 import struct
-import sys
 import threading
 import time
 from types import SimpleNamespace
 
 import pytest
+from live_model import (
+    ArgumentError,
+    AutomationState,
+    ClipSlotPlayingStatus,
+    CrossfadeAssignment,
+    DeviceParameter,
+    Groove,
+    IntVector,
+    LaunchMode,
+    LiveSet,
+    PanningMode,
+    ParameterState,
+    Quantization,
+    RoutingChannel,
+    RoutingType,
+    RoutingTypeCategory,
+    StringVector,
+    Vector,
+    inject,
+    native_device,
+    restore,
+)
 from Sunny import surface as surface_module
 from Sunny.handler import (
     BRIDGE_PROTOCOL_VERSION,
@@ -239,154 +261,186 @@ def test_handler_exception_is_reported():
     assert "boom" in response["error"]
 
 
-def test_live_11_note_dictionary_reaches_clip_api():
-    """The wire shape matches Clip.add_new_notes, including field names."""
+NOTE_FIELDS = [
+    "note_id",
+    "pitch",
+    "start_time",
+    "duration",
+    "velocity",
+    "mute",
+    "probability",
+    "velocity_deviation",
+    "release_velocity",
+]
 
-    class Clip:
-        def __init__(self):
-            self.received = None
-            self.query = None
 
-        def add_new_notes(self, note_dictionary):
-            self.received = note_dictionary
-            return [101]
+@pytest.fixture
+def live(monkeypatch):
+    """A default Live 12.3.5 Set whose ``Live`` module is importable by the handler."""
+    return LiveSet().install(monkeypatch)
 
-        def get_notes_by_id(self, query):
-            self.query = query
-            return {
-                "notes": [
-                    {
-                        "note_id": 101,
-                        "pitch": 60,
-                        "start_time": 0.0,
-                        "duration": 1.0,
-                        "velocity": 100.0,
-                        "mute": False,
-                        "probability": 1.0,
-                        "velocity_deviation": 0.0,
-                        "release_velocity": 23.0,
-                    }
-                ]
-            }
 
-        def get_all_notes_extended(self, query):
-            self.all_query = query
-            return self.get_notes_by_id({"note_ids": [101], "return": query["return"]})
+def _request(handler, request_type, path, name, *args):
+    return handler.handle(
+        _versioned({"type": request_type, "path": path, "name": name, "args": list(args)})
+    )
 
-    class ClipSlot:
-        def __init__(self, clip):
-            self.clip = clip
 
-    class Track:
-        def __init__(self, clip):
-            self.clip_slots = [ClipSlot(clip)]
+def _call(handler, path, name, *args):
+    return _request(handler, "call", path, name, *args)
 
-    class Song:
-        def __init__(self, clip):
-            self.tracks = [Track(clip)]
 
-    class Surface:
-        def __init__(self, song):
-            self._song = song
+def _set(handler, path, name, value):
+    return _request(handler, "set", path, name, value)
 
-        def song(self):
-            return self._song
 
-    clip = Clip()
-    handler = LomHandler(Surface(Song(clip)))
-    notes = {
-        "notes": [
-            {
-                "pitch": 60,
-                "start_time": 0.0,
-                "duration": 1.0,
-                "velocity": 100,
-                "mute": False,
-                "probability": 1.0,
-                "velocity_deviation": 0.0,
-                "release_velocity": 23.0,
-            }
-        ]
+def _wire_note(pitch, start_time, duration, velocity=100, release_velocity=64.0):
+    return {
+        "pitch": pitch,
+        "start_time": start_time,
+        "duration": duration,
+        "velocity": velocity,
+        "mute": False,
+        "probability": 1.0,
+        "velocity_deviation": 0.0,
+        "release_velocity": release_velocity,
     }
 
-    response = handler.handle(
-        _versioned(
-            {
-                "type": "call",
-                "path": "song/tracks/0/clip_slots/0/clip",
-                "name": "add_new_notes",
-                "args": [notes],
-            }
-        )
+
+def _type_route(display_name, category):
+    return {"display_name": display_name, "identifier": f"{int(category)}:{display_name}"}
+
+
+def _channel_route(display_name):
+    return {"display_name": display_name, "identifier": display_name}
+
+
+def _midi_track_with_clip(live, length=4.0, instrument=None):
+    track = live.song.create_midi_track(-1)
+    if instrument is not None:
+        track.insert_device(instrument)
+    track.clip_slots[0].create_clip(length)
+    return track, track.clip_slots[0].clip
+
+
+def test_live_model_rejects_max_dictionary_shapes():
+    """The model enforces Live's Python types, so handler regressions to Max shapes fail."""
+    live = LiveSet()
+    track, clip = _midi_track_with_clip(live, instrument="Operator")
+
+    with pytest.raises(ArgumentError, match="expected MidiNoteSpecification, got str 'notes'"):
+        clip.add_new_notes({"notes": [_wire_note(60, 0.0, 1.0)]})
+    with pytest.raises(ArgumentError):
+        clip.add_new_notes([_wire_note(60, 0.0, 1.0)])
+    with pytest.raises(ArgumentError):
+        clip.get_notes_by_id({"note_ids": [1], "return": NOTE_FIELDS})
+    with pytest.raises(TypeError):
+        clip.get_all_notes_extended({"return": NOTE_FIELDS})
+    with pytest.raises(ArgumentError):
+        track.output_routing_type = {"display_name": "Master", "identifier": "master"}
+    with pytest.raises(RuntimeError, match="not empty"):
+        track.clip_slots[0].create_clip(4.0)
+
+    for value in (
+        clip.launch_mode,
+        clip.launch_quantization,
+        track.mixer_device.crossfade_assign,
+        track.mixer_device.panning_mode,
+        track.clip_slots[0].playing_status,
+        track.devices[0].type,
+        track.devices[0].parameters[0].state,
+        track.devices[0].parameters[0].automation_state,
+    ):
+        assert isinstance(value, int) and type(value) is not int
+    assert type(track.output_routing_type) is RoutingType
+    assert track.output_routing_type is not track.output_routing_type
+    assert track.output_routing_type == track.output_routing_type
+    assert type(track.devices[0].parameters[0].value_items).__name__ == "StringVector"
+
+
+def test_add_new_notes_passes_midi_note_specifications_and_reads_back_midi_notes(live):
+    """The wire note dictionary becomes MidiNoteSpecification objects; MidiNotes become dicts."""
+    _, clip = _midi_track_with_clip(live)
+    handler = LomHandler(live.surface)
+    clip_path = "song/tracks/0/clip_slots/0/clip"
+    notes = [
+        _wire_note(60, 0.0, 1.0),
+        _wire_note(64, 1.0 / 3.0, 2.0 / 3.0, velocity=90, release_velocity=23.0),
+    ]
+
+    response = _call(handler, clip_path, "add_new_notes", {"notes": notes})
+    assert response == {"success": True, "value": [1, 2]}
+    assert all(type(note_id) is int for note_id in response["value"])
+    assert [
+        (note.pitch, note.start_time, note.duration, note.velocity, note.release_velocity)
+        for note in clip.get_all_notes_extended()
+    ] == [(60, 0.0, 1.0, 100.0, 64.0), (64, 1.0 / 3.0, 2.0 / 3.0, 90.0, 23.0)]
+
+    expected = [
+        {
+            "note_id": 1,
+            "pitch": 60,
+            "start_time": 0.0,
+            "duration": 1.0,
+            "velocity": 100.0,
+            "mute": False,
+            "probability": 1.0,
+            "velocity_deviation": 0.0,
+            "release_velocity": 64.0,
+        },
+        {
+            "note_id": 2,
+            "pitch": 64,
+            "start_time": 1.0 / 3.0,
+            "duration": 2.0 / 3.0,
+            "velocity": 90.0,
+            "mute": False,
+            "probability": 1.0,
+            "velocity_deviation": 0.0,
+            "release_velocity": 23.0,
+        },
+    ]
+    by_id = _call(
+        handler, clip_path, "get_notes_by_id", {"note_ids": [2, 1], "return": NOTE_FIELDS}
     )
-
-    assert response == {"success": True, "value": [101]}
-    assert clip.received == notes
-
-    query = {
-        "note_ids": [101],
-        "return": [
-            "note_id",
-            "pitch",
-            "start_time",
-            "duration",
-            "velocity",
-            "mute",
-            "probability",
-            "velocity_deviation",
-            "release_velocity",
-        ],
-    }
-    response = handler.handle(
-        _versioned(
-            {
-                "type": "call",
-                "path": "song/tracks/0/clip_slots/0/clip",
-                "name": "get_notes_by_id",
-                "args": [query],
-            }
-        )
-    )
-    assert response["success"] is True
-    assert response["value"]["notes"][0]["note_id"] == 101
-    assert clip.query == query
-
-    all_query = {"return": query["return"]}
-    response = handler.handle(
-        _versioned(
-            {
-                "type": "call",
-                "path": "song/tracks/0/clip_slots/0/clip",
-                "name": "get_all_notes_extended",
-                "args": [all_query],
-            }
-        )
-    )
-    assert response["success"] is True
-    assert response["value"]["notes"][0]["note_id"] == 101
-    assert clip.all_query == all_query
+    assert by_id == {"success": True, "value": {"notes": [expected[1], expected[0]]}}
+    all_notes = _call(handler, clip_path, "get_all_notes_extended", {"return": NOTE_FIELDS})
+    assert all_notes == {"success": True, "value": {"notes": expected}}
+    assert type(all_notes["value"]["notes"][0]["mute"]) is bool
 
 
-def test_handler_enforces_get_set_call_algebra_without_silent_noops():
+def test_note_readback_rejects_malformed_host_notes(live, monkeypatch):
+    """Converted MidiNote fields keep their categories; host drift fails closed."""
+    _, clip = _midi_track_with_clip(live)
+    handler = LomHandler(live.surface)
+    clip_path = "song/tracks/0/clip_slots/0/clip"
+    assert _call(handler, clip_path, "add_new_notes", {"notes": [_wire_note(60, 0.0, 1.0)]})[
+        "success"
+    ]
+    note = clip.get_all_notes_extended()[0]
+
+    for field, malformed in (
+        ("mute", 0),
+        ("pitch", 60.0),
+        ("start_time", float("nan")),
+        ("note_id", True),
+    ):
+        original = getattr(note, field)
+        setattr(note, field, malformed)
+        response = _call(handler, clip_path, "get_all_notes_extended", {"return": NOTE_FIELDS})
+        assert response["success"] is False, field
+        assert "MidiNote" in response["error"]
+        setattr(note, field, original)
+
+    monkeypatch.setattr(clip, "add_new_notes", lambda specifications: None)
+    response = _call(handler, clip_path, "add_new_notes", {"notes": [_wire_note(62, 1.0, 1.0)]})
+    assert response["success"] is False
+    assert "note IDs" in response["error"]
+
+
+def test_handler_enforces_get_set_call_algebra_without_silent_noops(live):
     """Malformed or type-confused requests fail instead of reporting false success."""
-
-    class Scene:
-        tempo_enabled = True
-        time_signature_enabled = True
-
-    class Song:
-        tempo = 120.0
-        scenes = [Scene()]
-
-        def stop_playing(self):
-            return None
-
-    class Surface:
-        def song(self):
-            return Song()
-
-    surface = Surface()
-    handler = LomHandler(surface)
+    handler = LomHandler(live.surface)
 
     missing = handler.handle(_versioned({"type": "get", "path": "song", "name": "not_a_property"}))
     assert missing["success"] is False
@@ -400,32 +454,18 @@ def test_handler_enforces_get_set_call_algebra_without_silent_noops():
     assert no_value["success"] is False
     assert "outside Sunny bridge protocol" in no_value["error"]
 
-    set_value = handler.handle(
-        _versioned({"type": "set", "path": "song", "name": "tempo", "args": [137.5]})
-    )
-    assert set_value == {
+    assert _set(handler, "song", "tempo", 137.5) == {
         "success": True,
         "value": {"property": "tempo", "requested": 137.5, "observed": 137.5},
     }
+    assert live.song.tempo == 137.5
 
-    scene_value = handler.handle(
-        _versioned(
-            {
-                "type": "set",
-                "path": "song/scenes/0",
-                "name": "time_signature_enabled",
-                "args": [False],
-            }
-        )
-    )
-    assert scene_value == {
+    live.song.scenes[0].enable_launch_overrides(128.0, 7, 8)
+    assert _set(handler, "song/scenes/0", "time_signature_enabled", False) == {
         "success": True,
-        "value": {
-            "property": "time_signature_enabled",
-            "requested": False,
-            "observed": False,
-        },
+        "value": {"property": "time_signature_enabled", "requested": False, "observed": False},
     }
+    assert live.song.scenes[0].time_signature_enabled is False
 
     wrong_args = handler.handle(
         _versioned({"type": "call", "path": "song", "name": "stop_playing", "args": {}})
@@ -433,283 +473,189 @@ def test_handler_enforces_get_set_call_algebra_without_silent_noops():
     assert wrong_args == {"success": False, "error": "Request args must be an array"}
 
 
-def test_mixer_crossfade_assignment_uses_exact_integer_readback():
-    """A generated Track is removed from both crossfader sides with closed evidence."""
+def test_structural_calls_return_no_private_host_object(live):
+    """Live returns the created Track or Scene; the adapter reports success, not the object."""
+    handler = LomHandler(live.surface)
 
-    class Mixer:
-        crossfade_assign = 0
-        panning_mode = 1
+    assert _call(handler, "song", "create_midi_track", -1) == {"success": True, "value": None}
+    assert _call(handler, "song", "create_midi_track", 0) == {"success": True, "value": None}
+    assert _call(handler, "song", "create_return_track") == {"success": True, "value": None}
+    assert _call(handler, "song", "create_scene", 0) == {"success": True, "value": None}
+    assert [track.name for track in live.song.tracks] == ["1-MIDI", "1-MIDI"]
+    assert len(live.song.scenes) == 2
+    assert all(len(track.clip_slots) == 2 for track in live.song.tracks)
+    assert all(len(track.mixer_device.sends) == 1 for track in live.song.tracks)
 
-    class Track:
-        mixer_device = Mixer()
-        arm = True
-        implicit_arm = True
-
-    class Song:
-        tracks = (Track(),)
-
-    handler = LomHandler(SimpleNamespace(song=lambda: Song()))
-    response = handler.handle(
-        _versioned(
-            {
-                "type": "set",
-                "path": "song/tracks/0/mixer_device",
-                "name": "crossfade_assign",
-                "args": [1],
-            }
-        )
-    )
-
-    assert response == {
+    assert _call(handler, "song/tracks/0/clip_slots/0", "create_clip", 4.0) == {
         "success": True,
-        "value": {"property": "crossfade_assign", "requested": 1, "observed": 1},
+        "value": None,
     }
-    assert Song.tracks[0].mixer_device.crossfade_assign == 1
-
-    response = handler.handle(
-        _versioned(
-            {
-                "type": "set",
-                "path": "song/tracks/0/mixer_device",
-                "name": "panning_mode",
-                "args": [0],
-            }
-        )
-    )
-    assert response == {
+    occupied = _call(handler, "song/tracks/0/clip_slots/0", "create_clip", 4.0)
+    assert occupied["success"] is False
+    assert "not empty" in occupied["error"]
+    assert _call(handler, "song/tracks/0/clip_slots/0", "delete_clip") == {
         "success": True,
-        "value": {"property": "panning_mode", "requested": 0, "observed": 0},
+        "value": None,
     }
-    assert Song.tracks[0].mixer_device.panning_mode == 0
+    assert live.song.tracks[0].clip_slots[0].has_clip is False
 
-    for property_name in ("arm", "implicit_arm"):
-        response = handler.handle(
-            _versioned(
-                {
-                    "type": "set",
-                    "path": "song/tracks/0",
-                    "name": property_name,
-                    "args": [False],
-                }
-            )
-        )
+
+def test_mixer_enum_assignment_reads_back_as_plain_integers(live):
+    """Enum-valued mixer properties are int subclasses; evidence carries plain ints."""
+    track = live.song.create_midi_track(-1)
+    track.mixer_device.crossfade_assign = 0
+    track.mixer_device.panning_mode = 1
+    track.arm = True
+    track.implicit_arm = True
+    handler = LomHandler(live.surface)
+
+    for path, property_name, value in (
+        ("song/tracks/0/mixer_device", "crossfade_assign", 1),
+        ("song/tracks/0/mixer_device", "panning_mode", 0),
+        ("song/tracks/0", "arm", False),
+        ("song/tracks/0", "implicit_arm", False),
+    ):
+        response = _set(handler, path, property_name, value)
         assert response == {
             "success": True,
-            "value": {"property": property_name, "requested": False, "observed": False},
+            "value": {"property": property_name, "requested": value, "observed": value},
         }
-        assert getattr(Song.tracks[0], property_name) is False
+        assert type(response["value"]["observed"]) is type(value)
+    assert track.mixer_device.crossfade_assign == CrossfadeAssignment.NONE
+    assert track.mixer_device.panning_mode == PanningMode.stereo
+    assert track.arm is False
+    assert track.implicit_arm is False
 
 
-def test_generated_return_gate_uses_exact_boolean_and_stereo_pan_readback():
+def test_generated_return_gate_uses_exact_boolean_and_stereo_pan_readback(live):
     """Aux returns clear independent suppressors and apply the modeled scalar pan."""
+    returned = live.song.create_return_track()
+    returned.mute = True
+    returned.solo = True
+    returned.mixer_device.crossfade_assign = 0
+    returned.mixer_device.panning_mode = 1
+    returned.mixer_device.track_activator.value = 0.0
+    returned.mixer_device.panning.value = -0.5
+    handler = LomHandler(live.surface)
 
-    class Panning:
-        value = -0.5
-
-    class Activator:
-        value = 0.0
-
-    class Mixer:
-        crossfade_assign = 0
-        panning_mode = 1
-        track_activator = Activator()
-        panning = Panning()
-
-    class ReturnTrack:
-        mute = True
-        solo = True
-        mixer_device = Mixer()
-
-    class Song:
-        return_tracks = (ReturnTrack(),)
-
-    handler = LomHandler(SimpleNamespace(song=lambda: Song()))
-    operations = (
+    for path, property_name, value in (
         ("song/return_tracks/0", "mute", False),
         ("song/return_tracks/0", "solo", False),
         ("song/return_tracks/0/mixer_device", "crossfade_assign", 1),
         ("song/return_tracks/0/mixer_device", "panning_mode", 0),
         ("song/return_tracks/0/mixer_device/track_activator", "value", 1.0),
         ("song/return_tracks/0/mixer_device/panning", "value", 0.25),
-    )
-    for path, property_name, value in operations:
-        response = handler.handle(
-            _versioned({"type": "set", "path": path, "name": property_name, "args": [value]})
-        )
-        assert response == {
+    ):
+        assert _set(handler, path, property_name, value) == {
             "success": True,
             "value": {"property": property_name, "requested": value, "observed": value},
         }
 
-    assert Song.return_tracks[0].mute is False
-    assert Song.return_tracks[0].solo is False
-    assert Song.return_tracks[0].mixer_device.crossfade_assign == 1
-    assert Song.return_tracks[0].mixer_device.panning_mode == 0
-    assert Song.return_tracks[0].mixer_device.track_activator.value == 1.0
-    assert Song.return_tracks[0].mixer_device.panning.value == 0.25
+    assert returned.mute is False and returned.solo is False
+    assert returned.mixer_device.crossfade_assign == 1
+    assert returned.mixer_device.panning_mode == 0
+    assert returned.mixer_device.track_activator.value == 1.0
+    assert returned.mixer_device.panning.value == 0.25
 
 
-def test_generated_main_gate_uses_exact_activator_and_centered_stereo_pan_readback():
+def test_generated_main_gate_uses_exact_activator_and_centered_stereo_pan_readback(live):
     """The project-wide Main stage cannot inherit a muted or panned target state."""
+    mixer = live.song.master_track.mixer_device
+    mixer.track_activator.value = 0.0
+    mixer.panning_mode = 1
+    mixer.panning.value = -0.5
+    handler = LomHandler(live.surface)
 
-    class Parameter:
-        def __init__(self, value):
-            self.value = value
-
-    class Mixer:
-        track_activator = Parameter(0.0)
-        panning_mode = 1
-        panning = Parameter(-0.5)
-
-    class Master:
-        mixer_device = Mixer()
-
-    class Song:
-        master_track = Master()
-
-    handler = LomHandler(SimpleNamespace(song=lambda: Song()))
-    operations = (
+    for path, property_name, value in (
         ("song/master_track/mixer_device/track_activator", "value", 1.0),
         ("song/master_track/mixer_device", "panning_mode", 0),
         ("song/master_track/mixer_device/panning", "value", 0.0),
-    )
-    for path, property_name, value in operations:
-        response = handler.handle(
-            _versioned({"type": "set", "path": path, "name": property_name, "args": [value]})
-        )
-        assert response == {
+    ):
+        assert _set(handler, path, property_name, value) == {
             "success": True,
             "value": {"property": property_name, "requested": value, "observed": value},
         }
+    assert mixer.track_activator.value == 1.0
+    assert mixer.panning_mode == 0
+    assert mixer.panning.value == 0.0
 
-    assert Song.master_track.mixer_device.track_activator.value == 1.0
-    assert Song.master_track.mixer_device.panning_mode == 0
-    assert Song.master_track.mixer_device.panning.value == 0.0
+
+def test_mixer_display_value_writes_fader_and_send_levels(live):
+    """Faders and sends are written in dB through display_value and read back exactly."""
+    live.song.create_return_track()
+    track = live.song.create_midi_track(-1)
+    handler = LomHandler(live.surface)
+
+    assert _set(handler, "song/tracks/0/mixer_device/volume", "display_value", -6.0) == {
+        "success": True,
+        "value": {"property": "display_value", "requested": -6.0, "observed": -6.0},
+    }
+    assert _set(handler, "song/tracks/0/mixer_device/sends/0", "display_value", -12.0) == {
+        "success": True,
+        "value": {"property": "display_value", "requested": -12.0, "observed": -12.0},
+    }
+    assert 0.0 < track.mixer_device.volume.value < 0.85
+    assert 0.0 < track.mixer_device.sends[0].value < 1.0
 
 
-def test_clip_groove_clear_uses_null_object_assignment_and_exact_readback():
+def test_clip_groove_clear_uses_null_object_assignment_and_exact_readback(live):
     """A Sunny clip cannot inherit a non-destructive playback groove."""
+    _, clip = _midi_track_with_clip(live)
+    clip.groove = Groove()
+    handler = LomHandler(live.surface)
 
-    class Clip:
-        groove = object()
-
-    class Slot:
-        clip = Clip()
-
-    class Track:
-        clip_slots = (Slot(),)
-
-    class Song:
-        tracks = (Track(),)
-
-    handler = LomHandler(SimpleNamespace(song=lambda: Song()))
-    response = handler.handle(
-        _versioned(
-            {
-                "type": "set",
-                "path": "song/tracks/0/clip_slots/0/clip",
-                "name": "groove",
-                "args": [None],
-            }
-        )
-    )
-
-    assert response == {
+    assert _set(handler, "song/tracks/0/clip_slots/0/clip", "groove", None) == {
         "success": True,
         "value": {"property": "groove", "requested": None, "observed": None},
     }
-    assert Song.tracks[0].clip_slots[0].clip.groove is None
+    assert clip.groove is None
+    assert clip.has_groove is False
 
 
-def test_clip_launch_tuple_is_assigned_with_exact_scalar_readback():
+def test_clip_launch_tuple_is_assigned_with_exact_scalar_readback(live):
     """The wrapper retains the four bounded Live-11+ launch scalar categories."""
+    _, clip = _midi_track_with_clip(live)
+    clip.launch_mode = 2
+    clip.launch_quantization = 0
+    clip.legato = True
+    clip.velocity_amount = 1.0
+    handler = LomHandler(live.surface)
 
-    class Clip:
-        launch_mode = 2
-        launch_quantization = 0
-        legato = True
-        velocity_amount = 1.0
-
-    class Slot:
-        clip = Clip()
-
-    class Track:
-        clip_slots = (Slot(),)
-
-    class Song:
-        tracks = (Track(),)
-
-    handler = LomHandler(SimpleNamespace(song=lambda: Song()))
-    path = "song/tracks/0/clip_slots/0/clip"
     for property_name, value in (
         ("launch_mode", 0),
         ("launch_quantization", 1),
         ("legato", False),
         ("velocity_amount", 0.0),
     ):
-        response = handler.handle(
-            _versioned({"type": "set", "path": path, "name": property_name, "args": [value]})
-        )
+        response = _set(handler, "song/tracks/0/clip_slots/0/clip", property_name, value)
         assert response == {
             "success": True,
             "value": {"property": property_name, "requested": value, "observed": value},
         }
-        assert getattr(Song.tracks[0].clip_slots[0].clip, property_name) == value
+        assert type(response["value"]["observed"]) is type(value)
+        assert getattr(clip, property_name) == value
+    assert clip.launch_mode == LaunchMode.trigger
+    assert clip.launch_quantization == Quantization.q_no_q
 
 
-def test_clip_envelope_clear_returns_exact_absence_evidence():
+def test_clip_envelope_clear_returns_exact_absence_evidence(live):
     """The adapter maps the public destructive call to one closed Boolean observation."""
+    _, clip = _midi_track_with_clip(live)
+    clip.add_envelope("Track Volume")
+    handler = LomHandler(live.surface)
 
-    class Clip:
-        has_envelopes = True
-
-        def clear_all_envelopes(self):
-            self.has_envelopes = False
-
-    class Slot:
-        clip = Clip()
-
-    class Track:
-        clip_slots = (Slot(),)
-
-    class Song:
-        tracks = (Track(),)
-
-    handler = LomHandler(SimpleNamespace(song=lambda: Song()))
-    response = handler.handle(
-        _versioned(
-            {
-                "type": "call",
-                "path": "song/tracks/0/clip_slots/0/clip",
-                "name": "sunny_clear_all_envelopes",
-                "args": [],
-            }
-        )
-    )
-
+    response = _call(handler, "song/tracks/0/clip_slots/0/clip", "sunny_clear_all_envelopes")
     assert response == {"success": True, "value": {"has_envelopes": False}}
-    assert Song.tracks[0].clip_slots[0].clip.has_envelopes is False
+    assert clip.has_envelopes is False
 
 
-def test_handler_requires_current_protocol_envelope_and_rejects_reflection_before_lom_access():
+def test_handler_requires_current_protocol_envelope_and_rejects_reflection_before_lom_access(
+    live, monkeypatch
+):
     """Only the canonical, versioned Sunny algebra can reach a Live object."""
-
-    class Song:
-        def __init__(self):
-            self.stop_calls = 0
-
-        def stop_playing(self):
-            self.stop_calls += 1
-
-    class Surface:
-        def __init__(self, song):
-            self._song = song
-
-        def song(self):
-            return self._song
-
-    song = Song()
-    handler = LomHandler(Surface(song))
+    reached = []
+    monkeypatch.setattr(live.surface.__class__, "song", lambda self: reached.append(1))
+    handler = LomHandler(live.surface)
     unversioned = handler.handle({"type": "call", "path": "song", "name": "stop_playing"})
     assert unversioned["success"] is False
     assert "Unsupported bridge protocol version" in unversioned["error"]
@@ -724,7 +670,7 @@ def test_handler_requires_current_protocol_envelope_and_rejects_reflection_befor
         response = handler.handle(request)
         assert response["success"] is False
         assert "outside Sunny bridge protocol" in response["error"]
-    assert song.stop_calls == 0
+    assert reached == []
 
     wrong_version = _versioned({"type": "get", "path": "song", "name": "tempo"})
     wrong_version["bridge_protocol_version"] -= 1
@@ -738,38 +684,14 @@ def test_handler_requires_current_protocol_envelope_and_rejects_reflection_befor
 
 def test_current_protocol_operation_algebra_covers_compilers_without_open_ended_lom_access():
     """Every compiler primitive is admitted by shape; adjacent reflection is declined."""
-    note_dictionary = {
-        "notes": [
-            {
-                "pitch": 60,
-                "start_time": 0.0,
-                "duration": 1.0,
-                "velocity": 100,
-                "mute": False,
-                "probability": 1.0,
-                "velocity_deviation": 0.0,
-                "release_velocity": 64.0,
-            }
-        ]
-    }
-    note_query = {
-        "note_ids": [101],
-        "return": [
-            "note_id",
-            "pitch",
-            "start_time",
-            "duration",
-            "velocity",
-            "mute",
-            "probability",
-            "velocity_deviation",
-            "release_velocity",
-        ],
-    }
+    note_dictionary = {"notes": [_wire_note(60, 0.0, 1.0)]}
+    note_query = {"note_ids": [101], "return": NOTE_FIELDS}
     all_notes_query = {"return": note_query["return"]}
+    routing = {"display_name": "Master", "identifier": "2:Master"}
     allowed = (
         ("get", "song", "tempo", []),
         ("call", "song", "sunny_get_scene_count", []),
+        ("call", "song", "sunny_get_track_count", []),
         ("call", "song", "sunny_get_return_track_count", []),
         ("set", "song", "tempo", [120.0]),
         ("set", "song", "signature_numerator", [4]),
@@ -787,6 +709,8 @@ def test_current_protocol_operation_algebra_covers_compilers_without_open_ended_
         ("set", "song/tracks/0", "mute", [False]),
         ("set", "song/tracks/0", "arm", [False]),
         ("set", "song/tracks/0", "implicit_arm", [False]),
+        ("call", "song/tracks/0", "sunny_set_output_routing_type", [routing]),
+        ("call", "song/return_tracks/0", "sunny_set_output_routing_channel", [routing, routing]),
         ("set", "song/tracks/0/mixer_device", "crossfade_assign", [1]),
         ("set", "song/return_tracks/0/mixer_device", "crossfade_assign", [1]),
         ("set", "song/return_tracks/0", "mute", [False]),
@@ -866,6 +790,8 @@ def test_current_protocol_operation_algebra_covers_compilers_without_open_ended_
         ("get", "song", "tracks", []),
         ("get", "song", "return_tracks", []),
         ("call", "song", "sunny_get_scene_count", [0]),
+        ("call", "song", "sunny_get_track_count", [0]),
+        ("call", "song/tracks/0", "sunny_get_track_count", []),
         ("get", "tracks/0", "mute", []),
         ("get", "song/tracks/00", "mute", []),
         ("get", "song/tracks/١", "mute", []),
@@ -909,6 +835,13 @@ def test_current_protocol_operation_algebra_covers_compilers_without_open_ended_
         ("set", "song/return_tracks/0", "arm", [False]),
         ("set", "song/return_tracks/0", "mute", [0]),
         ("set", "song/return_tracks/0", "mute", [True]),
+        ("call", "song/master_track", "sunny_set_output_routing_type", [routing]),
+        (
+            "call",
+            "song/tracks/0",
+            "sunny_set_output_routing_type",
+            [{**routing, "extra": 1}],
+        ),
         (
             "call",
             "song/tracks/0/clip_slots/0/clip",
@@ -954,99 +887,67 @@ def test_current_protocol_operation_algebra_covers_compilers_without_open_ended_
         assert not _request_allowed(*operation), operation
 
 
-def test_song_collection_counts_are_closed_scalars_not_stringified_object_lists():
-    """Cardinality adapters do not export private Live object labels as pseudo-values."""
-    song = SimpleNamespace(
-        scenes=(object(), object(), object()),
-        return_tracks=[object(), object()],
-    )
-    handler = LomHandler(SimpleNamespace(song=lambda: song))
+def test_song_collection_counts_are_closed_scalars_not_stringified_object_lists(live):
+    """Cardinality adapters report plain counts for tracks, returns and scenes."""
+    song = live.song
+    song.create_scene(-1)
+    song.create_scene(-1)
+    song.create_return_track()
+    song.create_return_track()
+    for _ in range(3):
+        song.create_midi_track(-1)
+    handler = LomHandler(live.surface)
 
     for method, expected in (
         ("sunny_get_scene_count", 3),
+        ("sunny_get_track_count", 3),
         ("sunny_get_return_track_count", 2),
     ):
-        response = handler.handle(
-            _versioned({"type": "call", "path": "song", "name": method, "args": []})
-        )
-        assert response == {"success": True, "value": expected}
+        assert _call(handler, "song", method) == {"success": True, "value": expected}
 
-    song.scenes = iter([object()])
-    malformed = handler.handle(
-        _versioned({"type": "call", "path": "song", "name": "sunny_get_scene_count", "args": []})
-    )
+    # A Live.Base.Vector is a sized host container and counts like a tuple.
+    inject(song, "scenes", Vector(song.scenes))
+    assert _call(handler, "song", "sunny_get_scene_count") == {"success": True, "value": 3}
+    inject(song, "scenes", iter(song.scenes))
+    malformed = _call(handler, "song", "sunny_get_scene_count")
     assert malformed["success"] is False
     assert "invalid scenes collection" in malformed["error"]
 
 
-def test_response_serialisation_rejects_private_or_non_json_host_values():
+def test_response_serialisation_rejects_private_or_non_json_host_values(live):
     """Unsupported host wrappers cannot masquerade as strings or permissive JSON."""
+    assert LomHandler._serialise(IntVector((1, 2))) == [1, 2]
+    assert LomHandler._serialise(StringVector(("Off", "On"))) == ["Off", "On"]
+    for enum_value, expected in ((LaunchMode.gate, 1), (CrossfadeAssignment.B, 2)):
+        assert LomHandler._serialise(enum_value) == expected
+        assert type(LomHandler._serialise(enum_value)) is int
+    assert LomHandler._serialise(True) is True
 
-    class AbletonVector:
-        def __iter__(self):
-            return iter((1, 2.0, "three"))
-
-    assert LomHandler._serialise(AbletonVector()) == [1, 2.0, "three"]
-
-    invalid_values = (
+    for value in (
         object(),
         float("nan"),
         float("inf"),
         1 << 65,
         {1: "coerced key"},
         {"nested": object()},
-    )
-    for value in invalid_values:
+        RoutingType(("master",), "Master", RoutingTypeCategory.master, None),
+    ):
         with pytest.raises(RuntimeError):
             LomHandler._serialise(value)
 
-    song = SimpleNamespace(tempo=object())
-    handler = LomHandler(SimpleNamespace(song=lambda: song))
-    response = handler.handle(
-        _versioned({"type": "get", "path": "song", "name": "tempo", "args": []})
-    )
+    inject(live.song, "tempo", object())
+    response = _request(LomHandler(live.surface), "get", "song", "tempo")
     assert response["success"] is False
     assert "unsupported private object" in response["error"]
 
 
-def test_sunny_set_cue_creates_named_cue_and_restores_playhead():
+def test_sunny_set_cue_creates_named_cue_and_restores_playhead(live):
     """The bridge adapter gives Song's toggle-only cue API safe set semantics."""
+    song = live.song
+    song.current_song_time = 9.0
+    handler = LomHandler(live.surface)
 
-    class Cue:
-        def __init__(self, time):
-            self.time = time
-            self.name = ""
-
-    class Song:
-        def __init__(self):
-            self.current_song_time = 9.0
-            self.cue_points = []
-
-        def set_or_delete_cue(self):
-            self.cue_points.append(Cue(self.current_song_time))
-
-    class Surface:
-        def __init__(self, song):
-            self._song = song
-
-        def song(self):
-            return self._song
-
-    song = Song()
-    handler = LomHandler(Surface(song))
-
-    response = handler.handle(
-        _versioned(
-            {
-                "type": "call",
-                "path": "song",
-                "name": "sunny_set_cue",
-                "args": [16.0, "Verse"],
-            }
-        )
-    )
-
-    assert response == {
+    assert _call(handler, "song", "sunny_set_cue", 16.0, "Verse") == {
         "success": True,
         "value": {
             "action": "created",
@@ -1059,17 +960,7 @@ def test_sunny_set_cue_creates_named_cue_and_restores_playhead():
     assert song.current_song_time == 9.0
     assert [(cue.time, cue.name) for cue in song.cue_points] == [(16.0, "Verse")]
 
-    response = handler.handle(
-        _versioned(
-            {
-                "type": "call",
-                "path": "song",
-                "name": "sunny_set_cue",
-                "args": [16.0, "Chorus"],
-            }
-        )
-    )
-    assert response == {
+    assert _call(handler, "song", "sunny_set_cue", 16.0, "Chorus") == {
         "success": True,
         "value": {
             "action": "updated",
@@ -1082,174 +973,110 @@ def test_sunny_set_cue_creates_named_cue_and_restores_playhead():
     assert [(cue.time, cue.name) for cue in song.cue_points] == [(16.0, "Chorus")]
 
 
-def test_sunny_set_device_parameter_requires_exact_enabled_parameter():
+def test_sunny_set_device_parameter_requires_exact_enabled_parameter(live):
     """Device parameter adaptation searches names and declines bad targets."""
-
-    class Parameter:
-        def __init__(self, name, enabled=True):
-            self.name = name
-            self.original_name = name
-            self.is_enabled = enabled
-            self.value = 0.0
-            self.display_value = 0.0
-            self.min = 0.0
-            self.max = 1.0
-            self.is_quantized = False
-            self.default_value = 0.0
-            self.state = 0
-            self.automation_state = 0
-
-    class Device:
-        def __init__(self):
-            self.parameters = [Parameter("Dry/Wet")]
-
-    class Track:
-        def __init__(self):
-            self.mixer_device = object()
-            self.devices = [self.mixer_device, Device()]
-
-    class Song:
-        def __init__(self):
-            self.tracks = [Track()]
-
-    class Surface:
-        def __init__(self, song):
-            self._song = song
-
-        def song(self):
-            return self._song
-
-    song = Song()
-    handler = LomHandler(Surface(song))
+    track = live.song.create_midi_track(-1)
+    track.insert_device("Operator")
+    track.insert_device("Compressor")
+    handler = LomHandler(live.surface)
+    parameter = next(p for p in track.devices[1].parameters if p.name == "Dry/Wet")
     request = _versioned(
         {
             "type": "call",
-            "path": "song/tracks/0/devices/0",
+            "path": "song/tracks/0/devices/1",
             "name": "sunny_set_device_parameter",
             "args": ["Dry/Wet", 0.25, "value", 0.0, 1.0],
         }
     )
-
-    assert handler.handle(request) == {
-        "success": True,
-        "value": {
-            "matched_name": "Dry/Wet",
-            "original_name": "Dry/Wet",
-            "property": "value",
-            "requested": 0.25,
-            "observed": 0.25,
-            "minimum": 0.0,
-            "maximum": 1.0,
-            "is_quantized": False,
-            "default_value": 0.0,
-            "value_items": None,
-            "is_enabled": True,
-            "state": 0,
-            "automation_state": 0,
-        },
+    observation = {
+        "matched_name": "Dry/Wet",
+        "original_name": "Dry/Wet",
+        "property": "value",
+        "observed": 0.25,
+        "minimum": 0.0,
+        "maximum": 1.0,
+        "is_quantized": False,
+        "default_value": 0.0,
+        "value_items": None,
+        "is_enabled": True,
+        "state": 0,
+        "automation_state": 0,
     }
-    parameter = song.tracks[0].devices[1].parameters[0]
+
+    assert handler.handle(request) == {"success": True, "value": {**observation, "requested": 0.25}}
     assert parameter.value == 0.25
     observation_request = _versioned(
         {
             "type": "call",
-            "path": "song/tracks/0/devices/0",
+            "path": "song/tracks/0/devices/1",
             "name": "sunny_get_device_parameter",
             "args": ["Dry/Wet", "value"],
         }
     )
-    assert handler.handle(observation_request) == {
-        "success": True,
-        "value": {
-            "matched_name": "Dry/Wet",
-            "original_name": "Dry/Wet",
-            "property": "value",
-            "observed": 0.25,
-            "minimum": 0.0,
-            "maximum": 1.0,
-            "is_quantized": False,
-            "default_value": 0.0,
-            "value_items": None,
-            "is_enabled": True,
-            "state": 0,
-            "automation_state": 0,
-        },
-    }
-    parameter.is_enabled = False
-    parameter.state = 2
+    assert handler.handle(observation_request) == {"success": True, "value": observation}
+
+    # EQ Eight has no Dry/Wet control: an exact-name lookup must not guess one.
+    track.insert_device("EQ Eight")
+    missing = handler.handle(_versioned({**observation_request, "path": "song/tracks/0/devices/2"}))
+    assert missing["success"] is False
+    assert "not found" in missing["error"]
+
+    for name, malformed, expected_error in (
+        ("is_enabled", 1, "invalid Boolean"),
+        ("value", float("nan"), "non-finite"),
+        ("max", -1.0, "inverted range"),
+        ("default_value", 0, "default_value"),
+        ("default_value", 2.0, "outside its reported range"),
+        ("state", True, "invalid state"),
+    ):
+        inject(parameter, name, malformed)
+        response = handler.handle(observation_request)
+        assert response["success"] is False, name
+        assert expected_error in response["error"]
+        restore(parameter, name)
+    assert parameter.value == 0.25
+
+    inject(parameter, "is_enabled", False)
+    inject(parameter, "state", ParameterState.disabled)
     disabled = handler.handle(observation_request)
     assert disabled["success"] is True
     assert disabled["value"]["is_enabled"] is False
     assert disabled["value"]["state"] == 2
+    refused = handler.handle(request)
+    assert refused["success"] is False
+    assert "disabled" in refused["error"]
+    restore(parameter, "is_enabled")
+    refused = handler.handle(request)
+    assert refused["success"] is False
+    assert "cannot be changed" in refused["error"]
+    restore(parameter, "state")
     assert parameter.value == 0.25
-    parameter.is_enabled = True
-    parameter.state = 0
-    parameter.is_enabled = 1
-    malformed = handler.handle(observation_request)
-    assert malformed["success"] is False
-    assert "invalid Boolean" in malformed["error"]
-    assert parameter.value == 0.25
-    parameter.is_enabled = True
-    parameter.value = float("nan")
-    malformed = handler.handle(observation_request)
-    assert malformed["success"] is False
-    assert "non-finite" in malformed["error"]
-    parameter.value = 0.25
-    parameter.max = -1.0
-    malformed = handler.handle(observation_request)
-    assert malformed["success"] is False
-    assert "inverted range" in malformed["error"]
-    parameter.max = 1.0
-    parameter.default_value = 0
-    malformed = handler.handle(observation_request)
-    assert malformed["success"] is False
-    assert "default_value" in malformed["error"]
-    parameter.default_value = 2.0
-    malformed = handler.handle(observation_request)
-    assert malformed["success"] is False
-    assert "outside its reported range" in malformed["error"]
-    parameter.is_quantized = True
-    parameter.value_items = ("Dry", "Wet")
+
+    inject(parameter, "is_quantized", True)
+    inject(parameter, "value_items", StringVector(("Dry", "Wet")))
     quantized = handler.handle(observation_request)
     assert quantized["success"] is True
     assert quantized["value"]["default_value"] is None
     assert quantized["value"]["value_items"] == ["Dry", "Wet"]
-    parameter.value_items = ["Dry", 1]
+    inject(parameter, "value_items", ("Dry", 1))
     malformed = handler.handle(observation_request)
     assert malformed["success"] is False
     assert "value_items entry" in malformed["error"]
-    parameter.is_quantized = False
-    parameter.default_value = 0.0
-    request["args"] = ["Dry/Wet", 37.5, "display_value", 0.0, 1.0]
+    restore(parameter, "value_items")
+    restore(parameter, "is_quantized")
+
+    request["args"] = ["Dry/Wet", 0.375, "display_value", 0.0, 1.0]
     response = handler.handle(request)
     assert response["success"] is True
     assert response["value"]["property"] == "display_value"
-    assert response["value"]["observed"] == 37.5
-    assert parameter.display_value == 37.5
-
-    parameter.state = 1
-    parameter.automation_state = 2
-    request["args"] = ["Dry/Wet", 0.3, "value", 0.0, 1.0]
-    response = handler.handle(request)
-    assert response["success"] is True
-    assert response["value"]["state"] == 1
-    assert response["value"]["automation_state"] == 2
-
-    parameter.state = 2
-    request["args"] = ["Dry/Wet", 0.6, "value", 0.0, 1.0]
-    response = handler.handle(request)
-    assert response["success"] is False
-    assert "cannot be changed" in response["error"]
-    assert parameter.value == 0.3
-
-    parameter.state = 0
-    parameter.automation_state = 0
+    assert response["value"]["observed"] == 0.375
+    assert parameter.display_value == 0.375
 
     request["args"] = ["Dry/Wet", 0.75, "value", 0.0, 2.0]
     response = handler.handle(request)
     assert response["success"] is False
     assert "does not match expected" in response["error"]
-    assert parameter.value == 0.3
+    assert parameter.value == 0.375
 
     request["args"] = ["Unknown", 0.5, "value", 0.0, 1.0]
     response = handler.handle(request)
@@ -1262,55 +1089,36 @@ def test_sunny_set_device_parameter_requires_exact_enabled_parameter():
     assert "outside Sunny bridge protocol" in response["error"]
 
 
-def test_insert_device_returns_exact_identity_type_and_activity_evidence():
-    """The adapter distinguishes insertion acceptance from an active instrument."""
+def test_sunny_set_device_parameter_reports_post_write_automation_override(live):
+    """Writing an automated parameter overrides its automation; evidence is sampled after."""
+    track = live.song.create_midi_track(-1)
+    track.insert_device("Operator")
+    parameter = next(p for p in track.devices[0].parameters if p.name == "Filter Freq")
+    parameter.start_automation_playback()
+    handler = LomHandler(live.surface)
 
-    class Device:
-        def __init__(self, name):
-            self.name = name
-            self.class_display_name = name
-            self.class_name = name.replace(" ", "")
-            self.type = 1
-            self.is_active = True
-            self.can_have_chains = False
-            self.latency_in_samples = 64
-            self.latency_in_ms = 1.5
-
-    class Track:
-        def __init__(self):
-            self.mixer_device = object()
-            self.devices = [self.mixer_device]
-            self.has_audio_output = False
-            self.has_midi_output = True
-
-        def insert_device(self, name, index):
-            self.devices.insert(index + 1, Device(name))
-            self.has_audio_output = True
-            self.has_midi_output = False
-
-    class Song:
-        def __init__(self):
-            self.tracks = [Track()]
-
-    class Surface:
-        def __init__(self, song):
-            self._song = song
-
-        def song(self):
-            return self._song
-
-    handler = LomHandler(Surface(Song()))
-    response = handler.handle(
-        _versioned(
-            {
-                "type": "call",
-                "path": "song/tracks/0",
-                "name": "insert_device",
-                "args": ["Operator", 0],
-            }
-        )
+    response = _call(
+        handler,
+        "song/tracks/0/devices/0",
+        "sunny_set_device_parameter",
+        "Filter Freq",
+        0.5,
+        "value",
+        0.0,
+        1.0,
     )
+    assert response["success"] is True
+    assert response["value"]["observed"] == 0.5
+    assert response["value"]["automation_state"] == int(AutomationState.overridden)
+    assert type(response["value"]["automation_state"]) is int
 
+
+def test_insert_device_returns_exact_identity_type_and_activity_evidence(live):
+    """The adapter distinguishes insertion acceptance from an active instrument."""
+    track = live.song.create_midi_track(-1)
+    handler = LomHandler(live.surface)
+
+    response = _call(handler, "song/tracks/0", "insert_device", "Operator", 0)
     assert response == {
         "success": True,
         "value": {
@@ -1325,352 +1133,182 @@ def test_insert_device_returns_exact_identity_type_and_activity_evidence():
             "type": 1,
             "is_active": True,
             "can_have_chains": False,
-            "latency_in_samples": 64,
-            "latency_in_ms": 1.5,
+            "latency_in_samples": 0,
+            "latency_in_ms": 0.0,
             "track_has_audio_output": True,
             "track_has_midi_output": False,
         },
     }
+    assert type(response["value"]["type"]) is int
+    assert [device.name for device in LomHandler._device_chain(track)] == ["Operator"]
+
+    unknown = _call(handler, "song/tracks/0", "insert_device", "Not A Device")
+    assert unknown["success"] is False
+    assert "Unknown" in unknown["error"]
 
 
 def test_device_snapshot_rejects_non_boolean_rack_and_activity_facts():
     """The private peer must not coerce category-confused Device facts into evidence."""
-    device = SimpleNamespace(
-        name="Operator",
-        class_display_name="Operator",
-        class_name="Operator",
-        type=1,
-        is_active=True,
-        can_have_chains=False,
-        latency_in_samples=64,
-        latency_in_ms=1.5,
-    )
-
+    device = native_device("Operator")
     assert LomHandler._device_snapshot(device)["can_have_chains"] is False
 
-    device.can_have_chains = 0
-    with pytest.raises(RuntimeError, match="invalid can_have_chains"):
-        LomHandler._device_snapshot(device)
-
-    device.can_have_chains = False
-    device.is_active = 1
-    with pytest.raises(RuntimeError, match="invalid is_active"):
-        LomHandler._device_snapshot(device)
-
-    device.is_active = True
-    device.type = True
-    with pytest.raises(RuntimeError, match="invalid type"):
-        LomHandler._device_snapshot(device)
+    for name, malformed, expected_error in (
+        ("can_have_chains", 0, "invalid can_have_chains"),
+        ("is_active", 1, "invalid is_active"),
+        ("type", True, "invalid type"),
+        ("type", 3, "invalid type"),
+    ):
+        inject(device, name, malformed)
+        with pytest.raises(RuntimeError, match=expected_error):
+            LomHandler._device_snapshot(device)
+        restore(device, name)
 
 
-def test_sunny_set_device_parameter_rejects_ambiguous_name_without_mutation():
+def test_sunny_set_device_parameter_rejects_ambiguous_name_without_mutation(live):
     """A duplicate public/original name cannot select a parameter by list accident."""
-
-    class Parameter:
-        def __init__(self, name, original_name):
-            self.name = name
-            self.original_name = original_name
-            self.is_enabled = True
-            self.value = 0.0
-            self.display_value = 0.0
-            self.min = 0.0
-            self.max = 1.0
-            self.is_quantized = False
-            self.default_value = 0.0
-            self.state = 0
-            self.automation_state = 0
-
-    class Device:
-        def __init__(self):
-            self.parameters = [
-                Parameter("Cutoff", "Filter Frequency"),
-                Parameter("Filter Frequency", "Frequency"),
-            ]
-
-    class Track:
-        def __init__(self):
-            self.devices = [Device()]
-
-    class Song:
-        def __init__(self):
-            self.tracks = [Track()]
-
-    class Surface:
-        def __init__(self, song):
-            self._song = song
-
-        def song(self):
-            return self._song
-
-    song = Song()
-    handler = LomHandler(Surface(song))
-    response = handler.handle(
-        _versioned(
-            {
-                "type": "call",
-                "path": "song/tracks/0/devices/0",
-                "name": "sunny_set_device_parameter",
-                "args": ["Filter Frequency", 0.5, "value", 0.0, 1.0],
-            }
-        )
+    track = live.song.create_midi_track(-1)
+    track.insert_device("Operator")
+    device = track.devices[0]
+    parameters = (
+        DeviceParameter("Cutoff", original_name="Filter Frequency"),
+        DeviceParameter("Filter Frequency", original_name="Frequency"),
     )
+    inject(device, "parameters", parameters)
+    handler = LomHandler(live.surface)
 
-    assert response["success"] is False
-    assert "ambiguous" in response["error"]
-    assert [parameter.value for parameter in song.tracks[0].devices[0].parameters] == [0.0, 0.0]
-
-    response = handler.handle(
-        _versioned(
-            {
-                "type": "call",
-                "path": "song/tracks/0/devices/0",
-                "name": "sunny_get_device_parameter",
-                "args": ["Filter Frequency", "value"],
-            }
-        )
-    )
-    assert response["success"] is False
-    assert "ambiguous" in response["error"]
+    for name, args in (
+        ("sunny_set_device_parameter", ("Filter Frequency", 0.5, "value", 0.0, 1.0)),
+        ("sunny_get_device_parameter", ("Filter Frequency", "value")),
+    ):
+        response = _call(handler, "song/tracks/0/devices/0", name, *args)
+        assert response["success"] is False
+        assert "ambiguous" in response["error"]
+    assert [parameter.value for parameter in parameters] == [0.0, 0.0]
 
 
-def test_sunny_set_device_parameter_reports_post_write_host_state():
-    """Activity/automation evidence is sampled after the write that can change it."""
+def test_sunny_get_device_count_excludes_the_mixer_device_and_rejects_args(live):
+    """Inserted-device addressing counts the insertable chain, not Track.devices."""
+    track = live.song.create_midi_track(-1)
+    for name in ("Operator", "Saturator", "Reverb"):
+        track.insert_device(name)
+    assert len(track.devices) == 4
+    handler = LomHandler(live.surface)
 
-    class Parameter:
-        name = "Cutoff"
-        original_name = "Cutoff"
-        is_enabled = True
-        display_value = 0.0
-        min = 0.0
-        max = 1.0
-        is_quantized = False
-        default_value = 0.0
-        state = 0
-        automation_state = 1
-
-        def __init__(self):
-            self._value = 0.0
-
-        @property
-        def value(self):
-            return self._value
-
-        @value.setter
-        def value(self, requested):
-            self._value = requested
-            self.state = 1
-            self.automation_state = 2
-
-    parameter = Parameter()
-    evidence = LomHandler._set_device_parameter(
-        SimpleNamespace(parameters=[parameter]), "Cutoff", 0.5, "value", 0.0, 1.0
-    )
-
-    assert evidence["observed"] == 0.5
-    assert evidence["state"] == 1
-    assert evidence["automation_state"] == 2
-
-    parameter._value = 1
-    with pytest.raises(RuntimeError, match="Device parameter 'Cutoff' value"):
-        LomHandler._get_device_parameter(SimpleNamespace(parameters=[parameter]), "Cutoff", "value")
-
-    parameter._value = 0.5
-    parameter.name = object()
-    with pytest.raises(RuntimeError, match="Device parameter 'Cutoff' name"):
-        LomHandler._get_device_parameter(SimpleNamespace(parameters=[parameter]), "Cutoff", "value")
-
-
-def test_sunny_get_device_count_reports_exact_track_state_and_rejects_args():
-    """Inserted-device addressing is based on observed track state, not a guessed index."""
-
-    class Track:
-        def __init__(self):
-            self.mixer_device = object()
-            self.devices = [object(), self.mixer_device, object(), object()]
-
-    class Song:
-        def __init__(self):
-            self.tracks = [Track()]
-
-    class Surface:
-        def __init__(self, song):
-            self._song = song
-
-        def song(self):
-            return self._song
-
-    handler = LomHandler(Surface(Song()))
-    request = _versioned(
-        {
-            "type": "call",
-            "path": "song/tracks/0",
-            "name": "sunny_get_device_count",
-            "args": [],
-        }
-    )
-    assert handler.handle(request) == {"success": True, "value": 3}
-
-    request["args"] = ["unexpected"]
-    response = handler.handle(request)
+    assert _call(handler, "song/tracks/0", "sunny_get_device_count") == {
+        "success": True,
+        "value": 3,
+    }
+    response = _call(handler, "song/tracks/0", "sunny_get_device_count", "unexpected")
     assert response["success"] is False
     assert "outside Sunny bridge protocol" in response["error"]
 
 
-def test_output_routing_mutation_is_advertised_two_stage_and_fail_closed():
-    """Route mutation re-enumerates target choices and rejects incoherent stages."""
-    master = {"display_name": "Master", "identifier": "master"}
-    group = {"display_name": "Group 1", "identifier": "group_1"}
-    stereo = {"display_name": "1/2", "identifier": "stereo_1_2"}
-    group_stereo = {"display_name": "Group", "identifier": "group_stereo"}
+def test_output_routing_is_selected_from_advertised_objects_in_two_stages(live):
+    """Routes are RoutingType/RoutingChannel objects chosen from the advertised tuples."""
+    song = live.song
+    song.create_return_track()
+    song.create_return_track()
+    track = song.create_midi_track(-1)
+    track.insert_device("Operator")
+    handler = LomHandler(live.surface)
+    master = _type_route("Master", RoutingTypeCategory.master)
+    external = _type_route("Ext. Out", RoutingTypeCategory.external)
+    return_a = _type_route("A-Return", RoutingTypeCategory.track)
+    return_b = _type_route("B-Return", RoutingTypeCategory.track)
+    track_in = _channel_route("Track In")
+    advertised_types = {"available_output_routing_types": [master, external, return_a, return_b]}
 
-    class Track:
-        def __init__(self):
-            self._output_routing_type = master.copy()
-            self.output_routing_channel = stereo.copy()
-            self.available_output_routing_types = {
-                "available_output_routing_types": [master.copy(), group.copy()]
-            }
-            self.available_output_routing_channels = {
-                "available_output_routing_channels": [stereo.copy()]
-            }
-
-        @property
-        def output_routing_type(self):
-            return self._output_routing_type
-
-        @output_routing_type.setter
-        def output_routing_type(self, value):
-            self._output_routing_type = value
-            if value == group:
-                self.output_routing_channel = group_stereo.copy()
-                self.available_output_routing_channels = {
-                    "available_output_routing_channels": [group_stereo.copy()]
-                }
-            else:
-                self.output_routing_channel = stereo.copy()
-                self.available_output_routing_channels = {
-                    "available_output_routing_channels": [stereo.copy()]
-                }
-
-    class Song:
-        def __init__(self):
-            self.tracks = [Track()]
-            self.return_tracks = [Track()]
-
-    class Surface:
-        def __init__(self):
-            self._song = Song()
-
-        def song(self):
-            return self._song
-
-    surface = Surface()
-    handler = LomHandler(surface)
-    type_request = _versioned(
-        {
-            "type": "call",
-            "path": "song/tracks/0",
-            "name": "sunny_set_output_routing_type",
-            "args": [group.copy()],
-        }
-    )
-    type_response = handler.handle(type_request)
-    assert type_response["success"] is True
-    assert type_response["value"] == {
-        "requested_type": group,
-        "available_output_routing_types_before": {
-            "available_output_routing_types": [master, group]
+    response = _call(handler, "song/tracks/0", "sunny_set_output_routing_type", return_a)
+    assert response == {
+        "success": True,
+        "value": {
+            "requested_type": return_a,
+            "available_output_routing_types_before": advertised_types,
+            "output_routing_type": return_a,
+            "output_routing_channel": track_in,
+            "available_output_routing_types": advertised_types,
+            "available_output_routing_channels": {"available_output_routing_channels": [track_in]},
         },
-        "output_routing_type": group,
-        "output_routing_channel": group_stereo,
-        "available_output_routing_types": {"available_output_routing_types": [master, group]},
-        "available_output_routing_channels": {"available_output_routing_channels": [group_stereo]},
     }
+    assert track.output_routing_type.attached_object is song.return_tracks[0]
 
-    channel_request = _versioned(
-        {
-            "type": "call",
-            "path": "song/tracks/0",
-            "name": "sunny_set_output_routing_channel",
-            "args": [group.copy(), group_stereo.copy()],
-        }
+    assert _call(handler, "song/tracks/0", "sunny_set_output_routing_type", external)["success"]
+    channel = _call(
+        handler,
+        "song/tracks/0",
+        "sunny_set_output_routing_channel",
+        external,
+        _channel_route("3/4"),
     )
-    channel_response = handler.handle(channel_request)
-    assert channel_response["success"] is True
-    assert channel_response["value"]["output_routing_type_before"] == group
-    assert channel_response["value"]["requested_channel"] == group_stereo
-    assert channel_response["value"]["output_routing_channel"] == group_stereo
-    assert channel_response["value"]["available_output_routing_channels_before"] == {
-        "available_output_routing_channels": [group_stereo]
+    assert channel["success"] is True
+    assert channel["value"]["output_routing_type_before"] == external
+    assert channel["value"]["requested_channel"] == _channel_route("3/4")
+    assert channel["value"]["output_routing_channel"] == _channel_route("3/4")
+    assert channel["value"]["available_output_routing_channels_before"] == {
+        "available_output_routing_channels": [
+            _channel_route(name) for name in ("1/2", "3/4", "1", "2", "3", "4")
+        ]
     }
+    assert track.output_routing_channel.display_name == "3/4"
 
-    unavailable_type = handler.handle(
-        _versioned(
-            {
-                **type_request,
-                "args": [{"display_name": "External", "identifier": "external"}],
-            }
-        )
-    )
-    assert unavailable_type["success"] is False
-    assert "not in available_output_routing_types" in unavailable_type["error"]
-    assert surface._song.tracks[0].output_routing_type == group
+    # An identifier naming an advertised route with another category is not that route.
+    impostor = {"display_name": "Master", "identifier": return_a["identifier"]}
+    for requested in (_type_route("C-Return", RoutingTypeCategory.track), impostor):
+        unavailable = _call(handler, "song/tracks/0", "sunny_set_output_routing_type", requested)
+        assert unavailable["success"] is False
+        assert "not in available_output_routing_types" in unavailable["error"]
+    assert track.output_routing_type.display_name == "Ext. Out"
 
-    surface._song.tracks[0].output_routing_type = master.copy()
-    changed_type = handler.handle(channel_request)
-    assert changed_type["success"] is False
-    assert "changed before channel mutation" in changed_type["error"]
-    assert surface._song.tracks[0].output_routing_channel == stereo
+    track.output_routing_type = track.available_output_routing_types[0]
+    changed = _call(
+        handler, "song/tracks/0", "sunny_set_output_routing_channel", external, _channel_route("1")
+    )
+    assert changed["success"] is False
+    assert "changed before channel mutation" in changed["error"]
+    assert track.output_routing_channel.display_name == "Track In"
 
-    malformed = handler.handle(
-        _versioned(
-            {
-                **type_request,
-                "args": [{"display_name": "Master", "identifier": "master", "extra": 1}],
-            }
-        )
+    returned = _call(handler, "song/return_tracks/1", "sunny_set_output_routing_type", return_a)
+    assert returned["success"] is True
+    assert song.return_tracks[1].output_routing_type.attached_object is song.return_tracks[0]
+
+
+def test_output_routing_mutation_refuses_ambiguous_advertised_routes(live):
+    """Two advertised routes with one identity cannot be told apart, so neither is chosen."""
+    song = live.song
+    first = song.create_return_track()
+    second = song.create_return_track()
+    first.name = "Bus"
+    second.name = "Bus"
+    track = song.create_midi_track(-1)
+    track.insert_device("Operator")
+    handler = LomHandler(live.surface)
+
+    response = _call(
+        handler,
+        "song/tracks/0",
+        "sunny_set_output_routing_type",
+        _type_route("Bus", RoutingTypeCategory.track),
     )
-    assert malformed["success"] is False
-    assert "outside Sunny bridge protocol" in malformed["error"]
-    assert not _request_allowed(
-        "call", "song/master_track", "sunny_set_output_routing_type", [master]
-    )
+    assert response["success"] is False
+    assert "ambiguous" in response["error"]
+    assert track.output_routing_type.display_name == "Master"
 
 
 def test_target_profile_uses_documented_application_version_and_conservative_gaps(monkeypatch):
     """The handshake reports observed Live facts without inventing Max availability."""
+    live = LiveSet((12, 2, 1)).install(monkeypatch)
+    handler = LomHandler(live.surface)
 
-    class Application:
-        @staticmethod
-        def get_major_version():
-            return 12
-
-        @staticmethod
-        def get_minor_version():
-            return 2
-
-        @staticmethod
-        def get_bugfix_version():
-            return 1
-
-        @staticmethod
-        def get_version_string():
-            return "12.2.1"
-
-    live_module = SimpleNamespace(
-        Application=SimpleNamespace(get_application=lambda: Application())
-    )
-    monkeypatch.setitem(sys.modules, "Live", live_module)
-    handler = LomHandler(object())
-
-    response = handler.handle(
-        _versioned({"type": "call", "path": "song", "name": "sunny_get_target_profile"})
-    )
-
+    response = _call(handler, "song", "sunny_get_target_profile")
     assert response["success"] is True
     profile = response["value"]
     assert profile["bridge_protocol_version"] == BRIDGE_PROTOCOL_VERSION
-    assert profile["live"]["version"]["string"] == "12.2.1"
+    assert profile["live"]["version"] == {
+        "major": 12,
+        "minor": 2,
+        "bugfix": 1,
+        "string": "12.2.1",
+    }
     assert profile["capabilities"]["clip_add_new_notes"] == "available"
     assert profile["capabilities"]["track_insert_device_native"] == "unavailable"
     assert profile["capabilities"]["max_for_live"] == "unknown"
@@ -1678,21 +1316,10 @@ def test_target_profile_uses_documented_application_version_and_conservative_gap
     assert profile["adapter"]["contract"] == "version_coupled_private"
 
 
-def test_target_profile_rejects_scalar_category_coercion(monkeypatch):
+def test_target_profile_rejects_scalar_category_coercion(live, monkeypatch):
     """Private host values cannot acquire documented profile categories via constructors."""
-    application = SimpleNamespace(
-        get_major_version=lambda: 12,
-        get_minor_version=lambda: 3,
-        get_bugfix_version=lambda: 5,
-        get_version_string=lambda: "12.3.5",
-    )
-    monkeypatch.setitem(
-        sys.modules,
-        "Live",
-        SimpleNamespace(Application=SimpleNamespace(get_application=lambda: application)),
-    )
-    handler = LomHandler(object())
-    request = _versioned({"type": "call", "path": "song", "name": "sunny_get_target_profile"})
+    application = live.application
+    handler = LomHandler(live.surface)
 
     for method_name, malformed_value, expected_error in (
         ("get_major_version", "12", "Application major version"),
@@ -1700,280 +1327,42 @@ def test_target_profile_rejects_scalar_category_coercion(monkeypatch):
         ("get_bugfix_version", True, "Application bugfix version"),
         ("get_version_string", object(), "Application version string"),
     ):
-        original = getattr(application, method_name)
-        setattr(application, method_name, lambda value=malformed_value: value)
-        response = handler.handle(request)
+        with monkeypatch.context() as patch:
+            patch.setattr(application, method_name, lambda value=malformed_value: value)
+            response = _call(handler, "song", "sunny_get_target_profile")
         assert response["success"] is False
         assert expected_error in response["error"]
-        setattr(application, method_name, original)
+    assert _call(handler, "song", "sunny_get_target_profile")["success"] is True
 
 
-def test_target_snapshot_is_single_call_structural_plan_evidence(monkeypatch, sunny_native_module):
-    """Protocol v43 reports bounded topology, input/output options, mixer, and latency."""
+def _snapshot_fixture(live):
+    """A Set with one scored MIDI track, one return, two scenes and one cue."""
+    song = live.song
+    song.create_scene(-1)
+    song.scenes[0].name = "Scene 1"
+    song.scenes[1].name = "Scene 2"
+    song.scenes[1].enable_launch_overrides(128.0, 7, 8)
+    song.create_return_track()
+    track, clip = _midi_track_with_clip(live, instrument="Operator")
+    track.name = "Part"
+    clip.name = "Verse"
+    clip.looping = False
+    song.current_song_time = 0.0
+    song.set_or_delete_cue()
+    song.cue_points[0].name = "Start"
+    return track, clip
 
-    class Application:
-        get_major_version = staticmethod(lambda: 12)
-        get_minor_version = staticmethod(lambda: 3)
-        get_bugfix_version = staticmethod(lambda: 5)
-        get_version_string = staticmethod(lambda: "12.3.5")
 
-    monkeypatch.setitem(
-        sys.modules,
-        "Live",
-        SimpleNamespace(Application=SimpleNamespace(get_application=lambda: Application())),
-    )
-
-    class Device:
-        name = "Operator"
-        class_display_name = "Operator"
-        class_name = "Operator"
-        type = 1
-        is_active = True
-        can_have_chains = False
-        latency_in_samples = 128
-        latency_in_ms = 2.9
-
-    class Parameter:
-        value = 0.5
-        display_value = 0.0
-        min = 0.0
-        max = 1.0
-        is_quantized = False
-        default_value = 0.0
-        state = 0
-        automation_state = 0
-        is_enabled = True
-
-    class ActivatorParameter(Parameter):
-        value = 1.0
-        display_value = 1.0
-        is_quantized = True
-        value_items = ("Off", "On")
-
-    class PanParameter(Parameter):
-        min = -1.0
-
-    class Mixer:
-        volume = Parameter()
-        track_activator = ActivatorParameter()
-        panning = PanParameter()
-        crossfade_assign = 1
-        panning_mode = 0
-
-        def __init__(self, send_count=0):
-            self.sends = tuple(Parameter() for _ in range(send_count))
-
-    class Clip:
-        name = "Verse"
-        is_audio_clip = False
-        is_midi_clip = True
-        is_arrangement_clip = False
-        is_session_clip = True
-        is_take_lane_clip = False
-        length = 4.0
-        signature_numerator = 4
-        signature_denominator = 4
-        start_marker = 0.0
-        end_marker = 4.0
-        end_time = 4.0
-        looping = False
-        muted = False
-        has_envelopes = False
-        is_playing = False
-        is_recording = False
-        is_overdubbing = False
-        is_triggered = False
-        will_record_on_start = False
-        launch_mode = 0
-        launch_quantization = 1
-        legato = False
-        velocity_amount = 0.0
-        has_groove = False
-
-    class Scene:
-        def __init__(self, name, tempo_enabled=False, signature_enabled=False):
-            self.name = name
-            self.is_triggered = False
-            self.tempo_enabled = tempo_enabled
-            self.tempo = 128.0 if tempo_enabled else -1.0
-            self.time_signature_enabled = signature_enabled
-            self.time_signature_numerator = 7 if signature_enabled else -1
-            self.time_signature_denominator = 8 if signature_enabled else -1
-
-    class Slot:
-        def __init__(self, clip=None):
-            self.clip = clip
-            self.has_clip = clip is not None
-            self.has_stop_button = clip is None
-            self.is_group_slot = False
-            self.controls_other_clips = False
-            self.is_playing = False
-            self.is_recording = False
-            self.is_triggered = False
-            self.playing_status = 0
-            self.will_record_on_start = False
-
-    class Track:
-        def __init__(self, name, clips=True, send_count=0):
-            self.name = name
-            self.mixer_device = Mixer(send_count)
-            self.devices = [self.mixer_device, Device()]
-            self.clip_slots = [Slot(Clip()), Slot()] if clips else []
-            self.arrangement_clips = ()
-            self.take_lanes = ()
-            self.group_track = None
-            self.is_grouped = False
-            self.input_routing_type = {"display_name": "All Ins", "identifier": "all_ins"}
-            self.input_routing_channel = {
-                "display_name": "All Channels",
-                "identifier": "all_channels",
-            }
-            self.available_input_routing_types = {
-                "available_input_routing_types": (
-                    {"display_name": "No Input", "identifier": "no_input"},
-                    {"display_name": "All Ins", "identifier": "all_ins"},
-                )
-            }
-            self.available_input_routing_channels = {
-                "available_input_routing_channels": [
-                    {"display_name": "All Channels", "identifier": "all_channels"},
-                    {"display_name": "Ch. 1", "identifier": "channel_1"},
-                ]
-            }
-            self.output_routing_type = {"display_name": "Master", "identifier": "master"}
-            self.output_routing_channel = {"display_name": "1/2", "identifier": "stereo_1_2"}
-            self.available_output_routing_types = {
-                "available_output_routing_types": (
-                    {"display_name": "Master", "identifier": "master"},
-                    {"display_name": "Group 1", "identifier": "group_1"},
-                )
-            }
-            self.available_output_routing_channels = {
-                "available_output_routing_channels": [
-                    {"display_name": "1/2", "identifier": "stereo_1_2"},
-                    {"display_name": "1", "identifier": "mono_1"},
-                ]
-            }
-            self.has_audio_input = False
-            self.has_midi_input = True
-            self.input_meter_level = 0.0
-            self.output_meter_level = 0.0
-            self.has_audio_output = clips
-            self.input_meter_left = 0.0
-            self.input_meter_right = 0.0
-            self.output_meter_left = 0.0
-            self.output_meter_right = 0.0
-            self.has_midi_output = False
-            self.is_frozen = False
-            self.arm = False
-            self.implicit_arm = False
-            self.back_to_arranger = False
-            self.fired_slot_index = -1
-            self.playing_slot_index = -1
-            self.mute = False
-            self.solo = False
-            self.muted_via_solo = False
-
-    class Cue:
-        name = "Start"
-        time = 0.0
-
-    class TuningSystem:
-        name = "12-TET"
-        pseudo_octave_in_cents = 1200.0
-        lowest_note = {"opaque_fixture": "lowest"}
-        highest_note = {"opaque_fixture": "highest"}
-        reference_pitch = {"opaque_fixture": "reference"}
-        note_tunings = {
-            "opaque_fixture": [
-                0.0,
-                100.0,
-                200.0,
-                300.0,
-                400.0,
-                500.0,
-                600.0,
-                700.0,
-                800.0,
-                900.0,
-                1000.0,
-                1100.0,
-            ]
-        }
-
-    class Song:
-        tempo = 120.0
-        signature_numerator = 4
-        signature_denominator = 4
-        is_playing = False
-        is_counting_in = False
-        arrangement_overdub = False
-        overdub = False
-        record_mode = False
-        session_record = False
-        session_automation_record = False
-        is_ableton_link_enabled = False
-        is_ableton_link_start_stop_sync_enabled = False
-        tempo_follower_enabled = False
-        nudge_down = False
-        nudge_up = False
-        back_to_arranger = False
-        re_enable_automation_enabled = False
-        loop = False
-        metronome = False
-        root_note = 0
-        scale_name = "Major"
-        scale_intervals = (0, 2, 4, 5, 7, 9, 11)
-        scale_mode = True
-        tuning_system = TuningSystem()
-
-        def __init__(self):
-            self.scenes = (Scene("Scene 1"), Scene("Scene 2", True, True))
-            self.tracks = (Track("Part", send_count=1),)
-            self.return_tracks = (Track("Return A", clips=False),)
-            del self.return_tracks[0].input_routing_type
-            del self.return_tracks[0].input_routing_channel
-            del self.return_tracks[0].available_input_routing_types
-            del self.return_tracks[0].available_input_routing_channels
-            del self.return_tracks[0].has_audio_input
-            del self.return_tracks[0].has_midi_input
-            del self.return_tracks[0].input_meter_level
-            del self.return_tracks[0].output_meter_level
-            self.master_track = Track("Master", clips=False)
-            del self.master_track.input_routing_type
-            del self.master_track.input_routing_channel
-            del self.master_track.available_input_routing_types
-            del self.master_track.available_input_routing_channels
-            del self.master_track.has_audio_input
-            del self.master_track.has_midi_input
-            del self.master_track.input_meter_level
-            del self.master_track.output_meter_level
-            del self.master_track.output_routing_type
-            del self.master_track.output_routing_channel
-            del self.master_track.available_output_routing_types
-            del self.master_track.available_output_routing_channels
-            self.cue_points = (Cue(),)
-
-    class Surface:
-        def __init__(self):
-            self._song = Song()
-
-        def song(self):
-            return self._song
-
-    surface = Surface()
-    handler = LomHandler(surface)
+def test_target_snapshot_is_single_call_structural_plan_evidence(live, sunny_native_module):
+    """The snapshot reads Live's Python types and satisfies the native snapshot validator."""
+    track, clip = _snapshot_fixture(live)
+    handler = LomHandler(live.surface)
     request = _versioned(
-        {
-            "type": "call",
-            "path": "song",
-            "name": "sunny_get_target_snapshot",
-            "args": [],
-        }
+        {"type": "call", "path": "song", "name": "sunny_get_target_snapshot", "args": []}
     )
-    response = handler.handle(request)
 
-    assert response["success"] is True
+    response = handler.handle(request)
+    assert response["success"] is True, response
     snapshot = response["value"]
     assert snapshot["schema_version"] == TARGET_SNAPSHOT_SCHEMA_VERSION
     assert snapshot["target_profile"]["bridge_protocol_version"] == BRIDGE_PROTOCOL_VERSION
@@ -1981,76 +1370,21 @@ def test_target_snapshot_is_single_call_structural_plan_evidence(monkeypatch, su
     assert (
         sunny_native_module.ABLETON_TARGET_SNAPSHOT_SCHEMA_VERSION == TARGET_SNAPSHOT_SCHEMA_VERSION
     )
-    assert snapshot["song"]["scale"] == {
+    assert sunny_native_module.validate_ableton_target_snapshot_json(json.dumps(snapshot))
+
+    song_state = snapshot["song"]
+    assert song_state["scale"] == {
         "root_note": 0,
         "name": "Major",
         "intervals": [0, 2, 4, 5, 7, 9, 11],
-        "mode": True,
+        "mode": False,
     }
-    assert snapshot["song"]["tuning_system"] == {
-        "name": "12-TET",
-        "pseudo_octave_in_cents": 1200.0,
-        "lowest_note": {"opaque_fixture": "lowest"},
-        "highest_note": {"opaque_fixture": "highest"},
-        "reference_pitch": {"opaque_fixture": "reference"},
-        "note_tunings": {
-            "opaque_fixture": [
-                0.0,
-                100.0,
-                200.0,
-                300.0,
-                400.0,
-                500.0,
-                600.0,
-                700.0,
-                800.0,
-                900.0,
-                1000.0,
-                1100.0,
-            ]
-        },
+    assert song_state["tuning_system"]["name"] == "12-TET"
+    assert song_state["tuning_system"]["note_tunings"] == {
+        "note_tunings": [100.0 * n for n in range(12)]
     }
-    assert sunny_native_module.validate_ableton_target_snapshot_json(json.dumps(snapshot))
-    assert snapshot["song"]["scene_count"] == 2
-    assert {
-        name: snapshot["song"][name]
-        for name in (
-            "is_playing",
-            "is_counting_in",
-            "arrangement_overdub",
-            "overdub",
-            "record_mode",
-            "session_record",
-            "session_automation_record",
-            "is_ableton_link_enabled",
-            "is_ableton_link_start_stop_sync_enabled",
-            "tempo_follower_enabled",
-            "nudge_down",
-            "nudge_up",
-            "back_to_arranger",
-            "re_enable_automation_enabled",
-            "loop",
-            "metronome",
-        )
-    } == {
-        "is_playing": False,
-        "is_counting_in": False,
-        "arrangement_overdub": False,
-        "overdub": False,
-        "record_mode": False,
-        "session_record": False,
-        "session_automation_record": False,
-        "is_ableton_link_enabled": False,
-        "is_ableton_link_start_stop_sync_enabled": False,
-        "tempo_follower_enabled": False,
-        "nudge_down": False,
-        "nudge_up": False,
-        "back_to_arranger": False,
-        "re_enable_automation_enabled": False,
-        "loop": False,
-        "metronome": False,
-    }
-    assert snapshot["song"]["scenes"] == [
+    assert song_state["scene_count"] == 2
+    assert song_state["scenes"] == [
         {
             "name": "Scene 1",
             "is_triggered": False,
@@ -2070,746 +1404,210 @@ def test_target_snapshot_is_single_call_structural_plan_evidence(monkeypatch, su
             "time_signature_denominator": 8,
         },
     ]
-    assert snapshot["song"]["tracks"][0] == {
-        "name": "Part",
-        "devices": [
-            {
-                "name": "Operator",
-                "class_display_name": "Operator",
-                "class_name": "Operator",
-                "type": 1,
-                "is_active": True,
-                "can_have_chains": False,
-                "latency_in_samples": 128,
-                "latency_in_ms": 2.9,
-            }
-        ],
-        "mixer": {
-            "volume": {
-                "value": 0.5,
-                "display_value": 0.0,
-                "minimum": 0.0,
-                "maximum": 1.0,
-                "is_quantized": False,
-                "default_value": 0.0,
-                "value_items": None,
-                "state": 0,
-                "automation_state": 0,
-                "is_enabled": True,
-            },
-            "track_activator": {
-                "value": 1.0,
-                "display_value": 1.0,
-                "minimum": 0.0,
-                "maximum": 1.0,
-                "is_quantized": True,
-                "default_value": None,
-                "value_items": ["Off", "On"],
-                "state": 0,
-                "automation_state": 0,
-                "is_enabled": True,
-            },
-            "panning": {
-                "value": 0.5,
-                "display_value": 0.0,
-                "minimum": -1.0,
-                "maximum": 1.0,
-                "is_quantized": False,
-                "default_value": 0.0,
-                "value_items": None,
-                "state": 0,
-                "automation_state": 0,
-                "is_enabled": True,
-            },
-            "sends": [
-                {
-                    "value": 0.5,
-                    "display_value": 0.0,
-                    "minimum": 0.0,
-                    "maximum": 1.0,
-                    "is_quantized": False,
-                    "default_value": 0.0,
-                    "value_items": None,
-                    "state": 0,
-                    "automation_state": 0,
-                    "is_enabled": True,
-                }
-            ],
-            "crossfade_assign": 1,
-            "panning_mode": 0,
-        },
-        "clip_slot_count": 2,
-        "arrangement_clip_count": 0,
-        "take_lane_count": 0,
-        "clip_slots": [
-            {
-                "slot": 0,
-                "has_clip": True,
-                "has_stop_button": False,
-                "is_group_slot": False,
-                "controls_other_clips": False,
-                "is_playing": False,
-                "is_recording": False,
-                "is_triggered": False,
-                "playing_status": 0,
-                "will_record_on_start": False,
-            },
-            {
-                "slot": 1,
-                "has_clip": False,
-                "has_stop_button": True,
-                "is_group_slot": False,
-                "controls_other_clips": False,
-                "is_playing": False,
-                "is_recording": False,
-                "is_triggered": False,
-                "playing_status": 0,
-                "will_record_on_start": False,
-            },
-        ],
-        "clips": [
-            {
-                "slot": 0,
-                "name": "Verse",
-                "is_audio_clip": False,
-                "is_midi_clip": True,
-                "is_arrangement_clip": False,
-                "is_session_clip": True,
-                "is_take_lane_clip": False,
-                "length": 4.0,
-                "signature_numerator": 4,
-                "signature_denominator": 4,
-                "start_marker": 0.0,
-                "end_marker": 4.0,
-                "end_time": 4.0,
-                "looping": False,
-                "muted": False,
-                "has_envelopes": False,
-                "is_playing": False,
-                "is_recording": False,
-                "is_overdubbing": False,
-                "is_triggered": False,
-                "will_record_on_start": False,
-                "launch_mode": 0,
-                "launch_quantization": 1,
-                "legato": False,
-                "velocity_amount": 0.0,
-                "has_groove": False,
-            }
-        ],
-        "group_track_index": None,
-        "input_routing_type": {"display_name": "All Ins", "identifier": "all_ins"},
-        "input_routing_channel": {
-            "display_name": "All Channels",
-            "identifier": "all_channels",
-        },
-        "available_input_routing_types": {
-            "available_input_routing_types": [
-                {"display_name": "No Input", "identifier": "no_input"},
-                {"display_name": "All Ins", "identifier": "all_ins"},
-            ]
-        },
-        "available_input_routing_channels": {
-            "available_input_routing_channels": [
-                {"display_name": "All Channels", "identifier": "all_channels"},
-                {"display_name": "Ch. 1", "identifier": "channel_1"},
-            ]
-        },
-        "output_routing_type": {"display_name": "Master", "identifier": "master"},
-        "output_routing_channel": {"display_name": "1/2", "identifier": "stereo_1_2"},
-        "available_output_routing_types": {
-            "available_output_routing_types": [
-                {"display_name": "Master", "identifier": "master"},
-                {"display_name": "Group 1", "identifier": "group_1"},
-            ]
-        },
-        "available_output_routing_channels": {
-            "available_output_routing_channels": [
-                {"display_name": "1/2", "identifier": "stereo_1_2"},
-                {"display_name": "1", "identifier": "mono_1"},
-            ]
-        },
-        "has_audio_input": False,
-        "has_midi_input": True,
-        "input_meter_level": 0.0,
-        "output_meter_level": 0.0,
-        "input_meter_left": 0.0,
-        "input_meter_right": 0.0,
-        "output_meter_left": 0.0,
-        "output_meter_right": 0.0,
+    assert song_state["cue_points"] == [{"name": "Start", "time": 0.0}]
+
+    part = song_state["tracks"][0]
+    assert part["name"] == "Part"
+    assert part["devices"] == [
+        {
+            "name": "Operator",
+            "class_display_name": "Operator",
+            "class_name": "Operator",
+            "type": 1,
+            "is_active": True,
+            "can_have_chains": False,
+            "latency_in_samples": 0,
+            "latency_in_ms": 0.0,
+        }
+    ]
+    assert part["mixer"]["volume"] == {
+        "value": 0.85,
+        "display_value": 0.0,
+        "minimum": 0.0,
+        "maximum": 1.0,
+        "is_quantized": False,
+        "default_value": 0.85,
+        "value_items": None,
+        "state": 0,
+        "automation_state": 0,
+        "is_enabled": True,
+    }
+    assert part["mixer"]["track_activator"]["value_items"] == ["Off", "On"]
+    assert part["mixer"]["track_activator"]["default_value"] is None
+    assert len(part["mixer"]["sends"]) == 1
+    assert part["mixer"]["crossfade_assign"] == 1
+    assert part["mixer"]["panning_mode"] == 0
+    assert part["clip_slot_count"] == 2
+    assert part["arrangement_clip_count"] == 0
+    assert part["take_lane_count"] == 0
+    assert [slot["has_clip"] for slot in part["clip_slots"]] == [True, False]
+    assert part["clip_slots"][0]["playing_status"] == 0
+    assert part["clips"] == [
+        {
+            "slot": 0,
+            "name": "Verse",
+            "is_audio_clip": False,
+            "is_midi_clip": True,
+            "is_arrangement_clip": False,
+            "is_session_clip": True,
+            "is_take_lane_clip": False,
+            "length": 4.0,
+            "signature_numerator": 4,
+            "signature_denominator": 4,
+            "start_marker": 0.0,
+            "end_marker": 4.0,
+            "end_time": 4.0,
+            "looping": False,
+            "muted": False,
+            "has_envelopes": False,
+            "is_playing": False,
+            "is_recording": False,
+            "is_overdubbing": False,
+            "is_triggered": False,
+            "will_record_on_start": False,
+            "launch_mode": 0,
+            "launch_quantization": 0,
+            "legato": False,
+            "velocity_amount": 0.0,
+            "has_groove": False,
+        }
+    ]
+    assert part["input_routing_type"] == _type_route("All Ins", RoutingTypeCategory.external)
+    assert part["input_routing_channel"] == _channel_route("All Channels")
+    assert part["output_routing_type"] == _type_route("Master", RoutingTypeCategory.master)
+    assert part["output_routing_channel"] == _channel_route("Track In")
+    assert part["available_output_routing_types"] == {
+        "available_output_routing_types": [
+            _type_route("Master", RoutingTypeCategory.master),
+            _type_route("Ext. Out", RoutingTypeCategory.external),
+            _type_route("A-Return", RoutingTypeCategory.track),
+        ]
+    }
+    assert {name: part[name] for name in ("has_audio_output", "has_midi_output")} == {
         "has_audio_output": True,
         "has_midi_output": False,
-        "is_frozen": False,
-        "arm": False,
-        "implicit_arm": False,
-        "back_to_arranger": False,
-        "fired_slot_index": -1,
-        "playing_slot_index": -1,
-        "mute": False,
-        "solo": False,
-        "muted_via_solo": False,
     }
-    assert {
-        name: snapshot["song"]["return_tracks"][0][name]
-        for name in (
-            "name",
-            "output_routing_type",
-            "output_routing_channel",
-            "available_output_routing_types",
-            "available_output_routing_channels",
-            "mute",
-            "solo",
-            "muted_via_solo",
-        )
-    } == {
-        "name": "Return A",
-        "output_routing_type": {"display_name": "Master", "identifier": "master"},
-        "output_routing_channel": {"display_name": "1/2", "identifier": "stereo_1_2"},
-        "available_output_routing_types": {
-            "available_output_routing_types": [
-                {"display_name": "Master", "identifier": "master"},
-                {"display_name": "Group 1", "identifier": "group_1"},
-            ]
-        },
-        "available_output_routing_channels": {
-            "available_output_routing_channels": [
-                {"display_name": "1/2", "identifier": "stereo_1_2"},
-                {"display_name": "1", "identifier": "mono_1"},
-            ]
-        },
-        "mute": False,
-        "solo": False,
-        "muted_via_solo": False,
-    }
-    assert snapshot["song"]["cue_points"] == [{"name": "Start", "time": 0.0}]
+    assert part["input_meter_level"] == 0.0 and part["output_meter_right"] == 0.0
+    assert song_state["return_tracks"][0]["name"] == "A-Return"
+    assert song_state["return_tracks"][0]["output_routing_type"] == _type_route(
+        "Master", RoutingTypeCategory.master
+    )
+    assert song_state["master_track"]["mixer"]["crossfade_assign"] is None
 
-    surface._song.tracks[0].arrangement_clips = [Clip()]
-    arrangement_content = handler.handle(request)
-    assert arrangement_content["success"] is True
-    assert arrangement_content["value"]["song"]["tracks"][0]["arrangement_clip_count"] == 1
-    surface._song.tracks[0].arrangement_clips = ()
+    def rejected(owner, name, malformed, expected_error):
+        inject(owner, name, malformed)
+        try:
+            response = handler.handle(request)
+        finally:
+            restore(owner, name)
+        assert response["success"] is False, (name, malformed)
+        assert expected_error in response["error"], response["error"]
 
-    surface._song.tracks[0].arrangement_clips = object()
-    malformed = handler.handle(request)
-    assert malformed["success"] is False
-    assert "invalid arrangement_clips collection" in malformed["error"]
-    surface._song.tracks[0].arrangement_clips = ()
+    song = live.song
+    slot = track.clip_slots[0]
+    mixer = track.mixer_device
+    device = track.devices[0]
+    returned = song.return_tracks[0]
 
-    surface._song.tracks[0].take_lanes = [object()]
-    take_lanes = handler.handle(request)
-    assert take_lanes["success"] is True
-    assert take_lanes["value"]["song"]["tracks"][0]["take_lane_count"] == 1
-    surface._song.tracks[0].take_lanes = ()
-
-    surface._song.tracks[0].take_lanes = object()
-    malformed = handler.handle(request)
-    assert malformed["success"] is False
-    assert "invalid take_lanes collection" in malformed["error"]
-    surface._song.tracks[0].take_lanes = ()
-
-    surface._song.tracks[0].is_frozen = 0
-    malformed = handler.handle(request)
-    assert malformed["success"] is False
-    assert "invalid is_frozen" in malformed["error"]
-    surface._song.tracks[0].is_frozen = False
-
-    for property_name in (
-        "is_playing",
-        "is_counting_in",
-        "arrangement_overdub",
-        "overdub",
-        "record_mode",
-        "session_record",
-        "session_automation_record",
-        "is_ableton_link_enabled",
-        "is_ableton_link_start_stop_sync_enabled",
-        "tempo_follower_enabled",
-        "nudge_down",
-        "nudge_up",
-        "back_to_arranger",
-        "re_enable_automation_enabled",
-        "loop",
-        "metronome",
-    ):
-        setattr(surface._song, property_name, 0)
-        malformed = handler.handle(request)
-        assert malformed["success"] is False
-        assert f"invalid {property_name}" in malformed["error"]
-        setattr(surface._song, property_name, False)
-
-    for property_name in ("is_triggered", "tempo_enabled", "time_signature_enabled"):
-        scene = surface._song.scenes[0]
-        original = getattr(scene, property_name)
-        setattr(scene, property_name, int(original))
-        malformed = handler.handle(request)
-        assert malformed["success"] is False
-        assert f"invalid {property_name}" in malformed["error"]
-        setattr(scene, property_name, original)
-
-    slot = surface._song.tracks[0].clip_slots[0]
-    for property_name in (
-        "has_clip",
-        "has_stop_button",
-        "is_group_slot",
-        "controls_other_clips",
-        "is_playing",
-        "is_recording",
-        "is_triggered",
-        "will_record_on_start",
-    ):
-        original = getattr(slot, property_name)
-        setattr(slot, property_name, int(original))
-        malformed = handler.handle(request)
-        assert malformed["success"] is False
-        assert f"invalid {property_name}" in malformed["error"]
-        setattr(slot, property_name, original)
-
-    slot.playing_status = True
-    malformed = handler.handle(request)
-    assert malformed["success"] is False
-    assert "invalid playing_status" in malformed["error"]
-    slot.playing_status = 0
-
-    slot.playing_status = 1
-    malformed = handler.handle(request)
-    assert malformed["success"] is False
-    assert "incoherent is_playing" in malformed["error"]
-    slot.playing_status = 0
-
-    surface._song.tracks[0].arm = 0
-    malformed = handler.handle(request)
-    assert malformed["success"] is False
-    assert "invalid arm" in malformed["error"]
-    surface._song.tracks[0].arm = False
-
-    surface._song.tracks[0].implicit_arm = 0
-    malformed = handler.handle(request)
-    assert malformed["success"] is False
-    assert "invalid implicit_arm" in malformed["error"]
-    surface._song.tracks[0].implicit_arm = False
-
-    surface._song.tracks[0].back_to_arranger = 0
-    malformed = handler.handle(request)
-    assert malformed["success"] is False
-    assert "invalid back_to_arranger" in malformed["error"]
-    surface._song.tracks[0].back_to_arranger = False
-
-    for property_name, malformed_value in (
+    for flag in ("is_playing", "metronome", "loop", "session_record", "nudge_up"):
+        rejected(song, flag, 0, f"invalid {flag}")
+    for name in ("is_triggered", "tempo_enabled", "time_signature_enabled"):
+        rejected(song.scenes[0], name, 0, f"invalid {name}")
+    for name in ("has_clip", "has_stop_button", "is_group_slot", "is_playing", "is_triggered"):
+        rejected(slot, name, int(getattr(slot, name)), f"invalid {name}")
+    rejected(slot, "playing_status", True, "invalid playing_status")
+    rejected(slot, "playing_status", ClipSlotPlayingStatus.playing, "incoherent is_playing")
+    for name in ("arm", "implicit_arm", "back_to_arranger", "is_frozen", "has_midi_input"):
+        rejected(track, name, int(getattr(track, name)), f"invalid {name}")
+    for name, malformed in (
         ("fired_slot_index", True),
         ("fired_slot_index", -3),
         ("playing_slot_index", 2),
-    ):
-        setattr(surface._song.tracks[0], property_name, malformed_value)
-        malformed = handler.handle(request)
-        assert malformed["success"] is False
-        assert f"invalid {property_name}" in malformed["error"]
-        setattr(surface._song.tracks[0], property_name, -1)
-
-    surface._song.tracks[0].clip_slots[0].has_clip = 1
-    malformed = handler.handle(request)
-    assert malformed["success"] is False
-    assert "invalid has_clip" in malformed["error"]
-    surface._song.tracks[0].clip_slots[0].has_clip = True
-
-    for property_name in (
-        "has_audio_input",
-        "has_midi_input",
-        "has_audio_output",
-        "has_midi_output",
-    ):
-        original = getattr(surface._song.tracks[0], property_name)
-        setattr(surface._song.tracks[0], property_name, int(original))
-        malformed = handler.handle(request)
-        assert malformed["success"] is False
-        assert f"invalid {property_name}" in malformed["error"]
-        setattr(surface._song.tracks[0], property_name, original)
-
-    for property_name, malformed_value in (
         ("input_meter_level", 0),
-        ("input_meter_level", -0.1),
         ("output_meter_level", 1.1),
-        ("output_meter_level", math.inf),
-        ("input_meter_left", 0),
-        ("input_meter_right", -0.1),
-        ("output_meter_left", 1.1),
         ("output_meter_right", math.inf),
     ):
-        original = getattr(surface._song.tracks[0], property_name)
-        setattr(surface._song.tracks[0], property_name, malformed_value)
-        malformed = handler.handle(request)
-        assert malformed["success"] is False
-        assert f"invalid {property_name}" in malformed["error"]
-        setattr(surface._song.tracks[0], property_name, original)
+        rejected(track, name, malformed, f"invalid {name}")
+    rejected(track, "arrangement_clips", object(), "invalid arrangement_clips collection")
+    rejected(track, "take_lanes", iter(()), "invalid take_lanes collection")
+    rejected(track, "output_routing_type", {"display_name": "Master"}, "output_routing_type")
+    rejected(
+        track,
+        "available_output_routing_types",
+        "Master",
+        "invalid available_output_routing_types",
+    )
+    rejected(
+        track,
+        "output_routing_type",
+        RoutingType(("elsewhere",), "Elsewhere", RoutingTypeCategory.external, None),
+        "not in available_output_routing_types",
+    )
+    rejected(
+        track,
+        "input_routing_channel",
+        RoutingChannel(("channel", "Ch. 99"), "Ch. 99"),
+        "not in available_input_routing_channels",
+    )
+    for name in ("mute", "solo", "muted_via_solo"):
+        rejected(returned, name, 0, f"invalid {name}")
+    rejected(mixer, "crossfade_assign", True, "invalid crossfade_assign")
+    rejected(mixer, "crossfade_assign", 3, "invalid crossfade_assign")
+    rejected(mixer, "panning_mode", 2, "invalid panning_mode")
+    for name, malformed, expected_error in (
+        ("value", 0, "invalid value"),
+        ("display_value", 0, "invalid display_value"),
+        ("min", 0, "invalid minimum"),
+        ("max", float("inf"), "invalid maximum"),
+        ("value", 2.0, "outside its reported range"),
+        ("is_quantized", 0, "invalid is_quantized"),
+        ("default_value", 0, "default_value"),
+        ("automation_state", 3, "invalid automation_state"),
+    ):
+        rejected(mixer.volume, name, malformed, expected_error)
+    rejected(mixer.track_activator, "value_items", ("Off", 1), "value_items entry")
+    for name in ("has_groove", "has_envelopes", "is_audio_clip", "looping", "is_playing"):
+        rejected(clip, name, int(getattr(clip, name)), f"invalid {name}")
+    rejected(clip, "is_audio_clip", True, "incoherent audio/MIDI identity")
+    rejected(clip, "is_arrangement_clip", True, "Arrangement Clip")
+    rejected(clip, "is_session_clip", 1, "invalid Live 11+ location identity")
+    rejected(clip, "is_take_lane_clip", True, "non-Session or Take Lane Clip")
+    rejected(clip, "end_time", 4, "invalid Clip end_time")
+    rejected(clip, "end_time", 3.0, "incoherent unlooped end_time")
+    rejected(clip, "launch_mode", True, "invalid launch_mode")
+    rejected(clip, "launch_quantization", 15, "invalid launch_quantization")
+    rejected(clip, "legato", 0, "invalid legato")
+    rejected(clip, "velocity_amount", 0, "invalid velocity_amount")
+    rejected(device, "latency_in_samples", True, "invalid latency_in_samples")
+    rejected(device, "latency_in_ms", -0.1, "invalid latency_in_ms")
+    rejected(song, "tempo", 120, "Song tempo")
+    rejected(song, "signature_numerator", 4.0, "Song signature_numerator")
+    rejected(song.scenes[0], "name", object(), "Scene name")
+    rejected(song.cue_points[0], "time", 0, "CuePoint time")
+    rejected(clip, "name", object(), "Clip name")
+    rejected(clip, "length", 4, "Clip length")
+    rejected(device, "name", object(), "Device name")
 
-    track = surface._song.tracks[0]
-    track.has_midi_input = False
+    inject(track, "has_midi_input", False)
     no_input = handler.handle(request)
+    restore(track, "has_midi_input")
     assert no_input["success"] is True
     assert {
-        property_name: no_input["value"]["song"]["tracks"][0][property_name]
-        for property_name in (
+        name: no_input["value"]["song"]["tracks"][0][name]
+        for name in (
             "input_routing_type",
-            "input_routing_channel",
-            "available_input_routing_types",
             "available_input_routing_channels",
             "input_meter_level",
             "output_meter_level",
         )
-    } == {
-        "input_routing_type": None,
-        "input_routing_channel": None,
-        "available_input_routing_types": None,
-        "available_input_routing_channels": None,
-        "input_meter_level": None,
-        "output_meter_level": None,
-    }
-    track.has_midi_input = True
-
-    track.has_audio_output = False
-    no_audio_output = handler.handle(request)
-    assert no_audio_output["success"] is True
-    assert {
-        property_name: no_audio_output["value"]["song"]["tracks"][0][property_name]
-        for property_name in (
-            "input_meter_left",
-            "input_meter_right",
-            "output_meter_left",
-            "output_meter_right",
-        )
-    } == {
-        "input_meter_left": None,
-        "input_meter_right": None,
-        "output_meter_left": None,
-        "output_meter_right": None,
-    }
-    track.has_audio_output = True
-
-    for property_name, malformed_value in (
-        ("input_routing_type", {"display_name": "All Ins"}),
-        ("input_routing_channel", {"display_name": "All Channels", "identifier": 1}),
-    ):
-        original = getattr(track, property_name)
-        setattr(track, property_name, malformed_value)
-        malformed = handler.handle(request)
-        assert malformed["success"] is False
-        assert f"invalid {property_name} dictionary" in malformed["error"]
-        setattr(track, property_name, original)
-
-    for property_name, malformed_value, expected_error in (
+    } == dict.fromkeys(
         (
-            "available_input_routing_types",
-            {"available_input_routing_types": "All Ins"},
-            "invalid available_input_routing_types list",
-        ),
-        (
+            "input_routing_type",
             "available_input_routing_channels",
-            {
-                "available_input_routing_channels": [
-                    {"display_name": "All Channels", "identifier": "all_channels", "extra": 1}
-                ]
-            },
-            "invalid available_input_routing_channels dictionary",
-        ),
-    ):
-        original = getattr(track, property_name)
-        setattr(track, property_name, malformed_value)
-        malformed = handler.handle(request)
-        assert malformed["success"] is False
-        assert expected_error in malformed["error"]
-        setattr(track, property_name, original)
-
-    original_selected_input = track.input_routing_type
-    track.input_routing_type = {"display_name": "Ext. In", "identifier": "external"}
-    malformed = handler.handle(request)
-    assert malformed["success"] is False
-    assert "not in available_input_routing_types" in malformed["error"]
-    track.input_routing_type = original_selected_input
-
-    for property_name, malformed_value in (
-        ("output_routing_type", {"display_name": "Master"}),
-        (
-            "output_routing_type",
-            {"display_name": "Master", "identifier": "master", "unexpected": True},
-        ),
-        ("output_routing_channel", {"display_name": "1/2", "identifier": 1}),
-        ("output_routing_channel", ("1/2", "stereo_1_2")),
-    ):
-        original = getattr(track, property_name)
-        setattr(track, property_name, malformed_value)
-        malformed = handler.handle(request)
-        assert malformed["success"] is False
-        assert f"invalid {property_name} dictionary" in malformed["error"]
-        setattr(track, property_name, original)
-
-    return_track = surface._song.return_tracks[0]
-    original_return_route = return_track.output_routing_type
-    return_track.output_routing_type = {"display_name": "Master", "identifier": False}
-    malformed = handler.handle(request)
-    assert malformed["success"] is False
-    assert "invalid output_routing_type dictionary" in malformed["error"]
-    return_track.output_routing_type = original_return_route
-
-    for property_name, malformed_value, expected_error in (
-        ("available_output_routing_types", [], "invalid available_output_routing_types dictionary"),
-        (
-            "available_output_routing_types",
-            {"available_output_routing_types": "Master"},
-            "invalid available_output_routing_types list",
-        ),
-        (
-            "available_output_routing_channels",
-            {
-                "available_output_routing_channels": [
-                    {"display_name": "1/2", "identifier": "stereo_1_2", "unexpected": True}
-                ]
-            },
-            "invalid available_output_routing_channels dictionary",
-        ),
-    ):
-        original = getattr(track, property_name)
-        setattr(track, property_name, malformed_value)
-        malformed = handler.handle(request)
-        assert malformed["success"] is False
-        assert expected_error in malformed["error"]
-        setattr(track, property_name, original)
-
-    original_selected_type = track.output_routing_type
-    track.output_routing_type = {"display_name": "External", "identifier": "external"}
-    malformed = handler.handle(request)
-    assert malformed["success"] is False
-    assert "not in available_output_routing_types" in malformed["error"]
-    track.output_routing_type = original_selected_type
-
-    for property_name in ("mute", "solo", "muted_via_solo"):
-        setattr(surface._song.return_tracks[0], property_name, 0)
-        malformed = handler.handle(request)
-        assert malformed["success"] is False
-        assert f"invalid {property_name}" in malformed["error"]
-        setattr(surface._song.return_tracks[0], property_name, False)
-
-    surface._song.tracks[0].mixer_device.crossfade_assign = True
-    malformed = handler.handle(request)
-    assert malformed["success"] is False
-    assert "invalid crossfade_assign" in malformed["error"]
-    surface._song.tracks[0].mixer_device.crossfade_assign = 3
-    malformed = handler.handle(request)
-    assert malformed["success"] is False
-    assert "invalid crossfade_assign" in malformed["error"]
-    surface._song.tracks[0].mixer_device.crossfade_assign = 1
-
-    surface._song.tracks[0].mixer_device.panning_mode = True
-    malformed = handler.handle(request)
-    assert malformed["success"] is False
-    assert "invalid panning_mode" in malformed["error"]
-    surface._song.tracks[0].mixer_device.panning_mode = 2
-    malformed = handler.handle(request)
-    assert malformed["success"] is False
-    assert "invalid panning_mode" in malformed["error"]
-    surface._song.tracks[0].mixer_device.panning_mode = 0
-
-    Parameter.value = 0
-    malformed = handler.handle(request)
-    assert malformed["success"] is False
-    assert "invalid value" in malformed["error"]
-    Parameter.value = 0.5
-
-    Parameter.display_value = 0
-    malformed = handler.handle(request)
-    assert malformed["success"] is False
-    assert "invalid display_value" in malformed["error"]
-    Parameter.display_value = 0.0
-
-    Parameter.min = 0
-    malformed = handler.handle(request)
-    assert malformed["success"] is False
-    assert "invalid minimum" in malformed["error"]
-    Parameter.min = 0.0
-
-    Parameter.max = float("inf")
-    malformed = handler.handle(request)
-    assert malformed["success"] is False
-    assert "invalid maximum" in malformed["error"]
-    Parameter.max = 1.0
-
-    Parameter.min = 2.0
-    malformed = handler.handle(request)
-    assert malformed["success"] is False
-    assert "invalid maximum" in malformed["error"]
-    Parameter.min = 0.0
-
-    Parameter.value = 2.0
-    malformed = handler.handle(request)
-    assert malformed["success"] is False
-    assert "outside its reported range" in malformed["error"]
-    Parameter.value = 0.5
-
-    Parameter.is_quantized = 0
-    malformed = handler.handle(request)
-    assert malformed["success"] is False
-    assert "invalid is_quantized" in malformed["error"]
-    Parameter.is_quantized = False
-
-    Parameter.default_value = 0
-    malformed = handler.handle(request)
-    assert malformed["success"] is False
-    assert "default_value" in malformed["error"]
-    Parameter.default_value = 2.0
-    malformed = handler.handle(request)
-    assert malformed["success"] is False
-    assert "outside its reported range" in malformed["error"]
-    Parameter.default_value = 0.0
-
-    ActivatorParameter.is_quantized = 1
-    malformed = handler.handle(request)
-    assert malformed["success"] is False
-    assert "invalid is_quantized" in malformed["error"]
-    ActivatorParameter.is_quantized = True
-
-    ActivatorParameter.value_items = ["Off", 1]
-    malformed = handler.handle(request)
-    assert malformed["success"] is False
-    assert "value_items entry" in malformed["error"]
-    ActivatorParameter.value_items = ("Off", "On")
-
-    Clip.has_groove = 0
-    malformed = handler.handle(request)
-    assert malformed["success"] is False
-    assert "invalid has_groove" in malformed["error"]
-    Clip.has_groove = False
-
-    Clip.has_envelopes = 0
-    malformed = handler.handle(request)
-    assert malformed["success"] is False
-    assert "invalid has_envelopes" in malformed["error"]
-    Clip.has_envelopes = False
-
-    for property_name in (
-        "is_audio_clip",
-        "is_midi_clip",
-        "is_arrangement_clip",
-        "looping",
-        "muted",
-    ):
-        original = getattr(Clip, property_name)
-        setattr(Clip, property_name, int(original))
-        malformed = handler.handle(request)
-        assert malformed["success"] is False
-        assert f"invalid {property_name}" in malformed["error"]
-        setattr(Clip, property_name, original)
-
-    Clip.is_audio_clip = True
-    malformed = handler.handle(request)
-    assert malformed["success"] is False
-    assert "incoherent audio/MIDI identity" in malformed["error"]
-    Clip.is_audio_clip = False
-
-    Clip.is_arrangement_clip = True
-    malformed = handler.handle(request)
-    assert malformed["success"] is False
-    assert "Arrangement Clip" in malformed["error"]
-    Clip.is_arrangement_clip = False
-
-    for property_name in ("is_session_clip", "is_take_lane_clip"):
-        original = getattr(Clip, property_name)
-        setattr(Clip, property_name, int(original))
-        malformed = handler.handle(request)
-        assert malformed["success"] is False
-        assert "invalid Live 11+ location identity" in malformed["error"]
-        setattr(Clip, property_name, original)
-
-    Clip.is_session_clip = False
-    malformed = handler.handle(request)
-    assert malformed["success"] is False
-    assert "non-Session or Take Lane Clip" in malformed["error"]
-    Clip.is_session_clip = True
-
-    Clip.is_take_lane_clip = True
-    malformed = handler.handle(request)
-    assert malformed["success"] is False
-    assert "non-Session or Take Lane Clip" in malformed["error"]
-    Clip.is_take_lane_clip = False
-
-    Clip.end_time = 4
-    malformed = handler.handle(request)
-    assert malformed["success"] is False
-    assert "invalid Clip end_time" in malformed["error"]
-    Clip.end_time = 4.0
-
-    Clip.end_time = 3.0
-    malformed = handler.handle(request)
-    assert malformed["success"] is False
-    assert "incoherent unlooped end_time" in malformed["error"]
-    Clip.end_time = 4.0
-
-    for property_name in (
-        "is_playing",
-        "is_recording",
-        "is_overdubbing",
-        "is_triggered",
-        "will_record_on_start",
-    ):
-        setattr(Clip, property_name, 0)
-        malformed = handler.handle(request)
-        assert malformed["success"] is False
-        assert f"invalid {property_name}" in malformed["error"]
-        setattr(Clip, property_name, False)
-
-    Clip.launch_mode = True
-    malformed = handler.handle(request)
-    assert malformed["success"] is False
-    assert "invalid launch_mode" in malformed["error"]
-    Clip.launch_mode = 0
-
-    Clip.launch_quantization = 15
-    malformed = handler.handle(request)
-    assert malformed["success"] is False
-    assert "invalid launch_quantization" in malformed["error"]
-    Clip.launch_quantization = 1
-
-    Clip.legato = 0
-    malformed = handler.handle(request)
-    assert malformed["success"] is False
-    assert "invalid legato" in malformed["error"]
-    Clip.legato = False
-
-    Clip.velocity_amount = 0
-    malformed = handler.handle(request)
-    assert malformed["success"] is False
-    assert "invalid velocity_amount" in malformed["error"]
-    Clip.velocity_amount = 0.0
-
-    Device.latency_in_samples = True
-    malformed = handler.handle(request)
-    assert malformed["success"] is False
-    assert "invalid latency_in_samples" in malformed["error"]
-    Device.latency_in_samples = 128
-
-    Device.latency_in_ms = 3
-    malformed = handler.handle(request)
-    assert malformed["success"] is False
-    assert "invalid latency_in_ms" in malformed["error"]
-
-    Device.latency_in_ms = -0.1
-    malformed = handler.handle(request)
-    assert malformed["success"] is False
-    assert "invalid latency_in_ms" in malformed["error"]
-    Device.latency_in_ms = 2.9
-
-    for owner, property_name, malformed_value, expected_error in (
-        (surface._song, "tempo", 120, "Song tempo"),
-        (surface._song, "signature_numerator", 4.0, "Song signature_numerator"),
-        (surface._song.scenes[0], "name", object(), "Scene name"),
-        (surface._song.cue_points[0], "time", 0, "CuePoint time"),
-        (Clip, "name", object(), "Clip name"),
-        (Clip, "length", 4, "Clip length"),
-        (Device, "name", object(), "Device name"),
-    ):
-        original = getattr(owner, property_name)
-        setattr(owner, property_name, malformed_value)
-        malformed = handler.handle(request)
-        assert malformed["success"] is False
-        assert expected_error in malformed["error"]
-        setattr(owner, property_name, original)
+            "input_meter_level",
+            "output_meter_level",
+        )
+    )
 
     request["args"] = ["unexpected"]
     response = handler.handle(request)
@@ -2817,214 +1615,55 @@ def test_target_snapshot_is_single_call_structural_plan_evidence(monkeypatch, su
     assert "outside Sunny bridge protocol" in response["error"]
 
 
+def test_target_snapshot_accepts_live_container_types_for_documented_lists(live):
+    """Live may return Base vectors where Cycling '74 documents lists (#22); both are read."""
+    track, _ = _snapshot_fixture(live)
+    handler = LomHandler(live.surface)
+    inject(live.song, "scenes", Vector(live.song.scenes))
+    inject(track, "arrangement_clips", Vector())
+    inject(track.mixer_device.track_activator, "value_items", ("Off", "On"))
+    inject(live.song, "scale_intervals", [0, 2, 4, 5, 7, 9, 11])
+
+    response = _call(handler, "song", "sunny_get_target_snapshot")
+    assert response["success"] is True, response
+    assert response["value"]["song"]["scene_count"] == 2
+    assert response["value"]["song"]["scale"]["intervals"] == [0, 2, 4, 5, 7, 9, 11]
+
+
 def test_target_snapshot_pitch_context_is_version_coupled(monkeypatch):
     """Unsupported older Live versions emit explicit null context instead of probing it."""
+    live = LiveSet((11, 3, 0)).install(monkeypatch)
+    response = _call(LomHandler(live.surface), "song", "sunny_get_target_snapshot")
 
-    class Application:
-        get_major_version = staticmethod(lambda: 11)
-        get_minor_version = staticmethod(lambda: 3)
-        get_bugfix_version = staticmethod(lambda: 0)
-        get_version_string = staticmethod(lambda: "11.3.0")
-
-    monkeypatch.setitem(
-        sys.modules,
-        "Live",
-        SimpleNamespace(Application=SimpleNamespace(get_application=lambda: Application())),
-    )
-
-    class Parameter:
-        value = 0.5
-        display_value = 0.0
-        min = 0.0
-        max = 1.0
-        is_quantized = False
-        default_value = 0.0
-        state = 0
-        automation_state = 0
-        is_enabled = True
-
-    class ActivatorParameter(Parameter):
-        value = 1.0
-        display_value = 1.0
-        is_quantized = True
-        value_items = ("Off", "On")
-
-    class PanParameter(Parameter):
-        min = -1.0
-
-    class Mixer:
-        volume = Parameter()
-        track_activator = ActivatorParameter()
-        panning = PanParameter()
-        sends = ()
-        panning_mode = 0
-
-    class Master:
-        name = "Master"
-        devices = ()
-        mixer_device = Mixer()
-
-    class Song:
-        tempo = 120.0
-        signature_numerator = 4
-        signature_denominator = 4
-        is_playing = False
-        is_counting_in = False
-        arrangement_overdub = False
-        overdub = False
-        record_mode = False
-        session_record = False
-        session_automation_record = False
-        is_ableton_link_enabled = False
-        is_ableton_link_start_stop_sync_enabled = False
-        tempo_follower_enabled = False
-        nudge_down = False
-        nudge_up = False
-        back_to_arranger = False
-        re_enable_automation_enabled = False
-        loop = False
-        metronome = False
-        scenes = ()
-        tracks = ()
-        return_tracks = ()
-        master_track = Master()
-        cue_points = ()
-
-    handler = LomHandler(SimpleNamespace(song=lambda: Song()))
-    response = handler.handle(
-        _versioned(
-            {
-                "type": "call",
-                "path": "song",
-                "name": "sunny_get_target_snapshot",
-                "args": [],
-            }
-        )
-    )
-
-    assert response["success"] is True
+    assert response["success"] is True, response
     assert response["value"]["song"]["scale"] is None
     assert response["value"]["song"]["tuning_system"] is None
 
 
 @pytest.mark.parametrize(
-    ("scale_intervals", "pseudo_octave", "tuning_overrides"),
+    ("owner", "name", "malformed"),
     [
-        ([0, True], 1200.0, {}),
-        ([0, 2, 4], float("inf"), {}),
-        ([0, 2, 4], 1200, {}),
-        ([0, 2, 4], 1200.0, {"name": 12}),
-        ([0, 2, 4], 1200.0, {"lowest_note": []}),
-        ([0, 2, 4], 1200.0, {"highest_note": {"nested": float("nan")}}),
-        ([0, 2, 4], 1200.0, {"note_tunings": {"first": [0.0], "second": [100.0]}}),
-        ([0, 2, 4], 1200.0, {"note_tunings": {"only": [0.0, "100"]}}),
+        ("song", "scale_intervals", [0, True]),
+        ("song", "scale_intervals", "0,2,4"),
+        ("song", "root_note", 12),
+        ("song", "scale_mode", 1),
+        ("tuning", "pseudo_octave_in_cents", float("inf")),
+        ("tuning", "pseudo_octave_in_cents", 1200),
+        ("tuning", "name", 12),
+        ("tuning", "lowest_note", []),
+        ("tuning", "highest_note", {"nested": float("nan")}),
+        ("tuning", "note_tunings", {"first": [0.0], "second": [100.0]}),
+        ("tuning", "note_tunings", {"only": [0.0, "100"]}),
     ],
 )
-def test_target_snapshot_rejects_malformed_host_pitch_context(
-    monkeypatch, scale_intervals, pseudo_octave, tuning_overrides
-):
+def test_target_snapshot_rejects_malformed_host_pitch_context(live, owner, name, malformed):
     """Private host wrappers cannot smuggle malformed scale/tuning facts into evidence."""
+    if owner == "song":
+        inject(live.song, name, malformed)
+    else:
+        setattr(live.song.tuning_system, name, malformed)
 
-    class Application:
-        get_major_version = staticmethod(lambda: 12)
-        get_minor_version = staticmethod(lambda: 3)
-        get_bugfix_version = staticmethod(lambda: 5)
-        get_version_string = staticmethod(lambda: "12.3.5")
-
-    monkeypatch.setitem(
-        sys.modules,
-        "Live",
-        SimpleNamespace(Application=SimpleNamespace(get_application=lambda: Application())),
-    )
-
-    class Parameter:
-        value = 0.5
-        display_value = 0.0
-        min = 0.0
-        max = 1.0
-        is_quantized = False
-        default_value = 0.0
-        state = 0
-        automation_state = 0
-        is_enabled = True
-
-    class ActivatorParameter(Parameter):
-        value = 1.0
-        display_value = 1.0
-        is_quantized = True
-        value_items = ("Off", "On")
-
-    class PanParameter(Parameter):
-        min = -1.0
-
-    class Mixer:
-        volume = Parameter()
-        track_activator = ActivatorParameter()
-        panning = PanParameter()
-        sends = ()
-        panning_mode = 0
-
-    class Master:
-        name = "Master"
-        devices = ()
-        mixer_device = Mixer()
-
-    class Tuning:
-        name = "Malformed"
-        pseudo_octave_in_cents = pseudo_octave
-        lowest_note = {"opaque_fixture": "lowest"}
-        highest_note = {"opaque_fixture": "highest"}
-        reference_pitch = {"opaque_fixture": "reference"}
-        note_tunings = {"opaque_fixture": [0.0, 100.0]}
-
-    for property_name, value in tuning_overrides.items():
-        setattr(Tuning, property_name, value)
-
-    class Song:
-        tempo = 120.0
-        signature_numerator = 4
-        signature_denominator = 4
-        is_playing = False
-        is_counting_in = False
-        arrangement_overdub = False
-        overdub = False
-        record_mode = False
-        session_record = False
-        session_automation_record = False
-        is_ableton_link_enabled = False
-        is_ableton_link_start_stop_sync_enabled = False
-        tempo_follower_enabled = False
-        nudge_down = False
-        nudge_up = False
-        back_to_arranger = False
-        re_enable_automation_enabled = False
-        loop = False
-        metronome = False
-        root_note = 0
-        scale_name = "Major"
-        scale_mode = True
-        tuning_system = Tuning()
-        scenes = ()
-        tracks = ()
-        return_tracks = ()
-        master_track = Master()
-        cue_points = ()
-
-        def __init__(self):
-            self.scale_intervals = scale_intervals
-
-    handler = LomHandler(SimpleNamespace(song=lambda: Song()))
-    response = handler.handle(
-        _versioned(
-            {
-                "type": "call",
-                "path": "song",
-                "name": "sunny_get_target_snapshot",
-                "args": [],
-            }
-        )
-    )
-
+    response = _call(LomHandler(live.surface), "song", "sunny_get_target_snapshot")
     assert response["success"] is False
     assert "invalid" in response["error"].lower()
 

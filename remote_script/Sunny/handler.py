@@ -57,6 +57,7 @@ _SONG_CALLS = frozenset(
         "sunny_get_target_profile",
         "sunny_get_target_snapshot",
         "sunny_get_scene_count",
+        "sunny_get_track_count",
         "sunny_get_return_track_count",
         "sunny_set_cue",
         "create_scene",
@@ -159,6 +160,45 @@ def _finite_number(value: Any) -> bool:
 def _protocol_index(value: Any, *, allow_append: bool = False) -> bool:
     minimum = -1 if allow_append else 0
     return not isinstance(value, bool) and isinstance(value, int) and minimum <= value <= 2147483647
+
+
+_NOTE_FIELDS = (
+    "note_id",
+    "pitch",
+    "start_time",
+    "duration",
+    "velocity",
+    "mute",
+    "probability",
+    "velocity_deviation",
+    "release_velocity",
+)
+
+# Live returns the created Track, Scene or Clip from these calls. Sunny's
+# evidence is re-observed through dedicated requests, so the private host
+# object is discarded rather than serialised.
+_STRUCTURAL_CALLS = frozenset(
+    {"create_midi_track", "create_return_track", "create_scene", "create_clip", "delete_clip"}
+)
+
+
+def _lom_sequence(value: Any) -> tuple[Any, ...] | None:
+    """Return a sized host collection as a tuple, or None for any other value.
+
+    Live's Python API returns tuples for most object collections and its own
+    ``Vector``/``StringVector``/``IntVector`` containers elsewhere; which one a
+    given property uses is not settled by public documentation. Both are sized
+    and iterable. Iterators, strings and mappings are not collections here.
+    """
+    if isinstance(value, (list, tuple)):
+        return tuple(value)
+    if isinstance(value, (str, bytes, bytearray, dict)):
+        return None
+    host_type = type(value)
+    if not hasattr(host_type, "__len__") or not hasattr(host_type, "__iter__"):
+        return None
+    items = tuple(value)
+    return items if len(items) == len(value) else None
 
 
 def _valid_routing_dictionary(value: Any) -> bool:
@@ -339,6 +379,7 @@ def _valid_request_arguments(req_type: str, kind: str, name: str, args: list[Any
             "sunny_get_target_profile",
             "sunny_get_target_snapshot",
             "sunny_get_scene_count",
+            "sunny_get_track_count",
             "sunny_get_return_track_count",
             "create_return_track",
         ):
@@ -578,6 +619,8 @@ class LomHandler:
             elif req_type == "call":
                 if name == "sunny_get_scene_count":
                     return {"success": True, "value": self._collection_count(obj.scenes, "scenes")}
+                if name == "sunny_get_track_count":
+                    return {"success": True, "value": self._collection_count(obj.tracks, "tracks")}
                 if name == "sunny_get_return_track_count":
                     return {
                         "success": True,
@@ -603,6 +646,17 @@ class LomHandler:
                 if name == "sunny_get_device_parameter":
                     evidence = self._get_device_parameter(obj, *args)
                     return {"success": True, "value": self._serialise(evidence)}
+                if name == "add_new_notes":
+                    return {"success": True, "value": self._add_new_notes(obj, args[0]["notes"])}
+                if name == "get_notes_by_id":
+                    notes = obj.get_notes_by_id(tuple(args[0]["note_ids"]))
+                    return {"success": True, "value": self._midi_notes_dictionary(notes)}
+                if name == "get_all_notes_extended":
+                    notes = obj.get_all_notes_extended()
+                    return {"success": True, "value": self._midi_notes_dictionary(notes)}
+                if name in _STRUCTURAL_CALLS:
+                    getattr(obj, name)(*args)
+                    return {"success": True, "value": None}
                 if name == "sunny_clear_all_envelopes":
                     obj.clear_all_envelopes()
                     has_envelopes = obj.has_envelopes
@@ -677,11 +731,76 @@ class LomHandler:
         raise RuntimeError("Cannot access Ableton Song object")
 
     @staticmethod
-    def _get_application() -> Any:
-        """Return Live's documented Application object."""
+    def _live_module() -> Any:
+        """Return Live's embedded ``Live`` module, imported only inside a host.
+
+        Tests supply the offline model under the same module name.
+        """
         import Live
 
-        return Live.Application.get_application()
+        return Live
+
+    @classmethod
+    def _get_application(cls) -> Any:
+        """Return Live's documented Application object."""
+        return cls._live_module().Application.get_application()
+
+    @classmethod
+    def _add_new_notes(cls, clip: Any, notes: list[dict[str, Any]]) -> list[int]:
+        """Insert validated wire notes as ``MidiNoteSpecification`` objects; return their IDs.
+
+        ``Clip.add_new_notes`` accepts only an iterable of specifications, the
+        form Ableton's own MxDCore builds with ``MidiNoteSpecification(**note)``.
+        """
+        specification_type = cls._live_module().Clip.MidiNoteSpecification
+        specifications = tuple(
+            specification_type(
+                pitch=note["pitch"],
+                start_time=float(note["start_time"]),
+                duration=float(note["duration"]),
+                velocity=float(note["velocity"]),
+                mute=note["mute"],
+                probability=note["probability"],
+                velocity_deviation=note["velocity_deviation"],
+                release_velocity=note["release_velocity"],
+            )
+            for note in notes
+        )
+        note_ids = _lom_sequence(clip.add_new_notes(specifications))
+        if note_ids is None:
+            raise RuntimeError("Clip.add_new_notes returned no note IDs")
+        if len(note_ids) != len(specifications) or any(
+            isinstance(note_id, bool) or not isinstance(note_id, int) for note_id in note_ids
+        ):
+            raise RuntimeError("Clip.add_new_notes returned invalid note IDs")
+        return [int(note_id) for note_id in note_ids]
+
+    @staticmethod
+    def _midi_note_dictionary(note: Any) -> dict[str, Any]:
+        """Convert one host ``MidiNote`` to the nine-field wire dictionary."""
+        fields = {}
+        for field in _NOTE_FIELDS:
+            value = getattr(note, field)
+            if field == "mute":
+                valid = isinstance(value, bool)
+            elif field in ("note_id", "pitch"):
+                valid = not isinstance(value, bool) and isinstance(value, int)
+                value = int(value) if valid else value
+            else:
+                valid = _finite_number(value)
+                value = float(value) if valid else value
+            if not valid:
+                raise RuntimeError(f"Clip returned invalid MidiNote {field}")
+            fields[field] = value
+        return fields
+
+    @classmethod
+    def _midi_notes_dictionary(cls, notes: Any) -> dict[str, list[dict[str, Any]]]:
+        """Convert a host ``MidiNoteVector`` to the wire ``{"notes": [...]}`` form."""
+        items = _lom_sequence(notes)
+        if items is None:
+            raise RuntimeError("Clip returned an invalid MidiNote collection")
+        return {"notes": [cls._midi_note_dictionary(note) for note in items]}
 
     def _target_profile(self) -> dict:
         """Report observed host facts and conservative deployment capabilities.
@@ -805,26 +924,57 @@ class LomHandler:
 
     @staticmethod
     def _routing_dictionary(value: Any, property_name: str) -> dict[str, str]:
-        if type(value) is not dict or set(value) != {"display_name", "identifier"}:
-            raise RuntimeError(f"Track returned invalid {property_name} dictionary")
-        display_name = value["display_name"]
-        identifier = value["identifier"]
-        if type(display_name) is not str or type(identifier) is not str:
-            raise RuntimeError(f"Track returned invalid {property_name} dictionary")
-        return {"display_name": display_name, "identifier": identifier}
+        """Describe one host ``RoutingType`` or ``RoutingChannel`` on the wire.
+
+        The identifier is derived from what the route names, not from the host
+        wrapper. Ableton's MxDCore uses ``hash(routing_object)``, which is only
+        meaningful within one Live session and for one track's own options,
+        whereas a Sunny plan names a route before its target track exists and
+        applies it later. A type is identified by its category and display name,
+        so "Master" the main output and a track called "Master" stay distinct;
+        a channel by its display name within its type. Two advertised options
+        with one identity are refused at mutation rather than chosen by order.
+        """
+        try:
+            display_name = value.display_name
+            category = value.category if "type" in property_name else None
+        except AttributeError as error:
+            raise RuntimeError(f"Track returned invalid {property_name} object") from error
+        if type(display_name) is not str:
+            raise RuntimeError(f"Track returned invalid {property_name} object")
+        if category is None:
+            return {"display_name": display_name, "identifier": display_name}
+        if isinstance(category, bool) or not isinstance(category, int):
+            raise RuntimeError(f"Track returned invalid {property_name} category")
+        return {"display_name": display_name, "identifier": f"{int(category)}:{display_name}"}
+
+    @classmethod
+    def _routing_options(cls, value: Any, property_name: str) -> list[tuple[dict[str, str], Any]]:
+        options = _lom_sequence(value)
+        if options is None:
+            raise RuntimeError(f"Track returned invalid {property_name} collection")
+        return [(cls._routing_dictionary(option, property_name), option) for option in options]
 
     @classmethod
     def _routing_collection(cls, value: Any, property_name: str) -> dict[str, list[dict[str, str]]]:
-        if type(value) is not dict or set(value) != {property_name}:
-            raise RuntimeError(f"Track returned invalid {property_name} dictionary")
-        raw_options = value[property_name]
-        if type(raw_options) not in (list, tuple):
-            raise RuntimeError(f"Track returned invalid {property_name} list")
-        return {
-            property_name: [
-                cls._routing_dictionary(option, property_name) for option in raw_options
-            ]
-        }
+        # The Max dictionary form, {property: [route, ...]}, is the wire shape.
+        return {property_name: [route for route, _ in cls._routing_options(value, property_name)]}
+
+    @classmethod
+    def _advertised_route(cls, track: Any, property_name: str, requested: dict[str, str]) -> Any:
+        """Return the one host object in ``available_*`` whose description is ``requested``."""
+        matches = [
+            option
+            for route, option in cls._routing_options(getattr(track, property_name), property_name)
+            if route == requested
+        ]
+        if not matches:
+            raise RuntimeError(f"Requested output routing is not in {property_name}")
+        if len(matches) != 1:
+            raise RuntimeError(
+                f"Requested output routing is ambiguous in {property_name} ({len(matches)} matches)"
+            )
+        return matches[0]
 
     @classmethod
     def _output_routing_snapshot(cls, track: Any) -> dict[str, Any]:
@@ -856,16 +1006,14 @@ class LomHandler:
     @classmethod
     def _set_output_routing_type(cls, track: Any, requested_type: dict[str, str]) -> dict[str, Any]:
         """Set one exact currently advertised type and return closed post-set evidence."""
-        requested = cls._routing_dictionary(requested_type, "requested output routing type")
+        requested = {
+            "display_name": requested_type["display_name"],
+            "identifier": requested_type["identifier"],
+        }
         before = cls._output_routing_snapshot(track)
-        if (
-            requested
-            not in before["available_output_routing_types"]["available_output_routing_types"]
-        ):
-            raise RuntimeError(
-                "Requested output routing type is not in available_output_routing_types"
-            )
-        track.output_routing_type = requested
+        track.output_routing_type = cls._advertised_route(
+            track, "available_output_routing_types", requested
+        )
         after = cls._output_routing_snapshot(track)
         if after["output_routing_type"] != requested:
             raise RuntimeError("Track output routing type readback differs from request")
@@ -883,26 +1031,20 @@ class LomHandler:
         requested_channel: dict[str, str],
     ) -> dict[str, Any]:
         """Revalidate the type, set one advertised channel, and return final route evidence."""
-        expected = cls._routing_dictionary(expected_type, "expected output routing type")
-        requested = cls._routing_dictionary(requested_channel, "requested output routing channel")
+        expected = {
+            "display_name": expected_type["display_name"],
+            "identifier": expected_type["identifier"],
+        }
+        requested = {
+            "display_name": requested_channel["display_name"],
+            "identifier": requested_channel["identifier"],
+        }
         before = cls._output_routing_snapshot(track)
         if before["output_routing_type"] != expected:
             raise RuntimeError("Track output routing type changed before channel mutation")
-        if (
-            expected
-            not in before["available_output_routing_types"]["available_output_routing_types"]
-        ):
-            raise RuntimeError(
-                "Expected output routing type is not in available_output_routing_types"
-            )
-        if (
-            requested
-            not in before["available_output_routing_channels"]["available_output_routing_channels"]
-        ):
-            raise RuntimeError(
-                "Requested output routing channel is not in available_output_routing_channels"
-            )
-        track.output_routing_channel = requested
+        track.output_routing_channel = cls._advertised_route(
+            track, "available_output_routing_channels", requested
+        )
         after = cls._output_routing_snapshot(track)
         if after["output_routing_type"] != expected:
             raise RuntimeError("Track output routing type changed during channel mutation")
@@ -1112,12 +1254,12 @@ class LomHandler:
         arrangement_clip_count = None
         take_lane_count = None
         if live_11_content_state_available:
-            arrangement_clips = track.arrangement_clips
-            if type(arrangement_clips) not in (list, tuple):
+            arrangement_clips = _lom_sequence(track.arrangement_clips)
+            if arrangement_clips is None:
                 raise RuntimeError("Track returned invalid arrangement_clips collection")
             arrangement_clip_count = len(arrangement_clips)
-            take_lanes = track.take_lanes
-            if type(take_lanes) not in (list, tuple):
+            take_lanes = _lom_sequence(track.take_lanes)
+            if take_lanes is None:
                 raise RuntimeError("Track returned invalid take_lanes collection")
             take_lane_count = len(take_lanes)
         clip_slots = [
@@ -1343,7 +1485,7 @@ class LomHandler:
     def _scale_snapshot(song: Any) -> dict[str, Any]:
         """Return the closed Song scale tuple documented by the current LOM."""
         root_note = song.root_note
-        intervals = song.scale_intervals
+        intervals = _lom_sequence(song.scale_intervals)
         scale_mode = song.scale_mode
         if (
             isinstance(root_note, bool)
@@ -1352,7 +1494,7 @@ class LomHandler:
         ):
             raise RuntimeError("Song returned an invalid scale root note")
         if (
-            not isinstance(intervals, (list, tuple))
+            intervals is None
             or not intervals
             or len(intervals) > 128
             or any(isinstance(value, bool) or not isinstance(value, int) for value in intervals)
@@ -1361,9 +1503,9 @@ class LomHandler:
         if not isinstance(scale_mode, bool):
             raise RuntimeError("Song returned an invalid scale mode")
         return {
-            "root_note": root_note,
+            "root_note": int(root_note),
             "name": LomHandler._lom_string(song.scale_name, "Song scale_name"),
-            "intervals": list(intervals),
+            "intervals": [int(value) for value in intervals],
             "mode": scale_mode,
         }
 
@@ -1707,9 +1849,10 @@ class LomHandler:
 
     @staticmethod
     def _collection_count(value: Any, property_name: str) -> int:
-        if type(value) not in (list, tuple):
+        items = _lom_sequence(value)
+        if items is None:
             raise RuntimeError(f"Song returned invalid {property_name} collection")
-        count = len(value)
+        count = len(items)
         if count > 2147483647:
             raise RuntimeError(f"Song returned oversized {property_name} collection")
         return count
@@ -1732,8 +1875,9 @@ class LomHandler:
     ) -> tuple[float | None, list[str] | None]:
         """Preserve the LOM's conditional domain without assigning label semantics."""
         if is_quantized:
-            raw_items = parameter.value_items
-            if type(raw_items) not in (list, tuple):
+            # Cycling '74 types value_items as StringVector; see issue #22.
+            raw_items = _lom_sequence(parameter.value_items)
+            if raw_items is None:
                 raise RuntimeError(f"{property_name} returned invalid value_items")
             return None, [
                 cls._lom_string(item, f"{property_name} value_items entry") for item in raw_items
@@ -1767,10 +1911,12 @@ class LomHandler:
             return None
         if type(value) in (bool, str):
             return value
-        if type(value) is int:
+        if isinstance(value, int):
+            # Live's enum properties are Boost.Python enums, which subclass int
+            # (MxDCore serialises them with int()); bool is handled above.
             if not -(1 << 63) <= value <= (1 << 64) - 1:
                 raise RuntimeError("Live returned an integer outside the JSON wire domain")
-            return value
+            return int(value)
         if type(value) is float:
             if not math.isfinite(value):
                 raise RuntimeError("Live returned a non-finite floating value")
