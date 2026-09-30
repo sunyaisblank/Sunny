@@ -97,17 +97,19 @@ jobs:
       - name: Install dependencies
         run: uv sync --all-extras
 
-      - name: Build native module for this Python
+      # sunny-mcp drives the end-to-end tests against the offline Live model.
+      - name: Build native module and MCP server for this Python
         run: |
           cmake -S . -B .bin-python -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DSUNNY_BUILD_TESTS=OFF \
-            -DSUNNY_BUILD_MCP_SERVER=OFF
-          cmake --build .bin-python --target sunny_native
+            -DSUNNY_BUILD_MCP_SERVER=ON
+          cmake --build .bin-python --target sunny_native sunny-mcp
 
       - name: Run tests
         run: |
           PYTHONPATH=python:remote_script:.bin-python/python \
+          SUNNY_MCP_BINARY=.bin-python/sunny-mcp \
           uv run pytest tests/python/ -v --tb=short
 
       - name: Verify native runtime against type stub
