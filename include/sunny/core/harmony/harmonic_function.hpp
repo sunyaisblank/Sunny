@@ -32,6 +32,7 @@ struct ChordAnalysis {
     HarmonicFunction function; ///< T, S, or D
     std::string numeral;       ///< Roman numeral
     int degree;                ///< Scale degree (1-7)
+    int accidental = 0;        ///< Alteration of the degree: -1 flat, +1 sharp, 0 none
 };
 
 /**

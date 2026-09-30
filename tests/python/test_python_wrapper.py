@@ -190,3 +190,11 @@ class TestChordRoots:
         """
         (chord,) = theory_engine.generate_negative_progression("C", "major", [numeral])
         assert chord["negative_root"] == root
+
+    def test_secondary_dominant_renders_as_applied_chord(self, theory_engine):
+        """add_secondary_dominant emits V/V, which in C is D major (Kostka-Payne)."""
+        numerals = theory_engine.add_secondary_dominant(["I", "V", "I"], "V")
+        assert numerals == ["I", "V/V", "V", "I"]
+        chords = theory_engine.generate_progression("C", "major", numerals)
+        assert chords[1]["root"] == "D"
+        assert {note % 12 for note in chords[1]["notes"]} == {2, 6, 9}

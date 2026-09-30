@@ -44,8 +44,8 @@ enum class CadenceType {
  */
 struct CadenceAnalysis {
     CadenceType type;
-    int penultimate_degree; ///< Scale degree of penultimate chord (0-6)
-    int final_degree;       ///< Scale degree of final chord (0-6)
+    int penultimate_degree; ///< Scale degree of penultimate chord (0-6), altered or not
+    int final_degree;       ///< Scale degree of final chord (0-6), altered or not
     bool is_root_position;  ///< Whether final chord is in root position
     bool soprano_on_tonic;  ///< Whether soprano of final chord is the tonic
 };

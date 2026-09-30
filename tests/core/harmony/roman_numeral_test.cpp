@@ -944,16 +944,98 @@ TEST_CASE("chord recognition round-trip all roots (§16.1.5)", "[harmony][core]"
 // Audit remediation: is_minor casing and accidental spelling
 // =============================================================================
 
-TEST_CASE("chord_to_numeral uses is_minor for casing", "[harmony][core]") {
-    // In A minor (key_root=9), a G major chord (root=7) on degree V
-    // should produce uppercase "V" because the chord quality is major.
-    // The is_minor flag is now consumed rather than suppressed.
-    auto result = chord_to_numeral(7, "major", 9, SCALE_MINOR, true);
-    REQUIRE(result.has_value());
-    // V chord in minor: major quality → uppercase
-    CHECK(result->find("V") != std::string::npos);
-    // Lowercase 'v' should not appear for a major chord
-    CHECK(result->find("v") == std::string::npos);
+TEST_CASE("chord_to_numeral in minor keys", "[harmony][core]") {
+    // A minor (key_root = 9, natural minor scale). Casing follows the chord's
+    // quality; the raised leading tone is read as the seventh degree without
+    // an accidental (Kostka-Payne vii°, V), the subtonic as VII. The previous
+    // version of this test passed G major (VII) as "V" by substring search.
+    CHECK(chord_to_numeral(4, "major", 9, SCALE_MINOR, true) == "V");
+    CHECK(chord_to_numeral(4, "minor", 9, SCALE_MINOR, true) == "v");
+    CHECK(chord_to_numeral(8, "diminished", 9, SCALE_MINOR, true) == "vii°");
+    CHECK(chord_to_numeral(7, "major", 9, SCALE_MINOR, true) == "VII");
+    CHECK(chord_to_numeral(10, "major", 9, SCALE_MINOR, true) == "bII");
+    CHECK(chord_to_numeral(6, "diminished", 9, SCALE_MINOR, true) == "#vi°");
+}
+
+TEST_CASE("chord_to_numeral spells mixture chords with flats", "[harmony][core]") {
+    // Intervals 1, 3, 8 and 10 above the tonic of a major key are the
+    // lowered degrees of the parallel minor (and the Neapolitan).
+    CHECK(chord_to_numeral(1, "major", 0, SCALE_MAJOR) == "bII");
+    CHECK(chord_to_numeral(3, "major", 0, SCALE_MAJOR) == "bIII");
+    CHECK(chord_to_numeral(8, "major", 0, SCALE_MAJOR) == "bVI");
+    CHECK(chord_to_numeral(10, "major", 0, SCALE_MAJOR) == "bVII");
+    CHECK(chord_to_numeral(3, "minor", 0, SCALE_MAJOR) == "biii");
+    // C major in E major lies eight semitones above the tonic.
+    CHECK(chord_to_numeral(0, "major", 4, SCALE_MAJOR) == "bVI");
+}
+
+TEST_CASE("Chromatic numerals round-trip through the parser", "[harmony][core]") {
+    for (const char* numeral : {"bII", "bIII", "biii", "bVI", "bVII", "#IV", "#iv°"}) {
+        INFO(numeral);
+        auto parsed = parse_roman_numeral_full(numeral);
+        REQUIRE(parsed.has_value());
+        CHECK(parsed->extension.empty());
+        auto chord = generate_chord_from_numeral(numeral, 0, SCALE_MAJOR, 4);
+        REQUIRE(chord.has_value());
+        auto back = chord_to_numeral(chord->root, chord->quality, 0, SCALE_MAJOR);
+        CHECK(back == std::string(numeral));
+    }
+}
+
+namespace {
+
+PitchClassSet voiced_pitch_classes(const ChordVoicing& chord) {
+    PitchClassSet pcs;
+    for (auto note : chord.notes)
+        pcs.insert(PitchClass::wrapped(note));
+    return pcs;
+}
+
+} // namespace
+
+// An applied numeral X/Y realises X in the key of Y. Expected chords from
+// Kostka-Payne: V/V in C is D major, V7/V is D7, vii°7/V is F#°7, vii°7/ii
+// is C#°7, V/ii is A major, V7/IV is C7; V/V/V (V of D) is A major.
+TEST_CASE("generate_chord_from_numeral realises applied chords", "[harmony][core]") {
+    struct Case {
+        const char* numeral;
+        PitchClass root;
+        PitchClassSet pcs;
+    };
+    const Case cases[] = {
+        {"V/V", 2, {2, 6, 9}},
+        {"V7/V", 2, {2, 6, 9, 0}},
+        {"vii°7/V", 6, {6, 9, 0, 3}},
+        {"viio7/ii", 1, {1, 4, 7, 10}},
+        {"V/ii", 9, {9, 1, 4}},
+        {"V7/IV", 0, {0, 4, 7, 10}},
+        {"V/V/V", 9, {9, 1, 4}},
+        {"V/bVI", 3, {3, 7, 10}},
+    };
+    for (const auto& c : cases) {
+        INFO(c.numeral);
+        auto chord = generate_chord_from_numeral(c.numeral, 0, SCALE_MAJOR, 4);
+        REQUIRE(chord.has_value());
+        CHECK(chord->root == c.root);
+        CHECK(voiced_pitch_classes(*chord) == c.pcs);
+    }
+
+    SECTION("An applied chord keeps its own inversion") {
+        auto chord = generate_chord_from_numeral("V65/V", 0, SCALE_MAJOR, 4);
+        REQUIRE(chord.has_value());
+        CHECK(chord->root == 2);
+        CHECK(chord->inversion == 1);
+        CHECK(chord->notes.front() % 12 == 6); // F# in the bass
+    }
+}
+
+TEST_CASE("Unrecognised numeral suffixes are errors", "[harmony][core]") {
+    // "It+6" (Italian sixth) is not in the grammar; it was read as I6.
+    for (const char* numeral :
+         {"It+6", "Ger+6", "IM7", "Vsus", "V/", "/V", "V/X", "Nx", "V7/V7", "V/vii°"}) {
+        INFO(numeral);
+        CHECK_FALSE(generate_chord_from_numeral(numeral, 0, SCALE_MAJOR, 4).has_value());
+    }
 }
 
 TEST_CASE("chord_to_numeral labels F# in C major as #IV not bV", "[harmony][core]") {

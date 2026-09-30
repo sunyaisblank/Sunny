@@ -47,6 +47,38 @@ struct ParsedNumeral {
 };
 
 /**
+ * @brief A scale degree with its chromatic alteration
+ */
+struct SpelledDegree {
+    int degree;     ///< Scale degree 0-6
+    int accidental; ///< -1 lowered (flat), +1 raised (sharp), 0 unaltered
+};
+
+/**
+ * @brief Spell a root lying some semitones above the tonic as an altered degree
+ *
+ * The single authority for Roman-numeral degree spelling, after Kostka-Payne
+ * and Aldwell-Schachter:
+ * - a diatonic interval takes its degree unaltered;
+ * - in a minor key (is_minor) the raised leading tone, 11 semitones above the
+ *   tonic, is read as the seventh degree unaltered (vii°, and V contains it);
+ * - intervals 1, 3, 8 and 10 are lowered degrees (bII, bIII, bVI, bVII: the
+ *   Neapolitan and the chords of the parallel minor);
+ * - every other chromatic interval is a raised degree (#IV, and in minor the
+ *   raised third and sixth of the parallel major, #III and #VI).
+ * If the preferred neighbour is not in the scale the other is used.
+ *
+ * @param semitones_above_tonic Interval from the tonic, any integer (reduced mod 12)
+ * @param scale_intervals Heptatonic scale, ascending from 0
+ * @param is_minor Whether the key is minor
+ * @return The spelled degree, or InvalidRomanNumeral if neither neighbour of a
+ *         chromatic interval is a scale degree below the seventh
+ */
+[[nodiscard]] Result<SpelledDegree> spell_scale_degree(int semitones_above_tonic,
+                                                       std::span<const Interval> scale_intervals,
+                                                       bool is_minor);
+
+/**
  * @brief Parse Roman numeral to scale degree and quality (simple)
  *
  * Handles: I-VII, i-vii, with modifiers °, +, 7, maj7, etc.
@@ -59,9 +91,14 @@ struct ParsedNumeral {
 /**
  * @brief Parse Roman numeral with full §6.2 BNF grammar
  *
- * Handles chromatic alterations (♭VII, ♯IV, bVII, #IV),
+ * Handles chromatic alterations (♭VII, ♯IV, bVII, #IV, biii),
  * Neapolitan (N), quality modifiers (°, +, ø), extensions,
- * and figured bass inversion suffixes.
+ * and figured bass inversion suffixes. The extension must be one of
+ * 7, 9, 11, 13, maj7, maj9, maj11, maj13, b9, #9, #11, b13 and alt (each
+ * altered form optionally preceded by 7); any other remainder, such as the
+ * "t+" of "It+6", is InvalidRomanNumeral rather than being ignored. Applied
+ * numerals ("V/V") are not single numerals and are refused here; see
+ * generate_chord_from_numeral.
  *
  * @param numeral Roman numeral string
  * @return ParsedNumeral or error
@@ -74,7 +111,12 @@ struct ParsedNumeral {
  * Supports the full §6.2 grammar including chromatic alterations,
  * Neapolitan, extensions, and inversions.
  *
- * @param numeral Roman numeral (e.g., "I", "bVII", "V7", "ii65", "N")
+ * An applied numeral X/Y (§6.2 applied_prefix) realises X in the key of Y:
+ * Y is realised in the host key, and X is built on Y's root in the major
+ * scale if Y is major or augmented, or the harmonic minor if Y is minor. A
+ * diminished target is refused. Applied numerals nest: V/V/V is V of V/V.
+ *
+ * @param numeral Roman numeral (e.g., "I", "bVII", "V7", "ii65", "N", "V7/V")
  * @param key_root Key root pitch class
  * @param scale_intervals Scale intervals for chord construction
  * @param octave Base octave for voicing

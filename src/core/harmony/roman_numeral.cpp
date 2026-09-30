@@ -165,7 +165,45 @@ std::pair<std::size_t, FiguredBass> parse_inversion_suffix(std::string_view s) {
     return {0, FiguredBass::Root};
 }
 
+// Extensions accepted after the degree and quality modifier. Anything else
+// is refused rather than silently read as a triad.
+bool is_known_extension(std::string_view ext) {
+    static constexpr std::string_view KNOWN[] = {
+        "",    "7",  "9",   "11",  "13",   "maj7", "maj9", "maj11", "maj13", "b9",
+        "7b9", "#9", "7#9", "#11", "7#11", "b13",  "7b13", "alt",   "7alt",
+    };
+    return std::find(std::begin(KNOWN), std::end(KNOWN), ext) != std::end(KNOWN);
+}
+
 } // namespace
+
+Result<SpelledDegree> spell_scale_degree(int semitones_above_tonic,
+                                         std::span<const Interval> scale_intervals,
+                                         bool is_minor) {
+    const int interval = ((semitones_above_tonic % 12) + 12) % 12;
+    const auto degree_of = [&](int target) -> int {
+        for (std::size_t i = 0; i < scale_intervals.size() && i < 7; ++i) {
+            if (((scale_intervals[i] % 12) + 12) % 12 == target) return static_cast<int>(i);
+        }
+        return -1;
+    };
+
+    if (int diatonic = degree_of(interval); diatonic >= 0) return SpelledDegree{diatonic, 0};
+
+    // Minor keys read the raised leading tone as the seventh degree itself.
+    if (is_minor && interval == 11 && degree_of(10) == 6) return SpelledDegree{6, 0};
+
+    // Neighbours wrap modulo 12, so interval 11 can be a lowered tonic and
+    // interval 0 is never chromatic.
+    const int lowered_from = degree_of((interval + 1) % 12); // this degree, flattened
+    const int raised_from = degree_of((interval + 11) % 12); // this degree, sharpened
+    const bool prefer_flat = interval == 1 || interval == 3 || interval == 8 || interval == 10;
+
+    if (prefer_flat && lowered_from >= 0) return SpelledDegree{lowered_from, -1};
+    if (raised_from >= 0) return SpelledDegree{raised_from, 1};
+    if (lowered_from >= 0) return SpelledDegree{lowered_from, -1};
+    return std::unexpected(ErrorCode::InvalidRomanNumeral);
+}
 
 Result<std::pair<int, bool>> parse_roman_numeral(std::string_view numeral) {
     if (numeral.empty()) {
@@ -205,7 +243,7 @@ Result<ParsedNumeral> parse_roman_numeral_full(std::string_view numeral) {
         // Parse optional inversion suffix (N6 = Neapolitan sixth)
         if (!remaining.empty()) {
             auto [slen, inv] = parse_inversion_suffix(remaining);
-            (void)slen;
+            if (slen != remaining.size()) return std::unexpected(ErrorCode::InvalidRomanNumeral);
             result.inversion = inv;
         }
         return result;
@@ -224,8 +262,9 @@ Result<ParsedNumeral> parse_roman_numeral_full(std::string_view numeral) {
                 remaining = remaining.substr(3);
             }
         } else if (remaining[0] == 'b' && remaining.size() > 1 &&
-                   std::isupper(static_cast<unsigned char>(remaining[1]))) {
-            // "b" followed by uppercase = flat accidental (e.g. bVII)
+                   std::string_view("IiVv").find(remaining[1]) != std::string_view::npos) {
+            // "b" before a numeral = flat accidental (e.g. bVII, biii); no
+            // numeral begins with 'b', so the reading is unambiguous
             result.accidental = -1;
             remaining = remaining.substr(1);
         } else if (remaining[0] == '#') {
@@ -283,6 +322,7 @@ Result<ParsedNumeral> parse_roman_numeral_full(std::string_view numeral) {
     }
 
     // 6. Remaining is the extension (7, 9, 11, 13, maj7, maj9, alt, b9, #9, etc.)
+    if (!is_known_extension(remaining)) return std::unexpected(ErrorCode::InvalidRomanNumeral);
     result.extension = std::string(remaining);
 
     // Figured bass 65, 43, 42 imply a seventh chord
@@ -310,6 +350,29 @@ Result<ChordVoicing> generate_chord_from_numeral(std::string_view numeral,
                                                  int octave) {
     if (numeral.empty()) {
         return std::unexpected(ErrorCode::InvalidRomanNumeral);
+    }
+
+    // Applied numeral X/Y: realise the target Y in the host key, then X in
+    // the key of Y. Splitting at the first slash makes V/V/V read as V of V/V.
+    if (auto slash = numeral.find('/'); slash != std::string_view::npos) {
+        const auto applied = numeral.substr(0, slash);
+        const auto target_numeral = numeral.substr(slash + 1);
+        if (applied.empty() || target_numeral.empty())
+            return std::unexpected(ErrorCode::InvalidRomanNumeral);
+        auto target =
+            generate_chord_from_numeral(target_numeral, key_root, scale_intervals, octave);
+        if (!target) return std::unexpected(target.error());
+        // A target is a key: a bare triad in root position, not a diminished chord.
+        if (target->inversion != 0 || target->notes.size() != 3)
+            return std::unexpected(ErrorCode::InvalidRomanNumeral);
+        std::span<const Interval> target_scale;
+        if (target->quality == "major" || target->quality == "augmented")
+            target_scale = SCALE_MAJOR;
+        else if (target->quality == "minor")
+            target_scale = SCALE_HARMONIC_MINOR;
+        else
+            return std::unexpected(ErrorCode::InvalidRomanNumeral);
+        return generate_chord_from_numeral(applied, target->root, target_scale, octave);
     }
 
     // Use the full parser
@@ -557,56 +620,10 @@ Result<std::string> chord_to_numeral(PitchClass chord_root,
                                      PitchClass key_root,
                                      std::span<const Interval> scale_intervals,
                                      bool is_minor) {
-    // Find scale degree
-    int interval = (chord_root - key_root + 12) % 12;
-    int degree = -1;
-    int accidental = 0;
-
-    for (std::size_t i = 0; i < scale_intervals.size(); ++i) {
-        if (scale_intervals[i] == interval) {
-            degree = static_cast<int>(i);
-            break;
-        }
-    }
-
-    // If not a diatonic degree, find the closest with an accidental.
-    // Check both sharp (raised lower neighbour) and flat (lowered upper
-    // neighbour) and pick the one with smaller accidental distance.
-    // When tied, prefer sharp for degrees 1,2,4,5 and flat for 3,6,7
-    // (conventional analytical spelling).
-    if (degree < 0) {
-        int flat_deg = -1;
-        int sharp_deg = -1;
-
-        for (std::size_t i = 0; i < scale_intervals.size(); ++i) {
-            if (scale_intervals[i] == interval + 1) flat_deg = static_cast<int>(i);
-            if (scale_intervals[i] == interval - 1) sharp_deg = static_cast<int>(i);
-        }
-
-        if (flat_deg >= 0 && sharp_deg >= 0) {
-            // Both candidates exist; prefer sharp for degrees 0,1,3,4
-            // (I, II, IV, V → #I, #II, #IV, #V preferred over bII, bIII, bV, bVI)
-            // and flat for degrees 2,5,6 (III, VI, VII → bIII, bVI, bVII preferred)
-            static constexpr bool PREFER_SHARP[7] = {true, true, false, true, true, false, false};
-            if (PREFER_SHARP[sharp_deg]) {
-                degree = sharp_deg;
-                accidental = 1;
-            } else {
-                degree = flat_deg;
-                accidental = -1;
-            }
-        } else if (flat_deg >= 0) {
-            degree = flat_deg;
-            accidental = -1;
-        } else if (sharp_deg >= 0) {
-            degree = sharp_deg;
-            accidental = 1;
-        }
-    }
-
-    if (degree < 0 || degree >= 7) {
-        return std::unexpected(ErrorCode::InvalidRomanNumeral);
-    }
+    auto spelled = spell_scale_degree(chord_root - key_root, scale_intervals, is_minor);
+    if (!spelled) return std::unexpected(spelled.error());
+    const int degree = spelled->degree;
+    const int accidental = spelled->accidental;
 
     // Determine case from quality: uppercase for major-type, lowercase for
     // minor-type. In a minor key the same rule applies — the chord's own
@@ -617,13 +634,9 @@ Result<std::string> chord_to_numeral(PitchClass chord_root,
          quality == "aug7" || quality == "augmaj7" || quality == "9" || quality == "maj9" ||
          quality == "6" || quality == "5");
 
-    // In a minor key, the natural diatonic quality at each degree differs
-    // from major. The casing still follows the chord quality — a major
-    // chord on degree 4 (V) stays uppercase, a minor chord on degree 0
-    // (i) stays lowercase. The is_minor flag is used here to inform
-    // quality suffix conventions when needed (currently casing derives
-    // entirely from quality, which already encodes major/minor).
-    (void)is_minor;
+    // Casing follows the chord's own quality in either mode: a major chord
+    // on degree 4 of a minor key is V, a minor chord on degree 0 is i. The
+    // mode informs degree spelling above (the minor leading tone).
 
     // Build numeral string
     std::string result;

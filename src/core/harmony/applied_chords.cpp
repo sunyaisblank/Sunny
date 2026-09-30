@@ -5,6 +5,7 @@
  */
 
 #include <algorithm>
+#include <string>
 #include <sunny/core/harmony/applied_chords.hpp>
 #include <sunny/core/harmony/roman_numeral.hpp>
 #include <sunny/core/pitch/midi_note.hpp>
@@ -100,34 +101,19 @@ Result<ChordVoicing> generate_secondary_dominant(std::string_view notation,
         return std::unexpected(ErrorCode::InvalidAppliedChord);
     }
 
-    PitchClass target_pc = transpose(key_root, scale_intervals[ac.target_degree]);
-
-    // Determine the applied function type
-    bool is_vii_type = ac.applied_function.starts_with("vii");
-    bool has_seventh = ac.applied_function.find('7') != std::string::npos;
-
-    PitchClass chord_root;
-    std::string_view quality;
-
-    if (is_vii_type) {
-        // vii° of target: root is a semitone below target
-        chord_root = transpose(target_pc, 11);
-        if (has_seventh) {
-            quality = "dim7";
-        } else {
-            quality = "diminished";
-        }
-    } else {
-        // V of target: root is a perfect fifth below target (= P4 above = 7 semitones below)
-        chord_root = transpose(target_pc, 7);
-        if (has_seventh) {
-            quality = "7";
-        } else {
-            quality = "major";
-        }
+    // Realisation belongs to the numeral grammar, which reads X/Y as X in the
+    // key of Y. An applied leading-tone chord is diminished by definition, so
+    // a bare "vii" is given its diminished mark before delegation.
+    std::string numeral(notation);
+    if (ac.applied_function.starts_with("vii")) {
+        const std::string_view after = std::string_view(ac.applied_function).substr(3);
+        const bool marked = after.starts_with("\xC2\xB0") || after.starts_with("\xC3\xB8") ||
+                            after.starts_with("o");
+        if (!marked) numeral.insert(3, "\xC2\xB0");
     }
-
-    return generate_chord(chord_root, quality, octave);
+    auto chord = generate_chord_from_numeral(numeral, key_root, scale_intervals, octave);
+    if (!chord) return std::unexpected(ErrorCode::InvalidAppliedChord);
+    return chord;
 }
 
 bool is_valid_secondary_target_degree(int target_degree) {

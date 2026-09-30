@@ -7,7 +7,9 @@
 #include <algorithm>
 #include <array>
 #include <sunny/core/harmony/harmonic_function.hpp>
+#include <sunny/core/harmony/roman_numeral.hpp>
 #include <sunny/core/pitch/pitch_class.hpp>
+#include <sunny/core/scale/definitions.hpp>
 
 namespace sunny::core {
 
@@ -35,51 +37,6 @@ constexpr std::array<HarmonicFunction, 7> MINOR_FUNCTIONS = {
     HarmonicFunction::Subdominant, // VI
     HarmonicFunction::Dominant,    // vii°
 };
-
-// Major scale degrees (semitones from root)
-constexpr std::array<int, 7> MAJOR_DEGREES = {0, 2, 4, 5, 7, 9, 11};
-
-// Natural minor scale degrees
-constexpr std::array<int, 7> MINOR_DEGREES = {0, 2, 3, 5, 7, 8, 10};
-
-// Find scale degree from pitch class.
-// For chromatic notes, prefer the diatonic degree with smallest accidental
-// distance. When equidistant, prefer the degree that yields a sharp for
-// degrees 0,1,3,4 (I, II, IV, V) and a flat for degrees 2,5,6 (III, VI, VII).
-int find_degree(PitchClass pc, PitchClass root, const std::array<int, 7>& degrees) {
-    int interval = (pc - root + 12) % 12;
-    for (int i = 0; i < 7; ++i) {
-        if (degrees[i] == interval) {
-            return i;
-        }
-    }
-    // Chromatic note: find both the lower neighbour (raised → sharp)
-    // and upper neighbour (lowered → flat).
-    int sharp_deg = -1; // degree whose diatonic pitch is one semitone below
-    int flat_deg = -1;  // degree whose diatonic pitch is one semitone above
-    int best_deg = 0;
-    int best_dist = 12;
-
-    for (int i = 0; i < 7; ++i) {
-        int dist = std::abs(degrees[i] - interval);
-        dist = std::min(dist, 12 - dist);
-        if (dist < best_dist) {
-            best_dist = dist;
-            best_deg = i;
-        }
-        if (degrees[i] == interval - 1) sharp_deg = i;
-        if (degrees[i] == interval + 1) flat_deg = i;
-    }
-
-    // When both neighbours are equidistant (distance 1), apply the
-    // conventional spelling preference.
-    if (best_dist == 1 && sharp_deg >= 0 && flat_deg >= 0) {
-        static constexpr bool PREFER_SHARP[7] = {true, true, false, true, true, false, false};
-        return PREFER_SHARP[sharp_deg] ? sharp_deg : flat_deg;
-    }
-
-    return best_deg;
-}
 
 // Determine chord quality from intervals
 std::string determine_quality(const std::vector<int>& intervals) {
@@ -166,18 +123,28 @@ analyze_chord_function(const PitchClassSet& chord_pcs, PitchClass key_root, bool
     // Determine quality
     result.quality = determine_quality(intervals);
 
-    // Find scale degree
-    const auto& degrees = is_minor ? MINOR_DEGREES : MAJOR_DEGREES;
-    const auto& functions = is_minor ? MINOR_FUNCTIONS : MAJOR_FUNCTIONS;
-
-    int degree = find_degree(chord_root, key_root, degrees);
+    // Find the scale degree with its alteration. Every chromatic interval
+    // has a spelling against the major or natural minor scale, so the
+    // result is always present.
+    const std::span<const Interval> scale =
+        is_minor ? std::span<const Interval>(SCALE_MINOR) : std::span<const Interval>(SCALE_MAJOR);
+    const auto spelled = spell_scale_degree(chord_root - key_root, scale, is_minor);
+    const int degree = spelled ? spelled->degree : 0;
+    const int accidental = spelled ? spelled->accidental : 0;
     result.degree = degree + 1; // 1-indexed
+    result.accidental = accidental;
+
+    // A lowered degree in major is borrowed from the parallel minor and takes
+    // its function there (bVI is predominant, bIII tonic); other degrees take
+    // the function of their own mode.
+    const auto& functions = (is_minor || accidental < 0) ? MINOR_FUNCTIONS : MAJOR_FUNCTIONS;
     result.function = functions[degree];
 
     // Generate Roman numeral
     bool is_major_chord = (result.quality == "major" || result.quality == "major7" ||
                            result.quality == "dominant7" || result.quality == "augmented");
-    result.numeral = degree_to_numeral(degree, is_major_chord);
+    result.numeral = accidental < 0 ? "b" : (accidental > 0 ? "#" : "");
+    result.numeral += degree_to_numeral(degree, is_major_chord);
 
     // Add quality modifiers
     if (result.quality == "diminished")

@@ -7,6 +7,7 @@
  */
 
 #include <catch2/catch_test_macros.hpp>
+#include <string>
 #include <sunny/core/harmony/harmonic_function.hpp>
 #include <sunny/core/pitch/pitch_class_set.hpp>
 
@@ -237,6 +238,43 @@ TEST_CASE("find_degree distinguishes sharp from flat chromatic degrees", "[harmo
 
     // The root should be recognised as F# (pitch class 6)
     CHECK(analysis.root == 6);
-    // 1-indexed degree 4 = #IV (0-indexed degree 3 + 1)
+    // 1-indexed degree 4 raised: #IV
     CHECK(analysis.degree == 4);
+    CHECK(analysis.accidental == 1);
+    CHECK(analysis.numeral == "#IV");
+}
+
+// Kostka and Payne, Tonal Harmony, and Aldwell and Schachter, Harmony and
+// Voice Leading: in minor the chord on the raised leading tone is vii°, a
+// dominant-function chord, and carries no accidental. Chords borrowed from
+// the parallel minor into major carry a flat on the altered root (bIII, bVI,
+// bVII), as does the Neapolitan (bII); the raised fourth takes a sharp.
+TEST_CASE("Chromatic roots carry their accidental and function", "[harmony][core]") {
+    struct Case {
+        PitchClassSet chord;
+        PitchClass key;
+        bool minor;
+        std::string numeral;
+        int degree;
+        int accidental;
+        HarmonicFunction function;
+    };
+    const Case cases[] = {
+        {{8, 11, 2}, 9, true, "vii°", 7, 0, HarmonicFunction::Dominant},
+        {{4, 8, 11}, 9, true, "V", 5, 0, HarmonicFunction::Dominant},
+        {{1, 5, 8}, 0, false, "bII", 2, -1, HarmonicFunction::Subdominant},
+        {{8, 0, 3}, 0, false, "bVI", 6, -1, HarmonicFunction::Subdominant},
+        {{3, 7, 10}, 0, false, "bIII", 3, -1, HarmonicFunction::Tonic},
+        {{10, 2, 5}, 0, false, "bVII", 7, -1, HarmonicFunction::Dominant},
+        {{6, 9, 0}, 0, false, "#iv°", 4, 1, HarmonicFunction::Subdominant},
+        {{10, 2, 5}, 9, true, "bII", 2, -1, HarmonicFunction::Subdominant},
+    };
+    for (const auto& c : cases) {
+        INFO("expected " << c.numeral);
+        auto analysis = analyze_chord_function(c.chord, c.key, c.minor);
+        CHECK(analysis.numeral == c.numeral);
+        CHECK(analysis.degree == c.degree);
+        CHECK(analysis.accidental == c.accidental);
+        CHECK(analysis.function == c.function);
+    }
 }
