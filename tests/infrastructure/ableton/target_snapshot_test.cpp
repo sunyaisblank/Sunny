@@ -252,6 +252,37 @@ json valid_snapshot() {
 
 } // namespace
 
+TEST_CASE("target snapshot equality ignores meter levels but not structure",
+          "[ableton][target-snapshot][regression]") {
+    const auto parsed = target_snapshot_from_json(valid_snapshot());
+    REQUIRE(parsed.has_value());
+
+    auto sounding = *parsed;
+    for (const auto* meter : {"input_meter_level",
+                              "output_meter_level",
+                              "input_meter_left",
+                              "input_meter_right",
+                              "output_meter_left",
+                              "output_meter_right"})
+        sounding.song_state["tracks"][0][meter] = 0.75;
+    CHECK(equivalent_target_snapshot(*parsed, sounding));
+    CHECK(equivalent_target_snapshot(sounding, *parsed));
+
+    auto extra_track = sounding;
+    extra_track.song_state["tracks"].push_back(extra_track.song_state["tracks"][0]);
+    CHECK_FALSE(equivalent_target_snapshot(*parsed, extra_track));
+
+    auto extra_device = sounding;
+    REQUIRE_FALSE(extra_device.song_state["tracks"][0]["devices"].empty());
+    extra_device.song_state["tracks"][0]["devices"].push_back(
+        extra_device.song_state["tracks"][0]["devices"][0]);
+    CHECK_FALSE(equivalent_target_snapshot(*parsed, extra_device));
+
+    auto renamed = sounding;
+    renamed.song_state["tracks"][0]["name"] = "Renamed";
+    CHECK_FALSE(equivalent_target_snapshot(*parsed, renamed));
+}
+
 TEST_CASE("target snapshot parser retains an exact structural precondition",
           "[ableton][target-snapshot]") {
     const auto encoded = valid_snapshot();
@@ -262,10 +293,6 @@ TEST_CASE("target snapshot parser retains an exact structural precondition",
 
     auto changed = *parsed;
     changed.song_state["tempo"] = 121.0;
-    CHECK_FALSE(equivalent_target_snapshot(*parsed, changed));
-
-    changed = *parsed;
-    changed.song_state["tracks"][0]["output_meter_right"] = 0.25;
     CHECK_FALSE(equivalent_target_snapshot(*parsed, changed));
 
     for (const auto* property : {"is_playing",
@@ -405,10 +432,6 @@ TEST_CASE("target snapshot parser retains an exact structural precondition",
     changed = *parsed;
     changed.song_state["tracks"][0]["available_input_routing_channels"]
                       ["available_input_routing_channels"][1]["display_name"] = "MIDI Ch. 1";
-    CHECK_FALSE(equivalent_target_snapshot(*parsed, changed));
-
-    changed = *parsed;
-    changed.song_state["tracks"][0]["input_meter_level"] = 0.25;
     CHECK_FALSE(equivalent_target_snapshot(*parsed, changed));
 
     changed = *parsed;

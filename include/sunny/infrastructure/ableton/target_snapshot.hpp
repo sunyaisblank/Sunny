@@ -38,7 +38,10 @@ target_snapshot_from_json(const nlohmann::json& value);
 /** Stable representation used for exact plan precondition comparison. */
 [[nodiscard]] nlohmann::json target_snapshot_to_json(const AbletonTargetSnapshot& snapshot);
 
-/** Exact structural equality, including the observed target profile. */
+/**
+ * Structural equality, including the observed target profile. Volatile track
+ * meter levels are excluded: they change with playback, not with structure.
+ */
 [[nodiscard]] bool equivalent_target_snapshot(const AbletonTargetSnapshot& lhs,
                                               const AbletonTargetSnapshot& rhs);
 

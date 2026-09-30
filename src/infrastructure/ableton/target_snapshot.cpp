@@ -4,6 +4,7 @@
  */
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <initializer_list>
 #include <limits>
@@ -631,9 +632,36 @@ json target_snapshot_to_json(const AbletonTargetSnapshot& snapshot) {
             {"song", snapshot.song_state}};
 }
 
+namespace {
+
+// Track meters are peak-hold and momentary levels that follow the signal while
+// the Set plays. They are evidence of activity, not of the structure a plan
+// depends on, so comparing them would refuse an apply whenever anything sounds.
+// Whether a meter is present at all follows the track's reported inputs and
+// outputs, which remain compared.
+constexpr std::array<std::string_view, 6> volatile_track_fields{"input_meter_level",
+                                                                "output_meter_level",
+                                                                "input_meter_left",
+                                                                "input_meter_right",
+                                                                "output_meter_left",
+                                                                "output_meter_right"};
+
+json structural_fingerprint(const AbletonTargetSnapshot& snapshot) {
+    auto fingerprint = target_snapshot_to_json(snapshot);
+    auto& song = fingerprint.at("song");
+    if (song.contains("tracks") && song.at("tracks").is_array())
+        for (auto& track : song.at("tracks"))
+            if (track.is_object())
+                for (const auto field : volatile_track_fields)
+                    track.erase(std::string{field});
+    return fingerprint;
+}
+
+} // namespace
+
 bool equivalent_target_snapshot(const AbletonTargetSnapshot& lhs,
                                 const AbletonTargetSnapshot& rhs) {
-    return target_snapshot_to_json(lhs) == target_snapshot_to_json(rhs);
+    return structural_fingerprint(lhs) == structural_fingerprint(rhs);
 }
 
 } // namespace sunny::infrastructure
