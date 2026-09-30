@@ -360,6 +360,7 @@ sunny::core::Result<void> LomProtocol::validate_request(const LomRequest& reques
                        {"sunny_get_target_profile",
                         "sunny_get_target_snapshot",
                         "sunny_get_scene_count",
+                        "sunny_get_track_count",
                         "sunny_get_return_track_count",
                         "sunny_set_cue",
                         "create_scene",
@@ -519,6 +520,7 @@ sunny::core::Result<void> LomProtocol::validate_request(const LomRequest& reques
                       {"sunny_get_target_profile",
                        "sunny_get_target_snapshot",
                        "sunny_get_scene_count",
+                       "sunny_get_track_count",
                        "sunny_get_return_track_count",
                        "create_return_track"}))
             valid = args.empty();

@@ -208,17 +208,16 @@ class TestMcpServer : public McpServer {
 class SessionTransport final : public LomTransport {
   public:
     LomResponse send(const LomRequest& request) override {
+        // The Remote Script declines anything outside the closed bridge algebra.
+        if (!LomProtocol::validate_request(request))
+            return {false, std::nullopt, "outside the bridge protocol"};
         if (request.property_or_method == "tempo") return ok(128.0);
         if (request.property_or_method == "signature_numerator") return ok(7);
         if (request.property_or_method == "signature_denominator") return ok(8);
         if (request.property_or_method == "is_playing") return ok(true);
         if (request.property_or_method == "current_song_time") return ok(12.5);
-        if (request.property_or_method == "tracks") {
-            return ok(std::vector<std::string>{"Bass", "Keys", "Drums"});
-        }
-        if (request.property_or_method == "return_tracks") {
-            return ok(std::vector<std::string>{"Reverb", "Delay"});
-        }
+        if (request.property_or_method == "sunny_get_track_count") return ok(3);
+        if (request.property_or_method == "sunny_get_return_track_count") return ok(2);
         return {false, std::nullopt, "unexpected property"};
     }
 

@@ -390,23 +390,27 @@ void register_sunny_tools(McpServer& server,
                 {"signature_denominator", "signature_denominator"},
                 {"is_playing", "is_playing"},
                 {"current_song_time", "current_song_time"},
-                {"track_count", "tracks"},
-                {"return_track_count", "return_tracks"}};
+                {"track_count", "sunny_get_track_count"},
+                {"return_track_count", "sunny_get_return_track_count"}};
 
             for (const auto& [output_name, property] : properties) {
-                auto response =
-                    dispatcher.request(LomProtocol::get_property(LomPaths::song(), property));
+                // The bridge exposes collection sizes only as closed count calls;
+                // the collections themselves are private host objects.
+                const bool count = property.starts_with("sunny_get_");
+                auto response = dispatcher.request(
+                    count ? LomProtocol::call_method(LomPaths::song(), property, {})
+                          : LomProtocol::get_property(LomPaths::song(), property));
                 if (!response.success || !response.value) {
                     errors.push_back(property + ": " + response.error.value_or("no value"));
                     continue;
                 }
 
                 auto value = lom_value_json(*response.value);
-                if (output_name == "track_count" || output_name == "return_track_count") {
-                    state[output_name] = value.is_array() ? value.size() : 0;
-                } else {
-                    state[output_name] = std::move(value);
+                if (count && (!value.is_number_integer() || value.get<std::int64_t>() < 0)) {
+                    errors.push_back(property + ": malformed count");
+                    continue;
                 }
+                state[output_name] = std::move(value);
             }
 
             if (!errors.empty()) {

@@ -276,7 +276,7 @@ std::uint16_t unused_loopback_port() {
 } // namespace
 
 TEST_CASE("TcpTransport round-trips framed JSON over loopback", "[bridge][transport][loopback]") {
-    LoopbackServer server(R"({"bridge_protocol_version":43,"success":true,"value":120.0})");
+    LoopbackServer server(R"({"bridge_protocol_version":44,"success":true,"value":120.0})");
 
     TcpConfig config;
     config.host = "127.0.0.1";
@@ -298,7 +298,7 @@ TEST_CASE("TcpTransport round-trips framed JSON over loopback", "[bridge][transp
 
 TEST_CASE("TcpTransport rejects an oversized request before writing a frame",
           "[bridge][transport][loopback][limits]") {
-    LoopbackServer server(R"({"bridge_protocol_version":43,"success":true})");
+    LoopbackServer server(R"({"bridge_protocol_version":44,"success":true})");
 
     TcpConfig config;
     config.host = "127.0.0.1";
@@ -451,7 +451,7 @@ TEST_CASE("TcpTransport validates a structural target snapshot over the real wir
 
 TEST_CASE("TcpTransport reads existing return count over the real wire",
           "[bridge][transport][loopback][target-state]") {
-    LoopbackServer server(R"({"bridge_protocol_version":43,"success":true,"value":2})");
+    LoopbackServer server(R"({"bridge_protocol_version":44,"success":true,"value":2})");
 
     TcpConfig config;
     config.host = "127.0.0.1";
@@ -467,7 +467,7 @@ TEST_CASE("TcpTransport reads existing return count over the real wire",
 
 TEST_CASE("TcpTransport reads existing device count over the real wire",
           "[bridge][transport][loopback][target-state]") {
-    LoopbackServer server(R"({"bridge_protocol_version":43,"success":true,"value":7})");
+    LoopbackServer server(R"({"bridge_protocol_version":44,"success":true,"value":7})");
 
     TcpConfig config;
     config.host = "127.0.0.1";
@@ -483,7 +483,7 @@ TEST_CASE("TcpTransport reads existing device count over the real wire",
 
 TEST_CASE("TcpTransport reads Session scene count over the real wire",
           "[bridge][transport][loopback][target-state]") {
-    LoopbackServer server(R"({"bridge_protocol_version":43,"success":true,"value":3})");
+    LoopbackServer server(R"({"bridge_protocol_version":44,"success":true,"value":3})");
 
     TcpConfig config;
     config.host = "127.0.0.1";
@@ -501,7 +501,7 @@ TEST_CASE("TcpTransport rejects pseudo-collection and negative count responses",
           "[bridge][transport][loopback][target-state][trust-boundary]") {
     SECTION("object labels are not a count") {
         LoopbackServer server(
-            R"({"bridge_protocol_version":43,"success":true,"value":["Scene 1"]})");
+            R"({"bridge_protocol_version":44,"success":true,"value":["Scene 1"]})");
         TcpConfig config;
         config.host = "127.0.0.1";
         config.port = server.port();
@@ -511,7 +511,7 @@ TEST_CASE("TcpTransport rejects pseudo-collection and negative count responses",
     }
 
     SECTION("negative count") {
-        LoopbackServer server(R"({"bridge_protocol_version":43,"success":true,"value":-1})");
+        LoopbackServer server(R"({"bridge_protocol_version":44,"success":true,"value":-1})");
         TcpConfig config;
         config.host = "127.0.0.1";
         config.port = server.port();
@@ -524,7 +524,7 @@ TEST_CASE("TcpTransport rejects pseudo-collection and negative count responses",
 TEST_CASE("full dispatch path delivers orchestrator messages "
           "over loopback",
           "[bridge][transport][loopback]") {
-    LoopbackServer server(R"({"bridge_protocol_version":43,"success":true})");
+    LoopbackServer server(R"({"bridge_protocol_version":44,"success":true})");
 
     TcpConfig config;
     config.host = "127.0.0.1";
@@ -584,7 +584,7 @@ TEST_CASE("dispatcher reconnects when Remote Script starts later",
 
     TcpTransport transport(config);
     REQUIRE_FALSE(transport.connect());
-    LoopbackServer server(R"({"bridge_protocol_version":43,"success":true,"value":121.0})", port);
+    LoopbackServer server(R"({"bridge_protocol_version":44,"success":true,"value":121.0})", port);
 
     BridgeDispatcher dispatcher(&transport);
     REQUIRE(dispatcher.online());
@@ -633,7 +633,7 @@ TEST_CASE("a request while the Remote Script is absent is declined as not sent",
     config.connect_timeout = std::chrono::milliseconds{100};
 
     auto server = std::make_unique<LoopbackServer>(
-        R"({"bridge_protocol_version":43,"success":true,"value":120.0})", port);
+        R"({"bridge_protocol_version":44,"success":true,"value":120.0})", port);
     TcpTransport transport(config);
     REQUIRE(transport.connect());
     BridgeDispatcher dispatcher(&transport);
@@ -646,7 +646,7 @@ TEST_CASE("a request while the Remote Script is absent is declined as not sent",
     REQUIRE_FALSE(transport.is_connected());
 
     server = std::make_unique<LoopbackServer>(
-        R"({"bridge_protocol_version":43,"success":true,"value":122.0})", port);
+        R"({"bridge_protocol_version":44,"success":true,"value":122.0})", port);
     auto recovered = dispatcher.request(LomProtocol::get_property(LomPaths::song(), "tempo"));
     REQUIRE(recovered.success);
     CHECK(std::get<double>(*recovered.value) == 122.0);

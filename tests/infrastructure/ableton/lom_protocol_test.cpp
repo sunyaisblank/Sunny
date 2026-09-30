@@ -74,7 +74,7 @@ TEST_CASE("serialize get_property request", "[bridge][serialize]") {
 
     // Should be valid JSON
     REQUIRE_FALSE(json_str.empty());
-    CHECK(json_str.find("\"bridge_protocol_version\":43") != std::string::npos);
+    CHECK(json_str.find("\"bridge_protocol_version\":44") != std::string::npos);
     CHECK(json_str.find("\"type\":\"get\"") != std::string::npos);
     CHECK(json_str.find("\"name\":\"tempo\"") != std::string::npos);
     CHECK(json_str.find("\"path\":\"song\"") != std::string::npos);
@@ -132,6 +132,12 @@ TEST_CASE("native request validation mirrors the closed current bridge algebra",
         LomProtocol::call_method(LomPaths::song(), "sunny_get_scene_count")));
     CHECK(LomProtocol::validate_request(
         LomProtocol::call_method(LomPaths::song(), "sunny_get_return_track_count")));
+    CHECK(LomProtocol::validate_request(
+        LomProtocol::call_method(LomPaths::song(), "sunny_get_track_count")));
+    CHECK_FALSE(LomProtocol::validate_request(
+        LomProtocol::call_method(LomPaths::song(), "sunny_get_track_count", {1})));
+    CHECK_FALSE(LomProtocol::validate_request(
+        LomProtocol::call_method(LomPaths::track(0), "sunny_get_track_count")));
     CHECK(LomProtocol::validate_request(
         LomProtocol::set_property(LomPaths::song(), "signature_denominator", 16)));
     CHECK(LomProtocol::validate_request(
@@ -440,7 +446,7 @@ TEST_CASE("NoteEvent conversion maps whole-note units to Live quarter-note beats
 
 TEST_CASE("deserialize success response", "[bridge][deserialize]") {
     auto resp = LomProtocol::deserialize_response(
-        R"({"bridge_protocol_version":43,"success":true,"value":120.0})");
+        R"({"bridge_protocol_version":44,"success":true,"value":120.0})");
 
     REQUIRE(resp.has_value());
     CHECK(resp->success == true);
@@ -451,7 +457,7 @@ TEST_CASE("deserialize success response", "[bridge][deserialize]") {
 
 TEST_CASE("deserialize error response", "[bridge][deserialize]") {
     auto resp = LomProtocol::deserialize_response(
-        R"({"bridge_protocol_version":43,"success":false,"error":"Track not found"})");
+        R"({"bridge_protocol_version":44,"success":false,"error":"Track not found"})");
 
     REQUIRE(resp.has_value());
     CHECK(resp->success == false);
@@ -461,7 +467,7 @@ TEST_CASE("deserialize error response", "[bridge][deserialize]") {
 
 TEST_CASE("deserialize integer value", "[bridge][deserialize]") {
     auto resp = LomProtocol::deserialize_response(
-        R"({"bridge_protocol_version":43,"success":true,"value":42})");
+        R"({"bridge_protocol_version":44,"success":true,"value":42})");
 
     REQUIRE(resp.has_value());
     REQUIRE(resp->value.has_value());
@@ -470,7 +476,7 @@ TEST_CASE("deserialize integer value", "[bridge][deserialize]") {
 
 TEST_CASE("deserialize boolean value", "[bridge][deserialize]") {
     auto resp = LomProtocol::deserialize_response(
-        R"({"bridge_protocol_version":43,"success":true,"value":true})");
+        R"({"bridge_protocol_version":44,"success":true,"value":true})");
 
     REQUIRE(resp.has_value());
     REQUIRE(resp->value.has_value());
@@ -479,7 +485,7 @@ TEST_CASE("deserialize boolean value", "[bridge][deserialize]") {
 
 TEST_CASE("deserialize string value", "[bridge][deserialize]") {
     auto resp = LomProtocol::deserialize_response(
-        R"({"bridge_protocol_version":43,"success":true,"value":"hello world"})");
+        R"({"bridge_protocol_version":44,"success":true,"value":"hello world"})");
 
     REQUIRE(resp.has_value());
     REQUIRE(resp->value.has_value());
@@ -489,7 +495,7 @@ TEST_CASE("deserialize string value", "[bridge][deserialize]") {
 TEST_CASE("deserialize array values", "[bridge][deserialize]") {
     SECTION("integer array") {
         auto resp = LomProtocol::deserialize_response(
-            R"({"bridge_protocol_version":43,"success":true,"value":[1,2,3]})");
+            R"({"bridge_protocol_version":44,"success":true,"value":[1,2,3]})");
 
         REQUIRE(resp.has_value());
         REQUIRE(resp->value.has_value());
@@ -501,7 +507,7 @@ TEST_CASE("deserialize array values", "[bridge][deserialize]") {
 
     SECTION("string array") {
         auto resp = LomProtocol::deserialize_response(
-            R"({"bridge_protocol_version":43,"success":true,"value":["a","b"]})");
+            R"({"bridge_protocol_version":44,"success":true,"value":["a","b"]})");
 
         REQUIRE(resp.has_value());
         REQUIRE(resp->value.has_value());
@@ -513,7 +519,7 @@ TEST_CASE("deserialize array values", "[bridge][deserialize]") {
 
 TEST_CASE("deserialize null value", "[bridge][deserialize]") {
     auto resp = LomProtocol::deserialize_response(
-        R"({"bridge_protocol_version":43,"success":true,"value":null})");
+        R"({"bridge_protocol_version":44,"success":true,"value":null})");
 
     REQUIRE(resp.has_value());
     CHECK_FALSE(resp->value.has_value());
@@ -537,19 +543,19 @@ TEST_CASE("response envelope requires matching version and success", "[bridge][d
                     R"({"bridge_protocol_version":4,"success":true,"value":42})")
                     .has_value());
     CHECK_FALSE(
-        LomProtocol::deserialize_response(R"({"bridge_protocol_version":43,"success":false})")
+        LomProtocol::deserialize_response(R"({"bridge_protocol_version":44,"success":false})")
             .has_value());
     CHECK_FALSE(LomProtocol::deserialize_response(
-                    R"({"bridge_protocol_version":43,"success":true,"value":9223372036854775807})")
+                    R"({"bridge_protocol_version":44,"success":true,"value":9223372036854775807})")
                     .has_value());
     CHECK_FALSE(LomProtocol::deserialize_response(
-                    R"({"bridge_protocol_version":43,"success":true,"extra":1})")
+                    R"({"bridge_protocol_version":44,"success":true,"extra":1})")
                     .has_value());
     CHECK_FALSE(LomProtocol::deserialize_response(
-                    R"({"bridge_protocol_version":43,"success":true,"error":"contradiction"})")
+                    R"({"bridge_protocol_version":44,"success":true,"error":"contradiction"})")
                     .has_value());
     CHECK_FALSE(LomProtocol::deserialize_response(
-                    R"({"bridge_protocol_version":43,"success":false,"error":"bad","value":1})")
+                    R"({"bridge_protocol_version":44,"success":false,"error":"bad","value":1})")
                     .has_value());
 }
 
@@ -563,7 +569,7 @@ TEST_CASE("serialize request with string args handles escaping", "[bridge][seria
 
     // Should be valid JSON that can be re-parsed
     auto resp = LomProtocol::deserialize_response(
-        R"({"bridge_protocol_version":43,"success":true,"value":")" + std::string("ok") + R"("})");
+        R"({"bridge_protocol_version":44,"success":true,"value":")" + std::string("ok") + R"("})");
     REQUIRE(resp.has_value());
 }
 

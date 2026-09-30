@@ -251,7 +251,7 @@ TEST_CASE("transports decline noncanonical paths without recording or sending",
     CHECK_FALSE(network.success);
     CHECK(network.delivery == LomDeliveryState::NotSent);
     REQUIRE(network.error.has_value());
-    CHECK(*network.error == "request outside Sunny bridge protocol v43");
+    CHECK(*network.error == "request outside Sunny bridge protocol v44");
 }
 
 TEST_CASE("transports decline requests outside the peer algebra before recording",
