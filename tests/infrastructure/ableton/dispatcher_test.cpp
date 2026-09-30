@@ -593,7 +593,39 @@ TEST_CASE("dispatcher reconnects when Remote Script starts later",
     CHECK(std::get<double>(*response.value) == 121.0);
 }
 
-TEST_CASE("transport recovers after Remote Script restarts", "[bridge][transport][loopback]") {
+// The Remote Script closes its side of the idle connection when Live reloads
+// it. Nothing was in flight, so the transport must reconnect before sending:
+// the first request after the restart succeeds rather than paying for the
+// stale socket.
+TEST_CASE("the first request after a Remote Script restart succeeds",
+          "[bridge][transport][loopback][lifecycle]") {
+    const auto port = unused_loopback_port();
+    TcpConfig config;
+    config.host = "127.0.0.1";
+    config.port = port;
+    config.connect_timeout = std::chrono::milliseconds{100};
+
+    auto server = std::make_unique<LoopbackServer>(
+        R"({"bridge_protocol_version":43,"success":true,"value":120.0})", port);
+    TcpTransport transport(config);
+    REQUIRE(transport.connect());
+    BridgeDispatcher dispatcher(&transport);
+    REQUIRE(dispatcher.request(LomProtocol::get_property(LomPaths::song(), "tempo")).success);
+
+    server.reset();
+    server = std::make_unique<LoopbackServer>(
+        R"({"bridge_protocol_version":43,"success":true,"value":122.0})", port);
+    auto recovered = dispatcher.request(LomProtocol::get_property(LomPaths::song(), "tempo"));
+    REQUIRE(recovered.success);
+    CHECK(recovered.delivery == LomDeliveryState::ResponseReceived);
+    CHECK(std::get<double>(*recovered.value) == 122.0);
+}
+
+// While the Remote Script is absent, the stale socket is detected before any
+// byte is written, so the decline is a definite NotSent rather than an
+// ambiguous delivery; recovery follows once the script returns.
+TEST_CASE("a request while the Remote Script is absent is declined as not sent",
+          "[bridge][transport][loopback][lifecycle]") {
     const auto port = unused_loopback_port();
     TcpConfig config;
     config.host = "127.0.0.1";
@@ -610,6 +642,7 @@ TEST_CASE("transport recovers after Remote Script restarts", "[bridge][transport
     server.reset();
     auto declined = dispatcher.request(LomProtocol::get_property(LomPaths::song(), "tempo"));
     REQUIRE_FALSE(declined.success);
+    CHECK(declined.delivery == LomDeliveryState::NotSent);
     REQUIRE_FALSE(transport.is_connected());
 
     server = std::make_unique<LoopbackServer>(

@@ -26,6 +26,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <sunny/infrastructure/ableton/lom_protocol.hpp>
 #include <sunny/infrastructure/ableton/target_profile.hpp>
 #include <sunny/infrastructure/ableton/target_snapshot.hpp>
@@ -200,13 +201,47 @@ class CommandBuffer final : public LomTransport {
 /// Connection state
 enum class ConnectionState : std::uint8_t { Disconnected, Connecting, Connected, Error };
 
+/// Why the most recent connection attempt failed.
+enum class ConnectFailure : std::uint8_t {
+    InvalidConfiguration, ///< a configured timeout cannot bound the exchange
+    HostUnresolved,       ///< the host name has no stream address
+    Refused,              ///< every resolved address refused the connection or was unreachable
+    TimedOut,             ///< no resolved address accepted within the connect timeout
+    SocketError,          ///< a local socket could not be created or configured
+};
+
+/// Operator-facing explanation of a connection failure.
+[[nodiscard]] std::string_view describe(ConnectFailure failure) noexcept;
+
+/// Deadline by which the Remote Script's main thread must begin a request
+/// (LOM_REQUEST_TIMEOUT_SECONDS in remote_script/Sunny/surface.py). A request
+/// not begun by then is cancelled in Live and answered with a definite failure.
+inline constexpr std::chrono::milliseconds SUNNY_REMOTE_SCRIPT_SCHEDULING_DEADLINE{10000};
+
+/// Default response deadline. Exceeding the scheduling deadline means a
+/// request the transport stops waiting for has already begun in Live: it can
+/// no longer start later, and its outcome is reported as indeterminate. The
+/// margin covers framing, transit and the main-thread hand-off; the cost is
+/// that a Live call hung after it began holds the tool call for this long.
+inline constexpr std::chrono::milliseconds SUNNY_BRIDGE_RESPONSE_TIMEOUT{20000};
+static_assert(SUNNY_BRIDGE_RESPONSE_TIMEOUT >=
+                  SUNNY_REMOTE_SCRIPT_SCHEDULING_DEADLINE + std::chrono::seconds{5},
+              "the response deadline must outlast the Remote Script scheduling deadline");
+
 /**
  * @brief TCP transport configuration
+ *
+ * Invariant for the ordering guarantee above: response_timeout exceeds
+ * SUNNY_REMOTE_SCRIPT_SCHEDULING_DEADLINE. Shorter values are accepted so
+ * tests can exercise expiry, and forfeit only that guarantee.
  */
 struct TcpConfig {
+    /// Host name or numeric IPv4/IPv6 address, resolved on every connect.
     std::string host = "127.0.0.1";
     std::uint16_t port = 9001;
-    std::chrono::milliseconds timeout{5000};
+    /// Bound on one exchange, from sending the request to its complete response.
+    std::chrono::milliseconds response_timeout = SUNNY_BRIDGE_RESPONSE_TIMEOUT;
+    /// Bound on one connect, across every address the host resolves to.
     std::chrono::milliseconds connect_timeout{10000};
 };
 
@@ -218,6 +253,14 @@ struct TcpConfig {
  *
  * Wire protocol: 4-byte big-endian length prefix + UTF-8 JSON payload.
  * Uses POSIX sockets; compatible with WSL2 connecting to Windows host.
+ *
+ * The connection persists across requests. Before each request the transport
+ * checks whether the peer closed the idle connection (a Remote Script reload,
+ * for instance) and reconnects; nothing is in flight at that point, so the
+ * replacement cannot duplicate a request. Delivery states are exact: NotSent
+ * means no complete frame left this process, and SentWithoutValidResponse
+ * means the request may have executed in Live. The connection is dropped
+ * after the latter, so a late response can never answer a later request.
  */
 class TcpTransport final : public LomTransport {
   public:
@@ -251,11 +294,30 @@ class TcpTransport final : public LomTransport {
     /// Current connection state
     [[nodiscard]] ConnectionState state() const { return state_; }
 
+    /// Why the most recent connect() failed; empty after a successful connect.
+    [[nodiscard]] std::optional<ConnectFailure> last_connect_failure() const {
+        return last_connect_failure_;
+    }
+
     /// Register a callback for state changes
     void on_state_change(std::function<void(ConnectionState)> callback);
 
   private:
     class SocketHandle;
+    using Deadline = std::chrono::steady_clock::time_point;
+
+    enum class Receipt : std::uint8_t { Complete, DeadlineExpired, ConnectionClosed };
+
+    /// Pre: Connected. Post: Connected over a connection the peer has not closed,
+    /// or Error. Called only between exchanges, when nothing is in flight.
+    bool replace_connection_if_peer_closed();
+
+    /// True when the idle connection is readable: end of stream, an error, or
+    /// bytes nobody requested. Each leaves it unusable for request/response.
+    [[nodiscard]] bool peer_closed_idle_connection() const;
+
+    /// Close the socket after a failed exchange so nothing can arrive on it later.
+    void abandon_connection();
 
     /// Send a length-prefixed frame and receive the response
     LomResponse send_and_receive(const std::string& json_payload);
@@ -263,8 +325,8 @@ class TcpTransport final : public LomTransport {
     /// Send exactly n bytes
     bool send_all(const void* data, std::size_t n);
 
-    /// Receive exactly n bytes
-    bool recv_all(void* data, std::size_t n);
+    /// Receive exactly n bytes before the deadline
+    Receipt recv_all(void* data, std::size_t n, Deadline deadline);
 
     /// Transition state and notify callback
     void set_state(ConnectionState new_state);
@@ -272,6 +334,7 @@ class TcpTransport final : public LomTransport {
     TcpConfig config_;
     std::unique_ptr<SocketHandle> socket_;
     ConnectionState state_ = ConnectionState::Disconnected;
+    std::optional<ConnectFailure> last_connect_failure_;
     std::function<void(ConnectionState)> state_callback_;
 };
 

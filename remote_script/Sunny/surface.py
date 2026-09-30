@@ -54,6 +54,9 @@ logger = logging.getLogger("sunny.remote_script")
 # The bridge is loopback-only unless the user deliberately exposes it.
 DEFAULT_BIND_HOST = "127.0.0.1"
 DEFAULT_PORT = 9001
+# Scheduling deadline: a request Live's main thread has not begun by then is
+# cancelled. Mirrored by SUNNY_REMOTE_SCRIPT_SCHEDULING_DEADLINE in the native
+# transport, whose response deadline must exceed it (test_bridge_lifecycle.py).
 LOM_REQUEST_TIMEOUT_SECONDS = 10.0
 
 

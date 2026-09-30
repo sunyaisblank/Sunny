@@ -82,7 +82,10 @@ int run_server() {
                       << "\n";
         } else {
             std::cerr << "sunny-mcp: could not connect to Ableton at " << config.host << ":"
-                      << config.port << "; Ableton tools will reconnect on demand\n";
+                      << config.port;
+            if (const auto failure = transport->last_connect_failure())
+                std::cerr << " (" << describe(*failure) << ")";
+            std::cerr << "; each Ableton tool call will try to connect again\n";
         }
     } else {
         std::cerr << "sunny-mcp: SUNNY_ABLETON_HOST not set; running offline "

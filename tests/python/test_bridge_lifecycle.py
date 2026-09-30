@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import os
 import queue
+import re
 import socket
 import struct
 import subprocess
@@ -28,11 +29,13 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from Sunny import surface as surface_module
 from Sunny.handler import BRIDGE_PROTOCOL_VERSION, LomHandler
 from Sunny.server import TcpServer
 from Sunny.surface import SunnyControlSurface
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+TRANSPORT_HEADER = PROJECT_ROOT / "include/sunny/infrastructure/ableton/transport.hpp"
 
 # Short enough to keep the suite fast, long enough that a loaded CI host still
 # delivers a complete frame well inside it.
@@ -267,6 +270,28 @@ def test_partial_frame_timeout_must_be_positive():
 
 
 # =============================================================================
+# Deadline ordering between the peers
+# =============================================================================
+
+
+def _header_milliseconds(name: str) -> int:
+    match = re.search(
+        rf"{name}\s*\{{\s*(\d+)\s*\}}",
+        TRANSPORT_HEADER.read_text(encoding="utf-8"),
+    )
+    assert match, f"{name} is not declared in {TRANSPORT_HEADER}"
+    return int(match.group(1))
+
+
+def test_native_response_deadline_exceeds_remote_script_scheduling_deadline():
+    """A request the native side stops waiting for has already begun or been cancelled."""
+    scheduling_ms = _header_milliseconds("SUNNY_REMOTE_SCRIPT_SCHEDULING_DEADLINE")
+    response_ms = _header_milliseconds("SUNNY_BRIDGE_RESPONSE_TIMEOUT")
+    assert scheduling_ms == round(surface_module.LOM_REQUEST_TIMEOUT_SECONDS * 1000)
+    assert response_ms > scheduling_ms
+
+
+# =============================================================================
 # End to end: sunny-mcp against the real Remote Script server
 # =============================================================================
 
@@ -280,3 +305,24 @@ def test_tool_calls_separated_by_an_idle_gap_both_succeed(live_application, mcp_
         time.sleep(IDLE_GAP_SECONDS)
         second = client.call_tool("get_ableton_session_state")
         assert second == first
+
+
+def test_first_tool_call_after_a_remote_script_reload_succeeds(live_application, mcp_client):
+    """The native client notices the closed idle socket and reconnects before sending."""
+    original = _RemoteScript()
+    port = original.port
+    try:
+        client = mcp_client(port)
+        first = client.call_tool("get_ableton_session_state")
+        _assert_live_session_state(first)
+    finally:
+        original.close()
+    with _RemoteScript(port=port):
+        assert client.call_tool("get_ableton_session_state") == first
+
+
+def test_host_name_is_resolved_rather_than_parsed_as_a_literal(live_application, mcp_client):
+    """Issue #5: SUNNY_ABLETON_HOST=localhost reaches a loopback Remote Script."""
+    with _RemoteScript() as peer:
+        client = mcp_client(peer.port, host="localhost")
+        _assert_live_session_state(client.call_tool("get_ableton_session_state"))
