@@ -6,8 +6,13 @@
  * Coverage: pcs_transpose, pcs_invert, pcs_interval_vector, pcs_normal_form, pcs_prime_form
  */
 
+#include <array>
 #include <catch2/catch_test_macros.hpp>
+#include <map>
+#include <set>
+#include <string>
 #include <sunny/core/pitch/pitch_class_set.hpp>
+#include <vector>
 
 using namespace sunny::core;
 
@@ -93,20 +98,32 @@ TEST_CASE("pcs_interval_vector", "[pcs][core]") {
     }
 }
 
-TEST_CASE("pcs_normal_form", "[pcs][core]") {
-    SECTION("Major triad normal form") {
-        PitchClassSet major = {0, 4, 7};
-        auto nf = pcs_normal_form(major);
-        // Normal form starts at 0, most compact
-        REQUIRE(nf.size() == 3);
-        CHECK(nf[0] == 0);
+TEST_CASE("pcs_normal_form keeps the original pitch classes", "[pcs][core]") {
+    auto as_ints = [](const std::vector<PitchClass>& pcs) {
+        std::vector<int> out;
+        for (auto pc : pcs)
+            out.push_back(static_cast<int>(pc));
+        return out;
+    };
+
+    SECTION("D major is [2,6,9], its most packed rotation, untransposed") {
+        CHECK(as_ints(pcs_normal_form(PitchClassSet{2, 6, 9})) == std::vector<int>{2, 6, 9});
     }
 
-    SECTION("Ordering") {
-        PitchClassSet pcs = {7, 0, 4}; // Same as above, different order
-        auto nf = pcs_normal_form(pcs);
-        REQUIRE(nf.size() == 3);
-        // Should be in ascending order from most compact rotation
+    SECTION("A major wraps past 11: [9,1,4]") {
+        CHECK(as_ints(pcs_normal_form(PitchClassSet{1, 4, 9})) == std::vector<int>{9, 1, 4});
+    }
+
+    SECTION("Input order is irrelevant") {
+        CHECK(as_ints(pcs_normal_form(PitchClassSet{7, 0, 4})) == std::vector<int>{0, 4, 7});
+    }
+
+    SECTION("A transpositionally symmetric set starts on its lowest pitch class") {
+        CHECK(as_ints(pcs_normal_form(PitchClassSet{9, 5, 1})) == std::vector<int>{1, 5, 9});
+    }
+
+    SECTION("A singleton is itself") {
+        CHECK(as_ints(pcs_normal_form(PitchClassSet{5})) == std::vector<int>{5});
     }
 
     SECTION("Empty set") {
@@ -117,6 +134,13 @@ TEST_CASE("pcs_normal_form", "[pcs][core]") {
 }
 
 TEST_CASE("pcs_prime_form", "[pcs][core]") {
+    auto as_ints = [](const std::vector<PitchClass>& pcs) {
+        std::vector<int> out;
+        for (auto pc : pcs)
+            out.push_back(static_cast<int>(pc));
+        return out;
+    };
+
     SECTION("Major and minor triads have same prime form") {
         PitchClassSet major = {0, 4, 7};
         PitchClassSet minor = {0, 3, 7};
@@ -125,6 +149,7 @@ TEST_CASE("pcs_prime_form", "[pcs][core]") {
         auto pf_minor = pcs_prime_form(minor);
 
         CHECK(pf_major == pf_minor); // Both are 3-11
+        CHECK(as_ints(pf_major) == std::vector<int>{0, 3, 7});
     }
 
     SECTION("Prime form starts at 0") {
@@ -132,6 +157,25 @@ TEST_CASE("pcs_prime_form", "[pcs][core]") {
         auto pf = pcs_prime_form(pcs);
         REQUIRE(!pf.empty());
         CHECK(pf[0] == 0);
+    }
+
+    SECTION("A singleton's prime form is [0]") {
+        CHECK(as_ints(pcs_prime_form(PitchClassSet{5})) == std::vector<int>{0});
+    }
+
+    // Forte's rule breaks span ties by comparing from the left; Rahn's by
+    // comparing from the right. The two disagree on exactly these classes
+    // below cardinality 7, and Sunny adopts Forte's rule throughout.
+    SECTION("Forte convention on the classes where Forte and Rahn disagree") {
+        // 5-20: Forte [0,1,3,7,8], Rahn [0,1,5,6,8]
+        CHECK(as_ints(pcs_prime_form(PitchClassSet{0, 1, 5, 6, 8})) ==
+              std::vector<int>{0, 1, 3, 7, 8});
+        // 6-Z29: Forte [0,1,3,6,8,9], Rahn [0,2,3,6,7,9]
+        CHECK(as_ints(pcs_prime_form(PitchClassSet{0, 2, 3, 6, 7, 9})) ==
+              std::vector<int>{0, 1, 3, 6, 8, 9});
+        // 6-31: Forte [0,1,3,5,8,9], Rahn [0,1,4,5,7,9]
+        CHECK(as_ints(pcs_prime_form(PitchClassSet{0, 1, 4, 5, 7, 9})) ==
+              std::vector<int>{0, 1, 3, 5, 8, 9});
     }
 }
 
@@ -242,6 +286,16 @@ TEST_CASE("forte_number lookup (§12.4)", "[pcs][core]") {
         REQUIRE(z50 == "6-Z50");
     }
 
+    SECTION("5-20 and its complement 7-20 are labelled in either written form") {
+        // Forte's form and Rahn's form of the same class.
+        REQUIRE(forte_number({0, 1, 3, 7, 8}) == "5-20");
+        REQUIRE(forte_number({0, 1, 5, 6, 8}) == "5-20");
+        // Interval vector of 5-20 in Forte's table: <211231>.
+        CHECK(pcs_interval_vector({0, 1, 3, 7, 8}) == std::array<int, 6>{2, 1, 1, 2, 3, 1});
+        // Complement of {0,1,3,7,8}
+        REQUIRE(forte_number({2, 4, 5, 6, 9, 10, 11}) == "7-20");
+    }
+
     SECTION("Transposed hexachords resolve to same Forte number") {
         // Whole-tone scale transposed by 1
         PitchClassSet wt0 = {0, 2, 4, 6, 8, 10};
@@ -249,6 +303,51 @@ TEST_CASE("forte_number lookup (§12.4)", "[pcs][core]") {
         REQUIRE(forte_number(wt0) == "6-35");
         REQUIRE(forte_number(wt1) == "6-35");
     }
+}
+
+// Every subset of the twelve pitch classes with cardinality 2 to 10 belongs
+// to exactly one Forte class. Forte's catalogue has 6, 12, 29, 38, 50, 38, 29,
+// 12 and 6 classes for cardinalities 2 to 10 (220 in all). The expectation is
+// the published class count, not the table, so a table entry stored in a
+// different convention from the algorithm leaves subsets unlabelled here.
+TEST_CASE("forte_number is total and injective on TI classes", "[pcs][core]") {
+    const std::map<std::size_t, std::size_t> expected_classes = {
+        {2, 6}, {3, 12}, {4, 29}, {5, 38}, {6, 50}, {7, 38}, {8, 29}, {9, 12}, {10, 6}};
+
+    std::map<std::string, std::vector<PitchClass>> prime_by_label;
+    std::map<std::vector<PitchClass>, std::string> label_by_prime;
+    std::map<std::size_t, std::set<std::string>> labels_by_cardinality;
+    std::size_t unlabelled = 0;
+
+    for (unsigned mask = 0; mask < 4096; ++mask) {
+        PitchClassSet pcs;
+        for (int pc = 0; pc < 12; ++pc) {
+            if ((mask >> pc) & 1u) pcs.insert(PitchClass::wrapped(pc));
+        }
+        if (pcs.size() < 2 || pcs.size() > 10) continue;
+
+        auto label = forte_number(pcs);
+        if (!label) {
+            ++unlabelled;
+            continue;
+        }
+        auto prime = pcs_prime_form(pcs);
+        labels_by_cardinality[pcs.size()].insert(*label);
+
+        auto [label_it, label_new] = prime_by_label.emplace(*label, prime);
+        CHECK(label_it->second == prime);
+        auto [prime_it, prime_new] = label_by_prime.emplace(prime, *label);
+        CHECK(prime_it->second == *label);
+    }
+
+    CHECK(unlabelled == 0);
+    std::size_t total = 0;
+    for (const auto& [cardinality, count] : expected_classes) {
+        INFO("cardinality " << cardinality);
+        CHECK(labels_by_cardinality[cardinality].size() == count);
+        total += labels_by_cardinality[cardinality].size();
+    }
+    CHECK(total == 220);
 }
 
 TEST_CASE("Z-relation (§12.5)", "[pcs][core]") {

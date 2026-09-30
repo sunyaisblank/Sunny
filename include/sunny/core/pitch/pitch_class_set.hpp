@@ -56,7 +56,11 @@ using PitchClassSet = std::unordered_set<PitchClass>;
 /**
  * @brief Compute the normal form of a pitch class set
  *
- * Normal form is the most compact rotation.
+ * Normal form is the most packed rotation of the ascending pitch classes
+ * under Forte's rule: smallest span first, then the smallest intervals from
+ * the first element compared from the left. The original pitch classes are
+ * kept (D major is [2,6,9]); rotations that remain tied are transpositions
+ * of one another, and the one beginning on the lowest pitch class is kept.
  *
  * @param pcs Input pitch class set
  * @return Vector of pitch classes in normal form order
@@ -66,7 +70,8 @@ using PitchClassSet = std::unordered_set<PitchClass>;
 /**
  * @brief Compute the prime form of a pitch class set
  *
- * Most compact of normal form and its inversion, transposed to 0.
+ * Forte's prime form: the normal forms of the set and of its inversion,
+ * each transposed to begin at 0, compared from the left. Always begins at 0.
  *
  * @param pcs Input pitch class set
  * @return Vector of pitch classes in prime form

@@ -49,31 +49,46 @@ std::array<int, 6> pcs_interval_vector(const PitchClassSet& pcs) {
 
 namespace {
 
-// Helper: compute all rotations and find most compact
-std::vector<PitchClass> find_normal_form_sorted(std::vector<PitchClass> sorted) {
-    if (sorted.size() <= 1) return sorted;
+// Transpose an ordered pitch-class sequence so that it begins at 0.
+std::vector<PitchClass> transpose_to_zero(const std::vector<PitchClass>& ordered) {
+    std::vector<PitchClass> result;
+    result.reserve(ordered.size());
+    for (auto pc : ordered) {
+        result.push_back(PitchClass::wrapped(pc - ordered.front()));
+    }
+    return result;
+}
 
-    std::size_t n = sorted.size();
-    std::vector<PitchClass> best = sorted;
-    int best_span = 12;
+// Select the most packed rotation of an ascending pitch-class sequence.
+//
+// Forte's rule: the smallest span from first to last element wins; ties are
+// broken by comparing the rotations, transposed to begin at 0, from the left
+// (the smaller interval between the first and second elements, then first
+// and third, and so on). Rahn's rule compares from the right instead; the two
+// disagree on 5-20, 6-Z29, 6-31, 7-Z18, 7-20 and 8-26. Rotations that remain
+// tied are transpositionally equivalent, and the one beginning on the lowest
+// pitch class is kept. The original pitch classes are returned.
+std::vector<PitchClass> most_packed_rotation(const std::vector<PitchClass>& ascending) {
+    if (ascending.size() <= 1) return ascending;
+
+    const std::size_t n = ascending.size();
+    std::vector<PitchClass> best;
+    std::vector<PitchClass> best_shape;
 
     for (std::size_t r = 0; r < n; ++r) {
-        // Rotate
         std::vector<PitchClass> rotated;
         rotated.reserve(n);
         for (std::size_t i = 0; i < n; ++i) {
-            rotated.push_back(PitchClass::wrapped(sorted[(r + i) % n] - sorted[r]));
+            rotated.push_back(ascending[(r + i) % n]);
         }
-
-        int span = rotated.back(); // Already transposed to start at 0
-        if (span < best_span) {
-            best_span = span;
-            best = rotated;
-        } else if (span == best_span) {
-            // Compare lexicographically
-            if (rotated < best) {
-                best = rotated;
-            }
+        auto shape = transpose_to_zero(rotated);
+        // The shape's last element is the span; lexicographic order on shapes
+        // of equal length compares spans only after the leading intervals, so
+        // compare the span first.
+        if (best.empty() || shape.back() < best_shape.back() ||
+            (shape.back() == best_shape.back() && shape < best_shape)) {
+            best = std::move(rotated);
+            best_shape = std::move(shape);
         }
     }
 
@@ -88,28 +103,24 @@ std::vector<PitchClass> pcs_normal_form(const PitchClassSet& pcs) {
     std::vector<PitchClass> sorted(pcs.begin(), pcs.end());
     std::sort(sorted.begin(), sorted.end());
 
-    return find_normal_form_sorted(sorted);
+    return most_packed_rotation(sorted);
 }
 
 std::vector<PitchClass> pcs_prime_form(const PitchClassSet& pcs) {
     if (pcs.empty()) return {};
 
-    // Get normal form
-    auto normal = pcs_normal_form(pcs);
+    // Forte's prime form: the normal forms of the set and of its inversion,
+    // each transposed to begin at 0, compared from the left.
+    auto normal = transpose_to_zero(pcs_normal_form(pcs));
+    auto inv_normal = transpose_to_zero(pcs_normal_form(pcs_invert(pcs, 0)));
 
-    // Get normal form of inversion
-    auto inverted = pcs_invert(pcs, 0);
-    auto inv_normal = pcs_normal_form(inverted);
-
-    // Return the lexicographically smaller one
     return (normal <= inv_normal) ? normal : inv_normal;
 }
 
 bool pcs_t_equivalent(const PitchClassSet& a, const PitchClassSet& b) {
     if (a.size() != b.size()) return false;
-    auto prime_a = pcs_normal_form(a);
-    auto prime_b = pcs_normal_form(b);
-    return prime_a == prime_b;
+    if (a.empty()) return true;
+    return transpose_to_zero(pcs_normal_form(a)) == transpose_to_zero(pcs_normal_form(b));
 }
 
 bool pcs_ti_equivalent(const PitchClassSet& a, const PitchClassSet& b) {
@@ -215,7 +226,7 @@ constexpr std::array<uint16_t, 38> FORTE_C5 = {
     0x11B, // 5-17: {0,1,3,4,8}
     0x0B3, // 5-18: {0,1,4,5,7}
     0x0CB, // 5-19: {0,1,3,6,7}
-    0x163, // 5-20: {0,1,5,6,8}
+    0x18B, // 5-20: {0,1,3,7,8} Forte; Rahn gives {0,1,5,6,8}
     0x133, // 5-21: {0,1,4,5,8}
     0x193, // 5-22: {0,1,4,7,8}
     0x0AD, // 5-23: {0,2,3,5,7}
@@ -239,12 +250,12 @@ constexpr std::array<uint16_t, 38> FORTE_C5 = {
 // Cardinality 6 (50 entries: 6-1 through 6-Z50)
 // Hexachords are self-complementary in cardinality, so the
 // complement derivation path does not apply. Full table required.
-// Prime forms use the Rahn algorithm (consistent with pcs_prime_form).
-// Z-related pairs: (Z3,Z36), (Z4,Z37), (Z6,Z38), (Z10,Z39),
+// Every table stores Forte's prime forms, the convention pcs_prime_form
+// computes. Z-related pairs: (Z3,Z36), (Z4,Z37), (Z6,Z38), (Z10,Z39),
 //   (Z11,Z40), (Z12,Z41), (Z13,Z42), (Z17,Z43), (Z19,Z44),
 //   (Z23,Z45), (Z24,Z46), (Z25,Z47), (Z26,Z48), (Z28,Z49), (Z29,Z50).
-// Rahn–Forte disagreements: 6-Z29 uses {0,1,3,6,8,9} (Rahn),
-//   6-31 uses {0,1,3,5,8,9} (Rahn).
+// Forte-Rahn disagreements: 6-Z29 is {0,1,3,6,8,9} (Rahn {0,2,3,6,7,9}),
+//   6-31 is {0,1,3,5,8,9} (Rahn {0,1,4,5,7,9}).
 constexpr std::array<uint16_t, 50> FORTE_C6 = {
     0x03F, // 6-1:   {0,1,2,3,4,5}     chromatic hexachord
     0x05F, // 6-2:   {0,1,2,3,4,6}
@@ -274,9 +285,9 @@ constexpr std::array<uint16_t, 50> FORTE_C6 = {
     0x1AB, // 6-Z26: {0,1,3,5,7,8}
     0x25B, // 6-27:  {0,1,3,4,6,9}
     0x26B, // 6-Z28: {0,1,3,5,6,9}
-    0x34B, // 6-Z29: {0,1,3,6,8,9}     Rahn; Forte gives {0,2,3,6,7,9}
+    0x34B, // 6-Z29: {0,1,3,6,8,9}     Forte; Rahn gives {0,2,3,6,7,9}
     0x2CB, // 6-30:  {0,1,3,6,7,9}     Petrushka chord
-    0x32B, // 6-31:  {0,1,3,5,8,9}     Rahn; Forte gives {0,1,4,5,7,9}
+    0x32B, // 6-31:  {0,1,3,5,8,9}     Forte; Rahn gives {0,1,4,5,7,9}
     0x2B5, // 6-32:  {0,2,4,5,7,9}     major scale hexachord
     0x2AD, // 6-33:  {0,2,3,5,7,9}     Dorian hexachord
     0x2AB, // 6-34:  {0,1,3,5,7,9}     Mystic chord (Scriabin)
