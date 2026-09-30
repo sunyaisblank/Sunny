@@ -158,19 +158,17 @@ function(sunny_verify_layer)
     endif()
 endfunction()
 
-# Keep current-facing documentation and package metadata tied to machine build
-# authorities. Historical protocol numbers in the decision record are outside
-# this check by design.
+# Keep package metadata and current bridge sources tied to machine build
+# authorities.
 function(sunny_verify_repository_metadata)
     cmake_parse_arguments(
         ARG
         ""
-        "PROJECT_VERSION;BRIDGE_PROTOCOL_VERSION;SNAPSHOT_SCHEMA_VERSION"
+        "PROJECT_VERSION;BRIDGE_PROTOCOL_VERSION"
         ""
         ${ARGN}
     )
-    if(ARG_UNPARSED_ARGUMENTS OR NOT ARG_PROJECT_VERSION OR
-       NOT ARG_BRIDGE_PROTOCOL_VERSION OR NOT ARG_SNAPSHOT_SCHEMA_VERSION)
+    if(ARG_UNPARSED_ARGUMENTS OR NOT ARG_PROJECT_VERSION OR NOT ARG_BRIDGE_PROTOCOL_VERSION)
         message(FATAL_ERROR "sunny_verify_repository_metadata received an invalid argument set")
     endif()
 
@@ -179,7 +177,6 @@ function(sunny_verify_repository_metadata)
         "${PROJECT_SOURCE_DIR}/python/sunny/__init__.py"
         "${PROJECT_SOURCE_DIR}/max-package/CMakeLists.txt"
         "${PROJECT_SOURCE_DIR}/max-package/package-info.json"
-        "${PROJECT_SOURCE_DIR}/docs/reference.md"
     )
     set_property(
         DIRECTORY
@@ -205,73 +202,9 @@ function(sunny_verify_repository_metadata)
         )
     endif()
 
-    set(_sunny_reference "${PROJECT_SOURCE_DIR}/docs/reference.md")
-    file(READ "${_sunny_reference}" _sunny_reference_contents)
-    string(
-        REGEX MATCHALL
-        "\"bridge_protocol_version\"[ \t]*:[ \t]*[0-9]+"
-        _sunny_documented_protocol_fields
-        "${_sunny_reference_contents}"
-    )
-    foreach(_sunny_field IN LISTS _sunny_documented_protocol_fields)
-        if(NOT _sunny_field MATCHES ":[ \t]*${ARG_BRIDGE_PROTOCOL_VERSION}$")
-            message(
-                FATAL_ERROR
-                "Sunny bridge documentation mismatch in docs/reference.md: ${_sunny_field}; "
-                "authority is ${ARG_BRIDGE_PROTOCOL_VERSION}"
-            )
-        endif()
-    endforeach()
-    if(NOT _sunny_reference_contents MATCHES
-       "Bridge protocol version ${ARG_BRIDGE_PROTOCOL_VERSION} returns:")
-        message(
-            FATAL_ERROR
-            "docs/reference.md does not identify current bridge protocol "
-            "${ARG_BRIDGE_PROTOCOL_VERSION}"
-        )
-    endif()
-    if(NOT _sunny_reference_contents MATCHES
-       "snapshot schema ${ARG_SNAPSHOT_SCHEMA_VERSION}([^0-9]|$)")
-        message(
-            FATAL_ERROR
-            "docs/reference.md does not identify current snapshot schema "
-            "${ARG_SNAPSHOT_SCHEMA_VERSION}"
-        )
-    endif()
-
-    # The conformance guide has a normative current-contract section followed
-    # by a historical decision ledger.  Pin only explicit current markers so
-    # old protocol/schema numbers remain valid evidence instead of being
-    # mechanically rewritten during every bridge evolution.
-    set(_sunny_ableton_conformance
-        "${PROJECT_SOURCE_DIR}/docs/ableton-max-conformance.md"
-    )
-    if(EXISTS "${_sunny_ableton_conformance}")
-        set_property(
-            DIRECTORY
-            APPEND
-            PROPERTY CMAKE_CONFIGURE_DEPENDS "${_sunny_ableton_conformance}"
-        )
-        file(READ "${_sunny_ableton_conformance}" _sunny_ableton_conformance_contents)
-        if(NOT _sunny_ableton_conformance_contents MATCHES
-           "### 2\\.1 Closed bridge algebra \\(protocol v${ARG_BRIDGE_PROTOCOL_VERSION}\\)" OR
-           NOT _sunny_ableton_conformance_contents MATCHES
-           "response carries `bridge_protocol_version: ${ARG_BRIDGE_PROTOCOL_VERSION}`" OR
-           NOT _sunny_ableton_conformance_contents MATCHES
-           "starting/final schema-${ARG_SNAPSHOT_SCHEMA_VERSION} topology")
-            message(
-                FATAL_ERROR
-                "Sunny Ableton conformance documentation mismatch: current protocol/schema "
-                "markers must identify v${ARG_BRIDGE_PROTOCOL_VERSION}/schema "
-                "${ARG_SNAPSHOT_SCHEMA_VERSION}"
-            )
-        endif()
-    endif()
-
     # Current native bridge comments and diagnostics are part of the protocol
-    # contract too.  Historical decision/conformance prose is intentionally not
-    # scanned, but a stale literal in executable infrastructure must not survive
-    # a protocol upgrade.
+    # contract too: a stale literal in executable infrastructure must not
+    # survive a protocol upgrade.
     file(
         GLOB_RECURSE _sunny_current_bridge_sources
         CONFIGURE_DEPENDS

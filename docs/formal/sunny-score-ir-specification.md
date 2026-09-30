@@ -59,7 +59,7 @@ The Score IR does not redefine these types. Where the Score IR requires properti
 
 ### 0.5 Implemented Runtime Profile
 
-The current Sunny runtime implements the C++ document model, validation and workflows; versioned JSON serialisation; MIDI event compilation; MusicXML and LilyPond text compilation; and capability-aware Ableton deployment. The public MCP surface is the inventory in §12.2 and `docs/reference.md`. There is no binary Score IR codec and no in-process PCM `AudioCompiler`; audio is produced by the deployed Ableton session after Score, Timbre, and Mix compilation. Sections that discuss either binary encoding or direct audio rendering define reserved design space, not a callable runtime capability.
+The current Sunny runtime implements the C++ document model, validation and workflows; versioned JSON serialisation; MIDI event compilation; MusicXML and LilyPond text compilation; and capability-aware Ableton deployment. The public MCP surface is the inventory in §12.2; `tools/list` is the runtime authority. There is no binary Score IR codec and no in-process PCM `AudioCompiler`; audio is produced by the deployed Ableton session after Score, Timbre, and Mix compilation. Sections that discuss either binary encoding or direct audio rendering define reserved design space, not a callable runtime capability.
 
 ---
 
