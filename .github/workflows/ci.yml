@@ -64,7 +64,7 @@ jobs:
         uses: github/codeql-action/init@v3
         with:
           languages: cpp
-          queries: .analysis/codeql
+          queries: ./.analysis/codeql
 
       - name: Configure and build
         run: |
@@ -229,8 +229,7 @@ jobs:
 
       - name: Configure staged Max package
         run: >-
-          cmake -S max-package -B .bin-max
-          -G "Visual Studio 17 2022" -A x64
+          cmake -S max-package -B .bin-max -A x64
 
       - name: Build staged Max package
         run: cmake --build .bin-max --config Release --target sunny_max_archive

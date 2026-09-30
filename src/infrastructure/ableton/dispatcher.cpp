@@ -4,8 +4,12 @@
  *
  */
 
+#include <cctype>
+#include <cerrno>
 #include <charconv>
 #include <cmath>
+#include <cstdlib>
+#include <string>
 #include <string_view>
 #include <sunny/infrastructure/ableton/dispatcher.hpp>
 
@@ -29,11 +33,21 @@ to_note_data(const std::vector<sunny::core::NoteEvent>& notes) {
 
 std::optional<double> parse_positive_double(std::string_view text) {
     double value = 0.0;
+#if defined(__cpp_lib_to_chars)
     const auto [end, error] =
         std::from_chars(text.data(), text.data() + text.size(), value, std::chars_format::general);
-    if (error != std::errc{} || end != text.data() + text.size() || !std::isfinite(value) ||
-        value <= 0.0)
-        return std::nullopt;
+    if (error != std::errc{} || end != text.data() + text.size()) return std::nullopt;
+#else
+    // libc++ before 20 lacks floating-point from_chars; strtod needs a terminated
+    // buffer and must not accept leading whitespace, which from_chars rejects.
+    if (text.empty() || std::isspace(static_cast<unsigned char>(text.front()))) return std::nullopt;
+    const std::string terminated(text);
+    char* end = nullptr;
+    errno = 0;
+    value = std::strtod(terminated.c_str(), &end);
+    if (errno != 0 || end != terminated.c_str() + terminated.size()) return std::nullopt;
+#endif
+    if (!std::isfinite(value) || value <= 0.0) return std::nullopt;
     return value;
 }
 

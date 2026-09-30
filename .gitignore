@@ -2,10 +2,7 @@
 # Build output
 # =============================================================================
 
-.bin/
-.bin-debug/
-.bin-max/
-.bin-max-sdk-headers/
+.bin*/
 build/
 *.manifest
 *.spec

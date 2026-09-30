@@ -18,17 +18,12 @@ using namespace sunny::core;
 
 // Pitch class constants (PitchClass = uint8_t)
 constexpr PitchClass PC_C = 0;
-constexpr PitchClass PC_Db = 1;
 constexpr PitchClass PC_D = 2;
-constexpr PitchClass PC_Eb = 3;
 constexpr PitchClass PC_E = 4;
 constexpr PitchClass PC_F = 5;
-constexpr PitchClass PC_Gb = 6;
 constexpr PitchClass PC_G = 7;
 constexpr PitchClass PC_Ab = 8;
-constexpr PitchClass PC_A = 9;
 constexpr PitchClass PC_Bb = 10;
-constexpr PitchClass PC_B = 11;
 
 // =============================================================================
 // PitchClassGIS: Axioms

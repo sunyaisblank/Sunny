@@ -904,10 +904,10 @@ Result<float> get_parameter(const TimbreProfile& profile, const std::string& pat
 }
 
 Result<float> map_device_parameter_value(float source_value, const DeviceParameter& mapping) {
-    const auto finite = [](float value) { return std::isfinite(value); };
-    if (!finite(source_value) || !finite(mapping.source_min) || !finite(mapping.source_max) ||
-        !finite(mapping.range_min) || !finite(mapping.range_max) ||
-        !(mapping.source_max > mapping.source_min) || !(mapping.range_max > mapping.range_min))
+    if (!std::isfinite(source_value) || !std::isfinite(mapping.source_min) ||
+        !std::isfinite(mapping.source_max) || !std::isfinite(mapping.range_min) ||
+        !std::isfinite(mapping.range_max) || !(mapping.source_max > mapping.source_min) ||
+        !(mapping.range_max > mapping.range_min))
         return std::unexpected(ErrorCode::TimbreInvalidParameter);
     if (mapping.curve.type != MappingCurveType::Custom && !mapping.curve.custom_points.empty())
         return std::unexpected(ErrorCode::TimbreInvalidParameter);
@@ -944,8 +944,8 @@ Result<float> map_device_parameter_value(float source_value, const DeviceParamet
             return std::unexpected(ErrorCode::TimbreInvalidParameter);
         for (std::size_t index = 0; index < points.size(); ++index) {
             const auto [x, y] = points[index];
-            if (!finite(x) || !finite(y) || x < 0.0f || x > 1.0f || y < 0.0f || y > 1.0f ||
-                (index > 0 && !(x > points[index - 1].first)))
+            if (!std::isfinite(x) || !std::isfinite(y) || x < 0.0f || x > 1.0f || y < 0.0f ||
+                y > 1.0f || (index > 0 && !(x > points[index - 1].first)))
                 return std::unexpected(ErrorCode::TimbreInvalidParameter);
         }
         const auto upper = std::lower_bound(
@@ -966,7 +966,7 @@ Result<float> map_device_parameter_value(float source_value, const DeviceParamet
     }
 
     const float target = mapping.range_min + curved * (mapping.range_max - mapping.range_min);
-    if (!finite(target)) return std::unexpected(ErrorCode::TimbreInvalidParameter);
+    if (!std::isfinite(target)) return std::unexpected(ErrorCode::TimbreInvalidParameter);
     return target;
 }
 
@@ -1013,7 +1013,7 @@ Result<void> create_macro(TimbreProfile& profile, MacroKnob macro) {
 }
 
 Result<void> set_macro(TimbreProfile& profile, std::uint8_t macro_index, float value) {
-    if (!finite(value) || value < 0.0f || value > 1.0f)
+    if (!std::isfinite(value) || value < 0.0f || value > 1.0f)
         return std::unexpected(ErrorCode::TimbreInvalidParameter);
     for (auto& m : profile.modulation.macro_knobs) {
         if (m.index == macro_index) {
