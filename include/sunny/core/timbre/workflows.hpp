@@ -63,6 +63,10 @@ create_timbre_profile(TimbreProfileId id, PartId part_id, const std::string& nam
 
 /**
  * @brief Remove an effect from the insert chain by its EffectId.
+ *
+ * References to later effects (modulation and macro targets, automation
+ * lanes, rendering-map paths and device indices) shift with them. Removing an
+ * effect that is itself referenced is refused, leaving the profile unchanged.
  */
 [[nodiscard]] Result<void> remove_effect(TimbreProfile& profile, EffectId effect_id);
 
@@ -71,7 +75,8 @@ create_timbre_profile(TimbreProfileId id, PartId part_id, const std::string& nam
  *
  * The new_order vector must contain exactly the same set of EffectIds
  * currently present in the chain. Returns an error if any id is missing
- * or duplicated.
+ * or duplicated. Every path or device reference to an effect follows that
+ * effect to its new position.
  */
 [[nodiscard]] Result<void> reorder_effects(TimbreProfile& profile,
                                            const std::vector<EffectId>& new_order);
@@ -201,7 +206,8 @@ struct PresetSearchQuery {
  *
  * Overwrites each parameter listed in the preset's parameter_state
  * map using the path-based setter. Parameters not listed in the
- * preset remain unchanged.
+ * preset remain unchanged. The load is atomic: if any path fails to
+ * resolve or validate, the profile is left unchanged.
  */
 [[nodiscard]] Result<void> load_preset(TimbreProfile& profile, const TimbrePreset& preset);
 
@@ -216,8 +222,12 @@ save_preset(const TimbreProfile& profile, TimbrePresetId id, const std::string& 
 
 /**
  * @brief Schedule a preset morph over a score time range.
+ *
+ * Both presets must exist in `library`, and the interval must start at or
+ * after SCORE_START and end after it starts.
  */
-[[nodiscard]] Result<void> morph_presets(TimbreProfile& profile, PresetMorph morph);
+[[nodiscard]] Result<void>
+morph_presets(TimbreProfile& profile, PresetMorph morph, const std::vector<TimbrePreset>& library);
 
 // =============================================================================
 // Validation (§11: validate_timbre)

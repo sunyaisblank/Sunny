@@ -815,6 +815,18 @@ TEST_CASE("add_automation atomically enforces the complete lane invariant",
     }
 }
 
+namespace {
+
+/// A library holding the preset IDs the morph tests refer to.
+std::vector<TimbrePreset> morph_library() {
+    std::vector<TimbrePreset> library(2);
+    library[0].id = TimbrePresetId{1};
+    library[1].id = TimbrePresetId{2};
+    return library;
+}
+
+} // namespace
+
 TEST_CASE("morph_presets rejects degenerate interval", "[timbre-ir][workflow]") {
     auto p = create_timbre_profile(TimbreProfileId{1}, PartId{1}, "Test");
 
@@ -824,7 +836,7 @@ TEST_CASE("morph_presets rejects degenerate interval", "[timbre-ir][workflow]") 
     morph.start = ScoreTime{4, Beat{0, 1}};
     morph.end = ScoreTime{2, Beat{0, 1}}; // end before start
 
-    auto r = morph_presets(p, morph);
+    auto r = morph_presets(p, morph, morph_library());
     CHECK(!r.has_value());
 }
 
@@ -837,7 +849,7 @@ TEST_CASE("morph_presets accepts valid interval", "[timbre-ir][workflow]") {
     morph.start = ScoreTime{1, Beat{0, 1}};
     morph.end = ScoreTime{4, Beat{0, 1}};
 
-    auto r = morph_presets(p, morph);
+    auto r = morph_presets(p, morph, morph_library());
     CHECK(r.has_value());
     CHECK(p.preset_morphs.size() == 1);
 }
@@ -1105,7 +1117,7 @@ TEST_CASE("morph_presets adds morph entry", "[timbre-ir][workflow]") {
     morph.end = ScoreTime{4, Beat{0, 1}};
     morph.curve.type = MappingCurveType::SCurve;
 
-    auto r = morph_presets(p, morph);
+    auto r = morph_presets(p, morph, morph_library());
     CHECK(r.has_value());
     REQUIRE(p.preset_morphs.size() == 1);
     CHECK(p.preset_morphs[0].from_preset.value == 1);
@@ -1173,4 +1185,128 @@ TEST_CASE("set/get parameter — physical model fields", "[timbre-ir][workflow]"
     CHECK(*get_parameter(p, "source.damping") == Approx(0.3f));
     CHECK(*get_parameter(p, "source.exciter.brightness") == Approx(0.9f));
     CHECK(*get_parameter(p, "source.resonator.decay") == Approx(0.6f));
+}
+
+// =============================================================================
+// Regression: effect references follow effect identity (issue #14)
+// =============================================================================
+
+namespace {
+
+TimbreProfile profile_with_referenced_delays() {
+    auto profile = create_timbre_profile(TimbreProfileId{1}, PartId{1}, "Refs");
+    DelayEffect first;
+    first.feedback = 0.3f;
+    DelayEffect second;
+    second.feedback = 0.7f;
+    REQUIRE(add_effect(profile, {EffectId{1}, first, true, 1.0f}));
+    REQUIRE(add_effect(profile, {EffectId{2}, second, true, 1.0f}));
+    REQUIRE(create_lfo(profile, LFO{}));
+
+    ModulationRouting routing;
+    routing.source.type = ModulationSourceType::LFO;
+    routing.target = "insert_chain.effects[1].feedback";
+    routing.depth = 0.5f;
+    REQUIRE(add_modulation(profile, routing));
+
+    MacroKnob macro;
+    macro.index = 0;
+    macro.name = "Feedback";
+    macro.mappings.push_back({"insert_chain.effects[1].feedback", 0.0f, 1.0f, {}});
+    REQUIRE(create_macro(profile, macro));
+
+    TimbreAutomation automation;
+    automation.parameter_path = "insert_chain.effects[1].feedback";
+    automation.breakpoints = {{SCORE_START, 0.5f}};
+    REQUIRE(add_automation(profile, automation));
+
+    // Device 2 is the second enabled effect: device 0 is the source.
+    DeviceParameter mapping;
+    mapping.device_index = 2;
+    mapping.parameter_name = "Feedback";
+    profile.rendering.parameter_map["insert_chain.effects[1].feedback"] = mapping;
+    return profile;
+}
+
+} // namespace
+
+TEST_CASE("reorder_effects carries every effect reference with its effect",
+          "[timbre-ir][workflow][regression]") {
+    auto profile = profile_with_referenced_delays();
+    REQUIRE(reorder_effects(profile, {EffectId{2}, EffectId{1}}));
+
+    const std::string moved = "insert_chain.effects[0].feedback";
+    CHECK(profile.modulation.routings[0].target == moved);
+    CHECK(profile.modulation.macro_knobs[0].mappings[0].target == moved);
+    CHECK(profile.parameter_automation[0].parameter_path == moved);
+    REQUIRE(profile.rendering.parameter_map.contains(moved));
+    CHECK(profile.rendering.parameter_map.at(moved).device_index == 1);
+    CHECK(*get_parameter(profile, moved) == Approx(0.7f));
+    CHECK(is_timbre_valid(profile));
+}
+
+TEST_CASE("remove_effect refuses a referenced effect and shifts later references",
+          "[timbre-ir][workflow][regression]") {
+    auto profile = profile_with_referenced_delays();
+    const auto before = timbre_to_json(profile);
+    CHECK_FALSE(remove_effect(profile, EffectId{2}));
+    CHECK(timbre_to_json(profile) == before);
+
+    REQUIRE(remove_effect(profile, EffectId{1}));
+    const std::string shifted = "insert_chain.effects[0].feedback";
+    CHECK(profile.modulation.routings[0].target == shifted);
+    CHECK(profile.parameter_automation[0].parameter_path == shifted);
+    REQUIRE(profile.rendering.parameter_map.contains(shifted));
+    CHECK(profile.rendering.parameter_map.at(shifted).device_index == 1);
+    CHECK(*get_parameter(profile, shifted) == Approx(0.7f));
+    CHECK(is_timbre_valid(profile));
+}
+
+TEST_CASE("a disabled effect owns no device index across a reorder",
+          "[timbre-ir][workflow][regression]") {
+    auto profile = create_timbre_profile(TimbreProfileId{1}, PartId{1}, "Devices");
+    REQUIRE(add_effect(profile, {EffectId{1}, DelayEffect{}, false, 1.0f}));
+    REQUIRE(add_effect(profile, {EffectId{2}, DelayEffect{}, true, 1.0f}));
+    DeviceParameter mapping;
+    mapping.device_index = 1; // the only enabled effect
+    mapping.parameter_name = "Feedback";
+    profile.rendering.parameter_map["insert_chain.effects[1].feedback"] = mapping;
+
+    REQUIRE(reorder_effects(profile, {EffectId{2}, EffectId{1}}));
+    REQUIRE(profile.rendering.parameter_map.contains("insert_chain.effects[0].feedback"));
+    CHECK(profile.rendering.parameter_map.at("insert_chain.effects[0].feedback").device_index == 1);
+}
+
+TEST_CASE("load_preset is atomic when a later path fails",
+          "[timbre-ir][workflow][preset][regression]") {
+    auto profile = create_timbre_profile(TimbreProfileId{1}, PartId{1}, "Target");
+    REQUIRE(set_parameter(profile, "source.amplifier.velocity_sensitivity", 0.1f));
+    const auto before = timbre_to_json(profile);
+
+    TimbrePreset preset;
+    preset.id = TimbrePresetId{1};
+    // Ordered map: the amplifier path applies before the unresolved oscillator.
+    preset.parameter_state = {{"source.amplifier.velocity_sensitivity", 0.9f},
+                              {"source.oscillators[1].level", 0.5f}};
+    CHECK_FALSE(load_preset(profile, preset));
+    CHECK(timbre_to_json(profile) == before);
+}
+
+TEST_CASE("morph_presets requires known presets and a start inside the score",
+          "[timbre-ir][workflow][preset][regression]") {
+    auto profile = create_timbre_profile(TimbreProfileId{1}, PartId{1}, "Morph");
+    std::vector<TimbrePreset> library(1);
+    library[0].id = TimbrePresetId{1};
+    PresetMorph morph;
+    morph.from_preset = TimbrePresetId{1};
+    morph.to_preset = TimbrePresetId{2};
+    morph.start = SCORE_START;
+    morph.end = ScoreTime{2, Beat::zero()};
+    CHECK_FALSE(morph_presets(profile, morph, library));
+    morph.to_preset = TimbrePresetId{1};
+    morph.start = ScoreTime{0, Beat::zero()};
+    CHECK_FALSE(morph_presets(profile, morph, library));
+    CHECK(profile.preset_morphs.empty());
+    morph.start = SCORE_START;
+    CHECK(morph_presets(profile, morph, library));
 }

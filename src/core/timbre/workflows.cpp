@@ -10,6 +10,7 @@
 #include <charconv>
 #include <cmath>
 #include <limits>
+#include <map>
 #include <optional>
 #include <sstream>
 #include <string_view>
@@ -834,18 +835,162 @@ Result<void> add_effect(TimbreProfile& profile, Effect effect) {
     return {};
 }
 
+namespace {
+
+/// Position of each effect's device among the chain's enabled effects, if it has one.
+///
+/// The compiler inserts the source at device 0 and each enabled effect after
+/// it in chain order, so rendering-map device indices address effects by this
+/// ordinal rather than by chain position.
+std::vector<std::optional<std::uint32_t>> effect_devices(const std::vector<Effect>& effects) {
+    std::vector<std::optional<std::uint32_t>> devices(effects.size());
+    std::uint32_t next = 1;
+    for (std::size_t i = 0; i < effects.size(); ++i)
+        if (effects[i].enabled) devices[i] = next++;
+    return devices;
+}
+
+/// Rewrite an insert-chain path through old→new effect positions.
+///
+/// Returns the path unchanged when it does not address an effect position,
+/// and nullopt when it addresses an effect that no longer exists.
+std::optional<std::string>
+relocate_effect_path(const std::string& path,
+                     const std::vector<std::optional<std::size_t>>& relocation) {
+    auto segments = split_path(path);
+    if (!segments || segments->size() < 3 || (*segments)[0] != "insert_chain" ||
+        (*segments)[1] != "effects")
+        return path;
+    const auto index = parse_index((*segments)[2]);
+    // An out-of-range reference was already unresolved; it stays for validation to report.
+    if (!index || *index >= relocation.size()) return path;
+    if (!relocation[*index]) return std::nullopt;
+    (*segments)[2] = "[" + std::to_string(*relocation[*index]) + "]";
+    std::string rebuilt;
+    for (const auto& segment : *segments) {
+        if (!rebuilt.empty() && segment.front() != '[') rebuilt += '.';
+        rebuilt += segment;
+    }
+    return rebuilt;
+}
+
+/**
+ * Carry every reference to an effect through a change of the effect chain.
+ *
+ * Modulation targets, macro targets, automation lanes and rendering-map keys
+ * address effects by chain position, and rendering-map device indices by
+ * enabled-effect ordinal. Both are rewritten from `before` to `after`
+ * (matched by EffectId) so a reference keeps naming the same effect. Returns
+ * false, leaving the references partially rewritten, when one names an effect
+ * absent from `after`; callers restore from an EffectReferenceState.
+ */
+bool relocate_effect_references(TimbreProfile& profile,
+                                const std::vector<Effect>& before,
+                                const std::vector<Effect>& after) {
+    std::vector<std::optional<std::size_t>> relocation(before.size());
+    std::map<std::uint32_t, std::optional<std::uint32_t>> device_relocation;
+    const auto old_devices = effect_devices(before);
+    const auto new_devices = effect_devices(after);
+    for (std::size_t i = 0; i < before.size(); ++i) {
+        const auto found = std::ranges::find(
+            after, before[i].id.value, [](const Effect& e) { return e.id.value; });
+        if (found != after.end()) {
+            const auto position = static_cast<std::size_t>(std::distance(after.begin(), found));
+            relocation[i] = position;
+            if (old_devices[i]) device_relocation[*old_devices[i]] = new_devices[position];
+        } else if (old_devices[i]) {
+            device_relocation[*old_devices[i]] = std::nullopt;
+        }
+    }
+
+    const auto relocate = [&](std::string& path) {
+        auto moved = relocate_effect_path(path, relocation);
+        if (!moved) return false;
+        path = std::move(*moved);
+        return true;
+    };
+    for (auto& routing : profile.modulation.routings)
+        if (!relocate(routing.target)) return false;
+    for (auto& macro : profile.modulation.macro_knobs)
+        for (auto& mapping : macro.mappings)
+            if (!relocate(mapping.target)) return false;
+    for (auto& automation : profile.parameter_automation)
+        if (!relocate(automation.parameter_path)) return false;
+
+    std::map<std::string, DeviceParameter> rendering;
+    for (const auto& [key, value] : profile.rendering.parameter_map) {
+        std::string path = key;
+        DeviceParameter mapping = value;
+        if (!relocate(path)) return false;
+        if (const auto device = device_relocation.find(mapping.device_index);
+            device != device_relocation.end()) {
+            if (!device->second) return false;
+            mapping.device_index = *device->second;
+        }
+        rendering.emplace(std::move(path), std::move(mapping));
+    }
+    profile.rendering.parameter_map = std::move(rendering);
+    return true;
+}
+
+/// Copyable snapshot of every part of a profile that an effect-chain edit touches.
+///
+/// TimbreProfile itself is move-only (Hybrid sources own their layers), so
+/// edits snapshot these parts and restore them on failure instead of
+/// working on a whole-profile copy.
+struct EffectReferenceState {
+    std::vector<Effect> effects;
+    ModulationMatrix modulation;
+    std::vector<TimbreAutomation> automation;
+    std::map<std::string, DeviceParameter> rendering;
+
+    explicit EffectReferenceState(const TimbreProfile& profile)
+        : effects(profile.insert_chain.effects), modulation(profile.modulation),
+          automation(profile.parameter_automation), rendering(profile.rendering.parameter_map) {}
+
+    void restore(TimbreProfile& profile) {
+        profile.insert_chain.effects = std::move(effects);
+        profile.modulation = std::move(modulation);
+        profile.parameter_automation = std::move(automation);
+        profile.rendering.parameter_map = std::move(rendering);
+    }
+};
+
+bool has_error(const std::vector<Diagnostic>& diagnostics) {
+    return std::ranges::any_of(diagnostics, [](const Diagnostic& diagnostic) {
+        return diagnostic.severity == ValidationSeverity::Error;
+    });
+}
+
+} // namespace
+
 Result<void> remove_effect(TimbreProfile& profile, EffectId effect_id) {
-    auto& effects = profile.insert_chain.effects;
+    const auto& effects = profile.insert_chain.effects;
     auto it = std::find_if(effects.begin(), effects.end(), [&](const Effect& e) {
         return e.id.value == effect_id.value;
     });
     if (it == effects.end()) return std::unexpected(not_found());
-    effects.erase(it);
+
+    const bool valid_before = !has_error(validate_timbre(profile));
+    EffectReferenceState previous(profile);
+    auto remaining = effects;
+    remaining.erase(remaining.begin() + std::distance(effects.begin(), it));
+    // A reference to the removed effect cannot be retargeted without changing
+    // its meaning, so the removal is refused and the profile left unchanged.
+    if (!relocate_effect_references(profile, previous.effects, remaining)) {
+        previous.restore(profile);
+        return std::unexpected(ErrorCode::InvalidModTarget);
+    }
+    profile.insert_chain.effects = std::move(remaining);
+    if (valid_before && has_error(validate_timbre(profile))) {
+        previous.restore(profile);
+        return std::unexpected(ErrorCode::TimbreInvalidParameter);
+    }
     return {};
 }
 
 Result<void> reorder_effects(TimbreProfile& profile, const std::vector<EffectId>& new_order) {
-    auto& effects = profile.insert_chain.effects;
+    const auto& effects = profile.insert_chain.effects;
     if (new_order.size() != effects.size()) return std::unexpected(not_found());
 
     // TI-3: reject duplicate IDs in the reorder list
@@ -863,9 +1008,15 @@ Result<void> reorder_effects(TimbreProfile& profile, const std::vector<EffectId>
         auto it = std::find_if(effects.begin(), effects.end(), [&](const Effect& e) {
             return e.id.value == id.value;
         });
-        reordered.push_back(std::move(*it));
+        reordered.push_back(*it);
     }
-    effects = std::move(reordered);
+    EffectReferenceState previous(profile);
+    // A permutation keeps every effect, so relocation cannot find a dangling reference.
+    if (!relocate_effect_references(profile, previous.effects, reordered)) {
+        previous.restore(profile);
+        return std::unexpected(ErrorCode::InvariantViolation);
+    }
+    profile.insert_chain.effects = std::move(reordered);
     return {};
 }
 
@@ -1147,9 +1298,22 @@ std::vector<TimbrePreset> search_presets(const std::vector<TimbrePreset>& librar
 }
 
 Result<void> load_preset(TimbreProfile& profile, const TimbrePreset& preset) {
+    // Record each overwritten value and roll back on the first failure, so a
+    // failure part-way through leaves the profile exactly as it was. The
+    // profile is move-only, so it cannot simply be copied and committed.
+    std::vector<std::pair<float*, float>> applied;
     for (const auto& [path, value] : preset.parameter_state) {
-        auto r = set_parameter(profile, path, value);
-        if (!r) return r;
+        float* slot = nullptr;
+        if (auto segments = split_path(path)) {
+            if (auto resolved = resolve_path(profile, *segments)) slot = *resolved;
+        }
+        const float previous = slot != nullptr ? *slot : 0.0f;
+        if (auto r = set_parameter(profile, path, value); !r) {
+            for (auto restore = applied.rbegin(); restore != applied.rend(); ++restore)
+                *restore->first = restore->second;
+            return r;
+        }
+        applied.emplace_back(slot, previous);
     }
     profile.semantic_descriptors = preset.semantic_descriptors;
     return {};
@@ -1184,9 +1348,16 @@ TimbrePreset save_preset(const TimbreProfile& profile, TimbrePresetId id, const 
     return preset;
 }
 
-Result<void> morph_presets(TimbreProfile& profile, PresetMorph morph) {
-    // TI-11: morph interval must be non-degenerate (start < end)
-    if (!(morph.start < morph.end)) return std::unexpected(ErrorCode::TimbreInvalidParameter);
+Result<void>
+morph_presets(TimbreProfile& profile, PresetMorph morph, const std::vector<TimbrePreset>& library) {
+    // TI-11: morph interval must be non-degenerate (start < end) and lie in the score
+    if (morph.start < SCORE_START || !(morph.start < morph.end))
+        return std::unexpected(ErrorCode::TimbreInvalidParameter);
+    const auto known = [&](TimbrePresetId id) {
+        return std::ranges::any_of(library,
+                                   [&](const TimbrePreset& preset) { return preset.id == id; });
+    };
+    if (!known(morph.from_preset) || !known(morph.to_preset)) return std::unexpected(not_found());
 
     profile.preset_morphs.push_back(std::move(morph));
     return {};

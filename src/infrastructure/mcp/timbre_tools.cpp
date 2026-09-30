@@ -385,7 +385,13 @@ void register_timbre_tools(McpServer& server,
             auto r = remove_effect(*p,
                                    EffectId{detail::checked_integer<std::uint64_t>(
                                        params.at("effect_id"), "effect id")});
-            if (!r) return error_response("Effect not found");
+            if (!r) {
+                if (r.error() == ErrorCode::TimbreNotFound)
+                    return error_response("Effect not found");
+                return error_response(
+                    "Effect is referenced by a modulation, macro, automation or rendering "
+                    "mapping; remove those references first");
+            }
             return {{"success", true}};
         });
 
@@ -949,7 +955,10 @@ void register_timbre_tools(McpServer& server,
             }
             if (!preset) return error_response("Preset not found: " + std::to_string(preset_id));
             auto r = load_preset(*p, *preset);
-            if (!r) return error_response("Failed to load preset");
+            if (!r)
+                return error_response(
+                    "Failed to load preset: a parameter path does not resolve or validate in "
+                    "this profile; the profile is unchanged");
             return {{"success", true}};
         });
 
@@ -990,8 +999,12 @@ void register_timbre_tools(McpServer& server,
                 checked_enum_or<MappingCurveType>(params, "curve_type", 0, MappingCurveType_Max);
             if (!ct) return error_response("curve_type out of range");
             morph.curve.type = *ct;
-            auto r = morph_presets(*p, std::move(morph));
-            if (!r) return error_response("Failed to add morph");
+            auto r = morph_presets(*p, std::move(morph), session->preset_library);
+            if (!r) {
+                if (r.error() == ErrorCode::TimbreNotFound)
+                    return error_response("Morph preset not found in the preset library");
+                return error_response("Morph must start at or after bar 1 and end after it starts");
+            }
             return {{"success", true}};
         });
 

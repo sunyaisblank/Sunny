@@ -41,6 +41,13 @@ bool succeeded(const json& response) {
            !response.contains("error");
 }
 
+bool any_warning_contains(const json& response, const std::string& needle) {
+    if (!response.contains("warnings")) return false;
+    return std::ranges::any_of(response["warnings"], [&](const json& warning) {
+        return warning.get<std::string>().find(needle) != std::string::npos;
+    });
+}
+
 // =============================================================================
 // Mix (#13)
 // =============================================================================
@@ -217,6 +224,197 @@ TEST_CASE("loudness targets and sends are bounded to their physical domains",
                      {"level_db", 200.0}},
                     55)
               .contains("error"));
+}
+
+// =============================================================================
+// Timbre (#14)
+// =============================================================================
+
+struct TimbreFixture {
+    std::shared_ptr<TimbreSession> session = std::make_shared<TimbreSession>();
+    McpServer server;
+    std::uint64_t profile_id = 0;
+
+    TimbreFixture() {
+        register_timbre_tools(server, nullptr, session);
+        profile_id =
+            call_tool(
+                server, "create_timbre_profile", {{"part_id", 1}, {"name", "T"}}, 1)["profile_id"]
+                .get<std::uint64_t>();
+    }
+
+    std::uint64_t add_delay(float feedback, int id) {
+        const auto added = call_tool(
+            server,
+            "add_effect",
+            {{"profile_id", profile_id}, {"effect_type", "delay"}, {"feedback", feedback}},
+            id);
+        REQUIRE(succeeded(added));
+        return added["effect_id"].get<std::uint64_t>();
+    }
+
+    void route_lfo_to(const std::string& target, int id) {
+        REQUIRE(succeeded(
+            call_tool(server, "create_modulation_lfo", {{"profile_id", profile_id}}, id)));
+        REQUIRE(succeeded(call_tool(server,
+                                    "add_modulation",
+                                    {{"profile_id", profile_id},
+                                     {"source_type", 0},
+                                     {"source_index", 0},
+                                     {"target", target},
+                                     {"depth", 0.5}},
+                                    id + 1)));
+    }
+
+    float parameter(const std::string& path, int id) {
+        const auto read =
+            call_tool(server, "get_parameter", {{"profile_id", profile_id}, {"path", path}}, id);
+        REQUIRE(read.contains("value"));
+        return read["value"].get<float>();
+    }
+
+    bool valid(int id) {
+        return call_tool(server, "validate_timbre", {{"profile_id", profile_id}}, id)["valid"] ==
+               true;
+    }
+};
+
+TEST_CASE("a modulation routing follows its effect through reorder_effects",
+          "[mcp][timbre][modulation][regression]") {
+    TimbreFixture fixture;
+    const auto first = fixture.add_delay(0.3f, 100);
+    const auto second = fixture.add_delay(0.7f, 101);
+    fixture.route_lfo_to("insert_chain.effects[0].feedback", 102);
+
+    REQUIRE(
+        succeeded(call_tool(fixture.server,
+                            "reorder_effects",
+                            {{"profile_id", fixture.profile_id}, {"effect_ids", {second, first}}},
+                            104)));
+    const auto& routing = fixture.session->find(fixture.profile_id)->modulation.routings.at(0);
+    CHECK(fixture.parameter(routing.target, 105) == Catch::Approx(0.3f));
+    CHECK(fixture.valid(106));
+}
+
+TEST_CASE("removing an effect never leaves a dangling modulation reference",
+          "[mcp][timbre][modulation][regression]") {
+    TimbreFixture fixture;
+    const auto first = fixture.add_delay(0.3f, 110);
+    const auto second = fixture.add_delay(0.7f, 111);
+    fixture.route_lfo_to("insert_chain.effects[1].feedback", 112);
+
+    // The routed effect is referenced, so its removal is refused.
+    CHECK(call_tool(fixture.server,
+                    "remove_effect",
+                    {{"profile_id", fixture.profile_id}, {"effect_id", second}},
+                    114)
+              .contains("error"));
+    CHECK(fixture.valid(115));
+    CHECK(fixture.session->find(fixture.profile_id)->insert_chain.effects.size() == 2);
+
+    // Removing the unreferenced effect before it shifts the routed effect down.
+    REQUIRE(succeeded(call_tool(fixture.server,
+                                "remove_effect",
+                                {{"profile_id", fixture.profile_id}, {"effect_id", first}},
+                                116)));
+    const auto& routing = fixture.session->find(fixture.profile_id)->modulation.routings.at(0);
+    CHECK(fixture.parameter(routing.target, 117) == Catch::Approx(0.7f));
+    CHECK(fixture.valid(118));
+}
+
+TEST_CASE("a failed load_preset leaves the profile unchanged",
+          "[mcp][timbre][preset][regression]") {
+    TimbreFixture fixture;
+    const auto donor = call_tool(fixture.server,
+                                 "create_timbre_profile",
+                                 {{"part_id", 2}, {"name", "D"}},
+                                 120)["profile_id"];
+    REQUIRE(succeeded(
+        call_tool(fixture.server,
+                  "set_sound_source",
+                  {{"profile_id", donor}, {"source_type", "subtractive"}, {"oscillator_count", 2}},
+                  121)));
+    REQUIRE(succeeded(call_tool(
+        fixture.server,
+        "set_parameter",
+        {{"profile_id", donor}, {"path", "source.amplifier.velocity_sensitivity"}, {"value", 0.9}},
+        122)));
+    const auto preset = call_tool(
+        fixture.server, "save_preset", {{"profile_id", donor}, {"name", "Two oscillators"}}, 123);
+
+    REQUIRE(succeeded(call_tool(fixture.server,
+                                "set_parameter",
+                                {{"profile_id", fixture.profile_id},
+                                 {"path", "source.amplifier.velocity_sensitivity"},
+                                 {"value", 0.1}},
+                                124)));
+    // The one-oscillator profile cannot resolve source.oscillators[1].
+    CHECK(call_tool(fixture.server,
+                    "load_preset",
+                    {{"profile_id", fixture.profile_id}, {"preset_id", preset["preset_id"]}},
+                    125)
+              .contains("error"));
+    CHECK(fixture.parameter("source.amplifier.velocity_sensitivity", 126) == Catch::Approx(0.1f));
+}
+
+TEST_CASE("compile_timbre warns for each modulation routing and preset morph it drops",
+          "[mcp][timbre][ableton][regression]") {
+    CommandBuffer transport;
+    auto session = std::make_shared<TimbreSession>();
+    McpServer server;
+    register_timbre_tools(server, &transport, session);
+    const auto profile =
+        call_tool(server, "create_timbre_profile", {{"part_id", 1}, {"name", "Mod"}}, 130);
+    REQUIRE(succeeded(
+        call_tool(server, "create_modulation_lfo", {{"profile_id", profile["profile_id"]}}, 131)));
+    REQUIRE(succeeded(call_tool(server,
+                                "add_modulation",
+                                {{"profile_id", profile["profile_id"]},
+                                 {"source_type", 0},
+                                 {"source_index", 0},
+                                 {"target", "source.filter.cutoff"},
+                                 {"depth", 0.5}},
+                                132)));
+    const auto preset = call_tool(
+        server, "save_preset", {{"profile_id", profile["profile_id"]}, {"name", "P"}}, 133);
+    REQUIRE(succeeded(call_tool(server,
+                                "morph_presets",
+                                {{"profile_id", profile["profile_id"]},
+                                 {"from_preset_id", preset["preset_id"]},
+                                 {"to_preset_id", preset["preset_id"]},
+                                 {"start_bar", 1},
+                                 {"end_bar", 2}},
+                                134)));
+    const auto compiled = call_tool(
+        server, "compile_timbre", {{"profile_id", profile["profile_id"]}, {"track_index", 0}}, 135);
+    INFO(compiled.dump());
+    REQUIRE(succeeded(compiled));
+    CHECK(any_warning_contains(compiled, "source.filter.cutoff"));
+    CHECK(any_warning_contains(compiled, "morph"));
+    CHECK(compiled["complete"] == false);
+}
+
+TEST_CASE("morph_presets rejects unknown presets and times before the score start",
+          "[mcp][timbre][preset][regression]") {
+    TimbreFixture fixture;
+    const auto preset = call_tool(
+        fixture.server, "save_preset", {{"profile_id", fixture.profile_id}, {"name", "P"}}, 140);
+    const auto morph = [&](std::uint64_t from, std::uint64_t to, int start, int end, int id) {
+        return call_tool(fixture.server,
+                         "morph_presets",
+                         {{"profile_id", fixture.profile_id},
+                          {"from_preset_id", from},
+                          {"to_preset_id", to},
+                          {"start_bar", start},
+                          {"end_bar", end}},
+                         id);
+    };
+    const auto known = preset["preset_id"].get<std::uint64_t>();
+    CHECK(morph(known, 999, 1, 2, 141).contains("error"));
+    CHECK(morph(999, known, 1, 2, 142).contains("error"));
+    CHECK(morph(known, known, 0, 2, 143).contains("error"));
+    CHECK(fixture.session->find(fixture.profile_id)->preset_morphs.empty());
+    CHECK(succeeded(morph(known, known, 1, 2, 144)));
 }
 
 } // namespace

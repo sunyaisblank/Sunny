@@ -818,3 +818,33 @@ TEST_CASE("source and effect parameter gaps make Timbre compilation explicit",
     CHECK(result->warnings[0].find("source-specific parameter values") != std::string::npos);
     CHECK(result->warnings[1].find("effect-specific parameter values") != std::string::npos);
 }
+
+TEST_CASE("each dropped modulation routing, macro and preset morph is a compiler warning",
+          "[ableton][timbre][regression]") {
+    auto profile = make_subtractive_profile();
+    REQUIRE(create_lfo(profile, LFO{}));
+    ModulationRouting routing;
+    routing.source.type = ModulationSourceType::LFO;
+    routing.target = "source.filter.cutoff";
+    routing.depth = 0.25f;
+    REQUIRE(add_modulation(profile, routing));
+    REQUIRE(add_modulation(profile, routing));
+    MacroKnob macro;
+    macro.index = 3;
+    macro.name = "Tone";
+    REQUIRE(create_macro(profile, macro));
+    profile.preset_morphs.push_back(
+        {TimbrePresetId{1}, TimbrePresetId{2}, SCORE_START, ScoreTime{2, Beat::zero()}, {}});
+
+    CommandBuffer buf;
+    const auto r = compile_timbre_to_ableton(profile, 0, buf);
+    REQUIRE(r.has_value());
+    const auto count = [&](const std::string& needle) {
+        return std::ranges::count_if(r->warnings, [&](const std::string& warning) {
+            return warning.find(needle) != std::string::npos;
+        });
+    };
+    CHECK(count("Modulation routing to 'source.filter.cutoff'") == 2);
+    CHECK(count("Macro 3") == 1);
+    CHECK(count("Preset morph") == 1);
+}

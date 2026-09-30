@@ -429,6 +429,26 @@ compile_timbre_to_ableton(const TimbreProfile& profile, int track_index, LomTran
                                         "requires Live 12.3+");
     }
 
+    // The public Live Object Model cannot author modulation routings, macro
+    // mappings or preset interpolation, so each is a target gap reported
+    // individually (Timbre spec §0.5) rather than silently dropped.
+    for (const auto& routing : profile.modulation.routings) {
+        result.warnings.push_back("Modulation routing to '" + routing.target +
+                                  "' was not applied: the public Live Object Model cannot "
+                                  "author synthesis modulation routings");
+    }
+    for (const auto& macro : profile.modulation.macro_knobs) {
+        result.warnings.push_back("Macro " + std::to_string(macro.index) + " ('" + macro.name +
+                                  "') and its " + std::to_string(macro.mappings.size()) +
+                                  " mapping(s) were not applied");
+    }
+    for (const auto& morph : profile.preset_morphs) {
+        result.warnings.push_back(
+            "Preset morph from preset " + std::to_string(morph.from_preset.value) + " to preset " +
+            std::to_string(morph.to_preset.value) + " starting at bar " +
+            std::to_string(morph.start.bar) + " was not applied: Live cannot interpolate presets");
+    }
+
     if (!profile.parameter_automation.empty()) {
         static_assert(sizeof(std::size_t) <= sizeof(std::uint64_t));
         result.automation_lanes_requested =
