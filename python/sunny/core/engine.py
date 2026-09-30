@@ -46,6 +46,36 @@ HARMONIC_FUNCTIONS = {
 }
 
 
+# Semitones above the root at which a tertian chord's fifth may lie, in order
+# of preference: perfect, diminished, augmented. A chord containing both a
+# perfect fifth and a sharp eleventh (6) or flat thirteenth (8) keeps 7.
+_FIFTH_INTERVALS = (7, 6, 8)
+
+
+def _chord_fifth(root: int, pitch_classes: set[int]) -> int:
+    """Return the pitch class of a tertian chord's fifth.
+
+    Raises:
+        ValueError: If the chord has no perfect, diminished or augmented fifth.
+    """
+    for interval in _FIFTH_INTERVALS:
+        candidate = (root + interval) % 12
+        if candidate in pitch_classes:
+            return candidate
+    raise ValueError(f"Chord on pitch class {root} has no fifth to reflect")
+
+
+def _parallel_minor_uses_flats(tonic: int) -> bool:
+    """Whether the parallel minor of ``tonic`` has a flat key signature.
+
+    Negative harmony maps a major key's chords into its parallel minor, so the
+    reflected roots are spelled in that key: C gives B-flat, not A-sharp. The
+    relative major of the parallel minor lies three semitones above the tonic;
+    its signature has flats for F, B-flat, E-flat, A-flat and D-flat.
+    """
+    return (tonic + 3) % 12 in {5, 10, 3, 8, 1}
+
+
 class TheoryEngine:
     """High-level theory engine backed by sunny_native.
 
@@ -114,7 +144,7 @@ class TheoryEngine:
             chords.append(
                 {
                     "numeral": numeral,
-                    "root": note_name(notes[0] % 12) if notes else note_name(root_pc),
+                    "root": note_name(voicing.root),
                     "quality": voicing.quality,
                     "notes": notes,
                 }
@@ -207,16 +237,19 @@ class TheoryEngine:
         intervals = self._scale_intervals(scale)
         result = []
 
+        # Reflection reverses the stack of thirds, so the image's root is the
+        # image of the original chord's fifth (the upper boundary of its triad).
+        prefer_flats = _parallel_minor_uses_flats(root_pc)
         for numeral in numerals:
             voicing = self._native.generate_chord_from_numeral(numeral, root_pc, intervals, 4)
             original_pcs = {n % 12 for n in voicing.notes}
-            neg_pcs = self._native.negative_harmony(original_pcs, root_pc)
-            neg_root = min(neg_pcs) if neg_pcs else root_pc
+            fifth = _chord_fifth(voicing.root, original_pcs)
+            (neg_root,) = self._native.negative_harmony({fifth}, root_pc)
 
             result.append(
                 {
                     "original": numeral,
-                    "negative_root": note_name(neg_root),
+                    "negative_root": note_name(neg_root, prefer_flats),
                 }
             )
 

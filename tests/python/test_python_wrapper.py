@@ -170,3 +170,23 @@ class TestDeclineOverFabricate:
         """Unknown modes are not analysed using the major-mode table."""
         with pytest.raises(ValueError, match="Unknown mode"):
             theory_engine.analyze_progression_functions(["I"], mode="mystery")
+
+
+class TestChordRoots:
+    """The facade reports the harmonic root, not the bass or the lowest pitch class."""
+
+    @pytest.mark.parametrize(("numeral", "root"), [("V6", "G"), ("I64", "C"), ("V", "G")])
+    def test_inverted_chord_root_is_harmonic_root(self, theory_engine, numeral, root):
+        """V6 in C has bass B and root G; I64 has bass G and root C."""
+        (chord,) = theory_engine.generate_progression("C", "major", [numeral])
+        assert chord["root"] == root
+
+    @pytest.mark.parametrize(("numeral", "root"), [("V", "F"), ("IV", "G"), ("ii", "Bb")])
+    def test_negative_root_is_reflected_fifth(self, theory_engine, numeral, root):
+        """About the C-G axis (x -> 7 - x) the image's root is the image of the fifth.
+
+        V = G-B-D reflects to F-Ab-C (F minor), IV = F-A-C to G-Bb-D (G minor)
+        and ii = D-F-A to Bb-D-F (B-flat major).
+        """
+        (chord,) = theory_engine.generate_negative_progression("C", "major", [numeral])
+        assert chord["negative_root"] == root
