@@ -7,9 +7,26 @@
  */
 
 #include <catch2/catch_test_macros.hpp>
+#include <string_view>
+#include <utility>
+#include <vector>
 #include <sunny/core/rhythm/euclidean.hpp>
 
 using namespace sunny::core;
+
+namespace {
+
+// Box notation as printed by Toussaint (2005): 'x' is an onset, '.' a rest.
+std::vector<bool> box_notation(std::string_view pattern) {
+    std::vector<bool> result;
+    result.reserve(pattern.size());
+    for (char c : pattern) {
+        result.push_back(c == 'x');
+    }
+    return result;
+}
+
+} // namespace
 
 TEST_CASE("euclidean_rhythm basic invariants", "[rhythm][core]") {
     SECTION("Length equals steps") {
@@ -171,6 +188,28 @@ TEST_CASE("euclidean_preset", "[rhythm][core]") {
             if (b) count++;
         CHECK(count == 5);
         CHECK(preset->size() == 8);
+    }
+
+    // Expected patterns are transcribed from Toussaint, "The Euclidean
+    // Algorithm Generates Traditional Musical Rhythms" (2005), and "The
+    // Geometry of Musical Rhythm" (2013), not derived from the generator.
+    // The three sixteen-pulse claves are not rotations of E(5,16), so an
+    // implementation that rotates E(5,16) cannot satisfy them.
+    SECTION("Each preset is the literal rhythm it names") {
+        const std::pair<std::string_view, std::string_view> expected[] = {
+            {"tresillo", "x..x..x."},
+            {"cinquillo", "x.xx.xx."},
+            {"son_clave", "x..x..x...x.x..."},
+            {"rumba_clave", "x..x...x..x.x..."},
+            {"bossa_nova", "x..x..x...x..x.."},
+            {"gahu", "x..x..x...x...x."},
+        };
+        for (const auto& [name, pattern] : expected) {
+            INFO("preset " << name);
+            auto preset = euclidean_preset(name);
+            REQUIRE(preset.has_value());
+            CHECK(*preset == box_notation(pattern));
+        }
     }
 
     SECTION("Unknown preset") {

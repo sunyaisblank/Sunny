@@ -8,6 +8,11 @@ from __future__ import annotations
 import pytest
 
 
+def _box_notation(pattern: str) -> list[bool]:
+    """Decode Toussaint's box notation: 'x' is an onset, '.' a rest."""
+    return [symbol == "x" for symbol in pattern]
+
+
 def test_native_module_metadata_and_enum_namespaces_are_exact(sunny_native_module):
     """The built extension derives package metadata and keeps enum values scoped."""
     import sunny
@@ -176,21 +181,26 @@ class TestRhythm:
         assert sum(pattern) == 3
 
     def test_euclidean_rhythm_tresillo(self, sunny_native_module):
-        """Verify tresillo pattern E(3,8)."""
+        """E(3,8) is the tresillo x..x..x. (Toussaint 2005)."""
         sn = sunny_native_module
 
         pattern = sn.euclidean_rhythm(3, 8)
-        # Tresillo: X . . X . . X .
-        # One of the valid rotations
-        assert sum(pattern) == 3
+        assert list(pattern) == _box_notation("x..x..x.")
 
-    def test_euclidean_rhythm_son_clave(self, sunny_native_module):
-        """Verify son clave pattern E(5,16)."""
+    @pytest.mark.parametrize(
+        ("name", "box"),
+        [
+            ("son_clave", "x..x..x...x.x..."),
+            ("rumba_clave", "x..x...x..x.x..."),
+            ("bossa_nova", "x..x..x...x..x.."),
+            ("gahu", "x..x..x...x...x."),
+        ],
+    )
+    def test_euclidean_preset_is_literal_rhythm(self, sunny_native_module, name, box):
+        """Each named preset equals the rhythm Toussaint (2005) transcribes."""
         sn = sunny_native_module
 
-        pattern = sn.euclidean_rhythm(5, 16)
-        assert len(pattern) == 16
-        assert sum(pattern) == 5
+        assert list(sn.euclidean_preset(name)) == _box_notation(box)
 
 
 class TestScales:

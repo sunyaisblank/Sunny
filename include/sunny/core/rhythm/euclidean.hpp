@@ -4,7 +4,7 @@
  *
  *
  * Distributes k pulses across n steps as evenly as possible
- * using Bresenham's algorithm (exact integer arithmetic).
+ * using Bjorklund's algorithm (exact integer arithmetic).
  *
  * Invariants:
  * - len(result) == steps
@@ -25,7 +25,7 @@ namespace sunny::core {
 /**
  * @brief Generate Euclidean rhythm pattern
  *
- * Uses Bresenham's algorithm for exact integer arithmetic.
+ * Uses Bjorklund's algorithm for exact integer arithmetic.
  *
  * @param pulses Number of hits (k), where 0 <= k <= n
  * @param steps Total steps in pattern (n), where n >= 1
@@ -49,14 +49,16 @@ namespace sunny::core {
                                                          Velocity velocity = 100);
 
 /**
- * @brief Get common Euclidean rhythm by name
+ * @brief Get a named traditional timeline by name
  *
- * Known patterns:
- * - "tresillo": E(3,8)
- * - "cinquillo": E(5,8)
- * - "son_clave": E(5,16) rotated
- * - "rumba_clave": E(5,16) different rotation
- * - "bossa_nova": E(5,16)
+ * Patterns follow Toussaint, "The Euclidean Algorithm Generates
+ * Traditional Musical Rhythms" (2005), in box notation:
+ * - "tresillo":    x..x..x.          (E(3,8))
+ * - "cinquillo":   x.xx.xx.          (E(5,8))
+ * - "son_clave":   x..x..x...x.x...  (not Euclidean)
+ * - "rumba_clave": x..x...x..x.x...  (not Euclidean)
+ * - "bossa_nova":  x..x..x...x..x..  (a rotation of E(5,16))
+ * - "gahu":        x..x..x...x...x.  (not Euclidean)
  *
  * @param name Pattern name
  * @return Pattern or error

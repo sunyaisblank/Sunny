@@ -126,24 +126,45 @@ std::vector<NoteEvent> euclidean_to_events(const std::vector<bool>& pattern,
     return events;
 }
 
+namespace {
+
+// Box notation as transcribed by Toussaint: 'x' is an onset, '.' a rest.
+std::vector<bool> from_box_notation(std::string_view pattern) {
+    std::vector<bool> result;
+    result.reserve(pattern.size());
+    for (char symbol : pattern) {
+        result.push_back(symbol == 'x');
+    }
+    return result;
+}
+
+} // namespace
+
 Result<std::vector<bool>> euclidean_preset(std::string_view name) {
+    // The tresillo and cinquillo are Euclidean rhythms and are generated.
     if (name == "tresillo") {
         return euclidean_rhythm(3, 8, 0);
     }
     if (name == "cinquillo") {
         return euclidean_rhythm(5, 8, 0);
     }
+    // The sixteen-pulse timelines are stored literally. Son clave, rumba
+    // clave and gahu are not rotations of E(5,16) (their inter-onset
+    // intervals are 3-3-4-2-4, 3-4-3-2-4 and 3-3-4-4-2, against 3-3-3-3-4),
+    // so no rotation parameter can produce them. Bossa nova is E(5,16)
+    // rotated to begin on its first onset after a three-pulse gap, and is
+    // stored literally for the same auditability.
     if (name == "son_clave") {
-        return euclidean_rhythm(5, 16, 3);
+        return from_box_notation("x..x..x...x.x...");
     }
     if (name == "rumba_clave") {
-        return euclidean_rhythm(5, 16, 4);
+        return from_box_notation("x..x...x..x.x...");
     }
     if (name == "bossa_nova") {
-        return euclidean_rhythm(5, 16, 0);
+        return from_box_notation("x..x..x...x..x..");
     }
     if (name == "gahu") {
-        return euclidean_rhythm(4, 12, 0);
+        return from_box_notation("x..x..x...x...x.");
     }
 
     return std::unexpected(ErrorCode::EuclideanInvalidParams);
