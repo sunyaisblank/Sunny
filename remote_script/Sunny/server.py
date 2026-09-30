@@ -6,13 +6,16 @@ Wire protocol:
 
 The server accepts one client at a time (the Sunny C++ orchestrator).
 Each request is dispatched to the handler callback and the response
-is sent back with the same framing.
+is sent back with the same framing. The connection persists between
+requests for as long as the client keeps it open; only a frame left
+incomplete is subject to a timeout.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import math
 import socket
 import struct
 import threading
@@ -25,6 +28,24 @@ logger = logging.getLogger("sunny.remote_script.server")
 HEADER_SIZE = 4  # bytes for uint32 big-endian length prefix
 # Must match SUNNY_BRIDGE_MAX_WIRE_PAYLOAD in the native transport.
 MAX_PAYLOAD = 16 * 1024 * 1024
+# A client that stops sending part-way through a frame has desynchronised the
+# stream, so an incomplete frame is abandoned after this long without
+# progress. Waiting between frames is the normal state of the persistent link
+# (the user may pause for any length of time) and has no deadline.
+PARTIAL_FRAME_TIMEOUT_SECONDS = 30.0
+# An idle receive wakes at this interval to re-check shutdown. Shutting the
+# socket down from another thread wakes it at once where the platform allows;
+# the interval bounds the wait where it does not.
+IDLE_WAKE_SECONDS = 1.0
+# With no idle deadline, TCP keepalive is what eventually releases a client
+# that vanished without closing (a half-open connection), so that the
+# single-client server can accept its replacement.
+_KEEPALIVE_OPTIONS = (
+    ("TCP_KEEPIDLE", 60),  # Linux, Windows
+    ("TCP_KEEPALIVE", 60),  # macOS spelling of the idle interval
+    ("TCP_KEEPINTVL", 10),
+    ("TCP_KEEPCNT", 6),
+)
 
 
 def _versioned_response(response: object) -> dict:
@@ -54,8 +75,12 @@ class TcpServer:
         host: str = "127.0.0.1",
         port: int = 9001,
         handler: Callable[[dict], dict] | None = None,
+        partial_frame_timeout: float = PARTIAL_FRAME_TIMEOUT_SECONDS,
     ) -> None:
+        if not math.isfinite(partial_frame_timeout) or partial_frame_timeout <= 0:
+            raise ValueError("partial_frame_timeout must be a positive number of seconds")
         self._host = host
+        self._partial_frame_timeout = partial_frame_timeout
         self._port = port
         self._handler = handler
         self._server_socket: socket.socket | None = None
@@ -149,7 +174,7 @@ class TcpServer:
 
     def _handle_client(self, client: socket.socket) -> None:
         """Process requests from a single client until disconnect."""
-        client.settimeout(30.0)
+        self._enable_keepalive(client)
 
         while not self._stop_requested.is_set():
             # Read length-prefixed frame
@@ -199,11 +224,51 @@ class TcpServer:
         # Send response
         self._send_frame(client, json.dumps(response))
 
+    @staticmethod
+    def _enable_keepalive(client: socket.socket) -> None:
+        """Let the kernel detect a client that disappeared without closing."""
+        try:
+            client.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+        except OSError:
+            return
+        for name, value in _KEEPALIVE_OPTIONS:
+            option = getattr(socket, name, None)
+            if option is None:
+                continue
+            try:
+                client.setsockopt(socket.IPPROTO_TCP, option, value)
+            except OSError:
+                # The platform default keepalive schedule still applies.
+                pass
+
+    def _await_frame_start(self, client: socket.socket) -> bytes | None:
+        """Wait, without a deadline, for the first byte of the next frame.
+
+        Returns None on disconnect or once shutdown has been requested.
+        """
+        client.settimeout(IDLE_WAKE_SECONDS)
+        while not self._stop_requested.is_set():
+            try:
+                first = client.recv(1)
+            except TimeoutError:
+                continue
+            except ConnectionResetError:
+                return None
+            return first or None
+        return None
+
     def _recv_frame(self, client: socket.socket) -> str | None:
         """Read one length-prefixed frame. Returns None on disconnect."""
-        header = self._recv_exact(client, HEADER_SIZE)
-        if header is None:
+        first = self._await_frame_start(client)
+        if first is None:
             return None
+        # From the first byte until the response has been written, every
+        # socket operation must make progress within the partial-frame timeout.
+        client.settimeout(self._partial_frame_timeout)
+        rest = self._recv_exact(client, HEADER_SIZE - 1)
+        if rest is None:
+            return None
+        header = first + rest
 
         length = struct.unpack(">I", header)[0]
         if length > MAX_PAYLOAD:
