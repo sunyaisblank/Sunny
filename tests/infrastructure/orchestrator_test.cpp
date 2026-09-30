@@ -103,6 +103,37 @@ TEST_CASE("create_progression_clip roots each numeral on the scale degree",
     CHECK(static_cast<int>(messages[1].notes[0].pitch) == 69);
 }
 
+TEST_CASE("apply_arpeggio rejects a numeral beyond the scale's degree count",
+          "[infrastructure][orchestrator][scale][arpeggio]") {
+    RecordingDelivery delivery;
+    Orchestrator orch;
+
+    const auto result =
+        orch.apply_arpeggio(delivery, 0, 0, "C", "pentatonic_minor", {"i", "vi"}, "up", 0.25);
+
+    CHECK(result.outcome == OperationOutcome::NotAttempted);
+    CHECK(result.message.find("vi") != std::string::npos);
+    CHECK(delivery.pending_message_count() == 0);
+}
+
+TEST_CASE("apply_arpeggio walks the progression chord by chord in the requested key",
+          "[infrastructure][orchestrator][arpeggio]") {
+    RecordingDelivery delivery;
+    Orchestrator orch;
+
+    // G major I-V descending: G-B-D (67 71 74) then D-F#-A (62 66 69), each high to low.
+    REQUIRE(orch.apply_arpeggio(delivery, 1, 2, "G", "major", {"I", "V"}, "down", 0.5).success());
+
+    const auto messages = delivery.drain_messages();
+    REQUIRE(messages.size() == 2);
+    CHECK(messages[0].args == std::vector<std::string>{"3.000000"});
+    std::vector<int> pitches;
+    for (const auto& note : messages[1].notes)
+        pitches.push_back(static_cast<int>(note.pitch));
+    CHECK(pitches == std::vector<int>{74, 71, 67, 69, 66, 62});
+    CHECK(messages[1].notes[3].start_time == sunny::core::Beat{3, 8});
+}
+
 // =============================================================================
 // apply_euclidean_rhythm
 // =============================================================================
@@ -307,8 +338,9 @@ TEST_CASE("live-operation inputs reject invalid coordinates and time",
     CHECK_FALSE(
         orch.create_progression_clip(delivery, -1, 0, "C", "major", {"I"}, 4, 4.0).success());
     CHECK_FALSE(orch.apply_euclidean_rhythm(delivery, 0, -1, 3, 8, 60, 0.25).success());
-    CHECK_FALSE(orch.apply_arpeggio(delivery, 0, 0, {"I"}, "sideways", 0.25).success());
-    CHECK_FALSE(orch.apply_arpeggio(delivery, 0, 0, {"I"}, "up", 0.0).success());
+    CHECK_FALSE(
+        orch.apply_arpeggio(delivery, 0, 0, "C", "major", {"I"}, "sideways", 0.25).success());
+    CHECK_FALSE(orch.apply_arpeggio(delivery, 0, 0, "C", "major", {"I"}, "up", 0.0).success());
     CHECK_FALSE(
         orch.create_progression_clip(
                 delivery, 0, 0, "C", "major", {"I"}, 4, std::numeric_limits<double>::infinity())
@@ -316,8 +348,10 @@ TEST_CASE("live-operation inputs reject invalid coordinates and time",
     CHECK_FALSE(
         orch.apply_euclidean_rhythm(delivery, 0, 0, 3, 8, 60, std::numeric_limits<double>::max())
             .success());
-    CHECK_FALSE(orch.apply_arpeggio(delivery, 0, 0, {"I"}, "up", std::numeric_limits<double>::max())
-                    .success());
+    CHECK_FALSE(
+        orch.apply_arpeggio(
+                delivery, 0, 0, "C", "major", {"I"}, "up", std::numeric_limits<double>::max())
+            .success());
     CHECK(delivery.pending_message_count() == 0);
 }
 

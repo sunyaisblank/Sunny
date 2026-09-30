@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <iomanip>
 #include <sstream>
 #include <string_view>
@@ -242,6 +243,8 @@ OrchestratorResult Orchestrator::apply_euclidean_rhythm(BridgeDelivery& delivery
 OrchestratorResult Orchestrator::apply_arpeggio(BridgeDelivery& delivery,
                                                 int track_index,
                                                 int slot_index,
+                                                const std::string& root,
+                                                const std::string& scale,
                                                 const std::vector<std::string>& numerals,
                                                 const std::string& direction,
                                                 double step_duration) {
@@ -276,50 +279,45 @@ OrchestratorResult Orchestrator::apply_arpeggio(BridgeDelivery& delivery,
         arp_dir = sunny::render::ArpDirection::Order;
     }
 
-    // Build a chord from each numeral (using C major as default context)
-    // The orchestrator's create_progression_clip accepts root/scale;
-    // arpeggio uses the same approach internally
-    auto scale_def = sunny::core::find_scale("major");
-    if (!scale_def) {
-        return rejected("Scale lookup failed");
-    }
+    auto root_pc = sunny::core::note_to_pitch_class(root);
+    if (!root_pc) return rejected("Invalid root note: " + root);
+    auto scale_def = sunny::core::find_scale(scale);
+    if (!scale_def) return rejected("Unknown scale: " + scale);
 
-    // Collect all notes from all chords into a single voicing
-    sunny::core::ChordVoicing combined;
+    auto step = live_beats_to_sunny_beat(step_duration);
+    if (!step) return rejected("Step duration is not representable as a Beat");
+
+    // Each chord is arpeggiated on its own and placed after the previous
+    // chord's steps, so the pattern walks the progression chord by chord
+    // rather than one sorted pool of every chord tone.
+    std::vector<sunny::core::NoteEvent> events;
+    std::int64_t steps_so_far = 0;
     for (const auto& numeral : numerals) {
-        auto chord_result =
-            sunny::core::generate_chord_from_numeral(numeral, 0, scale_def->get_intervals(), 4);
-        if (chord_result) {
-            for (auto note : chord_result->notes) {
-                combined.notes.push_back(note);
-            }
+        auto chord = sunny::core::generate_chord_from_numeral(
+            numeral, *root_pc, scale_def->get_intervals(), 4);
+        if (!chord) return rejected("Numeral " + numeral + " is not a chord of scale " + scale);
+
+        auto chord_events = sunny::render::generate_arpeggio(*chord, arp_dir, *step, 0.8, 1);
+        if (!chord_events) return rejected("Arpeggio generation rejected invalid render input");
+
+        auto offset = sunny::core::checked_mul(*step, sunny::core::Beat{steps_so_far, 1});
+        if (!offset) return rejected("Arpeggio onset is not representable as a Beat");
+        for (auto& event : *chord_events) {
+            auto start = sunny::core::checked_add(event.start_time, *offset);
+            if (!start) return rejected("Arpeggio onset is not representable as a Beat");
+            event.start_time = *start;
+            events.push_back(event);
         }
+        steps_so_far += static_cast<std::int64_t>(chord_events->size());
     }
 
-    if (combined.notes.empty()) {
-        return rejected("No valid chords for arpeggio");
-    }
-
-    // Generate arpeggio pattern
-    auto beat_dur = live_beats_to_sunny_beat(step_duration);
-    if (!beat_dur) return rejected("Step duration is not representable as a Beat");
-    auto events = sunny::render::generate_arpeggio(combined, arp_dir, *beat_dur, 0.8, 1);
-
-    if (!events) return rejected("Arpeggio generation rejected invalid render input");
-
-    // Calculate total duration
-    double total_duration = 0.0;
-    for (const auto& ev : *events) {
-        double end = 4.0 * (ev.start_time.to_float() + ev.duration.to_float());
-        if (end > total_duration) {
-            total_duration = end;
-        }
-    }
-
-    const auto note_count = events->size();
+    // The clip loops with period steps x step duration; the last note's end
+    // falls short of that by the gate.
+    const auto note_count = events.size();
+    const double clip_length = static_cast<double>(note_count) * step_duration;
     return record_clip_operation(
         delivery,
-        {clip_messages(track_index, slot_index, total_duration, std::move(*events)),
+        {clip_messages(track_index, slot_index, clip_length, std::move(events)),
          delete_clip_message(track_index, slot_index)},
         "Created arpeggio with " + std::to_string(note_count) + " notes");
 }

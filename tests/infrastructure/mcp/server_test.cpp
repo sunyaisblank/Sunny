@@ -24,6 +24,7 @@
 #include <sstream>
 #include <string>
 #include <sunny/core/detail/serialization_integer.hpp>
+#include <sunny/core/harmony/roman_numeral.hpp>
 #include <sunny/core/scale/definitions.hpp>
 #include <sunny/infrastructure/mcp/core_tools.hpp>
 #include <sunny/infrastructure/mcp/corpus_tools.hpp>
@@ -1129,6 +1130,87 @@ TEST_CASE("a failed redo keeps its entry on the redo stack", "[mcp][integration]
     CHECK(transport.clips.at(SLOT_0).size() == 3);
     CHECK(redone["can_undo"] == true);
     CHECK(redone["can_redo"] == false);
+}
+
+namespace {
+
+/// Call apply_arpeggio against a recording transport and return its two commands.
+std::pair<CommandBuffer::Entry, CommandBuffer::Entry> record_arpeggio(const json& arguments) {
+    Orchestrator orchestrator;
+    CommandBuffer transport;
+    BridgeDispatcher dispatcher(&transport);
+    McpServer server;
+    register_sunny_tools(server, orchestrator, dispatcher);
+
+    const auto result = call_tool(server, "apply_arpeggio", arguments, 110);
+    INFO(result.dump());
+    REQUIRE(result["success"] == true);
+    REQUIRE(transport.entries().size() == 2);
+    return {transport.entries()[0], transport.entries()[1]};
+}
+
+std::vector<int> recorded_pitches(const CommandBuffer::Entry& entry) {
+    std::vector<int> pitches;
+    for (const auto& note : entry.notes)
+        pitches.push_back(static_cast<int>(note.pitch));
+    return pitches;
+}
+
+} // namespace
+
+TEST_CASE("apply_arpeggio arpeggiates each chord in turn", "[mcp][tools][arpeggio]") {
+    const auto [create, notes] = record_arpeggio({{"track_index", 0},
+                                                  {"slot_index", 0},
+                                                  {"root", "C"},
+                                                  {"scale", "major"},
+                                                  {"numerals", {"I", "IV", "V"}},
+                                                  {"direction", "up"}});
+
+    // C-E-G, then F-A-C, then G-B-D, each an ascending triad from octave 4.
+    CHECK(recorded_pitches(notes) == std::vector<int>{60, 64, 67, 65, 69, 72, 67, 71, 74});
+    for (std::size_t step = 0; step < notes.notes.size(); ++step) {
+        CAPTURE(step);
+        CHECK(notes.notes[step].start_time == Catch::Approx(0.25 * static_cast<double>(step)));
+    }
+    // Nine steps of 0.25 beats loop with period 2.25 beats.
+    CHECK(std::get<double>(create.request.args.at(0)) == Catch::Approx(2.25));
+}
+
+TEST_CASE("apply_arpeggio clip length is steps times step duration", "[mcp][tools][arpeggio]") {
+    const auto [create, notes] = record_arpeggio({{"track_index", 0},
+                                                  {"slot_index", 0},
+                                                  {"root", "C"},
+                                                  {"scale", "major"},
+                                                  {"numerals", {"I", "IV"}},
+                                                  {"direction", "up"}});
+
+    REQUIRE(notes.notes.size() == 6);
+    CHECK(std::get<double>(create.request.args.at(0)) == Catch::Approx(1.5));
+}
+
+TEST_CASE("apply_arpeggio honours the requested key", "[mcp][tools][arpeggio]") {
+    const auto [create, notes] = record_arpeggio({{"track_index", 0},
+                                                  {"slot_index", 0},
+                                                  {"root", "A"},
+                                                  {"scale", "minor"},
+                                                  {"numerals", {"i", "iv"}},
+                                                  {"direction", "order"},
+                                                  {"step_duration", 0.5}});
+
+    std::vector<int> expected;
+    const auto minor = sunny::core::find_scale("minor");
+    REQUIRE(minor);
+    for (const auto* numeral : {"i", "iv"}) {
+        const auto chord = sunny::core::generate_chord_from_numeral(
+            numeral, sunny::core::PitchClass{9}, minor->get_intervals(), 4);
+        REQUIRE(chord);
+        for (const auto pitch : chord->notes)
+            expected.push_back(static_cast<int>(pitch));
+    }
+    // A minor i and iv are A-C-E and D-F-A; none of those is a C major triad.
+    CHECK(recorded_pitches(notes) == expected);
+    CHECK(recorded_pitches(notes).front() % 12 == 9);
+    CHECK(std::get<double>(create.request.args.at(0)) == Catch::Approx(3.0));
 }
 
 TEST_CASE("get_scale_notes returns exactly the scale's notes for every built-in scale",

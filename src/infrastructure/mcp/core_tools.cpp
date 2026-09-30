@@ -143,11 +143,13 @@ void register_sunny_tools(McpServer& server,
     // =========================================================================
     server.register_tool(
         "apply_arpeggio",
-        "Create an arpeggiated clip from chord numerals",
+        "Create a clip arpeggiating each chord numeral in turn in the given key",
         {{"type", "object"},
          {"properties",
           {{"track_index", {{"type", "integer"}, {"description", "Track index"}}},
            {"slot_index", {{"type", "integer"}, {"description", "Clip slot index"}}},
+           {"root", {{"type", "string"}, {"description", "Key root note (e.g. C, F#, Bb)"}}},
+           {"scale", {{"type", "string"}, {"description", "Scale name (e.g. major, minor)"}}},
            {"numerals",
             {{"type", "array"},
              {"items", {{"type", "string"}}},
@@ -156,7 +158,8 @@ void register_sunny_tools(McpServer& server,
             {{"type", "string"}, {"description", "up, down, updown, downup, random, order"}}},
            {"step_duration",
             {{"type", "number"}, {"description", "Step duration in beats (default 0.25)"}}}}},
-         {"required", json::array({"track_index", "slot_index", "numerals", "direction"})}},
+         {"required",
+          json::array({"track_index", "slot_index", "root", "scale", "numerals", "direction"})}},
         [&orchestrator, &dispatcher](const json& params) -> json {
             if (!dispatcher.online()) {
                 return offline_decline();
@@ -165,6 +168,8 @@ void register_sunny_tools(McpServer& server,
                 dispatcher,
                 sunny::core::detail::checked_integer<int>(params.at("track_index"), "track index"),
                 sunny::core::detail::checked_integer<int>(params.at("slot_index"), "slot index"),
+                params.at("root").get<std::string>(),
+                params.at("scale").get<std::string>(),
                 params.at("numerals").get<std::vector<std::string>>(),
                 params.at("direction").get<std::string>(),
                 params.value("step_duration", 0.25));

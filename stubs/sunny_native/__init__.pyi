@@ -425,6 +425,8 @@ class Orchestrator:
         self,
         track_index: int,
         slot_index: int,
+        root: str,
+        scale: str,
         numerals: list[str],
         direction: str,
         step_duration: float = 0.25,

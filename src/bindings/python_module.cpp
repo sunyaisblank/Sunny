@@ -935,14 +935,24 @@ PYBIND11_MODULE(sunny_native, m) {
             [](OfflineOrchestrator& self,
                int track_index,
                int slot_index,
+               const std::string& root,
+               const std::string& scale,
                const std::vector<std::string>& numerals,
                const std::string& direction,
                double step_duration) {
-                return self.orchestrator.apply_arpeggio(
-                    self.delivery, track_index, slot_index, numerals, direction, step_duration);
+                return self.orchestrator.apply_arpeggio(self.delivery,
+                                                        track_index,
+                                                        slot_index,
+                                                        root,
+                                                        scale,
+                                                        numerals,
+                                                        direction,
+                                                        step_duration);
             },
             py::arg("track_index"),
             py::arg("slot_index"),
+            py::arg("root"),
+            py::arg("scale"),
             py::arg("numerals"),
             py::arg("direction"),
             py::arg("step_duration") = 0.25)

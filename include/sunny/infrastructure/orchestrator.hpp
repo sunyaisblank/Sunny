@@ -149,9 +149,13 @@ class Orchestrator {
                                                             sunny::core::MidiNote pitch,
                                                             double step_duration = 0.25);
 
+    /// Arpeggiate each numeral's chord in turn in the given key; the clip
+    /// loops with period (total steps) x step_duration.
     [[nodiscard]] OrchestratorResult apply_arpeggio(BridgeDelivery& delivery,
                                                     int track_index,
                                                     int slot_index,
+                                                    const std::string& root,
+                                                    const std::string& scale,
                                                     const std::vector<std::string>& numerals,
                                                     const std::string& direction,
                                                     double step_duration = 0.25);
