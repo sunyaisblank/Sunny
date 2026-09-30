@@ -1067,6 +1067,36 @@ void register_score_tools(McpServer& server,
             return mutation_result_j(*result);
         });
 
+    // Ties are part of the Score IR and of every compiler, but were not
+    // reachable through MCP. The mutation refuses a tie without an adjacent
+    // same-pitch continuation, so a client inserts both notes first.
+    server.register_tool(
+        "score_set_tie",
+        "Set or clear the forward tie of one note in a NoteGroup",
+        {{"score_id", "integer"},
+         {"event_id", "integer"},
+         {"note_index", "integer (optional, default 0)"},
+         {"tied", "boolean"}},
+        [session](const json& params) -> json {
+            json err;
+            auto* score = lookup_score(session, params, err);
+            if (!score) return err;
+            auto sid = detail::checked_integer<std::uint64_t>(params["score_id"], "score id");
+
+            if (!params.contains("event_id")) return error_response("event_id is required");
+            if (!params.contains("tied") || !params["tied"].is_boolean())
+                return error_response("tied must be a boolean");
+            EventId event_id{
+                detail::checked_integer<std::uint64_t>(params["event_id"], "event id")};
+            auto note_index =
+                detail::checked_integer_or<std::uint8_t>(params, "note_index", 0, "note index");
+
+            auto result = set_tie(
+                *score, event_id, note_index, params["tied"].get<bool>(), session->undo_for(sid));
+            if (!result) return error_response("set_tie failed");
+            return mutation_result_j(*result);
+        });
+
     server.register_tool(
         "score_transpose",
         "Transpose a single event or an entire region by a diatonic interval",

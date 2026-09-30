@@ -53,6 +53,63 @@ void check_diagnostic_contract(const json& diagnostic) {
     CHECK(diagnostic["error_code"].is_number_integer());
 }
 
+TEST_CASE("Score MCP ties a note only to an adjacent same-pitch continuation",
+          "[mcp][score][tie]") {
+    McpServer server;
+    auto session = std::make_shared<ScoreSession>();
+    register_score_tools(server, nullptr, session);
+    const auto created = call_tool(server,
+                                   "score_create",
+                                   {{"total_bars", 2},
+                                    {"time_sig_num", 4},
+                                    {"time_sig_den", 4},
+                                    {"parts", {{{"name", "Line"}, {"instrument_type", 0}}}}},
+                                   3101);
+    const json g4 = {{"letter", "G"}, {"accidental", 0}, {"octave", 4}};
+    const json a4 = {{"letter", "A"}, {"accidental", 0}, {"octave", 4}};
+    for (const auto& [bar, offset, pitch] : {std::tuple{1, json{{"n", 3}, {"d", 4}}, g4},
+                                             std::tuple{2, json{{"n", 0}, {"d", 1}}, g4},
+                                             std::tuple{2, json{{"n", 1}, {"d", 4}}, a4}}) {
+        REQUIRE(call_tool(server,
+                          "score_insert_note",
+                          {{"score_id", created["score_id"]},
+                           {"part_id", created["part_ids"][0]},
+                           {"bar", bar},
+                           {"offset", offset},
+                           {"pitch", pitch},
+                           {"duration", {{"n", 1}, {"d", 4}}}},
+                          3102)["ok"] == true);
+    }
+    const auto note_event = [&](int bar, int num, int den) {
+        const auto document =
+            call_tool(server, "score_get_json", {{"score_id", created["score_id"]}}, 3103);
+        for (const auto& event : document["parts"][0]["measures"][bar - 1]["voices"][0]["events"])
+            if (event["type"] == "note_group" && event["offset"]["num"] == num &&
+                event["offset"]["den"] == den)
+                return event;
+        FAIL("note event not found");
+        return json{};
+    };
+
+    const auto across_bar = note_event(1, 3, 4);
+    CHECK(call_tool(
+              server,
+              "score_set_tie",
+              {{"score_id", created["score_id"]}, {"event_id", across_bar["id"]}, {"tied", true}},
+              3104)["ok"] == true);
+    CHECK(note_event(1, 3, 4)["notes"][0]["tie_forward"] == true);
+
+    const auto to_other_pitch = note_event(2, 0, 1);
+    CHECK(
+        call_tool(
+            server,
+            "score_set_tie",
+            {{"score_id", created["score_id"]}, {"event_id", to_other_pitch["id"]}, {"tied", true}},
+            3105)
+            .contains("error"));
+    CHECK_FALSE(note_event(2, 0, 1)["notes"][0].contains("tie_forward"));
+}
+
 TEST_CASE("Score MCP handle and serialized root identity remain identical",
           "[mcp][score][identity][serialization]") {
     McpServer server;
@@ -459,7 +516,7 @@ TEST_CASE("all public tools advertise object-shaped JSON Schemas", "[mcp][tools]
     auto response =
         server.process_request({{"jsonrpc", "2.0"}, {"method", "tools/list"}, {"id", 30}});
     const auto& tools = response["result"]["tools"];
-    REQUIRE(tools.size() == 116);
+    REQUIRE(tools.size() == 117);
     for (const auto& tool : tools) {
         CAPTURE(tool["name"]);
         const auto& schema = tool["inputSchema"];
