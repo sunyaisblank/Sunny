@@ -848,3 +848,36 @@ TEST_CASE("each dropped modulation routing, macro and preset morph is a compiler
     CHECK(count("Macro 3") == 1);
     CHECK(count("Preset morph") == 1);
 }
+
+TEST_CASE("a wet balance on EQ Eight is a planned gap and never a Dry/Wet write",
+          "[ableton][timbre][wet][regression]") {
+    auto profile = make_subtractive_profile();
+    profile.insert_chain.effects.push_back(Effect{EffectId{1}, EQEffect{}, true, 0.5f});
+    profile.insert_chain.effects.push_back(Effect{EffectId{2}, ReverbEffect{}, true, 0.3f});
+
+    CommandBuffer buf;
+    const auto r = compile_timbre_to_ableton(profile, 0, buf);
+    REQUIRE(r.has_value());
+    // Only the Reverb, which has a Dry/Wet parameter, receives its balance.
+    REQUIRE(r->parameter_deployments.size() == 1);
+    CHECK(r->parameter_deployments[0].ir_path == "insert_chain.effects[1].mix");
+    CHECK(std::ranges::any_of(r->warnings, [](const std::string& warning) {
+        return warning.find("EQ Eight has no Dry/Wet parameter") != std::string::npos;
+    }));
+}
+
+TEST_CASE("an explicit Dry/Wet mapping onto EQ Eight is refused before any mutation",
+          "[ableton][timbre][wet][regression]") {
+    auto profile = make_subtractive_profile();
+    profile.insert_chain.effects.push_back(Effect{EffectId{1}, EQEffect{}, true, 0.5f});
+    DeviceParameter mapping;
+    mapping.device_index = 1; // the EQ Eight device after the source
+    mapping.parameter_name = "Dry/Wet";
+    profile.rendering.parameter_map["insert_chain.effects[0].mix"] = mapping;
+
+    CommandBuffer buf;
+    const auto r = compile_timbre_to_ableton(profile, 0, buf);
+    REQUIRE_FALSE(r.has_value());
+    CHECK(r.error() == ErrorCode::TargetValueUnrepresentable);
+    CHECK(buf.size() == 0);
+}

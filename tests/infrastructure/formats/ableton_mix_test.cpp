@@ -1300,3 +1300,53 @@ TEST_CASE("channel mute and solo states are applied exactly", "[ableton][mix]") 
     CHECK(mute_values == std::vector<bool>{true, false});
     CHECK(solo_values == std::vector<bool>{false, true});
 }
+
+TEST_CASE("levels beyond Live's mixer ranges are refused before any mutation",
+          "[ableton][mix][range][regression]") {
+    SECTION("channel fader above +6 dB") {
+        auto graph = make_test_graph();
+        graph.channels[0].fader.level_db = 9.0f;
+        CommandBuffer buf;
+        const auto r = compile_mix_to_ableton(graph, 0, buf);
+        REQUIRE_FALSE(r.has_value());
+        CHECK(r.error() == ErrorCode::TargetValueUnrepresentable);
+        CHECK(buf.size() == 0);
+        const auto levels = ableton_unrepresentable_mix_levels(graph);
+        REQUIRE(levels.has_value());
+        REQUIRE(levels->size() == 1);
+        CHECK(levels->front().find("Channel 1 fader 9 dB") != std::string::npos);
+    }
+    SECTION("master fader above +6 dB") {
+        auto graph = make_test_graph();
+        graph.master_bus.fader.level_db = 7.0f;
+        CommandBuffer buf;
+        CHECK_FALSE(compile_mix_to_ableton(graph, 0, buf).has_value());
+        CHECK(buf.size() == 0);
+    }
+    SECTION("return level above +6 dB") {
+        auto graph = make_full_graph();
+        graph.aux_buses[0].return_level = 8.0f;
+        CommandBuffer buf;
+        CHECK_FALSE(compile_mix_to_ableton(graph, 0, buf).has_value());
+        CHECK(buf.size() == 0);
+    }
+    SECTION("enabled send above 0 dB") {
+        auto graph = make_full_graph();
+        graph.channels[1].sends[0].level_db = 3.0f;
+        CommandBuffer buf;
+        CHECK_FALSE(compile_mix_to_ableton(graph, 0, buf).has_value());
+        CHECK(buf.size() == 0);
+    }
+    SECTION("the boundaries themselves compile") {
+        auto graph = make_full_graph();
+        graph.channels[0].fader.level_db = ABLETON_FADER_CEILING_DB;
+        graph.channels[1].sends[0].level_db = ABLETON_SEND_CEILING_DB;
+        // A group fader is never written, so Live's range does not apply to it.
+        graph.group_buses[0].fader.level_db = 10.0f;
+        CommandBuffer buf;
+        CHECK(compile_mix_to_ableton(graph, 0, buf).has_value());
+        const auto levels = ableton_unrepresentable_mix_levels(graph);
+        REQUIRE(levels.has_value());
+        CHECK(levels->empty());
+    }
+}

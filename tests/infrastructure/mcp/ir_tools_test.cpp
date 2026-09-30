@@ -48,6 +48,16 @@ bool any_warning_contains(const json& response, const std::string& needle) {
     });
 }
 
+bool any_command_mentions(const CommandBuffer& buffer, const std::string& needle) {
+    return std::ranges::any_of(buffer.entries(), [&](const CommandBuffer::Entry& entry) {
+        if (entry.request.property_or_method.find(needle) != std::string::npos) return true;
+        return std::ranges::any_of(entry.request.args, [&](const auto& argument) {
+            const auto* text = std::get_if<std::string>(&argument);
+            return text != nullptr && text->find(needle) != std::string::npos;
+        });
+    });
+}
+
 // =============================================================================
 // Mix (#13)
 // =============================================================================
@@ -224,6 +234,76 @@ TEST_CASE("loudness targets and sends are bounded to their physical domains",
                      {"level_db", 200.0}},
                     55)
               .contains("error"));
+}
+
+// =============================================================================
+// Ableton plan-time refusal (#7)
+// =============================================================================
+
+TEST_CASE("compile_mix refuses a fader above Live's +6 dB ceiling before any mutation",
+          "[mcp][mix][ableton][regression]") {
+    CommandBuffer transport;
+    McpServer server;
+    register_mix_tools(server, &transport);
+    const auto graph = call_tool(server, "create_mix_graph", {{"part_ids", {1}}}, 60);
+    REQUIRE(
+        succeeded(call_tool(server,
+                            "set_channel_level",
+                            {{"graph_id", graph["graph_id"]}, {"channel_id", 1}, {"level_db", 9.0}},
+                            61)));
+    const auto compiled =
+        call_tool(server, "compile_mix", {{"graph_id", graph["graph_id"]}, {"base_track", 0}}, 62);
+    INFO(compiled.dump());
+    CHECK(compiled.contains("error"));
+    CHECK(compiled["error_code"] == 4112); // TargetValueUnrepresentable
+    CHECK(transport.size() == 0);
+}
+
+TEST_CASE("compile_mix refuses a send above Live's 0 dB ceiling before any mutation",
+          "[mcp][mix][ableton][regression]") {
+    CommandBuffer transport;
+    McpServer server;
+    register_mix_tools(server, &transport);
+    const auto graph = call_tool(server, "create_mix_graph", {{"part_ids", {1}}}, 70);
+    const auto aux = call_tool(
+        server, "create_aux_bus", {{"graph_id", graph["graph_id"]}, {"name", "Reverb"}}, 71);
+    REQUIRE(succeeded(call_tool(server,
+                                "set_channel_send",
+                                {{"graph_id", graph["graph_id"]},
+                                 {"channel_id", 1},
+                                 {"aux_id", aux["aux_bus_id"]},
+                                 {"level_db", 3.0}},
+                                72)));
+    const auto compiled =
+        call_tool(server, "compile_mix", {{"graph_id", graph["graph_id"]}, {"base_track", 0}}, 73);
+    INFO(compiled.dump());
+    CHECK(compiled.contains("error"));
+    CHECK(compiled["error_code"] == 4112);
+    CHECK(transport.size() == 0);
+}
+
+TEST_CASE("compile_timbre never plans a Dry/Wet write on EQ Eight",
+          "[mcp][timbre][ableton][regression]") {
+    CommandBuffer transport;
+    McpServer server;
+    register_timbre_tools(server, &transport);
+    const auto profile =
+        call_tool(server, "create_timbre_profile", {{"part_id", 1}, {"name", "EQ"}}, 80);
+    REQUIRE(succeeded(
+        call_tool(server,
+                  "add_effect",
+                  {{"profile_id", profile["profile_id"]}, {"effect_type", "eq"}, {"mix", 0.5}},
+                  81)));
+    REQUIRE(call_tool(
+                server, "validate_timbre", {{"profile_id", profile["profile_id"]}}, 82)["valid"] ==
+            true);
+    const auto compiled = call_tool(
+        server, "compile_timbre", {{"profile_id", profile["profile_id"]}, {"track_index", 0}}, 83);
+    INFO(compiled.dump());
+    REQUIRE(succeeded(compiled));
+    CHECK_FALSE(any_command_mentions(transport, "Dry/Wet"));
+    CHECK(any_warning_contains(compiled, "EQ Eight"));
+    CHECK(compiled["complete"] == false);
 }
 
 // =============================================================================

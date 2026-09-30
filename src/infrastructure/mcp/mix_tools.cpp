@@ -1571,6 +1571,16 @@ void register_mix_tools(McpServer& server,
             auto result =
                 formats::compile_mix_to_ableton(*graph, base_track, *transport, routing_bindings);
             if (!result) {
+                if (result.error() == ErrorCode::TargetValueUnrepresentable) {
+                    // Name each level Live cannot hold so the caller can fix it.
+                    auto levels = formats::ableton_unrepresentable_mix_levels(*graph);
+                    if (levels && !levels->empty())
+                        return {{"success", false},
+                                {"connected", transport->is_connected()},
+                                {"error_code", static_cast<int>(result.error())},
+                                {"error", "Mix levels exceed what Live can represent"},
+                                {"unrepresentable", *levels}};
+                }
                 return {{"success", false},
                         {"connected", transport->is_connected()},
                         {"error_code", static_cast<int>(result.error())},

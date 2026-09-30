@@ -535,6 +535,42 @@ Result<void> record_property_write(const LomPath& path,
 
 } // anonymous namespace
 
+Result<std::vector<std::string>> ableton_unrepresentable_mix_levels(const MixGraph& graph) {
+    auto resolution = resolve_relative_levels(graph);
+    if (!resolution) return std::unexpected(resolution.error());
+    std::vector<std::string> violations;
+    const auto format_db = [](float value) {
+        auto text = std::to_string(value);
+        text.erase(text.find_last_not_of('0') + 1);
+        if (!text.empty() && text.back() == '.') text.pop_back();
+        return text;
+    };
+    for (const auto& entry : resolution->levels) {
+        // Group Tracks are not materialised, so their faders are never written.
+        if (entry.target_type == FaderTargetType::Group) continue;
+        const float written = entry.resolved_level_db.value_or(entry.explicit_level_db);
+        if (written > ABLETON_FADER_CEILING_DB)
+            violations.push_back(fader_target_name(entry) + " fader " + format_db(written) +
+                                 " dB exceeds Live's +6 dB fader ceiling");
+    }
+    for (const auto& aux : graph.aux_buses) {
+        if (aux.return_level > ABLETON_FADER_CEILING_DB)
+            violations.push_back("Aux bus '" + aux.name + "' return level " +
+                                 format_db(aux.return_level) +
+                                 " dB exceeds Live's +6 dB fader ceiling");
+    }
+    for (const auto& channel : graph.channels) {
+        for (const auto& send : channel.sends) {
+            if (send.enabled && send.level_db > ABLETON_SEND_CEILING_DB)
+                violations.push_back("Channel " + std::to_string(channel.id.value) +
+                                     " send to aux bus " + std::to_string(send.aux_bus_id.value) +
+                                     " at " + format_db(send.level_db) +
+                                     " dB exceeds Live's 0 dB send ceiling");
+        }
+    }
+    return violations;
+}
+
 Result<MixCompilationResult>
 compile_mix_to_ableton_impl(const MixGraph& graph,
                             int base_track,
@@ -546,6 +582,11 @@ compile_mix_to_ableton_impl(const MixGraph& graph,
 
     if (base_track < 0) return std::unexpected(ErrorCode::MixInvalidParameter);
     if (!is_mix_valid(graph)) return std::unexpected(ErrorCode::InvariantViolation);
+    // Refuse levels Live cannot represent before any query or mutation, so a
+    // plan never fails part-way through applying.
+    auto unrepresentable = ableton_unrepresentable_mix_levels(graph);
+    if (!unrepresentable) return std::unexpected(unrepresentable.error());
+    if (!unrepresentable->empty()) return std::unexpected(ErrorCode::TargetValueUnrepresentable);
     static_assert(sizeof(std::size_t) <= sizeof(std::uint64_t));
     result.group_tracks_requested = static_cast<std::uint64_t>(graph.group_buses.size());
     result.return_tracks_requested = static_cast<std::uint64_t>(graph.aux_buses.size());

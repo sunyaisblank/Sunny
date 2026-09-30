@@ -188,6 +188,28 @@ struct MixCompilationResult {
     std::vector<std::string> warnings;
 };
 
+/// Live's mixer fader ceiling: DeviceParameter.max of a track volume is +6 dB.
+inline constexpr float ABLETON_FADER_CEILING_DB = 6.0f;
+
+/// Live's send ceiling: a send knob's maximum is 0 dB.
+inline constexpr float ABLETON_SEND_CEILING_DB = 0.0f;
+
+/**
+ * @brief List every level the compiler would write that Live cannot represent.
+ *
+ * Covers the channel, master and return-track faders the compiler writes
+ * (resolved relative levels or their explicit fallbacks) against
+ * ABLETON_FADER_CEILING_DB, and enabled channel sends against
+ * ABLETON_SEND_CEILING_DB. Group faders and group sends are not
+ * materialised and are not checked. An empty result means every written
+ * level is representable. compile_mix_to_ableton refuses a non-empty result
+ * with TargetValueUnrepresentable before its first target mutation.
+ *
+ * @pre graph is valid (its relative fader levels resolve)
+ */
+[[nodiscard]] sunny::core::Result<std::vector<std::string>>
+ableton_unrepresentable_mix_levels(const sunny::core::MixGraph& graph);
+
 /**
  * @brief Compile a MixGraph to Ableton mixer via LOM transport
  *

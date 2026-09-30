@@ -16,8 +16,10 @@
  */
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <limits>
+#include <string_view>
 #include <sunny/core/timbre/validation.hpp>
 #include <sunny/core/timbre/workflows.hpp>
 #include <sunny/infrastructure/formats/ableton_evidence.hpp>
@@ -175,6 +177,23 @@ std::string ableton_effect_name(const EffectParameters& params) {
         params);
 }
 
+/// The Dry/Wet DeviceParameter name shared by Live's native audio effects.
+constexpr const char* WET_PARAMETER = "Dry/Wet";
+
+/**
+ * Whether a native Live device mapped by ableton_effect_name exposes a
+ * Dry/Wet DeviceParameter.
+ *
+ * Saturator, Delay, Reverb, Chorus-Ensemble, Phaser-Flanger and Compressor
+ * each have one. EQ Eight has none, and an Audio Effect Rack exposes only
+ * its macros, so a wet balance on either cannot be written.
+ */
+bool has_wet_control(const std::string& device) {
+    static constexpr std::array<std::string_view, 6> wet_devices{
+        "Saturator", "Delay", "Reverb", "Chorus-Ensemble", "Phaser-Flanger", "Compressor"};
+    return std::ranges::find(wet_devices, device) != wet_devices.end();
+}
+
 } // anonymous namespace
 
 Result<TimbreCompilationResult>
@@ -195,6 +214,33 @@ compile_timbre_to_ableton(const TimbreProfile& profile, int track_index, LomTran
             return diagnostic.severity == ValidationSeverity::Error;
         }))
         return std::unexpected(ErrorCode::InvariantViolation);
+    // Check wet balances against the native device table before the first
+    // mutation. An explicit Dry/Wet mapping onto a device without one would
+    // fail part-way through apply, so it is refused; an implicit wet balance
+    // is a target gap reported as a warning, and the device stays fully wet.
+    if (!profile.insert_chain.bypass_all) {
+        std::uint32_t device = 1; // device 0 is the source
+        for (std::size_t index = 0; index < profile.insert_chain.effects.size(); ++index) {
+            const auto& effect = profile.insert_chain.effects[index];
+            if (!effect.enabled) continue;
+            const auto name = ableton_effect_name(effect.parameters);
+            if (!has_wet_control(name)) {
+                for (const auto& resolved : *resolved_mappings) {
+                    if (resolved.mapping->device_index == device &&
+                        resolved.mapping->parameter_name == WET_PARAMETER)
+                        return std::unexpected(ErrorCode::TargetValueUnrepresentable);
+                }
+                const auto mix_path = "insert_chain.effects[" + std::to_string(index) + "].mix";
+                if (effect.mix < 1.0f && !profile.rendering.parameter_map.contains(mix_path))
+                    result.warnings.push_back(
+                        "Effect " + std::to_string(index) + " requests a wet balance of " +
+                        std::to_string(effect.mix) + " but " + name +
+                        " has no Dry/Wet parameter; it was planned fully wet");
+            }
+            ++device;
+        }
+    }
+
     result.devices_requested = 1;
     if (!profile.insert_chain.bypass_all) {
         result.effects_requested = static_cast<std::uint64_t>(
@@ -338,15 +384,16 @@ compile_timbre_to_ableton(const TimbreProfile& profile, int track_index, LomTran
 
         // Native devices expose effect balance as a DeviceParameter, not as a
         // Device property. Avoid touching the parameter when the IR requests
-        // the device's fully-wet/default value because some devices (for
-        // example EQ Eight) intentionally have no Dry/Wet parameter.
+        // the device's fully-wet/default value, and never on a device without
+        // one (reported as a gap before the first mutation).
         const auto effect_mix_path =
             "insert_chain.effects[" + std::to_string(effect_index) + "].mix";
-        if (effect.mix < 1.0f && !rc.parameter_map.contains(effect_mix_path)) {
+        if (effect.mix < 1.0f && has_wet_control(effect_device) &&
+            !rc.parameter_map.contains(effect_mix_path)) {
             auto effect_path = track.child("devices").child(static_cast<int>(device_offset));
             DeviceParameter wet_mapping;
             wet_mapping.device_index = static_cast<std::uint32_t>(device_offset);
-            wet_mapping.parameter_name = "Dry/Wet";
+            wet_mapping.parameter_name = WET_PARAMETER;
             auto wet_result = deploy_parameter_mapping(effect_path,
                                                        effect_mix_path,
                                                        wet_mapping,
