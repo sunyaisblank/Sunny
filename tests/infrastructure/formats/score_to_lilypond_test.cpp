@@ -8,6 +8,7 @@
 #include <array>
 #include <catch2/catch_test_macros.hpp>
 #include <sunny/core/post_tonal/twelve_tone.hpp>
+#include <sunny/core/score/mutations.hpp>
 #include <sunny/infrastructure/formats/score_to_lilypond.hpp>
 
 // Include Score IR creation function
@@ -432,9 +433,16 @@ TEST_CASE("two voices produce polyphony syntax", "[lilypond][compiler]") {
     auto result = compile_score_to_lilypond(score);
     REQUIRE(result.has_value());
 
+    // Replaces a check that any `\\` appeared, which also passed when the
+    // separator only wrapped annotations. Exactly one separator divides the
+    // two genuine voices; the annotation spacer joins the first voice without.
     const std::string& ly = result->ly;
     CHECK(ly.find("<<") != std::string::npos);
-    CHECK(ly.find("\\\\") != std::string::npos);
+    std::size_t separators = 0;
+    for (auto at = ly.find("\\\\"); at != std::string::npos; at = ly.find("\\\\", at + 2))
+        ++separators;
+    CHECK(separators == 1);
+    CHECK(ly.find("\\\\ { e'1") != std::string::npos);
 }
 
 // =============================================================================
@@ -618,16 +626,18 @@ TEST_CASE("uncompilable score returns unexpected", "[lilypond][compiler]") {
 }
 
 // =============================================================================
-// Non-representable duration produces diagnostic
+// Unwritable dyadic durations are tied written values (issue #10)
 // =============================================================================
 
-TEST_CASE("non-conventional duration uses an exact LilyPond multiplier", "[lilypond][compiler]") {
+// Replaces a test that asserted `c'1*5/8`: LilyPond prints that multiplier as a
+// whole-note glyph, so the written music misstated the rhythm. Gould (Behind
+// Bars) requires every written note to carry a real value; 5/8 is a half
+// tied to an eighth.
+TEST_CASE("a 5/8 note is written as a tied half and eighth", "[lilypond][compiler][regression]") {
     auto score = make_test_score();
 
     auto& voice = score.parts[0].measures[0].voices[0];
     voice.events.clear();
-
-    // Insert a note with duration 5/8 (not a standard LilyPond duration)
     NoteGroup ng;
     Note note;
     note.pitch = SpelledPitch{0, 0, 4};
@@ -635,17 +645,82 @@ TEST_CASE("non-conventional duration uses an exact LilyPond multiplier", "[lilyp
     ng.notes.push_back(note);
     ng.duration = Beat{5, 8};
     voice.events.push_back(Event{EventId{8000001}, Beat::zero(), ng});
-
-    // Fill remaining measure: 1/1 - 5/8 = 3/8 rest
     RestEvent rest{Beat{3, 8}, true};
     voice.events.push_back(Event{EventId{8000002}, Beat{5, 8}, rest});
 
     auto result = compile_score_to_lilypond(score);
     REQUIRE(result.has_value());
 
-    CHECK(result->ly.find("c'1*5/8") != std::string::npos);
+    CHECK(result->ly.find("c'2~ c'8") != std::string::npos);
+    CHECK(result->ly.find("1*5/8") == std::string::npos);
     CHECK(result->ly.find("r4.") != std::string::npos);
     CHECK(result->report.diagnostics.empty());
+}
+
+TEST_CASE("a 5/16 note is written as a tied quarter and sixteenth",
+          "[lilypond][compiler][regression]") {
+    auto score = make_test_score(1);
+    Note note;
+    note.pitch = SpelledPitch{0, 0, 4};
+    REQUIRE(insert_note(score, score.parts[0].id, 1, 0, Beat::zero(), note, Beat{5, 16}));
+
+    auto result = compile_score_to_lilypond(score);
+    REQUIRE(result.has_value());
+    INFO(result->ly);
+    CHECK(result->ly.find("c'4~ c'16") != std::string::npos);
+    CHECK(result->ly.find("1*5/16") == std::string::npos);
+}
+
+TEST_CASE("triplet eighths inserted one by one are written as a LilyPond tuplet",
+          "[lilypond][compiler][tuplet][regression]") {
+    // Three notes of 1/12 whole note fill one quarter beat: a 3:2 tuplet of
+    // eighths, written \tuplet 3/2 { c'8 d'8 e'8 }.
+    auto score = make_test_score(1);
+    const auto part = score.parts[0].id;
+    for (int index = 0; index < 3; ++index) {
+        Note note;
+        note.pitch = SpelledPitch{static_cast<std::uint8_t>(index), 0, 4};
+        REQUIRE(insert_note(score, part, 1, 0, Beat{index, 12}, note, Beat{1, 12}));
+    }
+
+    auto result = compile_score_to_lilypond(score);
+    REQUIRE(result.has_value());
+    INFO(result->ly);
+    CHECK(result->ly.find("\\tuplet 3/2 { c'8 d'8 e'8 }") != std::string::npos);
+    CHECK(result->ly.find("1*1/12") == std::string::npos);
+}
+
+TEST_CASE("a tie across an annotated barline stays in one LilyPond voice",
+          "[lilypond][compiler][regression]") {
+    // Bar 1 carries the initial tempo mark. `<< {...} \\ {...} >>` would create
+    // new voices with forced stems (Notation Reference 1.5.2) and strand the
+    // tie; a parallel spacer without `\\` keeps one voice.
+    // The continuation is inserted first: a tie must always reach a note.
+    auto score = make_test_score(2);
+    Note release;
+    release.pitch = SpelledPitch{0, 0, 4};
+    REQUIRE(insert_note(score, score.parts[0].id, 2, 0, Beat::zero(), release, Beat{1, 1}));
+    Note held;
+    held.pitch = SpelledPitch{0, 0, 4};
+    held.tie_forward = true;
+    REQUIRE(insert_note(score, score.parts[0].id, 1, 0, Beat::zero(), held, Beat{1, 1}));
+
+    auto result = compile_score_to_lilypond(score);
+    REQUIRE(result.has_value());
+    INFO(result->ly);
+    CHECK(result->ly.find("\\tempo") != std::string::npos);
+    CHECK(result->ly.find("c'1~") != std::string::npos);
+    CHECK(result->ly.find("\\\\") == std::string::npos);
+}
+
+TEST_CASE("a B-flat clarinet part transposes concert pitch up a major second",
+          "[lilypond][compiler][transposition][regression]") {
+    // Written C4 sounds B-flat 3, so \transpose bes c' maps concert to written.
+    auto score = make_test_score(1);
+    score.parts[0].definition.transposition = -2;
+    auto result = compile_score_to_lilypond(score);
+    REQUIRE(result.has_value());
+    CHECK(result->ly.find("\\transpose bes c'") != std::string::npos);
 }
 
 TEST_CASE("invisible rests compile to spacer rests", "[lilypond][compiler][rest]") {

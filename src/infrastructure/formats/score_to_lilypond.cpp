@@ -15,6 +15,7 @@
 #include <sunny/core/score/document.hpp>
 #include <sunny/core/score/tuplets.hpp>
 #include <sunny/core/score/validation.hpp>
+#include <sunny/core/score/written_duration.hpp>
 #include <sunny/infrastructure/formats/lilypond.hpp>
 #include <sunny/infrastructure/formats/score_to_lilypond.hpp>
 
@@ -220,6 +221,29 @@ std::string exact_duration(Beat duration) {
     std::string result = "1*" + std::to_string(duration.numerator());
     if (duration.denominator() != 1) result += "/" + std::to_string(duration.denominator());
     return result;
+}
+
+/// LilyPond's shortest documented duration is the 128th note.
+constexpr int LILYPOND_MIN_EXPONENT = -7;
+
+/// LilyPond token of one written glyph: \breve, 1, 2, 4 ... with dots.
+std::string ly_written_value(WrittenNoteValue value) {
+    std::string token =
+        value.exponent > 0 ? std::string{"\\breve"} : std::to_string(1LL << -value.exponent);
+    token.append(static_cast<std::size_t>(value.dots), '.');
+    return token;
+}
+
+/// Open a \tuplet for a ratio implied by the duration itself (an event with
+/// no TupletContext whose written value is non-dyadic, such as 1/12).
+std::string inferred_tuplet_open(const WrittenDuration& written) {
+    if (written.inferred_actual == written.inferred_normal) return {};
+    return "\\tuplet " + std::to_string(written.inferred_actual) + "/" +
+           std::to_string(written.inferred_normal) + " { ";
+}
+
+std::string inferred_tuplet_close(const WrittenDuration& written) {
+    return written.inferred_actual == written.inferred_normal ? std::string{} : std::string{" }"};
 }
 
 void emit_spacer(std::ostringstream& out, Beat duration) {
@@ -609,31 +633,28 @@ void emit_beam_boundary(std::ostringstream& out, BeamBoundary boundary) {
     if (boundary.end) out << "]";
 }
 
-/// Emit a single NoteGroup (note or chord) with all annotations.
-void emit_note_group(std::ostringstream& out,
-                     const NoteGroup& ng,
-                     CompilationReport& report,
-                     ScoreTime position,
-                     std::optional<PartId> part_id,
-                     BeamBoundary beam_boundary) {
+/// Which part of a sounding event one written piece carries. The attack owns
+/// marks that belong to the onset; the release owns those that close it.
+struct PieceRole {
+    bool attack = true;
+    bool release = true;
+};
+
+/// Build the text of one written piece of a NoteGroup (note or chord).
+std::string note_group_piece_text(const NoteGroup& ng,
+                                  const std::string& dur_str,
+                                  PieceRole role,
+                                  CompilationReport& report,
+                                  ScoreTime position,
+                                  std::optional<PartId> part_id,
+                                  BeamBoundary beam_boundary) {
     bool is_chord = ng.notes.size() > 1;
-
-    // Resolve duration string
-    std::string dur_str;
-    bool in_tuplet = ng.tuplet_context.has_value();
-
-    if (in_tuplet) {
-        // Inside a tuplet, notes are written at the normal_type duration
-        dur_str = tuplet_note_duration(*ng.tuplet_context);
-    } else {
-        dur_str = exact_duration(ng.duration);
-    }
-
     std::ostringstream event_out;
 
     const Ornament* arpeggio = nullptr;
     std::size_t arpeggio_notes = 0;
     for (const auto& note : ng.notes) {
+        if (!role.attack) break;
         if (note.ornament && note.ornament->type == OrnamentType::Arpeggio) {
             if (!arpeggio) arpeggio = &*note.ornament;
             ++arpeggio_notes;
@@ -687,6 +708,7 @@ void emit_note_group(std::ostringstream& out,
 
     std::vector<std::string_view> chord_dynamics;
     for (const auto& note : ng.notes) {
+        if (!role.attack) break;
         if (const auto dynamic = semantic_dynamic(note))
             chord_dynamics.emplace_back(ly_dynamic(*dynamic));
         if (note.articulation) {
@@ -709,9 +731,11 @@ void emit_note_group(std::ostringstream& out,
             part_id);
     }
 
-    if (ng.slur_end) event_out << ")";
-    if (ng.slur_start) event_out << "(";
-    emit_beam_boundary(event_out, beam_boundary);
+    if (role.attack && ng.slur_end) event_out << ")";
+    if (role.attack && ng.slur_start) event_out << "(";
+    emit_beam_boundary(
+        event_out,
+        BeamBoundary{beam_boundary.start && role.attack, beam_boundary.end && role.release});
 
     bool breath = false;
     bool caesura = false;
@@ -721,19 +745,77 @@ void emit_note_group(std::ostringstream& out,
             caesura = caesura || technical.type == TechnicalDirection::Type::Caesura;
         }
     }
-    if (breath) event_out << " \\breathe";
-    if (caesura) event_out << " \\caesura";
+    if (role.release && breath) event_out << " \\breathe";
+    if (role.release && caesura) event_out << " \\caesura";
+    return event_out.str();
+}
 
+/// Emit a single NoteGroup (note or chord) with all annotations.
+///
+/// Every written note carries a real value (Gould): the sounding duration
+/// times the enclosing tuplet ratio is written as tied values, under an
+/// inferred \tuplet when the duration itself implies one. A duration with no
+/// written form keeps an exact multiplier and is reported as a residual.
+void emit_note_group(std::ostringstream& out,
+                     const NoteGroup& ng,
+                     Beat context_ratio,
+                     CompilationReport& report,
+                     ScoreTime position,
+                     std::optional<PartId> part_id,
+                     BeamBoundary beam_boundary) {
     if (!ng.notes.empty() && ng.notes.front().grace) {
+        const std::string dur_str = ng.tuplet_context ? tuplet_note_duration(*ng.tuplet_context)
+                                                      : exact_duration(ng.duration);
         out << (*ng.notes.front().grace == GraceType::Acciaccatura ? "\\acciaccatura { "
                                                                    : "\\appoggiatura { ")
-            << event_out.str() << " } ";
+            << note_group_piece_text(ng, dur_str, {}, report, position, part_id, beam_boundary)
+            << " } ";
         // Sunny's grace duration is an explicit structural allocation. LilyPond grace
         // expressions consume no main-voice time, so an invisible allocation follows.
         emit_spacer(out, ng.duration);
-    } else {
-        out << event_out.str();
+        return;
     }
+
+    const auto written =
+        project_written_duration(ng.duration, context_ratio, LILYPOND_MIN_EXPONENT);
+    if (!written) {
+        add_loss_diagnostic(report,
+                            "LilyPond has no written note value for this duration; emitted an "
+                            "exact duration multiplier",
+                            position,
+                            part_id);
+        const std::string dur_str = ng.tuplet_context ? tuplet_note_duration(*ng.tuplet_context)
+                                                      : exact_duration(ng.duration);
+        out << note_group_piece_text(ng, dur_str, {}, report, position, part_id, beam_boundary);
+        return;
+    }
+
+    out << inferred_tuplet_open(*written);
+    for (std::size_t piece = 0; piece < written->pieces.size(); ++piece) {
+        const PieceRole role{piece == 0, piece + 1 == written->pieces.size()};
+        NoteGroup piece_group = ng;
+        for (auto& note : piece_group.notes) {
+            // Marks belong to the attack; later pieces carry only the tie.
+            note.tie_forward = note.tie_forward || !role.release;
+            if (!role.attack) {
+                note.articulation.reset();
+                note.ornament.reset();
+                note.technical.clear();
+                note.dynamic.reset();
+                note.velocity.written.reset();
+                note.notation_head.reset();
+            }
+        }
+        if (piece > 0) out << " ";
+        out << note_group_piece_text(piece_group,
+                                     ly_written_value(written->pieces[piece].value),
+                                     role,
+                                     report,
+                                     position,
+                                     part_id,
+                                     beam_boundary);
+    }
+    out << inferred_tuplet_close(*written);
 }
 
 /// Emit a rest event. Uses "R" for full-bar rests to enable \compressMMRests.
@@ -741,9 +823,14 @@ void emit_rest(std::ostringstream& out,
                const RestEvent& rest,
                const Beat& measure_duration,
                BeamBoundary beam_boundary,
-               const TupletContext* tuplet_context) {
+               const TupletContext* tuplet_context,
+               Beat context_ratio,
+               CompilationReport& report,
+               ScoreTime position,
+               std::optional<PartId> part_id) {
     const Beat written_duration = tuplet_context ? tuplet_context->normal_type : rest.duration;
     if (!rest.visible) {
+        // A spacer prints nothing, so an exact multiplier is its written form.
         out << "s" << exact_duration(written_duration);
         emit_beam_boundary(out, beam_boundary);
         return;
@@ -752,11 +839,33 @@ void emit_rest(std::ostringstream& out,
     bool is_full_bar = !tuplet_context && rest.duration == measure_duration;
 
     if (is_full_bar) {
+        // R1*5/8 is LilyPond's whole-measure rest for any metre.
         out << "R" << exact_duration(rest.duration);
-    } else {
-        out << "r" << exact_duration(written_duration);
+        emit_beam_boundary(out, beam_boundary);
+        return;
     }
-    emit_beam_boundary(out, beam_boundary);
+
+    const auto written =
+        project_written_duration(rest.duration, context_ratio, LILYPOND_MIN_EXPONENT);
+    if (!written) {
+        add_loss_diagnostic(report,
+                            "LilyPond has no written rest value for this duration; emitted an "
+                            "exact duration multiplier",
+                            position,
+                            part_id);
+        out << "r" << exact_duration(written_duration);
+        emit_beam_boundary(out, beam_boundary);
+        return;
+    }
+    out << inferred_tuplet_open(*written);
+    for (std::size_t piece = 0; piece < written->pieces.size(); ++piece) {
+        if (piece > 0) out << " ";
+        out << "r" << ly_written_value(written->pieces[piece].value);
+        emit_beam_boundary(out,
+                           BeamBoundary{beam_boundary.start && piece == 0,
+                                        beam_boundary.end && piece + 1 == written->pieces.size()});
+    }
+    out << inferred_tuplet_close(*written);
 }
 
 /// Emit a ScoreDirection as a LilyPond directive.
@@ -1060,6 +1169,13 @@ void emit_voice_events(std::ostringstream& out,
     const auto contexts = collect_tuplet_contexts(voice);
     std::vector<TupletId> active_tuplets;
 
+    // Written-to-sounding ratio of every enclosing tuplet of one event.
+    const auto context_ratio = [&](const Event& event) {
+        const auto chain = tuplet_context_chain(event_tuplet_context(event), contexts);
+        if (!chain) return Beat::one();
+        return cumulative_tuplet_written_ratio(*chain).value_or(Beat::one());
+    };
+
     const auto transition_tuplets = [&](const TupletContext* leaf) {
         const auto chain_result = tuplet_context_chain(leaf, contexts);
         std::vector<const TupletContext*> chain;
@@ -1089,7 +1205,7 @@ void emit_voice_events(std::ostringstream& out,
             transition_tuplets(ng.tuplet_context ? &*ng.tuplet_context : nullptr);
 
             const auto beam = beam_boundary_for(voice, event.id);
-            emit_note_group(out, ng, report, position, part_id, beam);
+            emit_note_group(out, ng, context_ratio(event), report, position, part_id, beam);
             out << " ";
 
         } else if (event.is_rest()) {
@@ -1101,7 +1217,11 @@ void emit_voice_events(std::ostringstream& out,
                       rest,
                       measure_duration,
                       beam,
-                      rest.tuplet_context ? &*rest.tuplet_context : nullptr);
+                      rest.tuplet_context ? &*rest.tuplet_context : nullptr,
+                      context_ratio(event),
+                      report,
+                      position,
+                      part_id);
             out << " ";
         }
     }
@@ -1349,23 +1469,13 @@ Result<LilyPondCompilationResult> compile_score_to_lilypond(const Score& score) 
         // If transposing instrument, wrap in \transpose
         bool transposing = def.transposition != 0;
         if (transposing) {
-            // \transpose c' <written_pitch> means "written C sounds as <written_pitch>"
-            // transposition is the interval from written to sounding: sounding = written +
-            // transposition LilyPond \transpose c' bes means "what is written as C sounds as Bb" We
-            // need: \transpose <sounding> c' { <concert pitch music> } which reads concert pitch
-            // and writes it transposed. Actually for display purposes: \transpose c'
-            // <sounding_equivalent_of_c> The sounding pitch of written middle C is C +
-            // transposition semitones. Build a SpelledPitch for the sounding equivalent. For
-            // simplicity, use the transposition to determine the written key concert pitch.
-            // LilyPond: \transpose c' <concert_c_sounds_as> { music_in_concert }
-            // If transposition = -2 (Bb instrument), concert C sounds as C, written C sounds as Bb.
-            // So we want: \transpose bes c' { concert_music }
-            // which means: read notes as concert, write them for Bb instrument.
+            // \transpose <from> <to> moves concert music by from -> to. Written C4
+            // sounds at C4 plus the written-to-sounding interval (B-flat 3 for a
+            // B-flat instrument), so \transpose bes c' writes concert pitch a
+            // major second higher. The diatonic interval spells the pitch.
             SpelledPitch concert_c{0, 0, 4}; // C4
-            int sounding_midi = midi_value(concert_c) + def.transposition;
-            int8_t sounding_octave = static_cast<int8_t>(sounding_midi / 12 - 1);
-            auto sounding_pc = PitchClass::wrapped(sounding_midi);
-            SpelledPitch sounding_pitch = default_spelling(sounding_pc, 0, sounding_octave);
+            const SpelledPitch sounding_pitch =
+                apply_interval(concert_c, written_to_sounding_interval(def));
 
             out << "\\transpose " << compilable_ly_pitch(sounding_pitch) << " "
                 << compilable_ly_pitch(concert_c) << " { ";
@@ -1438,6 +1548,11 @@ Result<LilyPondCompilationResult> compile_score_to_lilypond(const Score& score) 
                     if (voice.staff_index == staff_index) staff_voices.push_back(&voice);
                 }
 
+                // Point annotations run as a parallel spacer joined to the
+                // first voice without `\\`: `<< {...} \\ {...} >>` would create
+                // new voices with forced stems and break ties at the barline
+                // (LilyPond Notation Reference 1.5.2). Only genuine polyphony
+                // uses the separator.
                 if (staff_voices.size() <= 1) {
                     if (has_annotations) out << "<< { ";
                     if (staff_voices.empty())
@@ -1445,7 +1560,7 @@ Result<LilyPondCompilationResult> compile_score_to_lilypond(const Score& score) 
                     else
                         emit_voice_events(
                             out, *staff_voices.front(), measure_dur, report, bar, part.id);
-                    if (has_annotations) out << "} \\\\ { " << annotation_out.str() << "} >> ";
+                    if (has_annotations) out << "} { " << annotation_out.str() << "} >> ";
                 } else {
                     out << "<< ";
                     for (std::size_t vi = 0; vi < staff_voices.size(); ++vi) {
@@ -1454,8 +1569,8 @@ Result<LilyPondCompilationResult> compile_score_to_lilypond(const Score& score) 
                         emit_voice_events(
                             out, *staff_voices[vi], measure_dur, report, bar, part.id);
                         out << "} ";
+                        if (vi == 0 && has_annotations) out << "{ " << annotation_out.str() << "} ";
                     }
-                    if (has_annotations) out << "\\\\ { " << annotation_out.str() << "} ";
                     out << ">> ";
                 }
                 out << "| ";
