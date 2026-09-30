@@ -1105,6 +1105,28 @@ TEST_CASE("a create_clip without a valid response is indeterminate and never com
     CHECK_FALSE(orchestrator.can_undo());
 }
 
+TEST_CASE("an undo without a valid response is indeterminate and keeps its entry",
+          "[mcp][integration][bridge][undo]") {
+    Orchestrator orchestrator;
+    ClipSlotModelTransport transport;
+    BridgeDispatcher dispatcher(&transport);
+    McpServer server;
+    register_sunny_tools(server, orchestrator, dispatcher);
+
+    REQUIRE(call_tool(server, "apply_euclidean_rhythm", euclidean_arguments(0), 97)["success"] ==
+            true);
+    transport.failures["delete_clip"] = 1;
+    transport.failure_delivery = LomDeliveryState::SentWithoutValidResponse;
+
+    const auto result = call_tool(server, "undo_ableton_operation", json::object(), 98);
+
+    CHECK(result["success"] == false);
+    CHECK(result["outcome"] == "indeterminate");
+    CHECK(result["can_undo"] == true);
+    CHECK(result["can_redo"] == false);
+    CHECK(transport.clips.at(SLOT_0).size() == 3);
+}
+
 TEST_CASE("a failed redo keeps its entry on the redo stack", "[mcp][integration][bridge][undo]") {
     Orchestrator orchestrator;
     ClipSlotModelTransport transport;
