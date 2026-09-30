@@ -464,6 +464,58 @@ std::vector<CompilationDiagnostic> local_key_midi_residuals(const Score& score) 
     return residuals;
 }
 
+/// Collapse same-key notes on one channel whose interval ends strictly inside another's.
+///
+/// SMF identifies a Note Off only by channel and key, and a reader pairs it
+/// with the oldest open Note On of that key. An inner interval [s2, e2) with
+/// s1 <= s2 and e2 < e1 would therefore end the outer note at e2, so the file
+/// writer rejects it. Such a unison already sounds for its whole span through
+/// the enclosing note; it is emitted once and the absorbed attack is reported.
+/// Identical intervals and intervals sharing only their end remain distinct:
+/// FIFO pairing reproduces both exactly. Afterwards the surviving notes of each
+/// key have non-decreasing starts and ends.
+std::vector<CompilationDiagnostic>
+collapse_nested_unisons(std::vector<MidiNoteData>& notes, const std::vector<ScoreTime>& positions) {
+    std::vector<std::size_t> order(notes.size());
+    std::iota(order.begin(), order.end(), std::size_t{0});
+    const auto end_of = [&](std::size_t index) {
+        return notes[index].tick + notes[index].duration_ticks;
+    };
+    // Earlier start first; at equal starts the longer note encloses the shorter.
+    std::stable_sort(order.begin(), order.end(), [&](std::size_t lhs, std::size_t rhs) {
+        return std::tuple{notes[lhs].channel, notes[lhs].note, notes[lhs].tick, -end_of(lhs)} <
+               std::tuple{notes[rhs].channel, notes[rhs].note, notes[rhs].tick, -end_of(rhs)};
+    });
+
+    std::vector<bool> absorbed(notes.size(), false);
+    std::vector<CompilationDiagnostic> residuals;
+    std::optional<std::size_t> carrier;
+    for (const auto index : order) {
+        const bool same_key = carrier && notes[*carrier].channel == notes[index].channel &&
+                              notes[*carrier].note == notes[index].note;
+        if (same_key && end_of(index) < end_of(*carrier)) {
+            absorbed[index] = true;
+            residuals.push_back(
+                {"Nested same-key unison merged: MIDI channel " +
+                     std::to_string(static_cast<int>(notes[index].channel)) + " key " +
+                     std::to_string(static_cast<int>(notes[index].note)) +
+                     " already sounds from an enclosing note, and an SMF Note Off cannot be "
+                     "paired with the inner attack; the unison sounds as one note",
+                 positions[index],
+                 notes[index].part_id});
+            continue;
+        }
+        carrier = index;
+    }
+
+    std::size_t kept = 0;
+    for (std::size_t index = 0; index < notes.size(); ++index) {
+        if (!absorbed[index]) notes[kept++] = notes[index];
+    }
+    notes.resize(kept);
+    return residuals;
+}
+
 } // anonymous namespace
 
 Result<GraceTiming>
@@ -707,6 +759,9 @@ Result<CompiledMidiResult> compile_to_midi(const Score& score, int ppq) {
     }
 
     // --- Note events per part ---
+    // Source positions run parallel to midi.notes so that a later unison
+    // residual can name the Score location it came from.
+    std::vector<ScoreTime> note_positions;
     for (const auto& part : score.parts) {
         std::uint8_t channel = part.definition.rendering.midi_channel;
 
@@ -877,8 +932,14 @@ Result<CompiledMidiResult> compile_to_midi(const Score& score, int ppq) {
                         total_duration = grace->duration;
                     }
 
+                    // Round both endpoints on the absolute lattice rather than
+                    // rounding the duration on its own: the end tick of one
+                    // note is then exactly the start tick of the next, so a
+                    // repeated key never overlaps its successor (issue #9).
+                    const auto sounding_end = checked_add(sounding_start, total_duration);
+                    if (!sounding_end) return std::unexpected(sounding_end.error());
                     std::int64_t start_tick = absolute_beat_to_tick(sounding_start, ppq);
-                    std::int64_t dur_ticks = absolute_beat_to_tick(total_duration, ppq);
+                    std::int64_t dur_ticks = absolute_beat_to_tick(*sounding_end, ppq) - start_tick;
 
                     double velocity_value = resolve_dynamic_velocity(
                         note, current_dynamic, part, fn.position, score.time_map);
@@ -925,10 +986,15 @@ Result<CompiledMidiResult> compile_to_midi(const Score& score, int ppq) {
                                                       velocity,
                                                       part.id,
                                                       tie->release_velocity});
+                    note_positions.push_back(fn.position);
                 }
             }
         }
     }
+
+    auto unison_residuals = collapse_nested_unisons(midi.notes, note_positions);
+    report.diagnostics.insert(
+        report.diagnostics.end(), unison_residuals.begin(), unison_residuals.end());
 
     // Sort notes by tick for sequential consumption
     std::stable_sort(midi.notes.begin(),

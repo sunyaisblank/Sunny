@@ -8,7 +8,9 @@
  *           multi-part compilation, articulation effects
  */
 
+#include <algorithm>
 #include <catch2/catch_test_macros.hpp>
+#include <cmath>
 #include <limits>
 #include <sunny/core/score/midi_compiler.hpp>
 #include <sunny/core/score/queries.hpp>
@@ -1351,4 +1353,76 @@ TEST_CASE("unmapped PartDirective remains explicit MIDI compilation evidence",
     REQUIRE(result->report.diagnostics.size() == 1);
     CHECK(result->report.diagnostics[0].message.find("pizzicato") != std::string::npos);
     CHECK(result->midi.control_changes.empty());
+}
+
+// =============================================================================
+// Regression: tick rounding and same-key unisons (issue #9)
+// =============================================================================
+
+TEST_CASE("compile_to_midi: every 1/(4k) tuplet note ends exactly where the next begins",
+          "[score][midi][regression]") {
+    // SMF 1.0 pairs a Note Off with an earlier Note On of the same key, so a
+    // repeated key must end on the tick of the next attack. At PPQ 480 a 4/4
+    // bar spans 1920 ticks; note i of a 4k-fold division starts at
+    // round(1920 i / 4k) = round(480 i / k) and ends where note i + 1 starts.
+    for (int k = 1; k <= 13; ++k) {
+        CAPTURE(k);
+        auto score = make_compilable_score(1);
+        auto& voice = score.parts[0].measures[0].voices[0];
+        voice.events.clear();
+        const int count = 4 * k;
+        for (int i = 0; i < count; ++i) {
+            Note note;
+            note.pitch = C4;
+            NoteGroup group;
+            group.notes.push_back(note);
+            group.duration = Beat{1, count};
+            voice.events.push_back(
+                Event{EventId{static_cast<std::uint64_t>(10'000 + i)}, Beat{i, count}, group});
+        }
+
+        auto result = compile_to_midi(score, 480);
+        REQUIRE(result.has_value());
+        const auto& notes = result->midi.notes;
+        REQUIRE(notes.size() == static_cast<std::size_t>(count));
+        for (std::size_t i = 0; i < notes.size(); ++i) {
+            CAPTURE(i);
+            const auto index = static_cast<double>(i);
+            CHECK(notes[i].tick == std::llround(480.0 * index / k));
+            CHECK(notes[i].tick + notes[i].duration_ticks ==
+                  std::llround(480.0 * (index + 1.0) / k));
+        }
+    }
+}
+
+TEST_CASE("compile_to_midi: a nested same-key unison on one channel sounds as one note",
+          "[score][midi][regression]") {
+    // Part A holds a whole-note C4; part B plays a quarter-note C4 at the same
+    // onset on the same channel. SMF cannot pair the inner Note Off with the
+    // inner Note On, so the unison is emitted once and reported.
+    auto score = make_compilable_score(1);
+    place_whole_note(score, 0, 0, C4);
+
+    Part second = score.parts[0];
+    second.id = PartId{200};
+    second.definition.name = "Second";
+    auto& events = second.measures[0].voices[0].events;
+    Note note;
+    note.pitch = C4;
+    NoteGroup quarter;
+    quarter.notes.push_back(note);
+    quarter.duration = Beat{1, 4};
+    events = {Event{EventId{7001}, Beat::zero(), quarter},
+              Event{EventId{7002}, Beat{1, 4}, RestEvent{Beat{3, 4}, true}}};
+    score.parts.push_back(second);
+
+    auto result = compile_to_midi(score, 480);
+    REQUIRE(result.has_value());
+    REQUIRE(result->midi.notes.size() == 1);
+    CHECK(result->midi.notes[0].tick == 0);
+    CHECK(result->midi.notes[0].duration_ticks == 1920);
+    CHECK(result->midi.notes[0].note == 60);
+    CHECK(std::ranges::any_of(result->report.diagnostics, [](const CompilationDiagnostic& d) {
+        return d.message.find("unison") != std::string::npos && d.part == PartId{200};
+    }));
 }

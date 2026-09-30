@@ -8,7 +8,13 @@
 #include <algorithm>
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
+#include <deque>
 #include <limits>
+#include <map>
+#include <string>
+#include <sunny/core/score/midi_compiler.hpp>
+#include <sunny/core/score/mutations.hpp>
+#include <sunny/core/score/workflows.hpp>
 #include <sunny/infrastructure/formats/midi_file.hpp>
 
 using namespace sunny::infrastructure::formats;
@@ -920,4 +926,153 @@ TEST_CASE("time sig numerator zero returns InvalidMidiTimeSig", "[midi][format]"
     auto result = parse_midi(data);
     REQUIRE_FALSE(result.has_value());
     REQUIRE(result.error() == sunny::core::ErrorCode::InvalidMidiTimeSig);
+}
+
+// =============================================================================
+// Regression: compiled scores are writable SMF (issue #9)
+// =============================================================================
+
+namespace {
+
+/// One sounding note recovered from raw SMF bytes.
+struct IndependentNote {
+    std::uint32_t start;
+    std::uint32_t end;
+    std::uint8_t channel;
+    std::uint8_t key;
+    bool operator==(const IndependentNote&) const = default;
+};
+
+/// Minimal SMF 1.0 reader written from the specification, independent of
+/// parse_midi: VLQ deltas, running status, meta and SysEx skipping, and FIFO
+/// Note Off pairing per (channel, key). A Note On with velocity 0 is a Note Off.
+std::vector<IndependentNote> independent_smf_notes(const std::vector<std::uint8_t>& bytes) {
+    std::size_t at = 0;
+    const auto u32 = [&](std::size_t p) {
+        return (std::uint32_t{bytes.at(p)} << 24U) | (std::uint32_t{bytes.at(p + 1)} << 16U) |
+               (std::uint32_t{bytes.at(p + 2)} << 8U) | std::uint32_t{bytes.at(p + 3)};
+    };
+    const auto vlq = [&]() {
+        std::uint32_t value = 0;
+        for (;;) {
+            const auto byte = bytes.at(at++);
+            value = (value << 7U) | (byte & 0x7FU);
+            if ((byte & 0x80U) == 0) return value;
+        }
+    };
+    REQUIRE(std::string(bytes.begin(), bytes.begin() + 4) == "MThd");
+    at = 8 + u32(4);
+    std::vector<IndependentNote> notes;
+    std::map<std::pair<int, int>, std::deque<std::uint32_t>> open;
+    while (at < bytes.size()) {
+        REQUIRE(std::string(bytes.begin() + static_cast<std::ptrdiff_t>(at),
+                            bytes.begin() + static_cast<std::ptrdiff_t>(at + 4)) == "MTrk");
+        const auto end = at + 8 + u32(at + 4);
+        at += 8;
+        std::uint32_t tick = 0;
+        std::uint8_t status = 0;
+        while (at < end) {
+            tick += vlq();
+            if ((bytes.at(at) & 0x80U) != 0) status = bytes.at(at++);
+            if (status == 0xFF) {
+                ++at; // meta type
+                at += vlq();
+                continue;
+            }
+            if (status == 0xF0 || status == 0xF7) {
+                at += vlq();
+                continue;
+            }
+            const auto kind = status & 0xF0U;
+            const auto channel = static_cast<std::uint8_t>(status & 0x0FU);
+            const auto data1 = bytes.at(at++);
+            const std::uint8_t data2 = (kind == 0xC0 || kind == 0xD0) ? 0 : bytes.at(at++);
+            const auto key = std::pair{int{channel}, int{data1}};
+            if (kind == 0x90 && data2 > 0) {
+                open[key].push_back(tick);
+            } else if (kind == 0x80 || kind == 0x90) {
+                REQUIRE_FALSE(open[key].empty());
+                notes.push_back({open[key].front(), tick, channel, data1});
+                open[key].pop_front();
+            }
+        }
+    }
+    for (const auto& entry : open)
+        CHECK(entry.second.empty());
+    return notes;
+}
+
+ScoreSpec one_bar_spec(std::size_t part_count) {
+    ScoreSpec spec;
+    spec.title = "Regression";
+    spec.total_bars = 1;
+    spec.bpm = 120.0;
+    spec.key_root = SpelledPitch{0, 0, 4};
+    for (std::size_t index = 0; index < part_count; ++index) {
+        PartDefinition part;
+        part.name = "P" + std::to_string(index + 1);
+        part.instrument_type = InstrumentType::Piano;
+        spec.parts.push_back(part);
+    }
+    return spec;
+}
+
+std::vector<IndependentNote> write_and_read_back(const Score& score) {
+    auto compiled = compile_to_midi(score, 480);
+    REQUIRE(compiled.has_value());
+    auto file = compiled_midi_to_file(compiled->midi);
+    REQUIRE(file.has_value());
+    auto bytes = write_midi(*file);
+    REQUIRE(bytes.has_value());
+    return independent_smf_notes(*bytes);
+}
+
+} // anonymous namespace
+
+TEST_CASE("a two-part nested unison on the default channel writes a valid SMF",
+          "[midi][format][regression]") {
+    // Both parts keep RenderingConfig's default channel. Part A holds a whole
+    // C4; part B plays a quarter C4 at the same onset. The file must write,
+    // and an independent reader must recover one C4 sounding for the bar.
+    auto score = create_score(one_bar_spec(2));
+    REQUIRE(score.has_value());
+    REQUIRE(score->parts[0].definition.rendering.midi_channel ==
+            score->parts[1].definition.rendering.midi_channel);
+
+    Note c4;
+    c4.pitch = SpelledPitch{0, 0, 4};
+    REQUIRE(insert_note(*score, score->parts[0].id, 1, 0, Beat::zero(), c4, Beat{1, 1}));
+    REQUIRE(insert_note(*score, score->parts[1].id, 1, 0, Beat::zero(), c4, Beat{1, 4}));
+
+    const auto notes = write_and_read_back(*score);
+    REQUIRE(notes.size() == 1);
+    CHECK(notes[0] == IndependentNote{0, 1920, 0, 60});
+}
+
+TEST_CASE("septuplet sixteenths on one key write back-to-back SMF notes",
+          "[midi][format][regression]") {
+    // Seven C4 notes of 1/28 whole note at PPQ 480 start at round(1920 i / 28)
+    // = 0, 69, 137, 206, 274, 343, 411, and each ends where the next begins.
+    auto score = create_score(one_bar_spec(1));
+    REQUIRE(score.has_value());
+    auto& voice = score->parts[0].measures[0].voices[0];
+    voice.events.clear();
+    Note c4;
+    c4.pitch = SpelledPitch{0, 0, 4};
+    NoteGroup group;
+    group.notes.push_back(c4);
+    group.duration = Beat{1, 28};
+    for (int i = 0; i < 7; ++i)
+        voice.events.push_back(
+            Event{EventId{static_cast<std::uint64_t>(900 + i)}, Beat{i, 28}, group});
+    voice.events.push_back(Event{EventId{999}, Beat{1, 4}, RestEvent{Beat{3, 4}, true}});
+
+    const std::vector<std::uint32_t> boundaries{0, 69, 137, 206, 274, 343, 411, 480};
+    const auto notes = write_and_read_back(*score);
+    REQUIRE(notes.size() == 7);
+    for (std::size_t i = 0; i < notes.size(); ++i) {
+        CAPTURE(i);
+        CHECK(notes[i].start == boundaries[i]);
+        CHECK(notes[i].end == boundaries[i + 1]);
+    }
 }
