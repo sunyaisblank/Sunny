@@ -6,6 +6,7 @@
  */
 
 #include <catch2/catch_test_macros.hpp>
+#include <cmath>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 #include <sunny/core/tuning/equal_temperament.hpp>
 
@@ -188,6 +189,25 @@ TEST_CASE("12-EDO major third error ~13.7 cents", "[tuning][core]") {
     auto error = edo_approximation_error(5.0 / 4.0, 12);
     REQUIRE(error.has_value());
     REQUIRE_THAT(*error, WithinAbs(13.686, 0.01));
+}
+
+// The error is measured against the nearest step itself, not against its
+// pitch class: 2/1 is exactly twelve steps of 12-EDO, 3/1 (1901.955 cents) is
+// nearest nineteen steps, and 125/64 (1158.94 cents) is nearest twelve.
+TEST_CASE("EDO approximation error uses the unreduced nearest step", "[tuning][core]") {
+    auto octave = edo_approximation_error(2.0, 12);
+    REQUIRE(octave.has_value());
+    CHECK_THAT(*octave, WithinAbs(0.0, 1e-9));
+
+    auto twelfth = edo_approximation_error(3.0, 12);
+    REQUIRE(twelfth.has_value());
+    CHECK_THAT(*twelfth, WithinAbs(1200.0 * std::log2(3.0) - 1900.0, 1e-9));
+    CHECK_THAT(*twelfth, WithinAbs(1.955, 0.001));
+
+    auto diesis_short_octave = edo_approximation_error(125.0 / 64.0, 12);
+    REQUIRE(diesis_short_octave.has_value());
+    CHECK_THAT(*diesis_short_octave, WithinAbs(1200.0 - 1200.0 * std::log2(125.0 / 64.0), 1e-9));
+    CHECK_THAT(*diesis_short_octave, WithinAbs(41.06, 0.01));
 }
 
 // =============================================================================

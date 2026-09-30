@@ -4,7 +4,7 @@
  *
  *
  * Formal Spec §13.3: Tuning tables giving cent deviations from
- * 12-TET for historical temperaments.
+ * 12-TET for historical temperaments, generated from their chains of fifths.
  *
  * Invariants:
  * - tuning_table[i] for 12-TET is 0.0 for all i
@@ -40,81 +40,109 @@ struct Temperament {
 // =============================================================================
 
 /// 12-TET: all deviations are zero
-constexpr TuningTable TUNING_EQUAL = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+inline constexpr TuningTable TUNING_EQUAL = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
 
-/// Pythagorean: pure fifths (3/2) except wolf between G#-Eb.
-/// Starting from C, tuned by ascending fifths: C-G-D-A-E-B-F#-C#-G# and
-/// descending fifths: C-F-Bb-Eb. The wolf falls on G#-Eb.
-/// Deviations from 12-TET in cents (C = 0):
-constexpr TuningTable TUNING_PYTHAGOREAN = {
-    0.0,   // C
-    -9.78, // C#/Db
-    3.91,  // D
-    -5.87, // Eb
-    7.82,  // E
-    -1.96, // F
-    11.73, // F#
-    1.96,  // G
-    -7.82, // Ab
-    5.87,  // A
-    -3.91, // Bb
-    9.78,  // B
-};
+// Each historical temperament is defined by the sizes of its fifths, so each
+// table is generated from its chain of fifths rather than transcribed. The
+// three generator intervals, in cents, are the exact logarithms
+//   pure fifth         1200 log2(3/2)
+//   syntonic comma     1200 log2(81/80)
+//   Pythagorean comma  1200 log2(3^12 / 2^19)
+// written as literals because std::log2 is not constexpr in C++23.
+inline constexpr double PURE_FIFTH_CENTS = 701.9550008653874;
+inline constexpr double SYNTONIC_COMMA_CENTS = 21.50628959671478;
+inline constexpr double PYTHAGOREAN_COMMA_CENTS = 23.460010384649014;
 
-/// Quarter-comma meantone: fifths narrowed by 1/4 syntonic comma (5.377 cents).
-/// Pure major thirds (5/4). Wolf fifth on G#-Eb.
-/// Deviations from 12-TET in cents (C = 0):
-constexpr TuningTable TUNING_QUARTER_COMMA_MEANTONE = {
-    0.0,    // C
-    -24.04, // C#
-    6.84,   // D
-    17.11,  // Eb
-    -13.69, // E
-    3.42,   // F
-    -20.53, // F#
-    -3.42,  // G
-    13.69,  // Ab (≈ G#)
-    10.26,  // A
-    20.53,  // Bb
-    -10.26, // B
-};
+/**
+ * @brief Build a tuning table from a chain of eleven fifths
+ *
+ * The chain begins on @p first_pitch_class and ascends by fifths; element k
+ * of @p fifths is the size in cents of the fifth from chain note k to chain
+ * note k+1. Chain note k lies 700k cents above the first in 12-TET, so its
+ * deviation is the running sum of (fifth - 700). The twelfth fifth, from
+ * the last chain note back to the first, closes the circle at 8400 cents and
+ * absorbs the remainder: the wolf of a regular temperament, or the last
+ * fifth of a circulating one. The result is shifted so that C deviates by 0.
+ *
+ * @pre 0 <= first_pitch_class < 12
+ */
+[[nodiscard]] constexpr TuningTable table_from_fifth_chain(int first_pitch_class,
+                                                           const std::array<double, 11>& fifths) {
+    TuningTable table{};
+    double deviation = 0.0;
+    int pc = first_pitch_class;
+    table[static_cast<std::size_t>(pc)] = 0.0;
+    for (double fifth : fifths) {
+        deviation += fifth - 700.0;
+        pc = (pc + 7) % 12;
+        table[static_cast<std::size_t>(pc)] = deviation;
+    }
+    const double c_deviation = table[0];
+    for (double& entry : table) {
+        entry -= c_deviation;
+    }
+    return table;
+}
 
-/// Werckmeister III (1691): 4 fifths narrowed by 1/4 Pythagorean comma.
-/// Tempered fifths: C-G, G-D, D-A, B-F#. Rest pure.
-/// Well-tempered: all keys usable, character varies.
-/// Deviations from 12-TET in cents (C = 0):
-constexpr TuningTable TUNING_WERCKMEISTER_III = {
-    0.0,    // C
-    -10.26, // C#
-    -7.82,  // D
-    -5.87,  // Eb
-    -13.69, // E
-    -1.96,  // F
-    -11.73, // F#
-    -3.91,  // G
-    -7.82,  // Ab
-    -11.73, // A
-    -3.91,  // Bb
-    -9.78,  // B
-};
+namespace detail {
 
-/// Vallotti (1754): 6 fifths tempered by 1/6 Pythagorean comma.
-/// Tempered fifths: F-C-G-D-A-E-B. Rest pure.
-/// Deviations from 12-TET in cents (C = 0):
-constexpr TuningTable TUNING_VALLOTTI = {
-    0.0,   // C
-    -5.87, // C#
-    -1.96, // D
-    1.96,  // Eb
-    -3.91, // E
-    3.91,  // F
-    -1.96, // F#
-    -3.91, // G
-    -1.96, // Ab
-    -5.87, // A
-    1.96,  // Bb
-    -7.82, // B
-};
+[[nodiscard]] constexpr std::array<double, 11> uniform_fifths(double size) {
+    std::array<double, 11> fifths{};
+    for (double& fifth : fifths) {
+        fifth = size;
+    }
+    return fifths;
+}
+
+} // namespace detail
+
+/// Pythagorean: eleven pure fifths on the chain Eb-Bb-F-C-G-D-A-E-B-F#-C#-G#;
+/// the wolf (about 678.49 cents) falls on G#-Eb.
+inline constexpr TuningTable TUNING_PYTHAGOREAN =
+    table_from_fifth_chain(3, detail::uniform_fifths(PURE_FIFTH_CENTS));
+
+/// Quarter-comma meantone: eleven fifths narrowed by a quarter syntonic comma
+/// (about 696.58 cents) on the chain Eb..G#, so every major third within the
+/// chain is a pure 5/4; the wolf (about 737.64 cents) falls on G#-Eb.
+inline constexpr TuningTable TUNING_QUARTER_COMMA_MEANTONE =
+    table_from_fifth_chain(3, detail::uniform_fifths(PURE_FIFTH_CENTS - SYNTONIC_COMMA_CENTS / 4.0));
+
+/// Werckmeister III (1691): C-G, G-D, D-A and B-F# narrowed by a quarter
+/// Pythagorean comma; the other eight fifths pure. Well-tempered: all keys
+/// usable, character varies. The chain starts on C.
+inline constexpr TuningTable TUNING_WERCKMEISTER_III = table_from_fifth_chain(
+    0,
+    {
+        PURE_FIFTH_CENTS - PYTHAGOREAN_COMMA_CENTS / 4.0, // C-G
+        PURE_FIFTH_CENTS - PYTHAGOREAN_COMMA_CENTS / 4.0, // G-D
+        PURE_FIFTH_CENTS - PYTHAGOREAN_COMMA_CENTS / 4.0, // D-A
+        PURE_FIFTH_CENTS,                                 // A-E
+        PURE_FIFTH_CENTS,                                 // E-B
+        PURE_FIFTH_CENTS - PYTHAGOREAN_COMMA_CENTS / 4.0, // B-F#
+        PURE_FIFTH_CENTS,                                 // F#-C#
+        PURE_FIFTH_CENTS,                                 // C#-G#
+        PURE_FIFTH_CENTS,                                 // G#-Eb
+        PURE_FIFTH_CENTS,                                 // Eb-Bb
+        PURE_FIFTH_CENTS,                                 // Bb-F (F-C closes the circle)
+    });
+
+/// Vallotti (1754): F-C-G-D-A-E-B narrowed by a sixth of a Pythagorean comma
+/// (about 698.04 cents); the other six fifths pure. The chain starts on F.
+inline constexpr TuningTable TUNING_VALLOTTI = table_from_fifth_chain(
+    5,
+    {
+        PURE_FIFTH_CENTS - PYTHAGOREAN_COMMA_CENTS / 6.0, // F-C
+        PURE_FIFTH_CENTS - PYTHAGOREAN_COMMA_CENTS / 6.0, // C-G
+        PURE_FIFTH_CENTS - PYTHAGOREAN_COMMA_CENTS / 6.0, // G-D
+        PURE_FIFTH_CENTS - PYTHAGOREAN_COMMA_CENTS / 6.0, // D-A
+        PURE_FIFTH_CENTS - PYTHAGOREAN_COMMA_CENTS / 6.0, // A-E
+        PURE_FIFTH_CENTS - PYTHAGOREAN_COMMA_CENTS / 6.0, // E-B
+        PURE_FIFTH_CENTS,                                 // B-F#
+        PURE_FIFTH_CENTS,                                 // F#-C#
+        PURE_FIFTH_CENTS,                                 // C#-G#
+        PURE_FIFTH_CENTS,                                 // G#-Eb
+        PURE_FIFTH_CENTS,                                 // Eb-Bb (Bb-F closes the circle)
+    });
 
 // =============================================================================
 // Lookup and frequency calculation

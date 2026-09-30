@@ -13,7 +13,7 @@ namespace {
 
 constexpr Temperament TEMPERAMENTS[] = {
     {"equal", TUNING_EQUAL, "12-tone equal temperament"},
-    {"pythagorean", TUNING_PYTHAGOREAN, "Pure fifths except wolf G#-Eb"},
+    {"pythagorean", TUNING_PYTHAGOREAN, "Pure fifths except the wolf G#-Eb"},
     {"quarter_comma_meantone",
      TUNING_QUARTER_COMMA_MEANTONE,
      "Pure major thirds, fifths narrowed by 1/4 syntonic comma"},

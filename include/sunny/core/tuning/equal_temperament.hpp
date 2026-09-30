@@ -148,6 +148,10 @@ edo_frequency(int pitch, int n, double ref_freq = 440.0, int ref_pitch = 69) {
 /**
  * @brief Approximation error in cents for a ratio in n-EDO
  *
+ * Measured against the nearest step k = round(1200 · log2(ratio) / (1200/n))
+ * itself, not against its pitch class k mod n: 2/1 in 12-EDO is twelve steps
+ * with error 0, and 3/1 is nineteen steps with error 1.955 cents.
+ *
  * @param ratio Just frequency ratio (> 0)
  * @param n EDO division count (> 0)
  * @return Absolute deviation in cents, or error if ratio <= 0 or n <= 0
@@ -157,12 +161,10 @@ edo_frequency(int pitch, int n, double ref_freq = 440.0, int ref_pitch = 69) {
     if (n <= 0) return std::unexpected(ErrorCode::InvalidEDO);
     auto target = ratio_to_cents(ratio);
     if (!target) return std::unexpected(target.error());
-    auto k = edo_approximate_ratio(ratio, n);
-    if (!k) return std::unexpected(k.error());
     auto step = edo_step_cents(n);
     if (!step) return std::unexpected(step.error());
-    double approx = *k * *step;
-    return std::abs(*target - approx);
+    const double nearest_step = std::round(*target / *step);
+    return std::abs(*target - nearest_step * *step);
 }
 
 } // namespace sunny::core
