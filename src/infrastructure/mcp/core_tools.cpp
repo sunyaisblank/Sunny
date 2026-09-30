@@ -23,13 +23,9 @@ using json = nlohmann::json;
 
 namespace {
 
-/// Decline result for Ableton-mutating tools when no transport is connected
-json offline_decline() {
-    return {{"success", false},
-            {"error",
-             "Ableton is not connected. Set SUNNY_ABLETON_HOST (and optionally "
-             "SUNNY_TCP_PORT) and ensure the Sunny Remote Script control surface "
-             "is active in Live."}};
+/// Decline result for Ableton tools when no transport is connected
+json offline_decline(const BridgeDispatcher& dispatcher) {
+    return {{"success", false}, {"error", dispatcher.offline_reason()}};
 }
 
 /// Report what a Live operation, undo, or redo did, and the history it left.
@@ -86,7 +82,7 @@ void register_sunny_tools(McpServer& server,
          {"required", json::array({"track_index", "slot_index", "root", "scale", "numerals"})}},
         [&orchestrator, &dispatcher](const json& params) -> json {
             if (!dispatcher.online()) {
-                return offline_decline();
+                return offline_decline(dispatcher);
             }
             auto result = orchestrator.create_progression_clip(
                 dispatcher,
@@ -119,7 +115,7 @@ void register_sunny_tools(McpServer& server,
          {"required", json::array({"track_index", "slot_index", "pulses", "steps"})}},
         [&orchestrator, &dispatcher](const json& params) -> json {
             if (!dispatcher.online()) {
-                return offline_decline();
+                return offline_decline(dispatcher);
             }
             int pitch_val =
                 sunny::core::detail::checked_integer_or<int>(params, "pitch", 60, "MIDI pitch");
@@ -162,7 +158,7 @@ void register_sunny_tools(McpServer& server,
           json::array({"track_index", "slot_index", "root", "scale", "numerals", "direction"})}},
         [&orchestrator, &dispatcher](const json& params) -> json {
             if (!dispatcher.online()) {
-                return offline_decline();
+                return offline_decline(dispatcher);
             }
             auto result = orchestrator.apply_arpeggio(
                 dispatcher,
@@ -358,7 +354,7 @@ void register_sunny_tools(McpServer& server,
         "Read transport, tempo, meter, and track counts from the live Ableton set",
         {{"type", "object"}, {"properties", json::object()}},
         [&orchestrator, &dispatcher](const json&) -> json {
-            if (!dispatcher.online()) return offline_decline();
+            if (!dispatcher.online()) return offline_decline(dispatcher);
 
             json state = {{"success", true},
                           {"connected", true},
@@ -418,7 +414,7 @@ void register_sunny_tools(McpServer& server,
                          "Undo Sunny's most recent live Ableton clip operation",
                          {{"type", "object"}, {"properties", json::object()}},
                          [&orchestrator, &dispatcher](const json&) -> json {
-                             if (!dispatcher.online()) return offline_decline();
+                             if (!dispatcher.online()) return offline_decline(dispatcher);
                              return history_result(
                                  "undo", orchestrator.undo(dispatcher), orchestrator);
                          });
@@ -427,7 +423,7 @@ void register_sunny_tools(McpServer& server,
                          "Redo Sunny's most recently undone live Ableton clip operation",
                          {{"type", "object"}, {"properties", json::object()}},
                          [&orchestrator, &dispatcher](const json&) -> json {
-                             if (!dispatcher.online()) return offline_decline();
+                             if (!dispatcher.online()) return offline_decline(dispatcher);
                              return history_result(
                                  "redo", orchestrator.redo(dispatcher), orchestrator);
                          });

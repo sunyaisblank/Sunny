@@ -1132,6 +1132,58 @@ TEST_CASE("a failed redo keeps its entry on the redo stack", "[mcp][integration]
     CHECK(redone["can_redo"] == false);
 }
 
+TEST_CASE("offline Ableton tools report the actual reason they cannot connect",
+          "[mcp][integration][bridge][offline]") {
+    SECTION("no host configured") {
+        Orchestrator orchestrator;
+        BridgeDispatcher dispatcher(nullptr);
+        McpServer server;
+        register_sunny_tools(server, orchestrator, dispatcher);
+
+        const auto result = call_tool(server, "undo_ableton_operation", json::object(), 120);
+        CHECK(result["success"] == false);
+        CHECK(result["error"].get<std::string>().find("SUNNY_ABLETON_HOST is not set") !=
+              std::string::npos);
+    }
+
+    SECTION("host configured but nothing listening") {
+        TcpConfig config;
+        config.host = "127.0.0.1";
+        config.port = 1; // reserved port: connection refused
+        config.connect_timeout = std::chrono::milliseconds{500};
+        TcpTransport transport(config);
+        Orchestrator orchestrator;
+        BridgeDispatcher dispatcher(transport);
+        McpServer server;
+        register_sunny_tools(server, orchestrator, dispatcher);
+
+        const auto result =
+            call_tool(server, "apply_euclidean_rhythm", euclidean_arguments(0), 121);
+        CHECK(result["success"] == false);
+        const auto error = result["error"].get<std::string>();
+        CHECK(error.find("SUNNY_ABLETON_HOST") == std::string::npos);
+        REQUIRE(transport.last_connect_failure());
+        CHECK(error.find(describe(*transport.last_connect_failure())) != std::string::npos);
+    }
+
+    SECTION("a transport without connection diagnostics") {
+        TcpConfig config;
+        config.host = "127.0.0.1";
+        config.port = 1;
+        config.connect_timeout = std::chrono::milliseconds{500};
+        TcpTransport transport(config);
+        Orchestrator orchestrator;
+        BridgeDispatcher dispatcher(static_cast<LomTransport*>(&transport));
+        McpServer server;
+        register_sunny_tools(server, orchestrator, dispatcher);
+
+        const auto result = call_tool(server, "redo_ableton_operation", json::object(), 122);
+        CHECK(result["success"] == false);
+        CHECK(result["error"].get<std::string>().find("Set SUNNY_ABLETON_HOST") ==
+              std::string::npos);
+    }
+}
+
 namespace {
 
 /// Call apply_arpeggio against a recording transport and return its two commands.

@@ -33,11 +33,24 @@ namespace sunny::infrastructure {
  */
 class BridgeDispatcher final : public BridgeDelivery {
   public:
-    /// Construct with a borrowed transport; nullptr means offline
+    /// Construct with a borrowed transport; nullptr means no host is configured
     explicit BridgeDispatcher(LomTransport* transport = nullptr) : transport_(transport) {}
+
+    /// Construct over a TCP transport, which can also explain a failed connection
+    explicit BridgeDispatcher(TcpTransport& transport)
+        : transport_(&transport), tcp_transport_(&transport) {}
 
     /// True when a connected transport is available
     [[nodiscard]] bool online() { return transport_ != nullptr && transport_->ensure_connected(); }
+
+    /**
+     * @brief Operator-facing reason the dispatcher is offline
+     *
+     * Pre:  online() most recently returned false
+     * Post: names the missing configuration when no transport exists, and
+     *       otherwise the transport's own connection failure when it has one
+     */
+    [[nodiscard]] std::string offline_reason() const;
 
     /// Send a single request, reconnecting first when possible.
     [[nodiscard]] LomResponse request(const LomRequest& request);
@@ -67,6 +80,7 @@ class BridgeDispatcher final : public BridgeDelivery {
 
   private:
     LomTransport* transport_;
+    const TcpTransport* tcp_transport_{nullptr}; ///< same object as transport_, when TCP
 };
 
 } // namespace sunny::infrastructure

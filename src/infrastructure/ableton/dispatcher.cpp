@@ -157,6 +157,22 @@ DispatchReport BridgeDispatcher::dispatch(const std::vector<BridgeMessage>& mess
     return report;
 }
 
+std::string BridgeDispatcher::offline_reason() const {
+    constexpr std::string_view SURFACE_HINT =
+        "ensure the Sunny Remote Script control surface is active in Live.";
+    if (transport_ == nullptr) {
+        return "Ableton is not connected: SUNNY_ABLETON_HOST is not set. Set it (and optionally "
+               "SUNNY_TCP_PORT) and " +
+               std::string(SURFACE_HINT);
+    }
+    if (tcp_transport_ != nullptr) {
+        if (const auto failure = tcp_transport_->last_connect_failure()) {
+            return "Could not connect to Ableton: " + std::string(describe(*failure)) + ".";
+        }
+    }
+    return "Could not connect to Ableton; " + std::string(SURFACE_HINT);
+}
+
 LomResponse BridgeDispatcher::request(const LomRequest& request) {
     if (!online()) {
         return LomResponse{false,

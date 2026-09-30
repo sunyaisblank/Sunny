@@ -92,7 +92,8 @@ int run_server() {
                   << "(theory and IR tools available, Ableton tools decline)\n";
     }
 
-    BridgeDispatcher dispatcher(transport.get());
+    // The TCP overload lets offline declines name the actual connection failure.
+    BridgeDispatcher dispatcher = transport ? BridgeDispatcher(*transport) : BridgeDispatcher();
 
     register_sunny_tools(server, orchestrator, dispatcher);
     register_timbre_tools(server, transport.get(), session.timbre);
