@@ -23,6 +23,12 @@ set(AUTHOR_DOMAIN "com.github.sunyaisblank")
 
 find_package(Threads REQUIRED)
 
+# The Max SDK includes <windows.h>, whose min/max macros break
+# std::numeric_limits<T>::max() in Sunny's headers.
+if(WIN32)
+    add_compile_definitions(NOMINMAX)
+endif()
+
 add_library(
     sunny_max_runtime STATIC
     ../src/max/clock_adapter.cpp
