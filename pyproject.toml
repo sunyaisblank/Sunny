@@ -50,7 +50,6 @@ install.components = ["SunnyPython"]
 cmake.args = [
     "-DSUNNY_BUILD_TESTS=OFF",
     "-DSUNNY_BUILD_MCP_SERVER=OFF",
-    "-DSUNNY_BUILD_MAX_EVIDENCE_TOOL=OFF",
     "-DSUNNY_BUILD_PYTHON_BINDINGS=ON",
 ]
 

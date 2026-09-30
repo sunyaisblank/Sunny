@@ -9,19 +9,9 @@ from typing import Any, Final
 __version__: Final[str]
 ABLETON_BRIDGE_PROTOCOL_VERSION: Final[int]
 ABLETON_TARGET_SNAPSHOT_SCHEMA_VERSION: Final[int]
-ABLETON_VALIDATION_RECORD_SCHEMA_VERSION: Final[int]
-MAX_VALIDATION_RECORD_SCHEMA_VERSION: Final[int]
 
 def validate_ableton_target_snapshot_json(payload: str) -> bool:
     """Validate one closed, versioned Ableton target snapshot JSON value."""
-    ...
-
-def validate_ableton_validation_record_json(payload: str) -> bool:
-    """Validate one strict schema-v1 Ableton deployment evidence record."""
-    ...
-
-def validate_max_validation_record_json(payload: str) -> bool:
-    """Validate one strict schema-v1 Max or Max for Live host evidence record."""
     ...
 
 # =============================================================================

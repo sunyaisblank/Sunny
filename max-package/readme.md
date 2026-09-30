@@ -75,139 +75,24 @@ selects attack velocity and a nonzero flag; note-off selects release velocity an
 does not attach `midiout` or select a port. The `docs/` reference pages supply object, argument, and
 message metadata to Max's Documentation Window and object autocomplete.
 
-`patchers/sunny-runtime-smoke.maxtest.maxpat` is a self-starting standalone-Max test for the pinned
-Cycling '74 `max-test` harness. The exact repository revision, SQLite result contract, helper
-patchers, expected assertions, and mapping into Sunny's host-evidence vocabulary are closed by
-`misc/validation/max-test-harness.json`. In addition to discovery, public surface, signal topology,
-DSP, callback, finite-output, and control checks, the smoke uses documented `thispatcher` scripting
-names to disconnect and reconnect every wrapper's signal sink. Exact process-call snapshots must
-advance while disconnected and again after reconnection, and every reconnected sink must receive a
-fresh expected sample. The smoke also drives the unnamed standalone-Max `transport` and advances
-its assertions from actual `sunny.events` callbacks. It checks ITM
-schedule/fire, equal-tick note-off-before-note-on order, note release formatting, clear/reassignment,
-and standalone transport identity. Its 1500 ms `delay` is only a failure watchdog; successful test
-ordering is callback-driven. The lifecycle phases use bounded 120 ms observation windows and a
-2000 ms failure watchdog; process-count advancement and new sample callbacks—not elapsed time—are
-the pass conditions. Four host checks and every Max for Live transport claim remain outside
-this smoke. A green max-test database is therefore an input to, not a replacement for, a complete
-named-host observation and its retained evidence.
+## Building
 
-`misc/validation/max-host-run-plan.json` closes the remaining operator measurements: exact
-teardown-cycle counts and diagnostics, timing settings/scenarios/sample spacing, downstream MIDI
-bytes and receiver identity, floating-point PCM comparisons, and six Live transport-discontinuity
-scenarios. `prepare-max-host-run.py` verifies one archive/sidecar/extracted-package byte set and
-creates a non-overwriting, evidence-empty workspace for one release cell. It fills provenance and
-applicability only; it never marks a check passed. For M4L,
-`prepare-m4l-device-source.py` verifies the pinned assertion/upstream-console inputs and creates an
-inventoried editable Max Audio Effect tree with the standalone `dac~` DSP-start edge removed and a
-silent unconnected `plugout~`; the named Live/Max build must still save and freeze the `.amxd`.
-`export-m4l-assertions.py` projects exactly one 64-fact run-ID-delimited console session and hashes
-its assertion map, device, and transcript without mapping checks. `index-max-host-run.py` hashes the
-twelve shared residual artifacts and, for M4L only, the saved device/assertion map/assertion
-projection/scenario/console set without deriving an outcome. Native `apply-host-run` and
-`verify-host-run` re-hash that transitive set, decode the two float-WAVE captures, map the device
-assertions to five artifacts and thirteen checks, and derive the four residual outcomes plus the
-conditional M4L discontinuity outcome. `run-named-live-validation.py` separately
-retains a deterministic Ableton JSON-RPC transcript and dry-run plan, and reaches guarded mutation
-only with an explicit `--apply`. The exact procedure and remaining `.amxd` host-authority blocker
-are documented in `misc/validation/README.md`.
-
-After Max and the official runner have closed the database, select its exact positive `test_id` and
-project only those raw rows with the staged extractor. It rejects SQLite journal/WAL state, missing
-columns, unfinished tests, unknown outcomes, symlink leaves, and a database that changes during
-extraction. The C++ tool then re-hashes the retained database, requires the compiled exact manifest
-digest and all 64 assertions, and maps only the 14 declared checks:
-
-```sh
-python3 misc/validation/export-max-test-sqlite.py \
-  misc/validation/max-test-harness.json evidence/max-test/results.db3 42 > max-test-result.tmp
-sunny-max-evidence apply-max-test \
-  misc/validation/max-test-harness.json max-test-result.tmp observation.json \
-  evidence max-test/results.db3 > observation.tmp
-mv observation.tmp observation.json
-```
-
-Keep the normalized temporary result until the resulting observation has been reviewed. Python only
-extracts unchanged database rows and a digest; the native command owns schema validation, digest
-agreement, assertion-set equality, pass/fail conjunctions, and observation mutation.
-
-Residual host files use the exact roles in `max-host-run-plan.json`. Run the staged indexer to
-produce `evidence/host-run-result.json`, then pass that file through `apply-host-run` and
-`verify-host-run` before record assembly. The indexer owns no threshold or verdict; native C++
-reconstructs scheduler offsets from the timing WAVE and calculates render errors directly. An M4L
-index is invalid without the host-saved validation device, exact marked assertion session, and six
-ordered discontinuity measurements bound to that run, but those inputs still require an actual
-Live/Max for Live execution.
-
-Example from the Sunny checkout:
+From the Sunny checkout, on macOS or Windows:
 
 ```sh
 cmake -S max-package -B .bin-max
 cmake --build .bin-max --config Release --target sunny_max_archive
 ```
 
-The archive target depends on all five externals and emits
-`Sunny-0.4.0-<platform>-<architecture>.zip` plus its `.sha256` sidecar in `.bin-max/`. The ZIP owns
-one outer `Sunny/` directory and the exact staged file bytes; the macOS and Windows CI jobs validate
-that equality before upload.
-Archive publication is immutable: the target builds and hashes a candidate pair before publishing,
-serializes writers to the same destination, and preserves existing files on failure. ZIP timestamps
-are fixed so identical inputs can repeat successfully without changing the published bytes. A
-changed input or an incomplete existing pair is rejected; choose a new build directory or set
-`SUNNY_MAX_ARCHIVE` to a new path. Remove an old pair only when deliberately discarding it.
-The sibling `.lock` and temporary `.work` paths are build metadata, not host evidence.
-Archive and work paths must be disjoint from the staged package. The target resolves existing
-directory aliases and rejects overlaps before creating directories or lock files.
-Lock and work paths must not be symlinks.
+The archive target builds all five externals and writes
+`Sunny-0.4.0-<platform>-<architecture>.zip` with a `.sha256` sidecar in `.bin-max/`. The ZIP holds
+one outer `Sunny/` directory containing the staged package. Publication never replaces an existing
+archive with different contents: a changed build must use a new build directory or `SUNNY_MAX_ARCHIVE`
+path, and an identical rebuild succeeds without rewriting the files. The macOS and Windows CI jobs
+build the package and check that the staged files and archive match the sources.
 
-Building the binaries does not by itself prove Max-host execution, disconnected-outlet continuity,
-audio deadline performance, Max for Live availability, or Ableton Live integration. Those claims
-require the named-host validation record specified in `docs/ableton-max-conformance.md`.
-The macOS and Windows CI jobs run the same exact staged-package validator: all five external
-binaries, all five help/reference pairs, five max-test patchers, both validation examples, the
-pinned harness manifest, release-matrix and host-run manifests, SQLite extractor, residual indexer,
-both remaining operator helpers, validation handoff, package manifest, and readme are required.
-That gate establishes
-package topology and copied bytes only, not host loading.
-`misc/validation/max-validation-record.example.json` is a canonical but deliberately incomplete
-schema-1 parser handoff. For an actual run, copy
-`misc/validation/max-validation-observation.example.json`, replace its provenance/environment and
-host observations, and retain one relative evidence artefact for every passed or failed applicable
-check. That observation deliberately has no handwritten digest or completion fields. Derive the
-record from the exact distributable archive, extracted package, and evidence directory with the
-installed C++ tool:
+## Limitations
 
-```sh
-sunny-max-evidence assemble observation.json Sunny-package.zip package-root evidence-root > record.tmp
-sunny-max-evidence verify record.tmp Sunny-package.zip package-root evidence-root
-mv record.tmp record.json
-```
-
-Writing a temporary result first prevents a failed assembly from replacing an earlier record. The
-thin installed Python `sunny_native.validate_max_validation_record_json` entry remains available for
-strict schema validation, but it does not read or hash evidence files.
-
-The derived `complete` member must remain false until every platform binary was discovered and
-instantiated and every check applicable to that one recorded host configuration passed. One
-complete record is not a release matrix and does not authenticate the operator or its evidence.
-The staged `example_` harness, `replace-with-` values, and uniform hexadecimal sentinels also force
-the derived verdict false; changing outcomes alone cannot promote the template into evidence.
-
-For release coverage, place the six completed records at the exact paths declared by
-`misc/validation/max-release-matrix.json` below a common record root, after separately running
-`verify` against each record's retained archive, extracted package, and evidence tree. Then derive
-and re-check the aggregate:
-
-```sh
-sunny-max-evidence assemble-matrix \
-  misc/validation/max-release-matrix.json release-records > release-matrix.tmp
-sunny-max-evidence verify-matrix \
-  release-matrix.tmp misc/validation/max-release-matrix.json release-records
-mv release-matrix.tmp release-matrix.json
-```
-
-The six cells are standalone Max and Max for Live on macOS x86_64, macOS arm64, and Windows x86_64.
-All must identify one Sunny/package source revision; both host kinds for a target must bind the same
-archive and binaries. The matrix proves only those six explicit record environments. It does not
-re-verify underlying evidence, authenticate the operator, or cover another Overdrive, Scheduler in
-Audio Interrupt, audio-driver, vector-size, Max, or Live configuration.
+The render logic behind these externals is tested on Linux through the host-neutral C++ library,
+and the wrappers are compiled against the pinned Max SDK headers. Loading the externals in Max,
+real-time audio behaviour, and Max for Live use have not yet been exercised in a running host.

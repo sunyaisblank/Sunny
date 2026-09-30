@@ -12,7 +12,6 @@
 #include <sunny/core/detail/serialization_integer.hpp>
 #include <sunny/core/project/validation.hpp>
 #include <sunny/infrastructure/ableton/target_profile.hpp>
-#include <sunny/infrastructure/ableton/validation_record.hpp>
 #include <sunny/infrastructure/formats/ableton_project.hpp>
 #include <sunny/infrastructure/mcp/project_tools.hpp>
 #include <vector>
@@ -23,146 +22,6 @@ using json = nlohmann::json;
 using namespace sunny::core;
 
 namespace {
-
-struct ValidationContext {
-    AbletonOperatorEnvironment environment;
-    std::vector<std::string> cleanup_steps;
-};
-
-bool valid_validation_text(const std::string& value, std::size_t maximum = 256) {
-    if (value.empty() || value.size() > maximum) return false;
-    return std::none_of(value.begin(), value.end(), [](const unsigned char character) {
-        return character < 0x20 || character == 0x7f;
-    });
-}
-
-json validation_context_schema() {
-    return {
-        {"type", "object"},
-        {"properties",
-         {{"live_edition", {{"type", "string"}}},
-          {"operating_system", {{"type", "string"}}},
-          {"architecture", {{"type", "string"}}},
-          {"remote_script_revision", {{"type", "string"}}},
-          {"max",
-           {{"type", "object"},
-            {"properties",
-             {{"max_version", {{"type", "string"}}},
-              {"max_for_live_version", {{"type", "string"}}},
-              {"license_state", {{"type", "string"}}}}},
-            {"required", json::array({"max_version", "max_for_live_version", "license_state"})}}},
-          {"cleanup_steps", {{"type", "array"}, {"items", {{"type", "string"}}}}}}},
-        {"required",
-         json::array({"live_edition",
-                      "operating_system",
-                      "architecture",
-                      "remote_script_revision",
-                      "cleanup_steps"})}};
-}
-
-bool parse_validation_context(const json& params,
-                              std::optional<ValidationContext>& result,
-                              std::string& error) {
-    if (!params.contains("validation_context")) {
-        result.reset();
-        return true;
-    }
-    const auto& encoded = params.at("validation_context");
-    if (!encoded.is_object()) {
-        error = "validation_context must be an object";
-        return false;
-    }
-    const auto permitted = [](std::string_view name) {
-        return name == "live_edition" || name == "operating_system" || name == "architecture" ||
-               name == "remote_script_revision" || name == "max" || name == "cleanup_steps";
-    };
-    for (auto field = encoded.begin(); field != encoded.end(); ++field) {
-        if (!permitted(field.key())) {
-            error = "validation_context contains an unknown field";
-            return false;
-        }
-    }
-    for (const auto* required : {"live_edition",
-                                 "operating_system",
-                                 "architecture",
-                                 "remote_script_revision",
-                                 "cleanup_steps"}) {
-        if (!encoded.contains(required)) {
-            error = std::string{"validation_context."} + required + " is required";
-            return false;
-        }
-    }
-    if (!encoded.at("live_edition").is_string() || !encoded.at("operating_system").is_string() ||
-        !encoded.at("architecture").is_string() ||
-        !encoded.at("remote_script_revision").is_string() ||
-        !encoded.at("cleanup_steps").is_array()) {
-        error = "validation_context contains an invalid field type";
-        return false;
-    }
-
-    ValidationContext context;
-    context.environment.live_edition = encoded.at("live_edition").get<std::string>();
-    context.environment.operating_system = encoded.at("operating_system").get<std::string>();
-    context.environment.architecture = encoded.at("architecture").get<std::string>();
-    context.environment.remote_script_revision =
-        encoded.at("remote_script_revision").get<std::string>();
-    if (!valid_validation_text(context.environment.live_edition) ||
-        !valid_validation_text(context.environment.operating_system) ||
-        !valid_validation_text(context.environment.architecture) ||
-        !valid_validation_text(context.environment.remote_script_revision)) {
-        error = "validation_context environment strings must be nonempty printable text";
-        return false;
-    }
-    for (const auto& step : encoded.at("cleanup_steps")) {
-        if (!step.is_string() || !valid_validation_text(step.get_ref<const std::string&>(), 2048)) {
-            error = "validation_context.cleanup_steps must contain printable nonempty strings";
-            return false;
-        }
-        context.cleanup_steps.push_back(step.get<std::string>());
-    }
-    if (encoded.contains("max")) {
-        const auto& max = encoded.at("max");
-        if (!max.is_object() || max.size() != 3 || !max.contains("max_version") ||
-            !max.at("max_version").is_string() || !max.contains("max_for_live_version") ||
-            !max.at("max_for_live_version").is_string() || !max.contains("license_state") ||
-            !max.at("license_state").is_string()) {
-            error = "validation_context.max must contain exactly three string fields";
-            return false;
-        }
-        context.environment.max =
-            AbletonMaxOperatorEnvironment{max.at("max_version").get<std::string>(),
-                                          max.at("max_for_live_version").get<std::string>(),
-                                          max.at("license_state").get<std::string>()};
-        if (!valid_validation_text(context.environment.max->max_version) ||
-            !valid_validation_text(context.environment.max->max_for_live_version) ||
-            !valid_validation_text(context.environment.max->license_state)) {
-            error = "validation_context.max strings must be nonempty printable text";
-            return false;
-        }
-    }
-    result = std::move(context);
-    return true;
-}
-
-void attach_validation_record(json& output,
-                              const formats::AbletonProjectDeploymentPlan& plan,
-                              const formats::AbletonProjectDeploymentAttempt& attempt,
-                              std::optional<ValidationContext> context,
-                              const std::optional<json>& encoded_compilation) {
-    output["validation_record"] = nullptr;
-    output["validation_record_context_supplied"] = context.has_value();
-    if (!context) return;
-    auto record = make_ableton_validation_record(plan,
-                                                 attempt,
-                                                 std::move(context->environment),
-                                                 encoded_compilation,
-                                                 std::move(context->cleanup_steps));
-    if (!record) {
-        output["validation_record_error_code"] = static_cast<int>(record.error());
-        return;
-    }
-    output["validation_record"] = ableton_validation_record_to_json(*record);
-}
 
 struct ResolvedProject {
     std::uint64_t score_id = 0;
@@ -1529,11 +1388,10 @@ void register_project_tools(McpServer& server, const McpSession& session, LomTra
             return plan_j(plan_id, *position->second.plan);
         });
 
-    const auto apply_schema = json{{"type", "object"},
-                                   {"properties",
-                                    {{"plan_id", {{"type", "integer"}, {"minimum", 1}}},
-                                     {"validation_context", validation_context_schema()}}},
-                                   {"required", json::array({"plan_id"})}};
+    const auto apply_schema =
+        json{{"type", "object"},
+             {"properties", {{"plan_id", {{"type", "integer"}, {"minimum", 1}}}}},
+             {"required", json::array({"plan_id"})}};
     server.register_tool(
         "project_apply_ableton_plan",
         "Apply an unconsumed project plan only if project and Ableton snapshots still match",
@@ -1543,10 +1401,6 @@ void register_project_tools(McpServer& server, const McpSession& session, LomTra
          mixes = session.mix,
          plans = session.deployment,
          transport](const json& params) {
-            std::optional<ValidationContext> validation_context;
-            std::string validation_error;
-            if (!parse_validation_context(params, validation_context, validation_error))
-                return error_response(validation_error);
             const auto plan_id =
                 detail::checked_integer<std::uint64_t>(params.at("plan_id"), "deployment plan id");
             const auto found = plans->plans.find(plan_id);
@@ -1579,33 +1433,24 @@ void register_project_tools(McpServer& server, const McpSession& session, LomTra
                             {"error", error}};
 
             auto attempt = formats::apply_project_ableton_plan(plan, project->view(), *transport);
-            std::optional<json> encoded_compilation;
-            if (attempt.compilation) encoded_compilation = compilation_j(*attempt.compilation);
-            json output = encoded_compilation.value_or(json::object());
+            json output =
+                attempt.compilation ? compilation_j(*attempt.compilation) : json::object();
             output["success"] =
                 attempt.status == formats::AbletonProjectDeploymentStatus::Completed;
             output["connected"] = transport->is_connected();
             output["plan_id"] = plan_id;
             output["plan_consumed"] = true;
             output["deployment"] = deployment_attempt_j(attempt);
-            attach_validation_record(
-                output, plan, attempt, std::move(validation_context), encoded_compilation);
             if (!output["success"].get<bool>()) output["error"] = "Ableton plan apply failed";
             return output;
         });
 
-    auto compile_schema = schema;
-    compile_schema["properties"]["validation_context"] = validation_context_schema();
     server.register_tool(
         "project_compile_to_ableton",
         "Plan and immediately apply a guarded correspondent project deployment",
-        compile_schema,
+        schema,
         [scores = session.score, timbres = session.timbre, mixes = session.mix, transport](
             const json& params) {
-            std::optional<ValidationContext> validation_context;
-            std::string validation_error;
-            if (!parse_validation_context(params, validation_context, validation_error))
-                return error_response(validation_error);
             std::string error;
             auto project = resolve_project(params, scores, timbres, mixes, error);
             if (!project) return error_response(error);
@@ -1644,17 +1489,14 @@ void register_project_tools(McpServer& server, const McpSession& session, LomTra
                             {"error", "Ableton project planning failed"}};
             }
             auto attempt = formats::apply_project_ableton_plan(*plan, project->view(), *transport);
-            std::optional<json> encoded_compilation;
-            if (attempt.compilation) encoded_compilation = compilation_j(*attempt.compilation);
-            json output = encoded_compilation.value_or(json::object());
+            json output =
+                attempt.compilation ? compilation_j(*attempt.compilation) : json::object();
             output["success"] =
                 attempt.status == formats::AbletonProjectDeploymentStatus::Completed;
             output["connected"] = transport->is_connected();
             output["plan"] = {{"target_snapshot", target_snapshot_to_json(plan->target_snapshot)},
                               {"planned_mutations", planned_mutations_j(plan->mutations)}};
             output["deployment"] = deployment_attempt_j(attempt);
-            attach_validation_record(
-                output, *plan, attempt, std::move(validation_context), encoded_compilation);
             if (!output["success"].get<bool>())
                 output["error"] = "Ableton project compilation failed";
             return output;

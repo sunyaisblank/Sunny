@@ -5,11 +5,7 @@
 #include <sunny/core/score/tuning.hpp>
 #include <sunny/core/score/types.hpp>
 #include <sunny/infrastructure/ableton/target_snapshot.hpp>
-#include <sunny/infrastructure/ableton/validation_record.hpp>
 #include <sunny/infrastructure/formats/scala.hpp>
-#include <sunny/infrastructure/max/max_test_result.hpp>
-#include <sunny/infrastructure/max/release_matrix.hpp>
-#include <sunny/infrastructure/max/validation_record.hpp>
 #include <sunny/infrastructure/orchestrator.hpp>
 #include <sunny/max/clock_adapter.hpp>
 #include <sunny/max/itm_event_adapter.hpp>
@@ -91,13 +87,6 @@ int main() {
 
     static_assert(sunny::infrastructure::SUNNY_BRIDGE_PROTOCOL_VERSION > 0);
     static_assert(sunny::infrastructure::SUNNY_TARGET_SNAPSHOT_SCHEMA_VERSION > 0);
-    static_assert(sunny::infrastructure::ABLETON_VALIDATION_RECORD_SCHEMA_VERSION == 1);
-    static_assert(sunny::infrastructure::MAX_VALIDATION_RECORD_SCHEMA_VERSION == 1);
-    static_assert(sunny::infrastructure::MAX_VALIDATION_OBSERVATION_SCHEMA_VERSION == 1);
-    static_assert(sunny::infrastructure::MAX_TEST_RESULT_SCHEMA_VERSION == 1);
-    static_assert(sunny::infrastructure::MAX_TEST_HARNESS_MANIFEST_SHA256.size() == 64);
-    static_assert(sunny::infrastructure::MAX_RELEASE_MATRIX_SCHEMA_VERSION == 1);
-    static_assert(sunny::infrastructure::MAX_RELEASE_MATRIX_MANIFEST_SHA256.size() == 64);
     static_assert(!sunny::SUNNY_VERSION.empty());
     static_assert(std::is_copy_constructible_v<sunny::core::ScoreDocument>);
     static_assert(!std::is_aggregate_v<sunny::core::PositiveRational>);

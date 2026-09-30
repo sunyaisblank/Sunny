@@ -9,19 +9,6 @@ add_test(
         -P "${PROJECT_SOURCE_DIR}/tests/architecture/rejection_test.cmake"
 )
 
-if(TARGET sunny-max-evidence)
-    add_test(NAME infrastructure.max-evidence-cli-help COMMAND sunny-max-evidence --help)
-    add_test(
-        NAME infrastructure.max-evidence-cli-roundtrip
-        COMMAND
-            "${CMAKE_COMMAND}"
-            "-DSUNNY_MAX_EVIDENCE_TOOL=$<TARGET_FILE:sunny-max-evidence>"
-            "-DSUNNY_SOURCE_DIR=${PROJECT_SOURCE_DIR}"
-            "-DSUNNY_BINARY_DIR=${PROJECT_BINARY_DIR}"
-            -P "${PROJECT_SOURCE_DIR}/tests/infrastructure/max/evidence_cli_test.cmake"
-    )
-endif()
-
 add_executable(sunny_core_tests)
 target_link_libraries(sunny_core_tests PRIVATE sunny::core Catch2::Catch2WithMain)
 target_sources(
@@ -136,7 +123,6 @@ target_sources(
         infrastructure/ableton/target_profile_test.cpp
         infrastructure/ableton/target_snapshot_test.cpp
         infrastructure/ableton/transport_test.cpp
-        infrastructure/ableton/validation_record_test.cpp
         infrastructure/compilation_workflows_test.cpp
         infrastructure/corpus/ingestion_test.cpp
         infrastructure/formats/abc_test.cpp
@@ -150,9 +136,6 @@ target_sources(
         infrastructure/formats/scala_test.cpp
         infrastructure/formats/score_to_lilypond_test.cpp
         infrastructure/formats/score_to_musicxml_test.cpp
-        infrastructure/max/max_test_result_test.cpp
-        infrastructure/max/release_matrix_test.cpp
-        infrastructure/max/validation_record_test.cpp
         infrastructure/mcp/server_test.cpp
         infrastructure/orchestrator_test.cpp
 )

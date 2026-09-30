@@ -96,64 +96,11 @@ def validate_staged_package(source: Path, staged: Path, archive: Path, platform:
     authored = [Path("package-info.json"), Path("readme.md")]
     authored.extend(Path("docs") / f"{name}.maxref.xml" for name in OBJECTS)
     authored.extend(Path("help") / f"{name}.maxhelp" for name in OBJECTS)
-    authored.extend(
-        Path("patchers") / name
-        for name in (
-            "sunny-runtime-smoke.maxtest.maxpat",
-            "sunny.assert-host-status.maxpat",
-            "sunny.assert-event-status.maxpat",
-            "sunny.assert-event-list.maxpat",
-            "sunny.assert-host-lifecycle.maxpat",
-        )
-    )
-    authored.extend(
-        (
-            Path("misc/validation/README.md"),
-            Path("misc/validation/max-host-run-plan.json"),
-            Path("misc/validation/max-validation-record.example.json"),
-            Path("misc/validation/max-validation-observation.example.json"),
-            Path("misc/validation/max-release-matrix.json"),
-            Path("misc/validation/max-test-harness.json"),
-            Path("misc/validation/export-max-test-sqlite.py"),
-            Path("misc/validation/export-m4l-assertions.py"),
-            Path("misc/validation/index-max-host-run.py"),
-            Path("misc/validation/prepare-m4l-device-source.py"),
-            Path("misc/validation/prepare-max-host-run.py"),
-            Path("misc/validation/run-named-live-validation.py"),
-        )
-    )
     for relative in authored:
         _require_identical_regular_file(source / relative, staged / relative)
 
     _exact_children(staged / "docs", {f"{name}.maxref.xml" for name in OBJECTS})
     _exact_children(staged / "help", {f"{name}.maxhelp" for name in OBJECTS})
-    _exact_children(
-        staged / "patchers",
-        {
-            "sunny-runtime-smoke.maxtest.maxpat",
-            "sunny.assert-host-status.maxpat",
-            "sunny.assert-event-status.maxpat",
-            "sunny.assert-event-list.maxpat",
-            "sunny.assert-host-lifecycle.maxpat",
-        },
-    )
-    _exact_children(
-        staged / "misc" / "validation",
-        {
-            "README.md",
-            "max-host-run-plan.json",
-            "max-validation-record.example.json",
-            "max-validation-observation.example.json",
-            "max-release-matrix.json",
-            "max-test-harness.json",
-            "export-max-test-sqlite.py",
-            "export-m4l-assertions.py",
-            "index-max-host-run.py",
-            "prepare-m4l-device-source.py",
-            "prepare-max-host-run.py",
-            "run-named-live-validation.py",
-        },
-    )
 
     external_names = (
         {f"{name}.mxo" for name in OBJECTS}

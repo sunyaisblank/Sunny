@@ -21,7 +21,6 @@
 #include <limits>
 #include <set>
 #include <string>
-#include <sunny/infrastructure/ableton/validation_record.hpp>
 #include <sunny/infrastructure/mcp/core_tools.hpp>
 #include <sunny/infrastructure/mcp/corpus_tools.hpp>
 #include <sunny/infrastructure/mcp/mix_tools.hpp>
@@ -1322,24 +1321,8 @@ TEST_CASE("Project MCP validates and deploys shared IR stores by PartId",
     const auto validation = call_tool(server, "project_validate", project_ids, 565);
     CHECK(validation["valid"] == true);
 
-    auto compile_params = project_ids;
-    compile_params["validation_context"] = {{"live_edition", "Suite"},
-                                            {"operating_system", "Windows 11"},
-                                            {"architecture", "x86_64"},
-                                            {"remote_script_revision", "0123456789abcdef"},
-                                            {"max",
-                                             {{"max_version", "9.0.5"},
-                                              {"max_for_live_version", "9.0.5"},
-                                              {"license_state", "licensed"}}},
-                                            {"cleanup_steps", json::array()}};
-    const auto compiled = call_tool(server, "project_compile_to_ableton", compile_params, 566);
+    const auto compiled = call_tool(server, "project_compile_to_ableton", project_ids, 566);
     REQUIRE(compiled["success"] == true);
-    REQUIRE(compiled["validation_record_context_supplied"] == true);
-    REQUIRE(compiled["validation_record"].is_object());
-    CHECK(compiled["validation_record"]["operator_environment"]["provenance"] ==
-          "operator_supplied");
-    CHECK(compiled["validation_record"]["deployment"]["execution_trace_complete"] == false);
-    CHECK(ableton_validation_record_from_json(compiled["validation_record"]));
     CHECK(compiled["score"]["tracks_created"] == 2);
     CHECK(compiled["score"]["notes_requested"] == 1);
     CHECK(compiled["score"]["notes_written"] == 1);
@@ -1925,29 +1908,8 @@ TEST_CASE("Project MCP plan/apply is read-only until one guarded one-shot applic
           }) == 2);
     CHECK(transport.entries().empty());
 
-    const auto malformed = call_tool(server,
-                                     "project_apply_ableton_plan",
-                                     {{"plan_id", plan["plan_id"]},
-                                      {"validation_context",
-                                       {{"live_edition", "Suite"},
-                                        {"operating_system", "Windows 11"},
-                                        {"architecture", "x86_64"},
-                                        {"remote_script_revision", ""},
-                                        {"cleanup_steps", json::array()}}}},
-                                     5731);
-    CHECK(malformed.contains("error"));
-    CHECK(transport.entries().empty());
-
-    const auto applied = call_tool(server,
-                                   "project_apply_ableton_plan",
-                                   {{"plan_id", plan["plan_id"]},
-                                    {"validation_context",
-                                     {{"live_edition", "Suite"},
-                                      {"operating_system", "Windows 11"},
-                                      {"architecture", "x86_64"},
-                                      {"remote_script_revision", "0123456789abcdef"},
-                                      {"cleanup_steps", json::array()}}}},
-                                   574);
+    const auto applied =
+        call_tool(server, "project_apply_ableton_plan", {{"plan_id", plan["plan_id"]}}, 574);
     REQUIRE(applied["success"] == true);
     CHECK(applied["plan_consumed"] == true);
     CHECK(applied["deployment"]["status"] == "completed");
@@ -1955,9 +1917,6 @@ TEST_CASE("Project MCP plan/apply is read-only until one guarded one-shot applic
     CHECK(applied["mix"]["output_routes_written"] == 1);
     CHECK(applied["mix"]["output_route_deployments"][0]["action"] == "recorded_only");
     CHECK(applied["deployment"]["mutation_journal"].size() == plan["planned_mutations"].size());
-    REQUIRE(applied["validation_record"].is_object());
-    CHECK(applied["validation_record"]["deployment"]["execution_trace_complete"] == false);
-    CHECK(ableton_validation_record_from_json(applied["validation_record"]));
     const auto entries_after_apply = transport.entries().size();
 
     const auto repeated =

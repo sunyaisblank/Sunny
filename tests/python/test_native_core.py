@@ -5,8 +5,6 @@ Tests the pybind11 bindings for the Sunny core layer.
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
 
@@ -18,16 +16,6 @@ def test_native_module_metadata_and_enum_namespaces_are_exact(sunny_native_modul
     assert sn.__version__ == sunny.__version__
     assert sn.ABLETON_BRIDGE_PROTOCOL_VERSION == 43
     assert sn.ABLETON_TARGET_SNAPSHOT_SCHEMA_VERSION == 34
-    assert sn.ABLETON_VALIDATION_RECORD_SCHEMA_VERSION == 1
-    assert sn.MAX_VALIDATION_RECORD_SCHEMA_VERSION == 1
-    with pytest.raises(ValueError, match="record violates"):
-        sn.validate_ableton_validation_record_json("{}")
-    with pytest.raises(ValueError, match="native Max contract"):
-        sn.validate_max_validation_record_json("{}")
-    example = Path("max-package/misc/validation/max-validation-record.example.json").read_text(
-        encoding="utf-8"
-    )
-    assert sn.validate_max_validation_record_json(example)
     assert not hasattr(sn, "Ok")
     assert not hasattr(sn, "Sine")
     assert not hasattr(sn, "GetProperty")

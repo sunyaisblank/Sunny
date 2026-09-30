@@ -103,11 +103,10 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DSUNNY_BUILD_TESTS=OFF \
             -DSUNNY_BUILD_MCP_SERVER=OFF
-          cmake --build .bin-python --target sunny_native sunny-max-evidence
+          cmake --build .bin-python --target sunny_native
 
       - name: Run tests
         run: |
-          SUNNY_MAX_EVIDENCE_TOOL=.bin-python/sunny-max-evidence \
           PYTHONPATH=python:remote_script:.bin-python/python \
           uv run pytest tests/python/ -v --tb=short
 
@@ -178,8 +177,7 @@ jobs:
 
       - name: Run bandit security scanner
         run: >-
-          uv run bandit -r python/sunny remote_script/Sunny
-          max-package/misc/validation/export-max-test-sqlite.py -ll -ii
+          uv run bandit -r python/sunny remote_script/Sunny -ll -ii
 
   # macOS build (for cross-platform verification)
   cpp-build-macos:

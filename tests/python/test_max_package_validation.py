@@ -33,7 +33,7 @@ def _stage_authored_package(source: Path, staged: Path, platform: str) -> None:
     staged.mkdir()
     for relative in (Path("package-info.json"), Path("readme.md")):
         shutil.copy2(source / relative, staged / relative)
-    for directory in ("docs", "help", "misc", "patchers"):
+    for directory in ("docs", "help"):
         shutil.copytree(source / directory, staged / directory)
     externals = staged / "externals"
     externals.mkdir()
@@ -99,38 +99,6 @@ def test_staged_max_package_rejects_authored_drift_and_unexpected_externals(
     shutil.copy2(source / "docs" / reference.name, reference)
     (staged / "externals" / "unexpected.mxe64").write_bytes(b"unexpected")
     with pytest.raises(ValueError, match="unexpected"):
-        VALIDATOR.validate_staged_package(source, staged, archive, "windows")
-
-
-def test_staged_max_package_requires_the_pinned_host_harness(tmp_path: Path) -> None:
-    """Reject a package that drops its executable host test or changes its pinned mapping."""
-    source = Path(__file__).parents[2] / "max-package"
-    staged = tmp_path / "package"
-    archive = tmp_path / "Sunny.zip"
-    _stage_authored_package(source, staged, "windows")
-    _archive(staged, archive)
-
-    smoke = staged / "patchers" / "sunny-runtime-smoke.maxtest.maxpat"
-    smoke.unlink()
-    with pytest.raises(ValueError, match="missing or non-regular staged file"):
-        VALIDATOR.validate_staged_package(source, staged, archive, "windows")
-
-    shutil.copy2(source / "patchers" / smoke.name, smoke)
-    harness = staged / "misc" / "validation" / "max-test-harness.json"
-    harness.write_text("{}\n", encoding="utf-8")
-    with pytest.raises(ValueError, match="diverges from source"):
-        VALIDATOR.validate_staged_package(source, staged, archive, "windows")
-
-    shutil.copy2(source / "misc" / "validation" / harness.name, harness)
-    extractor = staged / "misc" / "validation" / "export-max-test-sqlite.py"
-    extractor.unlink()
-    with pytest.raises(ValueError, match="missing or non-regular staged file"):
-        VALIDATOR.validate_staged_package(source, staged, archive, "windows")
-
-    shutil.copy2(source / "misc" / "validation" / extractor.name, extractor)
-    release_matrix = staged / "misc" / "validation" / "max-release-matrix.json"
-    release_matrix.unlink()
-    with pytest.raises(ValueError, match="missing or non-regular staged file"):
         VALIDATOR.validate_staged_package(source, staged, archive, "windows")
 
 

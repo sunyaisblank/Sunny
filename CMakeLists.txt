@@ -24,7 +24,6 @@ endif()
 option(SUNNY_BUILD_TESTS "Build the C++ test suite" ON)
 option(SUNNY_BUILD_PYTHON_BINDINGS "Build the Python extension" ON)
 option(SUNNY_BUILD_MCP_SERVER "Build the MCP server" ON)
-option(SUNNY_BUILD_MAX_EVIDENCE_TOOL "Build the Max evidence materializer/verifier" ON)
 option(SUNNY_MULL_INSTRUMENT "Instrument Sunny targets with Mull" OFF)
 
 # Both native and deployed Python peers consume this one machine-readable
@@ -224,7 +223,6 @@ target_sources(
         src/infrastructure/ableton/target_snapshot.cpp
         src/infrastructure/ableton/target_profile.cpp
         src/infrastructure/ableton/transport.cpp
-        src/infrastructure/ableton/validation_record.cpp
         src/infrastructure/compilation_workflows.cpp
         src/infrastructure/corpus/ingestion.cpp
         src/infrastructure/formats/abc.cpp
@@ -239,11 +237,6 @@ target_sources(
         src/infrastructure/formats/scala.cpp
         src/infrastructure/formats/score_to_lilypond.cpp
         src/infrastructure/formats/score_to_musicxml.cpp
-        src/infrastructure/max/host_run_result.cpp
-        src/infrastructure/max/max_test_result.cpp
-        src/infrastructure/max/release_matrix.cpp
-        src/infrastructure/max/validation_materializer.cpp
-        src/infrastructure/max/validation_record.cpp
         src/infrastructure/mcp/core_tools.cpp
         src/infrastructure/mcp/corpus_tools.cpp
         src/infrastructure/mcp/mix_tools.cpp
@@ -303,12 +296,6 @@ if(SUNNY_BUILD_MCP_SERVER)
     sunny_enable_warnings(sunny-mcp)
 endif()
 
-if(SUNNY_BUILD_MAX_EVIDENCE_TOOL)
-    add_executable(sunny-max-evidence apps/sunny_max_evidence.cpp)
-    target_link_libraries(sunny-max-evidence PRIVATE sunny::infrastructure)
-    sunny_enable_warnings(sunny-max-evidence)
-endif()
-
 if(SUNNY_BUILD_PYTHON_BINDINGS)
     pybind11_add_module(sunny_native src/bindings/python_module.cpp)
     target_link_libraries(sunny_native PRIVATE sunny::infrastructure)
@@ -334,9 +321,6 @@ install(
 )
 if(TARGET sunny-mcp)
     install(TARGETS sunny-mcp RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
-endif()
-if(TARGET sunny-max-evidence)
-    install(TARGETS sunny-max-evidence RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 endif()
 if(TARGET sunny_native)
     if(SKBUILD)
@@ -391,6 +375,5 @@ install(
 message(
     STATUS
         "Sunny ${PROJECT_VERSION}: C++${CMAKE_CXX_STANDARD}, tests=${SUNNY_BUILD_TESTS}, "
-        "Python=${SUNNY_BUILD_PYTHON_BINDINGS}, MCP=${SUNNY_BUILD_MCP_SERVER}, "
-        "MaxEvidence=${SUNNY_BUILD_MAX_EVIDENCE_TOOL}"
+        "Python=${SUNNY_BUILD_PYTHON_BINDINGS}, MCP=${SUNNY_BUILD_MCP_SERVER}"
 )

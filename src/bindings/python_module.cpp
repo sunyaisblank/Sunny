@@ -37,8 +37,6 @@
 
 // Infrastructure includes
 #include <sunny/infrastructure/ableton/target_snapshot.hpp>
-#include <sunny/infrastructure/ableton/validation_record.hpp>
-#include <sunny/infrastructure/max/validation_record.hpp>
 #include <sunny/infrastructure/orchestrator.hpp>
 #include <sunny/version.hpp>
 
@@ -100,10 +98,6 @@ PYBIND11_MODULE(sunny_native, m) {
         py::int_(sunny::infrastructure::SUNNY_BRIDGE_PROTOCOL_VERSION);
     m.attr("ABLETON_TARGET_SNAPSHOT_SCHEMA_VERSION") =
         py::int_(sunny::infrastructure::SUNNY_TARGET_SNAPSHOT_SCHEMA_VERSION);
-    m.attr("ABLETON_VALIDATION_RECORD_SCHEMA_VERSION") =
-        py::int_(sunny::infrastructure::ABLETON_VALIDATION_RECORD_SCHEMA_VERSION);
-    m.attr("MAX_VALIDATION_RECORD_SCHEMA_VERSION") =
-        py::int_(sunny::infrastructure::MAX_VALIDATION_RECORD_SCHEMA_VERSION);
     m.def("validate_ableton_target_snapshot_json", [](const std::string& payload) {
         try {
             const auto encoded = nlohmann::json::parse(payload);
@@ -111,26 +105,6 @@ PYBIND11_MODULE(sunny_native, m) {
             if (!parsed) throw py::value_error("snapshot violates the native Ableton contract");
         } catch (const nlohmann::json::exception&) {
             throw py::value_error("snapshot is not valid JSON");
-        }
-        return true;
-    });
-    m.def("validate_ableton_validation_record_json", [](const std::string& payload) {
-        try {
-            const auto encoded = nlohmann::json::parse(payload);
-            const auto parsed = sunny::infrastructure::ableton_validation_record_from_json(encoded);
-            if (!parsed) throw py::value_error("record violates the native Ableton contract");
-        } catch (const nlohmann::json::exception&) {
-            throw py::value_error("record is not valid JSON");
-        }
-        return true;
-    });
-    m.def("validate_max_validation_record_json", [](const std::string& payload) {
-        try {
-            const auto encoded = nlohmann::json::parse(payload);
-            const auto parsed = sunny::infrastructure::max_validation_record_from_json(encoded);
-            if (!parsed) throw py::value_error("record violates the native Max contract");
-        } catch (const nlohmann::json::exception&) {
-            throw py::value_error("record is not valid JSON");
         }
         return true;
     });
