@@ -15,6 +15,7 @@
 #include <sunny/core/score/mutations.hpp>
 #include <sunny/core/score/queries.hpp>
 #include <sunny/core/score/time.hpp>
+#include <sunny/core/score/tuplets.hpp>
 #include <sunny/core/score/validation.hpp>
 #include <sunny/core/voice_leading/voice_leading.hpp>
 
@@ -214,6 +215,107 @@ void for_each_event_in_region(Score& score, const ScoreRegion& region, Fn&& fn) 
 /// Record a pre-mutation snapshot when the caller supplied an undo stack.
 void push_snapshot(UndoStack* undo, std::optional<Score>&& before, std::string desc) {
     if (undo && before) undo->record(std::move(*before), std::move(desc));
+}
+
+/// Floor of a non-negative rational.
+std::int64_t floor_beat(Beat value) {
+    return value.numerator() / value.denominator();
+}
+
+/**
+ * Prepare a tuplet for a note of non-dyadic duration d = 1 / (2^a m), m odd.
+ *
+ * The conventional ratio is m : n with n the largest power of two below m; the
+ * tuplet span is S = m d and its normal type S / n (1/12 gives 3:2 eighths
+ * over a quarter). Structural rule S8 counts one direct event per tuplet
+ * unit, so the span [T, T + S), aligned to multiples of S from the bar start,
+ * becomes m unit rests under one fresh context and the note later replaces
+ * the unit it covers. Nothing changes when d is dyadic, when d is not a unit
+ * fraction, when the span leaves the bar or does not align with the note, or
+ * when any part of the span is not plain untupleted silence; those cases keep
+ * the previous behaviour and the exporters derive the written form.
+ */
+Result<void> materialise_tuplet_span(std::vector<Event>& events,
+                                     Beat offset,
+                                     Beat duration,
+                                     Beat measure_duration,
+                                     detail::FreshIdAllocator<EventId>& event_ids,
+                                     const Score& score) {
+    std::int64_t odd = duration.denominator();
+    while (odd % 2 == 0)
+        odd /= 2;
+    if (odd == 1 || duration.numerator() != 1 || odd > 255) return {};
+    std::int64_t normal = 1;
+    while (normal * 2 < odd)
+        normal *= 2;
+
+    const auto span = checked_mul(duration, Beat{odd, 1});
+    if (!span) return std::unexpected(span.error());
+    const auto span_index = checked_div(offset, *span);
+    if (!span_index) return std::unexpected(span_index.error());
+    const Beat span_start = Beat{floor_beat(*span_index), 1} * *span;
+    const Beat span_end = span_start + *span;
+    if (span_end > measure_duration) return {};
+    const auto unit_index = checked_div(offset - span_start, duration);
+    if (!unit_index || unit_index->denominator() != 1) return {};
+
+    std::vector<Event> kept;
+    std::optional<bool> visible;
+    for (const auto& event : events) {
+        const Beat event_end = event.offset + event.duration();
+        const bool overlaps =
+            event.duration() > Beat::zero() && event.offset < span_end && span_start < event_end;
+        if (!overlaps) {
+            kept.push_back(event);
+            continue;
+        }
+        const auto* rest = event.as_rest();
+        if (!rest || rest->tuplet_context) return {};
+        if (!visible) visible = rest->visible;
+        if (event.offset < span_start) {
+            Event prefix = event;
+            prefix.payload = RestEvent{span_start - event.offset, rest->visible, std::nullopt};
+            kept.push_back(std::move(prefix));
+        }
+        if (span_end < event_end) {
+            Event suffix = event;
+            if (event.offset < span_start) {
+                auto id = event_ids.allocate();
+                if (!id) return std::unexpected(id.error());
+                suffix.id = *id;
+            }
+            suffix.offset = span_end;
+            suffix.payload = RestEvent{event_end - span_end, rest->visible, std::nullopt};
+            kept.push_back(std::move(suffix));
+        }
+    }
+    if (!visible) return {};
+
+    detail::FreshIdAllocator<TupletId> tuplet_ids;
+    for (const auto& part : score.parts)
+        for (const auto& measure : part.measures)
+            for (const auto& voice : measure.voices)
+                for (const auto& event : voice.events)
+                    if (const auto* context = event_tuplet_context(event))
+                        tuplet_ids.include(context->id);
+    auto tuplet_id = tuplet_ids.allocate();
+    if (!tuplet_id) return std::unexpected(tuplet_id.error());
+    const TupletContext context{*tuplet_id,
+                                static_cast<std::uint8_t>(odd),
+                                static_cast<std::uint8_t>(normal),
+                                *span / Beat{normal, 1},
+                                std::nullopt};
+    for (std::int64_t unit = 0; unit < odd; ++unit) {
+        auto id = event_ids.allocate();
+        if (!id) return std::unexpected(id.error());
+        kept.push_back(Event{
+            *id, span_start + duration * Beat{unit, 1}, RestEvent{duration, *visible, context}});
+    }
+    std::stable_sort(kept.begin(), kept.end(), [](const Event& lhs, const Event& rhs) {
+        return lhs.offset < rhs.offset;
+    });
+    events = std::move(kept);
+    return {};
 }
 
 /// apply_interval asserts when the result leaves the SpelledPitch octave or
@@ -879,15 +981,23 @@ Result<MutationResult> insert_note(Score& score,
 
     auto event_ids = detail::event_id_allocator(score);
 
+    // A tuplet duration landing in plain silence first divides its tuplet
+    // span into unit rests under a fresh context, so the note joins a
+    // complete, marked tuplet instead of floating without a written ratio.
+    auto source_events = target_voice->events;
+    auto tupleted = materialise_tuplet_span(
+        source_events, offset, duration, *measure_duration, event_ids, score);
+    if (!tupleted) return std::unexpected(tupleted.error());
+
     // Construct the complete replacement before mutating the document. A
     // note may replace silence or join an exactly coincident NoteGroup; it
     // may not create partially overlapping musical events.
     std::vector<Event> replacement;
-    replacement.reserve(target_voice->events.size() + 2);
+    replacement.reserve(source_events.size() + 2);
     bool merged_into_chord = false;
     std::optional<std::optional<TupletContext>> replacement_tuplet;
     std::set<std::uint64_t> overlapped_event_ids;
-    for (const auto& existing : target_voice->events) {
+    for (const auto& existing : source_events) {
         const Beat existing_end = existing.offset + existing.duration();
         const bool overlaps = existing.duration() > Beat::zero() &&
                               existing.offset < *insertion_end && offset < existing_end;
