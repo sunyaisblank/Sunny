@@ -60,12 +60,17 @@ tick_after_itm(ItmHostSnapshot host, std::int64_t ppq, std::int64_t delay_ticks)
         return std::unexpected(sunny::core::ErrorCode::RenderUnrepresentableTiming);
 
     const long double sunny_floor = std::floor(sunny_position);
-    const long double last_admissible_floor =
-        static_cast<long double>(std::numeric_limits<std::int64_t>::max() - delay_ticks - 1);
-    if (sunny_floor > last_admissible_floor)
+    // 2^63 is exact in every binary floating format, whereas INT64_MAX - k rounds up to 2^63
+    // where long double is 64 bits wide (arm64 macOS, MSVC); comparing against it would admit
+    // an out-of-range conversion. Bound the float exactly, then finish in integer arithmetic.
+    constexpr long double exclusive_int64_bound = 9223372036854775808.0L;
+    if (sunny_floor >= exclusive_int64_bound)
+        return std::unexpected(sunny::core::ErrorCode::ArithmeticOverflow);
+    const auto floor_tick = static_cast<std::int64_t>(sunny_floor);
+    if (floor_tick > std::numeric_limits<std::int64_t>::max() - delay_ticks - 1)
         return std::unexpected(sunny::core::ErrorCode::ArithmeticOverflow);
 
-    const auto first_future_tick = static_cast<std::int64_t>(sunny_floor) + 1;
+    const auto first_future_tick = floor_tick + 1;
     const auto target_tick = first_future_tick + delay_ticks;
     const auto mapped = map_tick_to_itm(target_tick, ppq, host.ticks_per_quarter);
     if (!mapped) return std::unexpected(mapped.error());
