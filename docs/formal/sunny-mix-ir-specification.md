@@ -855,8 +855,8 @@ Examples:
 
 The *MixCompiler* maps the Mix IR to the supported portion of Ableton's mixer and effects infrastructure. Its result distinguishes accepted calls, immediate scalar readback equality, and semantic completeness, and includes warnings for requested operations outside the public LOM surface.
 
-The production transport first obtains the versioned target profile defined in
-`docs/ableton-max-conformance.md`; its absence is a pre-mutation protocol failure, including for an
+The production transport first obtains the versioned target profile defined in the
+bridge contract (`remote_script/Sunny/bridge_contract.json`); its absence is a pre-mutation protocol failure, including for an
 offline recording transport that has not declared a modelled target. When AuxBuses are present, it also requires the existing
 return-track count before mutation so new AuxBus IDs resolve to the returns actually appended to a
 non-empty set. Missing count evidence is a protocol failure; a graph with no AuxBus neither needs
@@ -1285,7 +1285,7 @@ The deployed MCP server exposes the following registration groups:
 | Corpus IR | 22 | `ingest_midi`, `remove_ingested_work`, `query_style_profile` |
 | Project | 4 | `project_validate`, `project_plan_to_ableton`, `project_apply_ableton_plan`, `project_compile_to_ableton` |
 
-Total: 116 tools. `tools/list` is the runtime authority; `docs/reference.md` records the same inventory counts.
+Total: 116 tools. `tools/list` is the runtime authority.
 
 ---
 

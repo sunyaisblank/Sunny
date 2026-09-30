@@ -1279,7 +1279,7 @@ configures Score, Timbre, and Mix in the same session using the identity and ord
 **Definition 9.2.1**. The *AbletonCompiler* emits the supported Live Object Model operations for a Score IR and returns a compilation summary. The summary distinguishes transport success from completeness: `success` means all emitted operations were accepted and every evidence payload required from a real protocol-v41 transport was well formed; `complete` means no requested feature was outside the supported LOM surface and no observed scalar diverged from its request.
 
 Before emitting mutations, the production transport performs the versioned target-profile handshake
-defined in `docs/ableton-max-conformance.md`. The compiler records the observed Live version and
+defined in the bridge contract (`remote_script/Sunny/bridge_contract.json`). The compiler records the observed Live version and
 capability states in its result. A missing, malformed, or internally contradictory profile is a
 pre-mutation protocol error, not a reason to guess. Recording transports must supply an explicit
 modelled profile and cannot obtain capabilities merely by omitting one.

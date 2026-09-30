@@ -180,37 +180,10 @@ immediate plan/apply convenience and therefore remains repeatable only in the op
 calling it again constructs a new creation plan. `score_create` returns allocated `part_ids`, so
 clients need not guess process-global identifiers.
 
-### 5.1 Versioned deployment evidence
-
-`AbletonValidationRecord` schema 1 is the canonical retained envelope for one consumed plan and
-its one-shot attempt. It contains the exact canonical Score/Timbre/Mix state, PPQ, planning
-snapshot, ordered mutations, apply-time precondition snapshot, mutation journal, optional final
-snapshot, and the aggregate compilation/postcondition serialization when one exists. Every stored
-request is decoded by the same closed current-protocol decoder used by native validation; every
-snapshot is reparsed through schema 34; target profiles must agree across the record. Unknown
-fields, stale Sunny/protocol/schema versions, noncanonical requests, journal prefix/sequence
-divergence, contradictory lifecycle shapes, and forged derived verdicts are rejected.
-
-Live edition, operating system, architecture, Remote Script revision, and optional Max/Max for
-Live/licence facts are not observable through the public bridge. They are therefore retained under
-literal `operator_supplied` provenance rather than mixed with the snapshot's bridge-observed Live
-version and capabilities. Cleanup entries are likewise operator-supplied recovery notes, not proof
-that a cleanup ran. The MCP apply and convenience-compile tools accept this optional
-`validation_context` before consuming a plan or reaching the target. Without it they return
-`validation_record: null`; with it they return the strict record for the actual attempt.
-
-`execution_trace_complete` means that a completed attempt has matching before/after snapshots and
-one acknowledged journal entry for every planned mutation. It is false for an offline
-`CommandBuffer`, even if its modelled compilation returns `success`. It is independent of the
-aggregate compiler's `complete` verdict and proves neither persistence, rendering, signal flow,
-audible equivalence, host identity beyond the supplied/observed fields, nor authenticity. A record
-may instead set `target_may_be_partially_modified` when acknowledged or indeterminate entries make
-rollback uncertainty material.
-
 ## 6. Ableton/Max external contract
 
-The aggregate model assumes only the target operations listed in
-`docs/ableton-max-conformance.md`. In particular:
+The aggregate model assumes only the target operations admitted by the bridge contract
+(`remote_script/Sunny/bridge_contract.json`). In particular:
 
 - Score note insertion is available only when the observed target profile permits the documented
   `Clip.add_new_notes` surface;
@@ -499,6 +472,6 @@ same preflight guarantee.
 | Atomic rollback/global idempotence | Not supplied by current LOM target; one plan object/identifier is one-shot | New target-side transaction/reconciliation design and Live tests |
 | Max for Live presence or device behaviour | Unknown in the current target | Independent licence/device discovery and named Live/Max validation |
 
-The strongest repository-only result is internal validity plus contract-tested translation. A
-claim of Live end-to-end conformance still requires the named-build validation record specified in
-`docs/ableton-max-conformance.md`.
+The strongest repository-only result is internal validity plus contract-tested translation against
+an offline model of Live's documented API. Live end-to-end conformance is established only by the
+final live validation against a running Live.

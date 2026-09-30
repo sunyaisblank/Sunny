@@ -1190,7 +1190,7 @@ The full MCP tool set across the IR specifications and aggregate project model:
 | Corpus IR | 22 | `ingest_midi`, `remove_ingested_work`, `query_how_would_x_handle` |
 | Project | 4 | `project_validate`, `project_plan_to_ableton`, `project_apply_ableton_plan`, `project_compile_to_ableton` |
 
-Total: 116 MCP tools. `tools/list` is the runtime authority; `docs/reference.md` records the same inventory counts.
+Total: 116 MCP tools. `tools/list` is the runtime authority.
 
 ---
 

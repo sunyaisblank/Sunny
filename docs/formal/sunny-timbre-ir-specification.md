@@ -778,8 +778,8 @@ A preset library is a collection of TimbrePresets, searchable by:
 
 The *TimbreCompiler* maps each TimbreProfile to the supported portion of an Ableton instrument device chain. Its MCP result distinguishes acknowledged transport success from completeness and includes warnings for requested operations outside the public LOM surface.
 
-The production transport first obtains the externally observed target profile described in
-`docs/ableton-max-conformance.md`. The result carries that profile so support decisions are tied to
+The production transport first obtains the externally observed target profile described in the
+bridge contract (`remote_script/Sunny/bridge_contract.json`). The result carries that profile so support decisions are tied to
 a named Live version and bridge contract rather than connection status alone. A transport that
 cannot supply a profile fails before mutation; an offline recording transport must declare the
 modelled target against which its plan is compiled.
