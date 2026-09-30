@@ -8,10 +8,12 @@
  * validate-on-load for the corpus database.
  */
 
+#include <algorithm>
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <set>
 #include <sunny/core/corpus/serialization.hpp>
+#include <sunny/core/corpus/validation.hpp>
 #include <sunny/core/corpus/workflows.hpp>
 
 using namespace sunny::core;
@@ -1788,11 +1790,11 @@ TEST_CASE("schema_version 5 is refused", "[corpus-ir][serialisation]") {
 // Validate-on-load (corpus database, strict v2-v4 paths)
 // =============================================================================
 
-TEST_CASE("v4 corpus validate-on-load blocks Error-severity diagnostics",
+TEST_CASE("v4 corpus validate-on-load blocks structural Error-severity diagnostics",
           "[corpus-ir][serialisation][v4]") {
     auto db = make_corpus();
-    // C6 Error: harmonic coverage 10/200 < 0.8 with analysis_complete == true
-    db.works[42].analysis.harmonic_analysis.chord_vocabulary = {{"I", 10}};
+    // C14 Error: the composer lists a work the corpus does not contain.
+    db.composers[1].works.push_back(IngestedWorkId{999});
 
     auto corpus_result = corpus_from_json(corpus_to_json(db));
     REQUIRE_FALSE(corpus_result.has_value());
@@ -1801,6 +1803,28 @@ TEST_CASE("v4 corpus validate-on-load blocks Error-severity diagnostics",
     // The per-work entry point does not validate; the same document loads
     auto work_result = ingested_work_from_json(ingested_work_to_json(db.works[42]));
     CHECK(work_result.has_value());
+}
+
+TEST_CASE("v4 corpus analysis-quality diagnostics do not block loading",
+          "[corpus-ir][serialisation][v4][regression]") {
+    auto db = make_corpus();
+    // C6 Error: harmonic coverage below 80% is an analysis-quality finding about
+    // the work, not a broken document, so the saved corpus reloads unchanged.
+    db.works[42].analysis.harmonic_analysis.chord_vocabulary = {{"I", 10}};
+    db.works[42].analysis.harmonic_analysis.harmonic_rhythm.changes_per_bar.assign(200, 0.0f);
+    db.works[42].analysis.harmonic_analysis.harmonic_rhythm.changes_per_bar[0] = 10.0f;
+    // Keep the composer aggregate fresh (C15) so C6 is the only Error.
+    auto signatures = std::move(db.composers[1].style_profile.signature_patterns);
+    REQUIRE(rebuild_style_profile(db, ComposerProfileId{1}).has_value());
+    db.composers[1].style_profile.signature_patterns = std::move(signatures);
+    REQUIRE(std::ranges::any_of(validate_corpus(db), [](const Diagnostic& diagnostic) {
+        return diagnostic.rule == "C6" && diagnostic.severity == ValidationSeverity::Error;
+    }));
+
+    const auto encoded = corpus_to_json(db);
+    auto corpus_result = corpus_from_json(encoded);
+    REQUIRE(corpus_result.has_value());
+    CHECK(corpus_to_json(*corpus_result) == encoded);
 }
 
 TEST_CASE("v4 corpus validate-on-load blocks stale derived aggregates",

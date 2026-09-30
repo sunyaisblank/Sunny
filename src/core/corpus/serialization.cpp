@@ -2005,14 +2005,14 @@ Result<CorpusDatabase> corpus_from_json(const json& j) {
             corpus.works[id] = std::move(*work);
         }
 
-        // Validate-on-load (v2-v4): Error-severity diagnostics block loading.
+        // Validate-on-load (v2-v4): structural errors block loading; analysis
+        // quality findings stay diagnostics so saved corpora always reload.
         for (const auto& diag : validate_corpus(corpus)) {
             // Schema v2 persisted caller-supplied partial aggregates and had no
             // freshness invariant. Preserve that historical migration contract;
             // v3+ and direct validation enforce C15.
             if (version == 2 && diag.rule == "C15") continue;
-            if (diag.severity == ValidationSeverity::Error)
-                return std::unexpected(ErrorCode::ValidationOnLoadFailed);
+            if (blocks_corpus_load(diag)) return std::unexpected(ErrorCode::ValidationOnLoadFailed);
         }
         return corpus;
     } catch (const json::exception&) {

@@ -638,14 +638,18 @@ void register_corpus_tools(McpServer& server, std::shared_ptr<CorpusSession> ses
                                  arr.push_back(mcp_detail::encode_diagnostic(d));
 
                              bool valid = true;
-                             for (const auto& d : diags)
-                                 if (d.severity == ValidationSeverity::Error) {
-                                     valid = false;
-                                     break;
-                                 }
+                             bool loadable = true;
+                             for (const auto& d : diags) {
+                                 if (d.severity == ValidationSeverity::Error) valid = false;
+                                 if (blocks_corpus_load(d)) loadable = false;
+                             }
 
-                             return {
-                                 {"valid", valid}, {"diagnostics", arr}, {"count", diags.size()}};
+                             // valid: no Error diagnostic of any kind. loadable:
+                             // no structural error, so the saved corpus reloads.
+                             return {{"valid", valid},
+                                     {"loadable", loadable},
+                                     {"diagnostics", arr},
+                                     {"count", diags.size()}};
                          });
 
     server.register_tool(

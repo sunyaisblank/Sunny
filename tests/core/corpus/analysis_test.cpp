@@ -448,3 +448,126 @@ TEST_CASE("analyze_work with Score populates analysis", "[corpus-ir][analysis][w
     CHECK(db.composers[1].style_profile.sample_size == 1);
     CHECK(db.composers[1].period_profiles[0].profile.sample_size == 1);
 }
+
+// =============================================================================
+// Regression: scale construction and tie folding (issue #12)
+// =============================================================================
+
+namespace {
+
+struct LineNote {
+    SpelledPitch pitch;
+    Beat duration;
+    bool tie_forward = false;
+};
+
+/// Replace one bar of voice 0 with consecutive notes; the bar must be filled exactly.
+void put_line(Score& score, std::size_t part, std::uint32_t bar_idx, std::vector<LineNote> line) {
+    auto& voice = score.parts[part].measures[bar_idx].voices[0];
+    voice.events.clear();
+    Beat offset = Beat::zero();
+    std::uint64_t event_id = 91000 + 16 * bar_idx;
+    for (const auto& item : line) {
+        Note note;
+        note.pitch = item.pitch;
+        note.velocity = VelocityValue{std::nullopt, 80};
+        note.tie_forward = item.tie_forward;
+        NoteGroup group;
+        group.notes.push_back(note);
+        group.duration = item.duration;
+        voice.events.push_back(Event{EventId{event_id++}, offset, group});
+        offset = offset + item.duration;
+    }
+    REQUIRE(offset == Beat{1, 1});
+}
+
+Score make_score_in(SpelledPitch key_root, std::uint32_t bars) {
+    ScoreSpec spec;
+    spec.title = "Key";
+    spec.total_bars = bars;
+    spec.bpm = 120.0;
+    spec.key_root = key_root;
+    PartDefinition flute;
+    flute.name = "Flute";
+    flute.abbreviation = "Fl.";
+    flute.instrument_type = InstrumentType::Flute;
+    flute.clef = Clef::Treble;
+    flute.rendering.midi_channel = 1;
+    spec.parts.push_back(flute);
+    auto result = create_score(spec);
+    REQUIRE(result.has_value());
+    return *result;
+}
+
+std::uint32_t histogram_total(const std::map<std::uint8_t, std::uint32_t>& histogram) {
+    std::uint32_t total = 0;
+    for (const auto& [degree, count] : histogram)
+        total += count;
+    return total;
+}
+
+const Beat quarter{1, 4};
+
+} // namespace
+
+TEST_CASE("a G major arpeggio is wholly diatonic in G major",
+          "[corpus-ir][analysis][melodic][regression]") {
+    // G major = G + {0,2,4,5,7,9,11} = {G,A,B,C,D,E,F#}; G B D B are degrees 1 3 5 3.
+    auto score = make_score_in(SpelledPitch{4, 0, 4}, 1);
+    put_line(score,
+             0,
+             0,
+             {{SpelledPitch{4, 0, 4}, quarter},
+              {SpelledPitch{6, 0, 4}, quarter},
+              {SpelledPitch{1, 0, 5}, quarter},
+              {SpelledPitch{6, 0, 4}, quarter}});
+
+    const auto voice = analyze_melodic(score).per_voice_analysis.at(0);
+    CHECK(voice.note_count == 4);
+    CHECK(voice.chromaticism_rate == Catch::Approx(0.0f));
+    CHECK(voice.scale_degree_distribution ==
+          std::map<std::uint8_t, std::uint32_t>{{1, 1}, {3, 2}, {5, 1}});
+}
+
+TEST_CASE("one chromatic tone in five gives chromaticism 0.2 and a complete histogram",
+          "[corpus-ir][analysis][melodic][regression]") {
+    // C D E F# G in C major: F# is the only non-diatonic pitch; bucket 0 is chromatic.
+    auto score = make_score_in(SpelledPitch{0, 0, 4}, 1);
+    put_line(score,
+             0,
+             0,
+             {{C4, quarter},
+              {D4, Beat{1, 8}},
+              {E4, Beat{1, 8}},
+              {SpelledPitch{3, 1, 4}, quarter},
+              {G4, quarter}});
+
+    const auto voice = analyze_melodic(score).per_voice_analysis.at(0);
+    CHECK(voice.note_count == 5);
+    CHECK(voice.chromaticism_rate == Catch::Approx(0.2f));
+    CHECK(histogram_total(voice.scale_degree_distribution) == 5);
+    CHECK(voice.scale_degree_distribution ==
+          std::map<std::uint8_t, std::uint32_t>{{0, 1}, {1, 1}, {2, 1}, {3, 1}, {5, 1}});
+}
+
+TEST_CASE("a tied continuation counts as one sounding note without an extra interval or onset",
+          "[corpus-ir][analysis][melodic][rhythmic][tie][regression]") {
+    // Bar 1: C4 q, E4 q, G4 h tied; bar 2: G4 w (continuation); bar 3: E4 w.
+    // Sounding notes C E G E: intervals +4 +3 -3; onsets per bar 3, 0, 1.
+    auto score = make_score_in(SpelledPitch{0, 0, 4}, 3);
+    put_line(score, 0, 0, {{C4, quarter}, {E4, quarter}, {G4, Beat{1, 2}, true}});
+    put_line(score, 0, 1, {{G4, Beat{1, 1}}});
+    put_line(score, 0, 2, {{E4, Beat{1, 1}}});
+
+    const auto voice = analyze_melodic(score).per_voice_analysis.at(0);
+    CHECK(voice.note_count == 4);
+    CHECK(voice.interval_distribution ==
+          std::map<std::int8_t, std::uint32_t>{{-3, 1}, {3, 1}, {4, 1}});
+    CHECK(histogram_total(voice.scale_degree_distribution) == 4);
+
+    const auto rhythm = analyze_rhythmic(score);
+    CHECK(rhythm.onset_density == std::vector<float>{3.0f, 0.0f, 1.0f});
+    // The tied G sounds for a half plus a whole note: one 3/2 duration, not two.
+    CHECK(rhythm.duration_distribution ==
+          std::map<std::string, std::uint32_t>{{"quarter", 2}, {"whole", 1}, {"3/2", 1}});
+}

@@ -12,6 +12,7 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
+#include <sunny/core/corpus/serialization.hpp>
 #include <sunny/core/corpus/workflows.hpp>
 #include <sunny/core/score/midi_compiler.hpp>
 #include <sunny/core/score/validation.hpp>
@@ -1232,4 +1233,37 @@ TEST_CASE("ingest_musicxml stores work and assigns to composer",
     CHECK(db.works.count(1) == 1);
     CHECK(db.works[1].analysis_complete);
     CHECK(db.composers[1].works.size() == 1);
+}
+
+TEST_CASE("a corpus holding a freshly ingested sparsely harmonised work reloads",
+          "[corpus-ir][ingestion][serialisation][regression]") {
+    // Ten 4/4 bars: a C major triad in bar 1, then one melody whole note per bar.
+    MidiFile midi;
+    midi.ppq = 480;
+    midi.time_signatures.push_back({0, 4, 4});
+    midi.tempos.push_back({0, 500000});
+    for (const std::uint8_t pitch : {60, 64, 67})
+        midi.notes.push_back({0, 1920, 0, pitch, 80});
+    const std::uint8_t melody[] = {62, 64, 65, 67, 69, 67, 65, 64, 60};
+    for (std::uint32_t bar = 1; bar < 10; ++bar)
+        midi.notes.push_back({bar * 1920, 1920, 0, melody[bar - 1], 80});
+    const auto bytes = write_midi(midi);
+    REQUIRE(bytes.has_value());
+
+    CorpusDatabase db;
+    db.composers[1] = create_composer_profile(ComposerProfileId{1}, "Composer");
+    IngestionOptions options;
+    options.title = "Sparse";
+    REQUIRE(ingest_midi(db,
+                        std::span<const std::uint8_t>(*bytes),
+                        IngestedWorkId{1},
+                        ComposerProfileId{1},
+                        options)
+                .has_value());
+    REQUIRE(db.works[1].analysis_complete);
+
+    const auto encoded = corpus_to_json(db);
+    const auto reloaded = corpus_from_json(encoded);
+    REQUIRE(reloaded.has_value());
+    CHECK(corpus_to_json(*reloaded) == encoded);
 }

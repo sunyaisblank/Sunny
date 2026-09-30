@@ -113,13 +113,18 @@ std::vector<Diagnostic> validate_ingested_work(const IngestedWork& work) {
         return diags;
     }
 
-    // C6: Harmonic analysis coverage
-    auto total_chords = std::uint32_t{0};
-    for (const auto& [_, count] : work.analysis.harmonic_analysis.chord_vocabulary)
-        total_chords += count;
-    auto total_bars = work.analysis.formal_analysis.total_duration_bars;
-    if (total_bars > 0 && total_chords > 0) {
-        float coverage = static_cast<float>(total_chords) / static_cast<float>(total_bars);
+    // C6: Harmonic analysis coverage is the proportion of bars carrying at
+    // least one recognised chord. Counting chords instead would let several
+    // chords in one bar stand in for harmonic silence elsewhere.
+    const auto total_bars = work.analysis.formal_analysis.total_duration_bars;
+    const auto& changes = work.analysis.harmonic_analysis.harmonic_rhythm.changes_per_bar;
+    const auto covered_bars = static_cast<std::uint32_t>(std::count_if(
+        changes.begin(),
+        changes.begin() +
+            static_cast<std::ptrdiff_t>(std::min<std::size_t>(changes.size(), total_bars)),
+        [](float count) { return count > 0.0f; }));
+    if (total_bars > 0) {
+        const float coverage = static_cast<float>(covered_bars) / static_cast<float>(total_bars);
         if (coverage < 0.8f) {
             diags.push_back(make_diag(ValidationSeverity::Error,
                                       "C6",
@@ -409,6 +414,12 @@ std::vector<Diagnostic> validate_corpus(const CorpusDatabase& corpus) {
     });
 
     return diags;
+}
+
+bool blocks_corpus_load(const Diagnostic& diagnostic) {
+    if (diagnostic.severity != ValidationSeverity::Error) return false;
+    return diagnostic.rule == "C2" || diagnostic.rule == "C14" || diagnostic.rule == "C15" ||
+           diagnostic.rule == "C16";
 }
 
 bool is_corpus_valid(const CorpusDatabase& corpus) {

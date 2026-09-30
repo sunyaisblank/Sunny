@@ -276,6 +276,9 @@ TEST_CASE("C6 errors for low harmonic coverage", "[corpus-ir][validation]") {
     work.id = IngestedWorkId{1};
     work.analysis_complete = true;
     work.analysis.harmonic_analysis.chord_vocabulary = {{"I", 10}};
+    work.analysis.harmonic_analysis.harmonic_rhythm.changes_per_bar.assign(100, 0.0f);
+    for (std::size_t bar = 0; bar < 10; ++bar)
+        work.analysis.harmonic_analysis.harmonic_rhythm.changes_per_bar[bar] = 1.0f;
     work.analysis.formal_analysis.total_duration_bars = 100;
 
     auto diags = validate_ingested_work(work);
@@ -290,10 +293,29 @@ TEST_CASE("C6 passes for adequate harmonic coverage", "[corpus-ir][validation]")
     work.id = IngestedWorkId{1};
     work.analysis_complete = true;
     work.analysis.harmonic_analysis.chord_vocabulary = {{"I", 100}};
+    work.analysis.harmonic_analysis.harmonic_rhythm.changes_per_bar.assign(100, 1.0f);
     work.analysis.formal_analysis.total_duration_bars = 100;
 
     auto diags = validate_ingested_work(work);
     CHECK_FALSE(has_rule(diags, "C6"));
+}
+
+TEST_CASE("C6 coverage counts bars with a chord rather than chords",
+          "[corpus-ir][validation][regression]") {
+    // Ten chords crowded into one of ten bars cover 1/10 of the work.
+    IngestedWork work;
+    work.id = IngestedWorkId{1};
+    work.analysis_complete = true;
+    work.analysis.harmonic_analysis.chord_vocabulary = {{"I", 10}};
+    work.analysis.harmonic_analysis.harmonic_rhythm.changes_per_bar.assign(10, 0.0f);
+    work.analysis.harmonic_analysis.harmonic_rhythm.changes_per_bar[0] = 10.0f;
+    work.analysis.formal_analysis.total_duration_bars = 10;
+    CHECK(has_rule(validate_ingested_work(work), "C6"));
+
+    // A work with no recognised chord has zero coverage; it is not exempt.
+    work.analysis.harmonic_analysis.chord_vocabulary.clear();
+    work.analysis.harmonic_analysis.harmonic_rhythm.changes_per_bar.assign(10, 0.0f);
+    CHECK(has_rule(validate_ingested_work(work), "C6"));
 }
 
 // =============================================================================
@@ -305,6 +327,7 @@ TEST_CASE("C7 warns for short sections", "[corpus-ir][validation]") {
     work.id = IngestedWorkId{1};
     work.analysis_complete = true;
     work.analysis.harmonic_analysis.chord_vocabulary = {{"I", 100}};
+    work.analysis.harmonic_analysis.harmonic_rhythm.changes_per_bar.assign(100, 1.0f);
     work.analysis.formal_analysis.total_duration_bars = 100;
 
     FormalSection short_sec;

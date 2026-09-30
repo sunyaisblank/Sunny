@@ -44,4 +44,16 @@ namespace sunny::core {
  */
 [[nodiscard]] bool is_corpus_valid(const CorpusDatabase& corpus);
 
+/**
+ * @brief Whether a diagnostic denies loading a persisted corpus.
+ *
+ * Only Error-severity structural rules gate loading: an embedded Score that
+ * fails structural validation (C2), contradictory identities (C14), stale
+ * derived aggregates (C15) and out-of-domain confidence records (C16).
+ * Ingestion and analysis quality rules (C1, C3-C13) describe the evidence
+ * rather than the document's integrity, so a state produced by Sunny's own
+ * tools always reloads; they remain diagnostics for validate_corpus.
+ */
+[[nodiscard]] bool blocks_corpus_load(const Diagnostic& diagnostic);
+
 } // namespace sunny::core

@@ -27,6 +27,7 @@
 #include <cmath>
 #include <map>
 #include <numeric>
+#include <optional>
 #include <set>
 #include <sunny/core/harmony/roman_numeral.hpp>
 #include <sunny/core/melody/analysis.hpp>
@@ -78,25 +79,79 @@ std::vector<PitchClassSet> collect_pcs_per_beat(const Score& score, std::uint32_
     return result;
 }
 
-/// Extract a melodic line (sequence of MIDI notes) from a single voice.
-std::vector<MidiNote> extract_melody_line(const Part& part, std::uint8_t voice_idx) {
-    std::vector<MidiNote> notes;
-    for (const auto& measure : part.measures) {
-        for (const auto& voice : measure.voices) {
+/// One sounding attack in a voice: a NoteGroup that begins at least one new note.
+struct SoundingOnset {
+    std::uint32_t bar_index = 0; ///< 0-indexed measure of the attack
+    Beat offset;                 ///< attack offset within that measure
+    Beat duration;               ///< sounding duration, extended through tie continuations
+    /// Highest note of the group when that note is attacked here rather than held.
+    std::optional<MidiNote> melody_note;
+};
+
+/// Distinct voice indices used anywhere in a part, in ascending order.
+std::set<std::uint8_t> voice_indices(const Part& part) {
+    std::set<std::uint8_t> indices;
+    for (const auto& measure : part.measures)
+        for (const auto& voice : measure.voices)
+            indices.insert(voice.voice_index);
+    return indices;
+}
+
+/// Fold same-pitch tie chains of one voice into sounding onsets.
+///
+/// A note continues the previous NoteGroup of the same voice when that group
+/// held a note of the same pitch with tie_forward; the continuation is part
+/// of one sounding note (ingestion spec stage 4), so it adds duration but no
+/// attack, interval or onset. A rest breaks every pending tie.
+std::vector<SoundingOnset> sounding_onsets(const Part& part, std::uint8_t voice_idx) {
+    std::vector<SoundingOnset> onsets;
+    std::set<int> tied_pitches;
+    for (std::uint32_t bar = 0; bar < part.measures.size(); ++bar) {
+        for (const auto& voice : part.measures[bar].voices) {
             if (voice.voice_index != voice_idx) continue;
             for (const auto& event : voice.events) {
+                if (event.is_rest()) tied_pitches.clear();
                 const auto* ng = event.as_note_group();
                 if (!ng || ng->notes.empty()) continue;
-                // Take the highest note as the melody note
-                MidiNote highest = 0;
+
+                bool attacks = false;
+                std::optional<MidiNote> highest;
+                bool highest_attacked = false;
+                std::set<int> next_tied;
                 for (const auto& note : ng->notes) {
-                    auto m = midi(note.pitch);
-                    if (m && *m > highest) highest = *m;
+                    const auto m = midi(note.pitch);
+                    const int key = m ? static_cast<int>(*m) : -1;
+                    const bool continued = m && tied_pitches.contains(key);
+                    if (!continued) attacks = true;
+                    if (m && (!highest || *m > *highest)) {
+                        highest = *m;
+                        highest_attacked = !continued;
+                    }
+                    if (note.tie_forward && m) next_tied.insert(key);
                 }
-                if (highest > 0) notes.push_back(highest);
+                tied_pitches = std::move(next_tied);
+
+                if (!attacks && !onsets.empty()) {
+                    onsets.back().duration = onsets.back().duration + ng->duration;
+                    continue;
+                }
+                SoundingOnset onset;
+                onset.bar_index = bar;
+                onset.offset = event.offset;
+                onset.duration = ng->duration;
+                if (highest && highest_attacked && *highest > 0) onset.melody_note = *highest;
+                onsets.push_back(onset);
             }
         }
     }
+    return onsets;
+}
+
+/// Extract a melodic line (sequence of attacked MIDI notes) from a single voice.
+std::vector<MidiNote> extract_melody_line(const Part& part, std::uint8_t voice_idx) {
+    std::vector<MidiNote> notes;
+    for (const auto& onset : sounding_onsets(part, voice_idx))
+        if (onset.melody_note) notes.push_back(*onset.melody_note);
     return notes;
 }
 
@@ -459,38 +514,33 @@ MelodicAnalysisRecord analyze_melodic(const Score& score) {
                 }
             }
 
-            // Chromaticism rate and scale degree distribution
+            // Chromaticism rate and scale degree distribution. Scale intervals
+            // are semitones from the root, so degree k+1 is root + intervals[k].
+            // Bucket 0 counts non-diatonic pitches so the histogram accounts
+            // for every melody note.
             KeySignature key = key_at_bar(score, 1);
-            auto ints = key.mode.get_intervals();
-            std::set<PitchClass> diatonic;
+            const PitchClass root = pc(key.root);
             std::vector<PitchClass> scale_pcs;
-            PitchClass root = pc(key.root);
-            PitchClass current = root;
-            diatonic.insert(current);
-            scale_pcs.push_back(current);
-            for (auto iv : ints) {
-                current = PitchClass::wrapped(current + iv);
-                diatonic.insert(current);
-                scale_pcs.push_back(current);
-            }
+            for (auto iv : key.mode.get_intervals())
+                scale_pcs.push_back(PitchClass::wrapped(root + iv));
             std::uint32_t chromatic_count = 0;
             std::uint32_t total_notes = 0;
             for (int i = 0; i < 12; ++i) {
-                total_notes += stats->pitch_class_histogram[i];
-                if (diatonic.find(PitchClass::wrapped(i)) == diatonic.end())
-                    chromatic_count += stats->pitch_class_histogram[i];
+                const auto count = stats->pitch_class_histogram[i];
+                if (count == 0) continue;
+                total_notes += count;
+                const auto found =
+                    std::find(scale_pcs.begin(), scale_pcs.end(), PitchClass::wrapped(i));
+                const auto degree =
+                    found == scale_pcs.end()
+                        ? std::uint8_t{0}
+                        : static_cast<std::uint8_t>(std::distance(scale_pcs.begin(), found) + 1);
+                if (degree == 0) chromatic_count += count;
+                vma.scale_degree_distribution[degree] += count;
             }
             if (total_notes > 0)
                 vma.chromaticism_rate =
                     static_cast<float>(chromatic_count) / static_cast<float>(total_notes);
-
-            // Scale degree distribution: map each PC to its scale degree
-            for (std::size_t deg = 0; deg < scale_pcs.size() && deg < 8; ++deg) {
-                auto pch = scale_pcs[deg];
-                auto count = stats->pitch_class_histogram[pch];
-                if (count > 0)
-                    vma.scale_degree_distribution[static_cast<std::uint8_t>(deg + 1)] = count;
-            }
         }
 
         // Track primary melody voice (most notes)
@@ -527,34 +577,35 @@ RhythmicAnalysisRecord analyze_rhythmic(const Score& score) {
     }
 
     for (std::uint32_t bar = 0; bar < score.metadata.total_bars; ++bar) {
-        std::uint32_t bar_onsets = 0;
-
         for (const auto& part : score.parts) {
             if (bar >= part.measures.size()) continue;
             const auto& measure = part.measures[bar];
-
-            // Check for time signature changes
             if (measure.local_time) time_sig_changes++;
+            for (const auto& voice : measure.voices)
+                for (const auto& event : voice.events)
+                    if (const auto* r = event.as_rest()) total_rest_dur += r->duration.to_float();
+        }
+    }
 
-            for (const auto& voice : measure.voices) {
-                for (const auto& event : voice.events) {
-                    if (event.is_note_group()) {
-                        const auto* ng = event.as_note_group();
-                        std::string key = beat_key(ng->duration);
-                        result.duration_distribution[key]++;
-                        total_note_events++;
-                        total_note_dur += ng->duration.to_float();
-                        bar_onsets++;
-                    } else if (event.is_rest()) {
-                        const auto* r = event.as_rest();
-                        total_rest_dur += r->duration.to_float();
-                    }
-                }
+    // Onsets are sounding attacks: tie continuations extend the attacked
+    // note's duration and contribute no onset of their own.
+    std::vector<float> bar_onsets(score.metadata.total_bars, 0.0f);
+    std::uint32_t weak_onsets = 0;
+    for (const auto& part : score.parts) {
+        for (const auto voice_idx : voice_indices(part)) {
+            for (const auto& onset : sounding_onsets(part, voice_idx)) {
+                if (onset.bar_index >= score.metadata.total_bars) continue;
+                result.duration_distribution[beat_key(onset.duration)]++;
+                total_note_events++;
+                total_note_dur += onset.duration.to_float();
+                bar_onsets[onset.bar_index] += 1.0f;
+                // Weak positions: offbeat eighths and sixteenths
+                const double offset_in_quarters = onset.offset.to_float() * 4.0;
+                if (offset_in_quarters - std::floor(offset_in_quarters) > 0.1) weak_onsets++;
             }
         }
-
-        result.onset_density.push_back(static_cast<float>(bar_onsets));
     }
+    result.onset_density = std::move(bar_onsets);
 
     // Rest proportion
     const double total_dur = total_note_dur + total_rest_dur;
@@ -564,25 +615,6 @@ RhythmicAnalysisRecord analyze_rhythmic(const Score& score) {
 
     // Syncopation index: ratio of onsets on weak metrical positions
     if (total_note_events > 0) {
-        std::uint32_t weak_onsets = 0;
-        for (const auto& part : score.parts) {
-            for (std::uint32_t bar = 0;
-                 bar < score.metadata.total_bars && bar < part.measures.size();
-                 ++bar) {
-                const auto& measure = part.measures[bar];
-                for (const auto& voice : measure.voices) {
-                    for (const auto& event : voice.events) {
-                        if (!event.is_note_group()) continue;
-                        // Weak positions: offbeat eighths and sixteenths
-                        const double offset_in_quarters =
-                            event.offset.to_float() * 4.0; // in quarter-note units
-                        const double fractional_offset =
-                            offset_in_quarters - std::floor(offset_in_quarters);
-                        if (fractional_offset > 0.1) weak_onsets++;
-                    }
-                }
-            }
-        }
         result.syncopation_index =
             static_cast<float>(weak_onsets) / static_cast<float>(total_note_events);
     }
