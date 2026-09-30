@@ -244,6 +244,19 @@ void McpServer::run(std::istream& input, std::ostream& output) {
                << std::flush;
     };
 
+    // A null result means the message warrants no reply.
+    const auto respond = [this](const nlohmann::json& message) -> nlohmann::json {
+        try {
+            return process_request(message);
+        } catch (const std::exception&) {
+            // process_request validates every field it reads, so reaching this
+            // handler is a server defect. The session survives it; a
+            // notification still receives no reply (JSON-RPC 2.0 section 4.1).
+            if (!message.is_object() || !message.contains("id")) return nullptr;
+            return make_error(request_id_or_null(message), -32603, "Internal error");
+        }
+    };
+
     while (running_.load(std::memory_order_relaxed) && std::getline(input, line)) {
         if (line.empty()) continue;
 
@@ -260,16 +273,23 @@ void McpServer::run(std::istream& input, std::ostream& output) {
             continue;
         }
 
-        nlohmann::json response;
-        try {
-            response = process_request(message);
-        } catch (const std::exception&) {
-            // process_request validates every field it reads, so reaching this
-            // handler is a server defect. The session survives it; a
-            // notification still receives no reply (JSON-RPC 2.0 section 4.1).
-            if (!message.is_object() || !message.contains("id")) continue;
-            response = make_error(request_id_or_null(message), -32603, "Internal error");
+        // JSON-RPC 2.0 section 6: a batch is answered element by element in one
+        // array that omits notifications; an empty batch is itself invalid, and
+        // a batch of only notifications produces no output.
+        if (message.is_array()) {
+            if (message.empty()) {
+                write_line(make_error(nullptr, -32600, "Invalid Request: empty batch"));
+                continue;
+            }
+            auto responses = nlohmann::json::array();
+            for (const auto& element : message) {
+                auto response = respond(element);
+                if (!response.is_null()) responses.push_back(std::move(response));
+            }
+            if (!responses.empty()) write_line(responses);
+            continue;
         }
+        const auto response = respond(message);
         if (!response.is_null()) write_line(response);
     }
 

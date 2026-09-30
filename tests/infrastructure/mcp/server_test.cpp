@@ -458,14 +458,49 @@ TEST_CASE("stdio loop answers each non-object message with -32600 and keeps serv
     REQUIRE(responses.size() == 12);
     for (std::size_t index = 0; index < responses.size(); index += 2) {
         CAPTURE(index);
-        const auto& error = responses[index];
         const auto& listed = responses[index + 1];
-        CHECK(error["jsonrpc"] == "2.0");
-        CHECK(error["id"].is_null());
-        CHECK(error["error"]["code"] == (index == 10 ? -32700 : -32600));
+        // "[1,2]" is a batch of two invalid requests: JSON-RPC 2.0 section 6
+        // answers each element, so it yields an array of two errors.
+        const auto errors = index == 8 ? responses[index] : json::array({responses[index]});
+        CHECK(errors.size() == (index == 8 ? 2U : 1U));
+        for (const auto& error : errors) {
+            CHECK(error["jsonrpc"] == "2.0");
+            CHECK(error["id"].is_null());
+            CHECK(error["error"]["code"] == (index == 10 ? -32700 : -32600));
+        }
         CHECK(listed["id"] == static_cast<int>(index / 2 + 1));
         CHECK(listed["result"]["tools"].size() == 1);
     }
+}
+
+TEST_CASE("stdio loop answers a batch element by element and omits notifications",
+          "[mcp][protocol][stdio]") {
+    // JSON-RPC 2.0 section 6; MCP 2025-03-26, which initialize negotiates,
+    // requires servers to accept batches.
+    TestMcpServer server;
+    server.add_tool("echo", [](const json& params) -> json { return params; });
+
+    const auto responses =
+        run_stdio_session(server,
+                          {R"([{"jsonrpc":"2.0","method":"ping","id":"a"},)"
+                           R"({"jsonrpc":"2.0","method":"notifications/initialized"},)"
+                           R"({"jsonrpc":"2.0","method":"tools/list","id":7},)"
+                           R"(42])",
+                           R"([{"jsonrpc":"2.0","method":"notifications/initialized"}])",
+                           R"({"jsonrpc":"2.0","method":"ping","id":8})"});
+
+    // The all-notification batch produces no output at all.
+    REQUIRE(responses.size() == 2);
+    const auto& batch = responses[0];
+    REQUIRE(batch.is_array());
+    REQUIRE(batch.size() == 3);
+    CHECK(batch[0]["id"] == "a");
+    CHECK(batch[0]["result"] == json::object());
+    CHECK(batch[1]["id"] == 7);
+    CHECK(batch[1]["result"]["tools"].size() == 1);
+    CHECK(batch[2]["id"].is_null());
+    CHECK(batch[2]["error"]["code"] == -32600);
+    CHECK(responses[1]["id"] == 8);
 }
 
 TEST_CASE("stdio loop answers ping with an empty result", "[mcp][protocol][stdio]") {
