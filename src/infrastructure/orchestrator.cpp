@@ -9,6 +9,7 @@
 #include <cmath>
 #include <iomanip>
 #include <sstream>
+#include <string_view>
 #include <sunny/core/harmony/roman_numeral.hpp>
 #include <sunny/core/pitch/pitch_class.hpp>
 #include <sunny/core/rhythm/euclidean.hpp>
@@ -16,6 +17,7 @@
 #include <sunny/core/voice_leading/voice_leading.hpp>
 #include <sunny/infrastructure/orchestrator.hpp>
 #include <sunny/render/arpeggiator.hpp>
+#include <utility>
 
 namespace sunny::infrastructure {
 namespace {
@@ -37,9 +39,64 @@ live_beats_to_sunny_beat(double quarter_notes) {
     return sunny::core::Beat::from_float(quarter_notes / 4.0);
 }
 
+/// Create a clip of the given length in the slot, then write the notes into it.
+[[nodiscard]] std::vector<BridgeMessage> clip_messages(int track_index,
+                                                       int slot_index,
+                                                       double clip_length_beats,
+                                                       std::vector<sunny::core::NoteEvent> events) {
+    BridgeMessage create_msg;
+    create_msg.type = BridgeMessageType::CreateClip;
+    create_msg.path = clip_slot_path(track_index, slot_index);
+    create_msg.args.push_back(std::to_string(clip_length_beats));
+    BridgeMessage notes_msg;
+    notes_msg.type = BridgeMessageType::AddNotes;
+    notes_msg.path = create_msg.path + "/clip";
+    notes_msg.notes = std::move(events);
+    return {std::move(create_msg), std::move(notes_msg)};
+}
+
+[[nodiscard]] OrchestratorResult rejected(std::string message) {
+    return {OperationOutcome::NotAttempted, "", std::move(message), 0, {}};
+}
+
+void append_errors(std::vector<std::string>& errors,
+                   const std::vector<std::string>& more,
+                   std::string_view prefix) {
+    for (const auto& error : more)
+        errors.push_back(std::string(prefix) + error);
+}
+
 } // namespace
 
-OrchestratorResult Orchestrator::create_progression_clip(int track_index,
+std::string_view to_string(OperationOutcome outcome) noexcept {
+    switch (outcome) {
+    case OperationOutcome::NotAttempted:
+        return "not_attempted";
+    case OperationOutcome::Applied:
+        return "applied";
+    case OperationOutcome::NotApplied:
+        return "not_applied";
+    case OperationOutcome::RolledBack:
+        return "rolled_back";
+    case OperationOutcome::PartiallyApplied:
+        return "partially_applied";
+    case OperationOutcome::Indeterminate:
+        return "indeterminate";
+    }
+    return "indeterminate";
+}
+
+DispatchReport RecordingDelivery::dispatch(const std::vector<BridgeMessage>& messages) {
+    recorded_.insert(recorded_.end(), messages.begin(), messages.end());
+    return {messages.size(), 0, false, {}};
+}
+
+std::vector<BridgeMessage> RecordingDelivery::drain_messages() {
+    return std::exchange(recorded_, {});
+}
+
+OrchestratorResult Orchestrator::create_progression_clip(BridgeDelivery& delivery,
+                                                         int track_index,
                                                          int slot_index,
                                                          const std::string& root,
                                                          const std::string& scale,
@@ -49,26 +106,26 @@ OrchestratorResult Orchestrator::create_progression_clip(int track_index,
     std::lock_guard lock(mutex_);
 
     if (track_index < 0 || slot_index < 0) {
-        return {false, "", "Track and clip-slot indices must be non-negative"};
+        return rejected("Track and clip-slot indices must be non-negative");
     }
     if (!std::isfinite(duration_beats) || duration_beats <= 0.0) {
-        return {false, "", "Duration must be a positive finite beat count"};
+        return rejected("Duration must be a positive finite beat count");
     }
     if (numerals.empty()) {
-        return {false, "", "At least one chord numeral is required"};
+        return rejected("At least one chord numeral is required");
     }
 
     // Parse root note
     auto root_result = sunny::core::note_to_pitch_class(root);
     if (!root_result) {
-        return {false, "", "Invalid root note: " + root};
+        return rejected("Invalid root note: " + root);
     }
     sunny::core::PitchClass root_pc = *root_result;
 
     // Get scale intervals
     auto scale_def = sunny::core::find_scale(scale);
     if (!scale_def) {
-        return {false, "", "Unknown scale: " + scale};
+        return rejected("Unknown scale: " + scale);
     }
 
     // A numeral that names no degree of this scale is rejected rather than
@@ -78,7 +135,7 @@ OrchestratorResult Orchestrator::create_progression_clip(int track_index,
         auto chord_result = sunny::core::generate_chord_from_numeral(
             numeral, root_pc, scale_def->get_intervals(), octave);
         if (!chord_result) {
-            return {false, "", "Numeral " + numeral + " is not a chord of scale " + scale};
+            return rejected("Numeral " + numeral + " is not a chord of scale " + scale);
         }
         chords.push_back(*chord_result);
     }
@@ -109,12 +166,12 @@ OrchestratorResult Orchestrator::create_progression_clip(int track_index,
     std::vector<sunny::core::NoteEvent> events;
     double beat_per_chord = duration_beats / static_cast<double>(chords.size());
     auto event_duration = live_beats_to_sunny_beat(beat_per_chord * 0.9);
-    if (!event_duration) return {false, "", "Chord duration is not representable as a Beat"};
+    if (!event_duration) return rejected("Chord duration is not representable as a Beat");
 
     for (std::size_t i = 0; i < chords.size(); ++i) {
         double start = static_cast<double>(i) * beat_per_chord;
         auto event_start = live_beats_to_sunny_beat(start);
-        if (!event_start) return {false, "", "Chord onset is not representable as a Beat"};
+        if (!event_start) return rejected("Chord onset is not representable as a Beat");
         for (auto note : chords[i].notes) {
             sunny::core::NoteEvent event;
             event.pitch = note;
@@ -125,26 +182,15 @@ OrchestratorResult Orchestrator::create_progression_clip(int track_index,
         }
     }
 
-    // Queue messages
-    std::string op_id = generate_operation_id();
-
-    BridgeMessage create_msg;
-    create_msg.type = BridgeMessageType::CreateClip;
-    create_msg.path = clip_slot_path(track_index, slot_index);
-    create_msg.args.push_back(std::to_string(duration_beats));
-    BridgeMessage notes_msg;
-    notes_msg.type = BridgeMessageType::AddNotes;
-    notes_msg.path = create_msg.path + "/clip";
-    notes_msg.notes = std::move(events);
-    HistoryEntry history{{std::move(create_msg), std::move(notes_msg)},
-                         {delete_clip_message(track_index, slot_index)}};
-    queue_messages(history.forward_messages);
-    push_history(std::move(history));
-
-    return {true, op_id, "Created progression with " + std::to_string(chords.size()) + " chords"};
+    return record_clip_operation(
+        delivery,
+        {clip_messages(track_index, slot_index, duration_beats, std::move(events)),
+         delete_clip_message(track_index, slot_index)},
+        "Created progression with " + std::to_string(chords.size()) + " chords");
 }
 
-OrchestratorResult Orchestrator::apply_euclidean_rhythm(int track_index,
+OrchestratorResult Orchestrator::apply_euclidean_rhythm(BridgeDelivery& delivery,
+                                                        int track_index,
                                                         int slot_index,
                                                         int pulses,
                                                         int steps,
@@ -153,20 +199,20 @@ OrchestratorResult Orchestrator::apply_euclidean_rhythm(int track_index,
     std::lock_guard lock(mutex_);
 
     if (track_index < 0 || slot_index < 0) {
-        return {false, "", "Track and clip-slot indices must be non-negative"};
+        return rejected("Track and clip-slot indices must be non-negative");
     }
     if (!std::isfinite(step_duration) || step_duration <= 0.0) {
-        return {false, "", "Step duration must be positive and finite"};
+        return rejected("Step duration must be positive and finite");
     }
 
     auto pattern_result = sunny::core::euclidean_rhythm(pulses, steps);
     if (!pattern_result) {
-        return {false, "", "Invalid Euclidean parameters"};
+        return rejected("Invalid Euclidean parameters");
     }
 
     auto& pattern = *pattern_result;
     auto event_duration = live_beats_to_sunny_beat(step_duration * 0.8);
-    if (!event_duration) return {false, "", "Step duration is not representable as a Beat"};
+    if (!event_duration) return rejected("Step duration is not representable as a Beat");
 
     // Convert to note events
     std::vector<sunny::core::NoteEvent> events;
@@ -175,7 +221,7 @@ OrchestratorResult Orchestrator::apply_euclidean_rhythm(int track_index,
             sunny::core::NoteEvent event;
             event.pitch = pitch;
             auto event_start = live_beats_to_sunny_beat(static_cast<double>(i) * step_duration);
-            if (!event_start) return {false, "", "Step onset is not representable as a Beat"};
+            if (!event_start) return rejected("Step onset is not representable as a Beat");
             event.start_time = *event_start;
             event.duration = *event_duration;
             event.velocity = 100;
@@ -183,30 +229,18 @@ OrchestratorResult Orchestrator::apply_euclidean_rhythm(int track_index,
         }
     }
 
-    std::string op_id = generate_operation_id();
-
-    double total_duration = static_cast<double>(steps) * step_duration;
-
-    BridgeMessage create_msg;
-    create_msg.type = BridgeMessageType::CreateClip;
-    create_msg.path = clip_slot_path(track_index, slot_index);
-    create_msg.args.push_back(std::to_string(total_duration));
-    BridgeMessage notes_msg;
-    notes_msg.type = BridgeMessageType::AddNotes;
-    notes_msg.path = create_msg.path + "/clip";
-    notes_msg.notes = std::move(events);
-    HistoryEntry history{{std::move(create_msg), std::move(notes_msg)},
-                         {delete_clip_message(track_index, slot_index)}};
-    queue_messages(history.forward_messages);
-    push_history(std::move(history));
-
-    return {true,
-            op_id,
-            "Created Euclidean rhythm E(" + std::to_string(pulses) + "," + std::to_string(steps) +
-                ")"};
+    return record_clip_operation(delivery,
+                                 {clip_messages(track_index,
+                                                slot_index,
+                                                static_cast<double>(steps) * step_duration,
+                                                std::move(events)),
+                                  delete_clip_message(track_index, slot_index)},
+                                 "Created Euclidean rhythm E(" + std::to_string(pulses) + "," +
+                                     std::to_string(steps) + ")");
 }
 
-OrchestratorResult Orchestrator::apply_arpeggio(int track_index,
+OrchestratorResult Orchestrator::apply_arpeggio(BridgeDelivery& delivery,
+                                                int track_index,
                                                 int slot_index,
                                                 const std::vector<std::string>& numerals,
                                                 const std::string& direction,
@@ -214,18 +248,18 @@ OrchestratorResult Orchestrator::apply_arpeggio(int track_index,
     std::lock_guard lock(mutex_);
 
     if (track_index < 0 || slot_index < 0) {
-        return {false, "", "Track and clip-slot indices must be non-negative"};
+        return rejected("Track and clip-slot indices must be non-negative");
     }
     if (!std::isfinite(step_duration) || step_duration <= 0.0) {
-        return {false, "", "Step duration must be positive and finite"};
+        return rejected("Step duration must be positive and finite");
     }
     if (numerals.empty()) {
-        return {false, "", "At least one chord numeral is required"};
+        return rejected("At least one chord numeral is required");
     }
     if (direction != "up" && direction != "down" && direction != "updown" &&
         direction != "up_down" && direction != "downup" && direction != "down_up" &&
         direction != "random" && direction != "order") {
-        return {false, "", "Unknown arpeggio direction: " + direction};
+        return rejected("Unknown arpeggio direction: " + direction);
     }
 
     // Parse direction
@@ -247,7 +281,7 @@ OrchestratorResult Orchestrator::apply_arpeggio(int track_index,
     // arpeggio uses the same approach internally
     auto scale_def = sunny::core::find_scale("major");
     if (!scale_def) {
-        return {false, "", "Scale lookup failed"};
+        return rejected("Scale lookup failed");
     }
 
     // Collect all notes from all chords into a single voicing
@@ -263,17 +297,15 @@ OrchestratorResult Orchestrator::apply_arpeggio(int track_index,
     }
 
     if (combined.notes.empty()) {
-        return {false, "", "No valid chords for arpeggio"};
+        return rejected("No valid chords for arpeggio");
     }
 
     // Generate arpeggio pattern
     auto beat_dur = live_beats_to_sunny_beat(step_duration);
-    if (!beat_dur) return {false, "", "Step duration is not representable as a Beat"};
+    if (!beat_dur) return rejected("Step duration is not representable as a Beat");
     auto events = sunny::render::generate_arpeggio(combined, arp_dir, *beat_dur, 0.8, 1);
 
-    if (!events) return {false, "", "Arpeggio generation rejected invalid render input"};
-
-    std::string op_id = generate_operation_id();
+    if (!events) return rejected("Arpeggio generation rejected invalid render input");
 
     // Calculate total duration
     double total_duration = 0.0;
@@ -285,53 +317,122 @@ OrchestratorResult Orchestrator::apply_arpeggio(int track_index,
     }
 
     const auto note_count = events->size();
-
-    BridgeMessage create_msg;
-    create_msg.type = BridgeMessageType::CreateClip;
-    create_msg.path = clip_slot_path(track_index, slot_index);
-    create_msg.args.push_back(std::to_string(total_duration));
-    BridgeMessage notes_msg;
-    notes_msg.type = BridgeMessageType::AddNotes;
-    notes_msg.path = create_msg.path + "/clip";
-    notes_msg.notes = std::move(*events);
-    HistoryEntry history{{std::move(create_msg), std::move(notes_msg)},
-                         {delete_clip_message(track_index, slot_index)}};
-    queue_messages(history.forward_messages);
-    push_history(std::move(history));
-
-    return {true, op_id, "Created arpeggio with " + std::to_string(note_count) + " notes"};
+    return record_clip_operation(
+        delivery,
+        {clip_messages(track_index, slot_index, total_duration, std::move(*events)),
+         delete_clip_message(track_index, slot_index)},
+        "Created arpeggio with " + std::to_string(note_count) + " notes");
 }
 
-bool Orchestrator::undo() {
+OrchestratorResult Orchestrator::deliver_forward(BridgeDelivery& delivery,
+                                                 const HistoryEntry& entry) {
+    const auto& slot = entry.inverse.path;
+    OrchestratorResult result;
+    const auto forward = delivery.dispatch(entry.forward_messages);
+    result.commands_sent = forward.sent;
+    result.errors = forward.errors;
+    if (forward.all_ok()) {
+        result.outcome = OperationOutcome::Applied;
+        return result;
+    }
+
+    if (forward.sent == 0) {
+        // Nothing was acknowledged, so there is nothing of Sunny's to revert.
+        // Compensating here would delete whatever clip already occupied the
+        // slot, which is how a refused create_clip used to destroy user work.
+        if (forward.indeterminate) {
+            result.outcome = OperationOutcome::Indeterminate;
+            result.message = "The bridge lost the response to the first command; " + slot +
+                             " may or may not hold a new clip. Inspect it before retrying.";
+        } else {
+            result.outcome = OperationOutcome::NotApplied;
+            result.message = "Live refused the first command; " + slot + " was not changed.";
+        }
+        return result;
+    }
+
+    // The clip Sunny created exists; deleting it reverts every acknowledged
+    // message and any partial effect of the failed one (HistoryEntry invariant).
+    const auto compensation = delivery.dispatch({entry.inverse});
+    append_errors(result.errors, compensation.errors, "compensation: ");
+    if (compensation.all_ok()) {
+        result.outcome = OperationOutcome::RolledBack;
+        result.message = "A later command failed; the clip Sunny created in " + slot +
+                         " was deleted, so the set is unchanged.";
+    } else if (compensation.indeterminate) {
+        result.outcome = OperationOutcome::Indeterminate;
+        result.message = "A later command failed and the response to deleting the clip Sunny "
+                         "created in " +
+                         slot + " was lost. Inspect the slot before retrying.";
+    } else {
+        result.outcome = OperationOutcome::PartiallyApplied;
+        result.message = "A later command failed and the clip Sunny created in " + slot +
+                         " could not be deleted; it remains incomplete and is not in the undo "
+                         "history.";
+    }
+    return result;
+}
+
+OrchestratorResult Orchestrator::record_clip_operation(BridgeDelivery& delivery,
+                                                       HistoryEntry entry,
+                                                       std::string applied_message) {
+    auto result = deliver_forward(delivery, entry);
+    if (!result.success()) return result;
+
+    result.operation_id = generate_operation_id();
+    result.message = std::move(applied_message);
+    push_undo(std::move(entry));
+    redo_stack_.clear();
+    return result;
+}
+
+OrchestratorResult Orchestrator::undo(BridgeDelivery& delivery) {
     std::lock_guard lock(mutex_);
 
     if (undo_stack_.empty()) {
-        return false;
+        return rejected("No Sunny Ableton operation is available to undo");
     }
 
-    auto op = std::move(undo_stack_.back());
+    const auto& entry = undo_stack_.back();
+    const auto report = delivery.dispatch({entry.inverse});
+    OrchestratorResult result;
+    result.commands_sent = report.sent;
+    result.errors = report.errors;
+    if (!report.all_ok()) {
+        // The entry stays on the undo stack, so a retry reverts this
+        // operation rather than the one before it.
+        result.outcome =
+            report.indeterminate ? OperationOutcome::Indeterminate : OperationOutcome::NotApplied;
+        result.message = report.indeterminate
+                             ? "The bridge lost the response to the undo; inspect " +
+                                   entry.inverse.path + " before retrying."
+                             : "Undo was refused; the operation remains in the undo history.";
+        return result;
+    }
+
+    result.outcome = OperationOutcome::Applied;
+    result.message = "Undid the operation in " + entry.inverse.path;
+    redo_stack_.push_back(std::move(undo_stack_.back()));
     undo_stack_.pop_back();
-
-    queue_messages(op.inverse_messages);
-
-    redo_stack_.push_back(std::move(op));
-    return true;
+    return result;
 }
 
-bool Orchestrator::redo() {
+OrchestratorResult Orchestrator::redo(BridgeDelivery& delivery) {
     std::lock_guard lock(mutex_);
 
     if (redo_stack_.empty()) {
-        return false;
+        return rejected("No Sunny Ableton operation is available to redo");
     }
 
-    auto op = std::move(redo_stack_.back());
+    // A failed redo leaves the entry on the redo stack; the forward delivery
+    // compensated for, or reported, whatever it partially applied.
+    auto result = deliver_forward(delivery, redo_stack_.back());
+    if (!result.success()) return result;
+
+    result.message = "Redid the operation in " + redo_stack_.back().inverse.path;
+    push_undo(std::move(redo_stack_.back()));
     redo_stack_.pop_back();
-
-    queue_messages(op.forward_messages);
-
-    undo_stack_.push_back(std::move(op));
-    return true;
+    return result;
 }
 
 bool Orchestrator::can_undo() const {
@@ -350,21 +451,11 @@ void Orchestrator::clear_history() {
     redo_stack_.clear();
 }
 
-std::vector<BridgeMessage> Orchestrator::drain_messages() {
-    std::lock_guard lock(mutex_);
-    auto messages = std::move(pending_messages_);
-    pending_messages_.clear();
-    return messages;
-}
-
-std::size_t Orchestrator::pending_message_count() const {
-    std::lock_guard lock(mutex_);
-    return pending_messages_.size();
-}
-
 void Orchestrator::set_max_undo_levels(std::size_t levels) {
     std::lock_guard lock(mutex_);
     max_undo_levels_ = levels;
+    while (undo_stack_.size() > max_undo_levels_)
+        undo_stack_.pop_front();
 }
 
 std::string Orchestrator::generate_operation_id() {
@@ -376,17 +467,11 @@ std::string Orchestrator::generate_operation_id() {
     return oss.str();
 }
 
-void Orchestrator::push_history(HistoryEntry entry) {
+void Orchestrator::push_undo(HistoryEntry entry) {
     undo_stack_.push_back(std::move(entry));
-    redo_stack_.clear();
-
     while (undo_stack_.size() > max_undo_levels_) {
         undo_stack_.pop_front();
     }
-}
-
-void Orchestrator::queue_messages(std::span<const BridgeMessage> messages) {
-    pending_messages_.insert(pending_messages_.end(), messages.begin(), messages.end());
 }
 
 } // namespace sunny::infrastructure

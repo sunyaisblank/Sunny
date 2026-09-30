@@ -3,16 +3,15 @@
  * @brief Bridge Message Dispatcher
  *
  *
- * Translates the Orchestrator's queued BridgeMessages into LomRequests
- * and delivers them through a LomTransport. This closes the seam between
- * the in-memory Orchestrator queue and the LOM wire protocol
- * (LomProtocol / LomTransport): without a dispatcher the queue
- * accumulates and nothing reaches Ableton.
+ * Implements the Orchestrator's BridgeDelivery contract over the LOM wire
+ * protocol: each BridgeMessage becomes a LomRequest (or a note batch) sent
+ * through a LomTransport.
  *
  * Failure philosophy: when the transport is absent or disconnected the
  * dispatcher reports offline and delivers nothing; callers decline the
  * operation loudly rather than pretending an in-memory mutation reached
- * the DAW.
+ * the DAW. Delivery stops at the first failed message, because every later
+ * message depends on the effects of the ones before it.
  */
 
 #pragma once
@@ -25,23 +24,14 @@
 
 namespace sunny::infrastructure {
 
-/// Outcome of dispatching a batch of bridge messages
-struct DispatchReport {
-    std::size_t sent{0};
-    std::size_t failed{0};
-    std::vector<std::string> errors;
-
-    [[nodiscard]] bool all_ok() const { return failed == 0; }
-};
-
 /**
  * @brief Delivers Orchestrator bridge messages over a LomTransport
  *
  * Pre:  transport may be null (offline mode) or connected
- * Post: dispatch() delivers every translatable message in order and
- *       reports per-message failures; no message is silently dropped
+ * Post: dispatch() delivers messages in order up to the first failure and
+ *       reports it; no message after a failure is sent
  */
-class BridgeDispatcher {
+class BridgeDispatcher final : public BridgeDelivery {
   public:
     /// Construct with a borrowed transport; nullptr means offline
     explicit BridgeDispatcher(LomTransport* transport = nullptr) : transport_(transport) {}
@@ -56,13 +46,15 @@ class BridgeDispatcher {
     [[nodiscard]] sunny::core::Result<std::optional<AbletonTargetProfile>> target_profile();
 
     /**
-     * @brief Translate and send a batch of messages in queue order
+     * @brief Translate and send a batch of messages in order
      *
-     * Pre:  online() is true (callers decline before queueing otherwise)
-     * Post: every message was sent and acknowledged, or its failure is
-     *       recorded in the report with the transport's error text
+     * Pre:  online() is true (callers decline before delivering otherwise)
+     * Post: report.sent messages were acknowledged; the next one failed with
+     *       the transport's error text and nothing after it was sent;
+     *       report.indeterminate is set when the failed message was sent
+     *       without a valid response
      */
-    [[nodiscard]] DispatchReport dispatch(const std::vector<BridgeMessage>& messages);
+    [[nodiscard]] DispatchReport dispatch(const std::vector<BridgeMessage>& messages) override;
 
     /**
      * @brief Translate one non-AddNotes bridge message to a LomRequest

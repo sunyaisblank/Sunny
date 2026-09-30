@@ -168,6 +168,87 @@ TEST_CASE("dispatcher declines malformed AddNotes without recording a send",
     CHECK(buffer.size() == 0);
 }
 
+namespace {
+
+/// Acknowledges every request except the one at a chosen position in the stream.
+class FailAtTransport final : public LomTransport {
+  public:
+    FailAtTransport(std::size_t failing_index, LomDeliveryState delivery)
+        : failing_index_(failing_index), delivery_(delivery) {}
+
+    LomResponse send(const LomRequest& request) override {
+        methods.push_back(request.property_or_method);
+        return respond();
+    }
+
+    LomResponse send_notes(const LomPath&, const std::vector<LomNoteData>&) override {
+        methods.emplace_back("add_new_notes");
+        return respond();
+    }
+
+    [[nodiscard]] bool is_connected() const override { return true; }
+
+    std::vector<std::string> methods;
+
+  private:
+    LomResponse respond() {
+        if (methods.size() - 1 == failing_index_)
+            return {false, std::nullopt, std::string{"injected failure"}, delivery_};
+        return {true, std::nullopt, std::nullopt};
+    }
+
+    std::size_t failing_index_;
+    LomDeliveryState delivery_;
+};
+
+std::vector<BridgeMessage> create_notes_delete_batch() {
+    BridgeMessage create_msg;
+    create_msg.type = BridgeMessageType::CreateClip;
+    create_msg.path = "song/tracks/0/clip_slots/0";
+    create_msg.args.push_back("4.0");
+
+    BridgeMessage notes_msg;
+    notes_msg.type = BridgeMessageType::AddNotes;
+    notes_msg.path = "song/tracks/0/clip_slots/0/clip";
+    notes_msg.notes.push_back({60, sunny::core::Beat{0, 1}, sunny::core::Beat{1, 4}, 100, false});
+
+    BridgeMessage delete_msg;
+    delete_msg.type = BridgeMessageType::CallMethod;
+    delete_msg.path = "song/tracks/0/clip_slots/1";
+    delete_msg.args = {"delete_clip"};
+    return {create_msg, notes_msg, delete_msg};
+}
+
+} // namespace
+
+TEST_CASE("dispatch stops at the first failed message", "[bridge][dispatcher][atomicity]") {
+    FailAtTransport transport(0, LomDeliveryState::ResponseReceived);
+    BridgeDispatcher dispatcher(&transport);
+
+    const auto report = dispatcher.dispatch(create_notes_delete_batch());
+
+    CHECK_FALSE(report.all_ok());
+    CHECK(report.sent == 0);
+    CHECK(report.failed == 3);
+    CHECK_FALSE(report.indeterminate);
+    CHECK(transport.methods == std::vector<std::string>{"create_clip"});
+    REQUIRE(report.errors.size() == 2);
+    CHECK(report.errors[0].find("injected failure") != std::string::npos);
+}
+
+TEST_CASE("dispatch reports the acknowledged prefix and an indeterminate failure",
+          "[bridge][dispatcher][atomicity]") {
+    FailAtTransport transport(1, LomDeliveryState::SentWithoutValidResponse);
+    BridgeDispatcher dispatcher(&transport);
+
+    const auto report = dispatcher.dispatch(create_notes_delete_batch());
+
+    CHECK(report.sent == 1);
+    CHECK(report.failed == 2);
+    CHECK(report.indeterminate);
+    CHECK(transport.methods == std::vector<std::string>{"create_clip", "add_new_notes"});
+}
+
 // =============================================================================
 // TCP loopback: framed request/response against a scripted server
 // =============================================================================

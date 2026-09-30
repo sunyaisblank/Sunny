@@ -32,32 +32,30 @@ json offline_decline() {
              "is active in Live."}};
 }
 
-/// Merge an orchestrator result with the dispatch outcome
-json delivery_result(const OrchestratorResult& result, const DispatchReport& report) {
-    json out = {{"success", result.success && report.all_ok()},
-                {"operation_id", result.operation_id},
+/// Report what a Live operation, undo, or redo did, and the history it left.
+json operation_result(const OrchestratorResult& result, const Orchestrator& orchestrator) {
+    json out = {{"success", result.success()},
+                {"outcome", std::string(to_string(result.outcome))},
                 {"message", result.message},
-                {"commands_sent", report.sent}};
-    if (!report.all_ok()) {
-        out["errors"] = report.errors;
-    }
+                {"commands_sent", result.commands_sent},
+                {"can_undo", orchestrator.can_undo()},
+                {"can_redo", orchestrator.can_redo()}};
+    if (!result.operation_id.empty()) out["operation_id"] = result.operation_id;
+    if (result.outcome == OperationOutcome::NotAttempted) out["error"] = result.message;
+    if (!result.errors.empty()) out["errors"] = result.errors;
+    return out;
+}
+
+json history_result(const char* action,
+                    const OrchestratorResult& result,
+                    const Orchestrator& orchestrator) {
+    auto out = operation_result(result, orchestrator);
+    out["action"] = action;
     return out;
 }
 
 json lom_value_json(const LomValue& value) {
     return std::visit([](const auto& item) -> json { return item; }, value);
-}
-
-json history_delivery_result(const char* action,
-                             Orchestrator& orchestrator,
-                             const DispatchReport& report) {
-    json out = {{"success", report.all_ok()},
-                {"action", action},
-                {"commands_sent", report.sent},
-                {"can_undo", orchestrator.can_undo()},
-                {"can_redo", orchestrator.can_redo()}};
-    if (!report.all_ok()) out["errors"] = report.errors;
-    return out;
 }
 
 } // namespace
@@ -91,6 +89,7 @@ void register_sunny_tools(McpServer& server,
                 return offline_decline();
             }
             auto result = orchestrator.create_progression_clip(
+                dispatcher,
                 sunny::core::detail::checked_integer<int>(params.at("track_index"), "track index"),
                 sunny::core::detail::checked_integer<int>(params.at("slot_index"), "slot index"),
                 params.at("root").get<std::string>(),
@@ -98,12 +97,7 @@ void register_sunny_tools(McpServer& server,
                 params.at("numerals").get<std::vector<std::string>>(),
                 sunny::core::detail::checked_integer_or<int>(params, "octave", 4, "octave"),
                 params.value("duration_beats", 4.0));
-            if (!result.success) {
-                return {{"success", false},
-                        {"operation_id", result.operation_id},
-                        {"message", result.message}};
-            }
-            return delivery_result(result, dispatcher.dispatch(orchestrator.drain_messages()));
+            return operation_result(result, orchestrator);
         });
 
     // =========================================================================
@@ -134,18 +128,14 @@ void register_sunny_tools(McpServer& server,
                 return {{"error", "pitch must be 0-127, got " + std::to_string(pitch_val)}};
             }
             auto result = orchestrator.apply_euclidean_rhythm(
+                dispatcher,
                 sunny::core::detail::checked_integer<int>(params.at("track_index"), "track index"),
                 sunny::core::detail::checked_integer<int>(params.at("slot_index"), "slot index"),
                 sunny::core::detail::checked_integer<int>(params.at("pulses"), "pulse count"),
                 sunny::core::detail::checked_integer<int>(params.at("steps"), "step count"),
                 *pitch,
                 params.value("step_duration", 0.25));
-            if (!result.success) {
-                return {{"success", false},
-                        {"operation_id", result.operation_id},
-                        {"message", result.message}};
-            }
-            return delivery_result(result, dispatcher.dispatch(orchestrator.drain_messages()));
+            return operation_result(result, orchestrator);
         });
 
     // =========================================================================
@@ -172,17 +162,13 @@ void register_sunny_tools(McpServer& server,
                 return offline_decline();
             }
             auto result = orchestrator.apply_arpeggio(
+                dispatcher,
                 sunny::core::detail::checked_integer<int>(params.at("track_index"), "track index"),
                 sunny::core::detail::checked_integer<int>(params.at("slot_index"), "slot index"),
                 params.at("numerals").get<std::vector<std::string>>(),
                 params.at("direction").get<std::string>(),
                 params.value("step_duration", 0.25));
-            if (!result.success) {
-                return {{"success", false},
-                        {"operation_id", result.operation_id},
-                        {"message", result.message}};
-            }
-            return delivery_result(result, dispatcher.dispatch(orchestrator.drain_messages()));
+            return operation_result(result, orchestrator);
         });
 
     // =========================================================================
@@ -423,37 +409,23 @@ void register_sunny_tools(McpServer& server,
     // =========================================================================
     // undo_ableton_operation / redo_ableton_operation
     // =========================================================================
-    server.register_tool(
-        "undo_ableton_operation",
-        "Undo Sunny's most recent live Ableton clip operation",
-        {{"type", "object"}, {"properties", json::object()}},
-        [&orchestrator, &dispatcher](const json&) -> json {
-            if (!dispatcher.online()) return offline_decline();
-            if (!orchestrator.undo()) {
-                return {{"success", false},
-                        {"error", "No Sunny Ableton operation is available to undo"},
-                        {"can_undo", false},
-                        {"can_redo", orchestrator.can_redo()}};
-            }
-            return history_delivery_result(
-                "undo", orchestrator, dispatcher.dispatch(orchestrator.drain_messages()));
-        });
+    server.register_tool("undo_ableton_operation",
+                         "Undo Sunny's most recent live Ableton clip operation",
+                         {{"type", "object"}, {"properties", json::object()}},
+                         [&orchestrator, &dispatcher](const json&) -> json {
+                             if (!dispatcher.online()) return offline_decline();
+                             return history_result(
+                                 "undo", orchestrator.undo(dispatcher), orchestrator);
+                         });
 
-    server.register_tool(
-        "redo_ableton_operation",
-        "Redo Sunny's most recently undone live Ableton clip operation",
-        {{"type", "object"}, {"properties", json::object()}},
-        [&orchestrator, &dispatcher](const json&) -> json {
-            if (!dispatcher.online()) return offline_decline();
-            if (!orchestrator.redo()) {
-                return {{"success", false},
-                        {"error", "No Sunny Ableton operation is available to redo"},
-                        {"can_undo", orchestrator.can_undo()},
-                        {"can_redo", false}};
-            }
-            return history_delivery_result(
-                "redo", orchestrator, dispatcher.dispatch(orchestrator.drain_messages()));
-        });
+    server.register_tool("redo_ableton_operation",
+                         "Redo Sunny's most recently undone live Ableton clip operation",
+                         {{"type", "object"}, {"properties", json::object()}},
+                         [&orchestrator, &dispatcher](const json&) -> json {
+                             if (!dispatcher.online()) return offline_decline();
+                             return history_result(
+                                 "redo", orchestrator.redo(dispatcher), orchestrator);
+                         });
 }
 
 } // namespace sunny::infrastructure

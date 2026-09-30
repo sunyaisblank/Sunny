@@ -111,6 +111,12 @@ DispatchReport BridgeDispatcher::dispatch(const std::vector<BridgeMessage>& mess
     }
 
     for (const auto& msg : messages) {
+        if (report.failed > 0) {
+            // Stop at the first failure: each message relies on the effects of
+            // the ones before it, as add_new_notes relies on create_clip.
+            ++report.failed;
+            continue;
+        }
         LomResponse response;
         if (msg.type == BridgeMessageType::AddNotes) {
             const auto path = LomPath::parse(msg.path);
@@ -139,10 +145,15 @@ DispatchReport BridgeDispatcher::dispatch(const std::vector<BridgeMessage>& mess
             ++report.sent;
         } else {
             ++report.failed;
+            report.indeterminate = response.delivery == LomDeliveryState::SentWithoutValidResponse;
             report.errors.push_back(msg.path + ": " + response.error.value_or("unknown error"));
         }
     }
 
+    if (report.failed > 1) {
+        report.errors.push_back(std::to_string(report.failed - 1) +
+                                " later message(s) not sent after the failure");
+    }
     return report;
 }
 

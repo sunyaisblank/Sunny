@@ -19,6 +19,7 @@
 #include <future>
 #include <latch>
 #include <limits>
+#include <map>
 #include <set>
 #include <sstream>
 #include <string>
@@ -868,6 +869,266 @@ TEST_CASE("real MCP progression call reaches note transport", "[mcp][integration
     REQUIRE(transport.entries().size() == 5);
     CHECK(transport.entries()[3].request.property_or_method == "create_clip");
     CHECK(transport.entries()[4].request.property_or_method == "add_new_notes");
+}
+
+namespace {
+
+/**
+ * Models Live's Session clip slots closely enough to observe what Sunny's
+ * operations change. create_clip succeeds only on an empty slot (LOM
+ * ClipSlot.create_clip), add_new_notes appends to an existing clip, and
+ * delete_clip succeeds only on an occupied slot. Selected methods fail on
+ * demand to model transient bridge failures.
+ */
+class ClipSlotModelTransport final : public LomTransport {
+  public:
+    std::map<std::string, std::vector<int>> clips; ///< slot path -> clip pitches
+    std::map<std::string, int> failures;           ///< method -> upcoming calls to fail
+    LomDeliveryState failure_delivery = LomDeliveryState::ResponseReceived;
+    std::vector<std::string> methods; ///< every method that reached the model
+
+    LomResponse send(const LomRequest& request) override {
+        const auto& method = request.property_or_method;
+        const auto slot = request.path.to_string();
+        methods.push_back(method);
+        if (inject_failure(method)) return injected(method);
+        if (method == "create_clip") {
+            if (clips.contains(slot)) return rejected("clip slot already has a clip");
+            clips[slot] = {};
+            return {true, std::nullopt, std::nullopt};
+        }
+        if (method == "delete_clip") {
+            if (!clips.contains(slot)) return rejected("clip slot is empty");
+            clips.erase(slot);
+            return {true, std::nullopt, std::nullopt};
+        }
+        return rejected("unexpected request " + method);
+    }
+
+    LomResponse send_notes(const LomPath& clip_path,
+                           const std::vector<LomNoteData>& notes) override {
+        methods.emplace_back("add_new_notes");
+        if (inject_failure("add_new_notes")) return injected("add_new_notes");
+        auto slot = clip_path.to_string();
+        if (!slot.ends_with("/clip")) return rejected("not a clip path");
+        slot.resize(slot.size() - std::string_view{"/clip"}.size());
+        const auto clip = clips.find(slot);
+        if (clip == clips.end()) return rejected("clip slot is empty");
+        for (const auto& note : notes)
+            clip->second.push_back(static_cast<int>(note.pitch));
+        return {true, std::nullopt, std::nullopt};
+    }
+
+    [[nodiscard]] bool is_connected() const override { return true; }
+
+    [[nodiscard]] std::size_t total_notes() const {
+        std::size_t total = 0;
+        for (const auto& [slot, pitches] : clips)
+            total += pitches.size();
+        return total;
+    }
+
+    [[nodiscard]] std::size_t count(std::string_view method) const {
+        return static_cast<std::size_t>(std::ranges::count(methods, method));
+    }
+
+  private:
+    bool inject_failure(const std::string& method) {
+        const auto found = failures.find(method);
+        if (found == failures.end() || found->second <= 0) return false;
+        --found->second;
+        return true;
+    }
+
+    [[nodiscard]] LomResponse injected(const std::string& method) const {
+        return {false, std::nullopt, "injected " + method + " failure", failure_delivery};
+    }
+
+    static LomResponse rejected(std::string reason) {
+        return {false, std::nullopt, std::move(reason)};
+    }
+};
+
+const std::string SLOT_0 = "song/tracks/0/clip_slots/0";
+const std::string SLOT_1 = "song/tracks/0/clip_slots/1";
+
+json progression_arguments(int slot) {
+    return {{"track_index", 0},
+            {"slot_index", slot},
+            {"root", "C"},
+            {"scale", "major"},
+            {"numerals", {"I", "IV", "V"}}};
+}
+
+json euclidean_arguments(int slot) {
+    return {{"track_index", 0}, {"slot_index", slot}, {"pulses", 3}, {"steps", 8}};
+}
+
+json arpeggio_arguments(int slot) {
+    return {{"track_index", 0},
+            {"slot_index", slot},
+            {"root", "C"},
+            {"scale", "major"},
+            {"numerals", {"I", "IV"}},
+            {"direction", "up"}};
+}
+
+} // namespace
+
+TEST_CASE("creation on an occupied slot leaves the user's clip and the undo history untouched",
+          "[mcp][integration][bridge][undo]") {
+    const std::vector<std::pair<std::string, json>> operations = {
+        {"create_progression_clip", progression_arguments(0)},
+        {"apply_euclidean_rhythm", euclidean_arguments(0)},
+        {"apply_arpeggio", arpeggio_arguments(0)}};
+
+    for (const auto& [tool, arguments] : operations) {
+        CAPTURE(tool);
+        Orchestrator orchestrator;
+        ClipSlotModelTransport transport;
+        transport.clips[SLOT_0] = {48, 55};
+        BridgeDispatcher dispatcher(&transport);
+        McpServer server;
+        register_sunny_tools(server, orchestrator, dispatcher);
+
+        const auto created = call_tool(server, tool, arguments, 70);
+        CHECK(created["success"] == false);
+        CHECK(created["outcome"] == "not_applied");
+        CHECK(transport.clips.at(SLOT_0) == std::vector<int>{48, 55});
+        CHECK(transport.count("add_new_notes") == 0);
+        CHECK_FALSE(orchestrator.can_undo());
+
+        const auto undone = call_tool(server, "undo_ableton_operation", json::object(), 71);
+        CHECK(undone["success"] == false);
+        REQUIRE(transport.clips.contains(SLOT_0));
+        CHECK(transport.clips.at(SLOT_0) == std::vector<int>{48, 55});
+        CHECK(transport.count("delete_clip") == 0);
+    }
+}
+
+TEST_CASE("a failed undo keeps its entry so a retry reverts the intended operation",
+          "[mcp][integration][bridge][undo]") {
+    Orchestrator orchestrator;
+    ClipSlotModelTransport transport;
+    BridgeDispatcher dispatcher(&transport);
+    McpServer server;
+    register_sunny_tools(server, orchestrator, dispatcher);
+
+    // E(3,8) writes 3 notes into slot 0; the I-IV-V triads write 9 notes into slot 1.
+    REQUIRE(call_tool(server, "apply_euclidean_rhythm", euclidean_arguments(0), 80)["success"] ==
+            true);
+    REQUIRE(call_tool(server, "create_progression_clip", progression_arguments(1), 81)["success"] ==
+            true);
+    REQUIRE(transport.clips.at(SLOT_0).size() == 3);
+    REQUIRE(transport.clips.at(SLOT_1).size() == 9);
+
+    transport.failures["delete_clip"] = 1;
+    const auto failed = call_tool(server, "undo_ableton_operation", json::object(), 82);
+    CHECK(failed["success"] == false);
+    CHECK(failed["can_undo"] == true);
+    CHECK(failed["can_redo"] == false);
+    CHECK(transport.clips.at(SLOT_1).size() == 9);
+
+    const auto retried = call_tool(server, "undo_ableton_operation", json::object(), 83);
+    CHECK(retried["success"] == true);
+    CHECK_FALSE(transport.clips.contains(SLOT_1));
+    REQUIRE(transport.clips.contains(SLOT_0));
+    CHECK(transport.clips.at(SLOT_0).size() == 3);
+    CHECK(retried["can_undo"] == true);
+    CHECK(retried["can_redo"] == true);
+
+    const auto redone = call_tool(server, "redo_ableton_operation", json::object(), 84);
+    CHECK(redone["success"] == true);
+    REQUIRE(transport.clips.contains(SLOT_1));
+    CHECK(transport.clips.at(SLOT_1).size() == 9);
+    CHECK(transport.total_notes() == 12);
+    CHECK_FALSE(orchestrator.can_redo());
+}
+
+TEST_CASE("a failed note write is compensated by deleting the clip Sunny created",
+          "[mcp][integration][bridge][undo]") {
+    Orchestrator orchestrator;
+    ClipSlotModelTransport transport;
+    BridgeDispatcher dispatcher(&transport);
+    McpServer server;
+    register_sunny_tools(server, orchestrator, dispatcher);
+
+    transport.failures["add_new_notes"] = 1;
+    const auto result = call_tool(server, "create_progression_clip", progression_arguments(0), 90);
+
+    CHECK(result["success"] == false);
+    CHECK(result["outcome"] == "rolled_back");
+    CHECK_FALSE(transport.clips.contains(SLOT_0));
+    CHECK(transport.count("delete_clip") == 1);
+    CHECK_FALSE(orchestrator.can_undo());
+    CHECK_FALSE(orchestrator.can_redo());
+}
+
+TEST_CASE("a failed compensation is reported as partially applied without history",
+          "[mcp][integration][bridge][undo]") {
+    Orchestrator orchestrator;
+    ClipSlotModelTransport transport;
+    BridgeDispatcher dispatcher(&transport);
+    McpServer server;
+    register_sunny_tools(server, orchestrator, dispatcher);
+
+    transport.failures["add_new_notes"] = 1;
+    transport.failures["delete_clip"] = 1;
+    const auto result = call_tool(server, "apply_euclidean_rhythm", euclidean_arguments(0), 91);
+
+    CHECK(result["success"] == false);
+    CHECK(result["outcome"] == "partially_applied");
+    REQUIRE(result["errors"].is_array());
+    CHECK(result["errors"].size() >= 2);
+    REQUIRE(transport.clips.contains(SLOT_0));
+    CHECK(transport.clips.at(SLOT_0).empty());
+    CHECK_FALSE(orchestrator.can_undo());
+}
+
+TEST_CASE("a create_clip without a valid response is indeterminate and never compensated",
+          "[mcp][integration][bridge][undo]") {
+    Orchestrator orchestrator;
+    ClipSlotModelTransport transport;
+    BridgeDispatcher dispatcher(&transport);
+    McpServer server;
+    register_sunny_tools(server, orchestrator, dispatcher);
+
+    transport.failures["create_clip"] = 1;
+    transport.failure_delivery = LomDeliveryState::SentWithoutValidResponse;
+    const auto result = call_tool(server, "create_progression_clip", progression_arguments(0), 92);
+
+    CHECK(result["success"] == false);
+    CHECK(result["outcome"] == "indeterminate");
+    CHECK(transport.count("add_new_notes") == 0);
+    CHECK(transport.count("delete_clip") == 0);
+    CHECK_FALSE(orchestrator.can_undo());
+}
+
+TEST_CASE("a failed redo keeps its entry on the redo stack", "[mcp][integration][bridge][undo]") {
+    Orchestrator orchestrator;
+    ClipSlotModelTransport transport;
+    BridgeDispatcher dispatcher(&transport);
+    McpServer server;
+    register_sunny_tools(server, orchestrator, dispatcher);
+
+    REQUIRE(call_tool(server, "apply_euclidean_rhythm", euclidean_arguments(0), 93)["success"] ==
+            true);
+    REQUIRE(call_tool(server, "undo_ableton_operation", json::object(), 94)["success"] == true);
+
+    // The user records a clip into the freed slot before asking Sunny to redo.
+    transport.clips[SLOT_0] = {40};
+    const auto blocked = call_tool(server, "redo_ableton_operation", json::object(), 95);
+    CHECK(blocked["success"] == false);
+    CHECK(blocked["can_redo"] == true);
+    CHECK(blocked["can_undo"] == false);
+    CHECK(transport.clips.at(SLOT_0) == std::vector<int>{40});
+
+    transport.clips.erase(SLOT_0);
+    const auto redone = call_tool(server, "redo_ableton_operation", json::object(), 96);
+    CHECK(redone["success"] == true);
+    CHECK(transport.clips.at(SLOT_0).size() == 3);
+    CHECK(redone["can_undo"] == true);
+    CHECK(redone["can_redo"] == false);
 }
 
 TEST_CASE("get_scale_notes returns exactly the scale's notes for every built-in scale",

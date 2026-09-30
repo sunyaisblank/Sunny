@@ -30,10 +30,12 @@ namespace sunny::infrastructure {
  * - undo_ableton_operation
  * - redo_ableton_operation
  *
- * The three Ableton-mutating tools decline before computing when the
- * dispatcher is offline, and deliver the orchestrator's queued bridge
- * messages through it when online; pure theory tools never touch the
- * transport.
+ * The Ableton-mutating tools and undo/redo decline before computing when
+ * the dispatcher is offline; when online the orchestrator delivers through
+ * the dispatcher and records history only for acknowledged deliveries.
+ * Each result carries an "outcome" (applied, not_applied, rolled_back,
+ * partially_applied, indeterminate, not_attempted). Pure theory tools never
+ * touch the transport.
  *
  * @param server MCP server to register tools with
  * @param orchestrator Orchestrator instance for stateful operations

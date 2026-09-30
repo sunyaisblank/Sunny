@@ -9,11 +9,13 @@
  */
 
 #include <cmath>
+#include <cstddef>
 #include <pybind11/functional.h>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 #include <string>
 #include <utility>
+#include <vector>
 
 // Core includes
 #include <sunny/core/harmony/harmonic_function.hpp>
@@ -69,6 +71,14 @@ PitchClass to_pitch_class(int pc) {
 MidiNote to_midi_note(int note) {
     return unwrap(MidiNote::from_int(note), "MIDI note must be in [0, 127]");
 }
+
+/// Python has no Ableton transport, so its orchestrator delivers into a
+/// recording that acknowledges every message; drain_messages() hands the
+/// record to the caller.
+struct OfflineOrchestrator {
+    sunny::infrastructure::RecordingDelivery delivery;
+    sunny::infrastructure::Orchestrator orchestrator;
+};
 
 MidiNote to_render_midi_note(int note) {
     auto result = MidiNote::from_int(note);
@@ -865,32 +875,54 @@ PYBIND11_MODULE(sunny_native, m) {
         .def_readonly("notes", &BridgeMessage::notes);
 
     py::class_<OrchestratorResult>(m, "OrchestratorResult")
-        .def_readonly("success", &OrchestratorResult::success)
+        .def_property_readonly("success", &OrchestratorResult::success)
         .def_readonly("operation_id", &OrchestratorResult::operation_id)
         .def_readonly("message", &OrchestratorResult::message);
 
-    py::class_<Orchestrator>(m, "Orchestrator")
+    py::class_<OfflineOrchestrator>(m, "Orchestrator")
         .def(py::init<>())
-        .def("create_progression_clip",
-             &Orchestrator::create_progression_clip,
-             py::arg("track_index"),
-             py::arg("slot_index"),
-             py::arg("root"),
-             py::arg("scale"),
-             py::arg("numerals"),
-             py::arg("octave") = 4,
-             py::arg("duration_beats") = 4.0)
+        .def(
+            "create_progression_clip",
+            [](OfflineOrchestrator& self,
+               int track_index,
+               int slot_index,
+               const std::string& root,
+               const std::string& scale,
+               const std::vector<std::string>& numerals,
+               int octave,
+               double duration_beats) {
+                return self.orchestrator.create_progression_clip(self.delivery,
+                                                                 track_index,
+                                                                 slot_index,
+                                                                 root,
+                                                                 scale,
+                                                                 numerals,
+                                                                 octave,
+                                                                 duration_beats);
+            },
+            py::arg("track_index"),
+            py::arg("slot_index"),
+            py::arg("root"),
+            py::arg("scale"),
+            py::arg("numerals"),
+            py::arg("octave") = 4,
+            py::arg("duration_beats") = 4.0)
         .def(
             "apply_euclidean_rhythm",
-            [](Orchestrator& self,
+            [](OfflineOrchestrator& self,
                int track_index,
                int slot_index,
                int pulses,
                int steps,
                int pitch,
                double step_duration) {
-                return self.apply_euclidean_rhythm(
-                    track_index, slot_index, pulses, steps, to_midi_note(pitch), step_duration);
+                return self.orchestrator.apply_euclidean_rhythm(self.delivery,
+                                                                track_index,
+                                                                slot_index,
+                                                                pulses,
+                                                                steps,
+                                                                to_midi_note(pitch),
+                                                                step_duration);
             },
             py::arg("track_index"),
             py::arg("slot_index"),
@@ -898,21 +930,45 @@ PYBIND11_MODULE(sunny_native, m) {
             py::arg("steps"),
             py::arg("pitch"),
             py::arg("step_duration") = 0.25)
-        .def("apply_arpeggio",
-             &Orchestrator::apply_arpeggio,
-             py::arg("track_index"),
-             py::arg("slot_index"),
-             py::arg("numerals"),
-             py::arg("direction"),
-             py::arg("step_duration") = 0.25)
-        .def("undo", &Orchestrator::undo)
-        .def("redo", &Orchestrator::redo)
-        .def("can_undo", &Orchestrator::can_undo)
-        .def("can_redo", &Orchestrator::can_redo)
-        .def("clear_history", &Orchestrator::clear_history)
-        .def("drain_messages", &Orchestrator::drain_messages)
-        .def("pending_message_count", &Orchestrator::pending_message_count)
-        .def("set_max_undo_levels", &Orchestrator::set_max_undo_levels, py::arg("levels"));
+        .def(
+            "apply_arpeggio",
+            [](OfflineOrchestrator& self,
+               int track_index,
+               int slot_index,
+               const std::vector<std::string>& numerals,
+               const std::string& direction,
+               double step_duration) {
+                return self.orchestrator.apply_arpeggio(
+                    self.delivery, track_index, slot_index, numerals, direction, step_duration);
+            },
+            py::arg("track_index"),
+            py::arg("slot_index"),
+            py::arg("numerals"),
+            py::arg("direction"),
+            py::arg("step_duration") = 0.25)
+        .def("undo",
+             [](OfflineOrchestrator& self) {
+                 return self.orchestrator.undo(self.delivery).success();
+             })
+        .def("redo",
+             [](OfflineOrchestrator& self) {
+                 return self.orchestrator.redo(self.delivery).success();
+             })
+        .def("can_undo",
+             [](const OfflineOrchestrator& self) { return self.orchestrator.can_undo(); })
+        .def("can_redo",
+             [](const OfflineOrchestrator& self) { return self.orchestrator.can_redo(); })
+        .def("clear_history", [](OfflineOrchestrator& self) { self.orchestrator.clear_history(); })
+        .def("drain_messages",
+             [](OfflineOrchestrator& self) { return self.delivery.drain_messages(); })
+        .def("pending_message_count",
+             [](const OfflineOrchestrator& self) { return self.delivery.pending_message_count(); })
+        .def(
+            "set_max_undo_levels",
+            [](OfflineOrchestrator& self, std::size_t levels) {
+                self.orchestrator.set_max_undo_levels(levels);
+            },
+            py::arg("levels"));
 
     // =========================================================================
     // Version
