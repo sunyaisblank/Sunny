@@ -606,7 +606,7 @@ TEST_CASE("the first request after a Remote Script restart succeeds",
     config.connect_timeout = std::chrono::milliseconds{100};
 
     auto server = std::make_unique<LoopbackServer>(
-        R"({"bridge_protocol_version":43,"success":true,"value":120.0})", port);
+        R"({"bridge_protocol_version":44,"success":true,"value":120.0})", port);
     TcpTransport transport(config);
     REQUIRE(transport.connect());
     BridgeDispatcher dispatcher(&transport);
@@ -614,7 +614,7 @@ TEST_CASE("the first request after a Remote Script restart succeeds",
 
     server.reset();
     server = std::make_unique<LoopbackServer>(
-        R"({"bridge_protocol_version":43,"success":true,"value":122.0})", port);
+        R"({"bridge_protocol_version":44,"success":true,"value":122.0})", port);
     auto recovered = dispatcher.request(LomProtocol::get_property(LomPaths::song(), "tempo"));
     REQUIRE(recovered.success);
     CHECK(recovered.delivery == LomDeliveryState::ResponseReceived);

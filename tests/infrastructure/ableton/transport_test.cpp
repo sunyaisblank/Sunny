@@ -63,7 +63,7 @@ std::string frame(const std::string& payload) {
 }
 
 std::string response_with_value(const std::string& value_json) {
-    return R"({"bridge_protocol_version":43,"success":true,"value":)" + value_json + "}";
+    return R"({"bridge_protocol_version":44,"success":true,"value":)" + value_json + "}";
 }
 
 /// Loopback peer that runs one scripted session per accepted connection, in
