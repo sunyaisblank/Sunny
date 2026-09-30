@@ -5,6 +5,7 @@
  */
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <map>
 #include <pugixml.hpp>
@@ -16,6 +17,7 @@
 #include <sunny/core/score/tuplets.hpp>
 #include <sunny/core/score/types.hpp>
 #include <sunny/core/score/validation.hpp>
+#include <sunny/core/score/written_duration.hpp>
 #include <sunny/infrastructure/formats/musicxml.hpp>
 #include <sunny/infrastructure/formats/musicxml_internal.hpp>
 #include <sunny/infrastructure/formats/score_to_musicxml.hpp>
@@ -255,12 +257,22 @@ std::vector<sunny::core::Beat> collect_all_musicxml_timing_values(const sunny::c
         for (const auto& measure : part.measures) {
             if (measure.local_time) values.push_back(measure.local_time->measure_duration());
             for (const auto& voice : measure.voices) {
+                const auto contexts = sunny::core::collect_tuplet_contexts(voice);
                 for (const auto& event : voice.events) {
                     values.push_back(event.offset);
                     auto dur = event.duration();
                     if (dur != sunny::core::Beat::zero()) {
                         values.push_back(dur);
                     }
+                    if (!event.is_note_group() && !event.is_rest()) continue;
+                    const auto chain = sunny::core::tuplet_context_chain(
+                        sunny::core::event_tuplet_context(event), contexts);
+                    if (!chain) continue;
+                    const auto ratio = sunny::core::cumulative_tuplet_written_ratio(*chain);
+                    if (!ratio) continue;
+                    if (const auto written = sunny::core::project_written_duration(dur, *ratio))
+                        for (const auto& piece : written->pieces)
+                            values.push_back(piece.sounding);
                 }
             }
         }
@@ -332,7 +344,7 @@ void emit_attributes(pugi::xml_node measure_node,
                      const sunny::core::Clef* clef,
                      std::uint8_t staff_count,
                      const std::vector<sunny::core::Clef>* staff_clefs,
-                     int transposition,
+                     std::optional<sunny::core::DiatonicInterval> transposition,
                      sunny::core::CompilationReport& report,
                      std::optional<sunny::core::ScoreTime> location,
                      std::optional<sunny::core::PartId> part_id) {
@@ -396,10 +408,27 @@ void emit_attributes(pugi::xml_node measure_node,
         }
     }
 
-    if (transposition != 0) {
+    // MusicXML 4.0 adds <transpose> to the written <pitch> to obtain sounding
+    // pitch; <diatonic> keeps the letter-name step so readers respell exactly.
+    if (transposition && transposition->chromatic != 0) {
         auto trans_node = attrs.append_child("transpose");
-        trans_node.append_child("chromatic").text().set(transposition);
+        trans_node.append_child("diatonic").text().set(transposition->diatonic);
+        trans_node.append_child("chromatic").text().set(transposition->chromatic);
     }
+}
+
+/// Written form of a concert key for a part whose written pitch is the
+/// concert pitch moved by `concert_to_written`: the tonic moves by the same
+/// interval and the signature by the interval's line-of-fifths displacement
+/// 7c - 12d (a major second up adds two sharps).
+sunny::core::KeySignature written_key(const sunny::core::KeySignature& concert,
+                                      sunny::core::DiatonicInterval concert_to_written) {
+    if (concert_to_written.chromatic == 0 && concert_to_written.diatonic == 0) return concert;
+    sunny::core::KeySignature written = concert;
+    written.root = sunny::core::apply_interval(concert.root, concert_to_written);
+    written.accidentals = static_cast<std::int8_t>(
+        concert.accidentals + 7 * concert_to_written.chromatic - 12 * concert_to_written.diatonic);
+    return written;
 }
 
 // -----------------------------------------------------------------------------
@@ -853,6 +882,32 @@ void emit_note_duration(pugi::xml_node note_node, sunny::core::Beat duration, in
     note_node.append_child("duration").text().set(dur_units);
 }
 
+/// MusicXML <type> names indexed by 1 - exponent (breve .. 1024th).
+constexpr std::array<std::string_view, 12> WRITTEN_TYPE_NAMES{"breve",
+                                                              "whole",
+                                                              "half",
+                                                              "quarter",
+                                                              "eighth",
+                                                              "16th",
+                                                              "32nd",
+                                                              "64th",
+                                                              "128th",
+                                                              "256th",
+                                                              "512th",
+                                                              "1024th"};
+
+void emit_written_value(pugi::xml_node note_node,
+                        sunny::core::WrittenNoteValue value,
+                        int voice_number,
+                        bool cue_size) {
+    note_node.append_child("voice").text().set(voice_number);
+    auto type = note_node.append_child("type");
+    type.text().set(WRITTEN_TYPE_NAMES[static_cast<std::size_t>(1 - value.exponent)].data());
+    if (cue_size) type.append_attribute("size") = "cue";
+    for (int dot = 0; dot < value.dots; ++dot)
+        note_node.append_child("dot");
+}
+
 bool emit_note_voice_type_and_dot(pugi::xml_node note_node,
                                   sunny::core::Beat duration,
                                   int voice_number,
@@ -1298,15 +1353,21 @@ EventTupletProjection project_event_tuplets(const sunny::core::Voice& voice,
     return projection;
 }
 
-void emit_tuplet_time_modification(pugi::xml_node note, const EventTupletProjection& projection) {
-    if (projection.chain.empty()) return;
+void emit_tuplet_time_modification(pugi::xml_node note,
+                                   const EventTupletProjection& projection,
+                                   const sunny::core::WrittenDuration* written = nullptr) {
+    // A ratio implied by the duration itself (a 1/12 note outside any
+    // TupletContext is an eighth under 3:2) multiplies the context ratio.
+    const std::int64_t inferred_actual = written ? written->inferred_actual : 1;
+    const std::int64_t inferred_normal = written ? written->inferred_normal : 1;
+    if (projection.chain.empty() && inferred_actual == inferred_normal) return;
     auto tm = note.append_child("time-modification");
     tm.append_child("actual-notes")
         .text()
-        .set(static_cast<long long>(projection.cumulative_ratio.numerator()));
+        .set(static_cast<long long>(projection.cumulative_ratio.numerator() * inferred_actual));
     tm.append_child("normal-notes")
         .text()
-        .set(static_cast<long long>(projection.cumulative_ratio.denominator()));
+        .set(static_cast<long long>(projection.cumulative_ratio.denominator() * inferred_normal));
     if (projection.chain.size() > 1) {
         const auto outer_type = projection.chain.front()->normal_type;
         if (const auto graphic = musicxml_graphic_duration(outer_type)) {
@@ -1320,6 +1381,16 @@ void emit_tuplet_time_modification(pugi::xml_node note, const EventTupletProject
 struct BeamProjection {
     const char* value = nullptr;
 };
+
+/// Beam value of one tied piece of a split event: a group boundary stays on
+/// the outer piece and the inner pieces continue the beam.
+BeamProjection beam_for_piece(BeamProjection event_beam, bool first_piece, bool last_piece) {
+    if (!event_beam.value || (first_piece && last_piece)) return event_beam;
+    const std::string_view value = event_beam.value;
+    if (value == "begin" && first_piece) return event_beam;
+    if (value == "end" && last_piece) return event_beam;
+    return {"continue"};
+}
 
 BeamProjection primary_beam_for(const sunny::core::Voice& voice, sunny::core::EventId event_id) {
     for (const auto& group : voice.beam_groups) {
@@ -1604,6 +1675,10 @@ compile_score_to_musicxml(const sunny::core::Score& score) {
         std::string part_id_str = "P" + std::to_string(pi + 1);
         std::map<std::uint8_t, std::vector<sunny::core::SpelledPitch>> incoming_ties;
         const auto lyric_projection = project_part_lyrics(part);
+        // Score notes are concert pitch; MusicXML writes transposing parts at
+        // written pitch with <transpose> giving written-to-sounding.
+        const auto written_to_sounding = sunny::core::written_to_sounding_interval(part.definition);
+        const auto concert_to_written = sunny::core::interval_negate(written_to_sounding);
 
         auto part_node = score_node.append_child("part");
         part_node.append_attribute("id") = part_id_str.c_str();
@@ -1621,7 +1696,6 @@ compile_score_to_musicxml(const sunny::core::Score& score) {
             const sunny::core::KeySignature* active_key = nullptr;
             const sunny::core::TimeSignature* active_time = nullptr;
             const sunny::core::Clef* active_clef = nullptr;
-            int transposition = 0;
 
             // Check for local overrides first, then global maps
             if (measure.local_key) {
@@ -1647,20 +1721,20 @@ compile_score_to_musicxml(const sunny::core::Score& score) {
                 active_time && (is_first_bar || !previous_time ||
                                 !same_time_signature_state(*active_time, *previous_time));
 
-            if (is_first_bar) {
-                active_clef = &part.definition.clef;
-                transposition = static_cast<int>(part.definition.transposition);
-            }
+            if (is_first_bar) active_clef = &part.definition.clef;
 
             if (is_first_bar || key_changed || time_changed) {
+                const auto written_active_key = active_key
+                                                    ? written_key(*active_key, concert_to_written)
+                                                    : sunny::core::KeySignature{};
                 emit_attributes(m,
                                 divisions,
-                                key_changed ? active_key : nullptr,
+                                key_changed ? &written_active_key : nullptr,
                                 time_changed ? active_time : nullptr,
                                 is_first_bar ? active_clef : nullptr,
                                 is_first_bar ? part.definition.staff_count : 1,
                                 is_first_bar ? &part.definition.staff_clefs : nullptr,
-                                is_first_bar ? transposition : 0,
+                                is_first_bar ? std::optional{written_to_sounding} : std::nullopt,
                                 report,
                                 sunny::core::ScoreTime{bar, sunny::core::Beat::zero()},
                                 part.id);
@@ -1747,14 +1821,15 @@ compile_score_to_musicxml(const sunny::core::Score& score) {
                     continue;
                 const int offset_units = beat_to_mxml_duration(key_entry.position.beat, divisions);
                 emit_forward(m, offset_units, 1);
+                const auto written_change = written_key(key_entry.key, concert_to_written);
                 emit_attributes(m,
                                 divisions,
-                                &key_entry.key,
+                                &written_change,
                                 nullptr,
                                 nullptr,
                                 1,
                                 nullptr,
-                                0,
+                                std::nullopt,
                                 report,
                                 key_entry.position,
                                 part.id);
@@ -1801,89 +1876,143 @@ compile_score_to_musicxml(const sunny::core::Score& score) {
                             }
                         }
 
-                        for (std::size_t ni = 0; ni < ng->notes.size(); ++ni) {
-                            const auto& note = ng->notes[ni];
-                            bool is_first_in_chord = (ni == 0);
-                            bool tie_stop = std::find(voice_incoming_ties.begin(),
-                                                      voice_incoming_ties.end(),
-                                                      note.pitch) != voice_incoming_ties.end();
+                        // Every written note needs a value and dots (Gould). A
+                        // duration with no single glyph is written as tied
+                        // pieces; one with no written form keeps its exact
+                        // <duration> and is reported rather than mislabelled.
+                        const bool grace_group = !ng->notes.empty() && ng->notes.front().grace;
+                        const auto written = grace_group
+                                                 ? std::nullopt
+                                                 : sunny::core::project_written_duration(
+                                                       ng->duration, tuplets.cumulative_ratio);
+                        if (!grace_group && !written) {
+                            report.diagnostics.push_back(
+                                {"MusicXML has no written note value for this duration; emitted "
+                                 "the exact <duration> without a <type>",
+                                 event_location,
+                                 part.id});
+                        }
+                        const std::size_t piece_count = written ? written->pieces.size() : 1;
+                        const std::vector<TupletBoundary> no_boundaries;
 
-                            auto n = m.append_child("note");
+                        for (std::size_t piece = 0; piece < piece_count; ++piece) {
+                            const bool first_piece = piece == 0;
+                            const bool last_piece = piece + 1 == piece_count;
+                            const auto piece_duration =
+                                written ? written->pieces[piece].sounding : ng->duration;
+                            sunny::core::NoteGroup piece_group = *ng;
+                            piece_group.slur_start = ng->slur_start && first_piece;
+                            piece_group.slur_end = ng->slur_end && last_piece;
 
-                            // Grace note
-                            if (note.grace) {
-                                auto grace = n.append_child("grace");
-                                grace.append_attribute("slash") =
-                                    *note.grace == sunny::core::GraceType::Acciaccatura ? "yes"
-                                                                                        : "no";
-                            }
+                            for (std::size_t ni = 0; ni < ng->notes.size(); ++ni) {
+                                const auto& source_note = ng->notes[ni];
+                                bool is_first_in_chord = (ni == 0);
+                                const bool tie_stop =
+                                    !first_piece ||
+                                    std::find(voice_incoming_ties.begin(),
+                                              voice_incoming_ties.end(),
+                                              source_note.pitch) != voice_incoming_ties.end();
+                                // Marks belong to the attack; later pieces carry
+                                // only the tie that continues the sound.
+                                sunny::core::Note note = source_note;
+                                note.tie_forward = !last_piece || source_note.tie_forward;
+                                if (!first_piece) {
+                                    note.articulation.reset();
+                                    note.ornament.reset();
+                                    note.technical.clear();
+                                }
 
-                            // Chord flag for subsequent notes in the group
-                            if (!is_first_in_chord) {
-                                n.append_child("chord");
-                            }
+                                auto n = m.append_child("note");
 
-                            // Pitch
-                            emit_note_pitch(n, note.pitch);
+                                // Grace note
+                                if (note.grace) {
+                                    auto grace = n.append_child("grace");
+                                    grace.append_attribute("slash") =
+                                        *note.grace == sunny::core::GraceType::Acciaccatura ? "yes"
+                                                                                            : "no";
+                                }
 
-                            // Duration (omitted for grace notes)
-                            if (!note.grace) {
-                                emit_note_duration(n, ng->duration, divisions);
-                            }
+                                // Chord flag for subsequent notes in the group
+                                if (!is_first_in_chord) {
+                                    n.append_child("chord");
+                                }
 
-                            // Sound ties precede voice/type in the MusicXML note sequence.
-                            if (tie_stop) {
-                                auto tie = n.append_child("tie");
-                                tie.append_attribute("type") = "stop";
-                            }
-                            if (note.tie_forward) {
-                                auto tie = n.append_child("tie");
-                                tie.append_attribute("type") = "start";
-                            }
+                                // Pitch
+                                emit_note_pitch(
+                                    n, sunny::core::apply_interval(note.pitch, concert_to_written));
 
-                            const bool cue_size =
-                                note.notation_head == sunny::core::NoteHeadType::Cue;
-                            const auto written_type_duration =
-                                tuplets.chain.empty() ? ng->duration
-                                                      : tuplets.chain.back()->normal_type;
-                            const bool graphic_duration_emitted = emit_note_voice_type_and_dot(
-                                n, written_type_duration, voice_number, cue_size);
-                            if (cue_size && !graphic_duration_emitted) {
-                                report.diagnostics.push_back(
-                                    {"MusicXML cannot attach cue size without a representable "
-                                     "graphic note type; sounding duration retained",
-                                     event_location,
-                                     part.id});
-                            }
+                                // Duration (omitted for grace notes)
+                                if (!note.grace) {
+                                    emit_note_duration(n, piece_duration, divisions);
+                                }
 
-                            emit_tuplet_time_modification(n, tuplets);
+                                // Sound ties precede voice/type in the MusicXML note sequence.
+                                if (tie_stop) {
+                                    auto tie = n.append_child("tie");
+                                    tie.append_attribute("type") = "stop";
+                                }
+                                if (note.tie_forward) {
+                                    auto tie = n.append_child("tie");
+                                    tie.append_attribute("type") = "start";
+                                }
 
-                            if (note.notation_head && !cue_size) {
-                                if (const char* notehead = notehead_to_mxml(*note.notation_head))
-                                    n.append_child("notehead").text().set(notehead);
-                            }
-                            if (staff_number > 0) n.append_child("staff").text().set(staff_number);
+                                const bool cue_size =
+                                    note.notation_head == sunny::core::NoteHeadType::Cue;
+                                bool graphic_duration_emitted = true;
+                                if (written) {
+                                    emit_written_value(
+                                        n, written->pieces[piece].value, voice_number, cue_size);
+                                } else {
+                                    const auto written_type_duration =
+                                        tuplets.chain.empty() ? ng->duration
+                                                              : tuplets.chain.back()->normal_type;
+                                    graphic_duration_emitted = emit_note_voice_type_and_dot(
+                                        n, written_type_duration, voice_number, cue_size);
+                                }
+                                if (cue_size && !graphic_duration_emitted) {
+                                    report.diagnostics.push_back(
+                                        {"MusicXML cannot attach cue size without a representable "
+                                         "graphic note type; sounding duration retained",
+                                         event_location,
+                                         part.id});
+                                }
 
-                            // Beam is chord/stem scoped, so only the first note in a
-                            // simultaneous NoteGroup owns the MusicXML beam element.
-                            if (is_first_in_chord) emit_primary_beam(n, beam_projection);
+                                emit_tuplet_time_modification(
+                                    n, tuplets, written ? &*written : nullptr);
 
-                            // Notations (articulations, ornaments, technical, ties, slurs, tuplets)
-                            emit_note_notations(n,
-                                                note,
-                                                *ng,
-                                                is_first_in_chord,
-                                                tie_stop,
-                                                tuplets.starts,
-                                                tuplets.stops,
-                                                report,
-                                                event_location,
-                                                part.id);
+                                if (note.notation_head && !cue_size) {
+                                    if (const char* notehead =
+                                            notehead_to_mxml(*note.notation_head))
+                                        n.append_child("notehead").text().set(notehead);
+                                }
+                                if (staff_number > 0)
+                                    n.append_child("staff").text().set(staff_number);
 
-                            if (is_first_in_chord) {
-                                const auto lyrics = lyric_projection.find(event.id.value);
-                                if (lyrics != lyric_projection.end())
-                                    emit_projected_lyrics(n, lyrics->second);
+                                // Beam is chord/stem scoped, so only the first note in a
+                                // simultaneous NoteGroup owns the MusicXML beam element.
+                                if (is_first_in_chord)
+                                    emit_primary_beam(
+                                        n,
+                                        beam_for_piece(beam_projection, first_piece, last_piece));
+
+                                // Notations (articulations, ornaments, technical, ties,
+                                // slurs, tuplets)
+                                emit_note_notations(n,
+                                                    note,
+                                                    piece_group,
+                                                    is_first_in_chord,
+                                                    tie_stop,
+                                                    first_piece ? tuplets.starts : no_boundaries,
+                                                    last_piece ? tuplets.stops : no_boundaries,
+                                                    report,
+                                                    event_location,
+                                                    part.id);
+
+                                if (is_first_in_chord && first_piece) {
+                                    const auto lyrics = lyric_projection.find(event.id.value);
+                                    if (lyrics != lyric_projection.end())
+                                        emit_projected_lyrics(n, lyrics->second);
+                                }
                             }
                         }
 
@@ -1900,22 +2029,54 @@ compile_score_to_musicxml(const sunny::core::Score& score) {
                     } else if (auto* rest = std::get_if<sunny::core::RestEvent>(&event.payload)) {
                         const auto tuplets =
                             project_event_tuplets(voice, event_index, tuplet_contexts);
-                        auto n = m.append_child("note");
-                        if (!rest->visible) n.append_attribute("print-object") = "no";
-                        n.append_child("rest");
-                        emit_note_duration(n, rest->duration, divisions);
-                        const auto written_type_duration = tuplets.chain.empty()
-                                                               ? rest->duration
-                                                               : tuplets.chain.back()->normal_type;
-                        (void)emit_note_voice_type_and_dot(
-                            n, written_type_duration, voice_number, false);
-                        emit_tuplet_time_modification(n, tuplets);
-                        if (staff_number > 0) n.append_child("staff").text().set(staff_number);
                         const auto beam_projection = primary_beam_for(voice, event.id);
-                        emit_primary_beam(n, beam_projection);
-                        if (!tuplets.starts.empty() || !tuplets.stops.empty()) {
-                            auto notations = n.append_child("notations");
-                            emit_tuplet_boundaries(notations, tuplets.starts, tuplets.stops);
+                        // A whole-measure rest is one symbol whatever the metre
+                        // (MusicXML <rest measure="yes"/>); other rests are
+                        // written as consecutive rest values.
+                        const bool whole_measure =
+                            tuplets.chain.empty() && active_time &&
+                            rest->duration == active_time->measure_duration();
+                        auto written = sunny::core::project_written_duration(
+                            rest->duration, tuplets.cumulative_ratio);
+                        if (whole_measure && written && written->pieces.size() > 1) written.reset();
+                        if (!whole_measure && !written) {
+                            report.diagnostics.push_back(
+                                {"MusicXML has no written rest value for this duration; emitted "
+                                 "the exact <duration> without a <type>",
+                                 event_location,
+                                 part.id});
+                        }
+                        const std::size_t piece_count = written ? written->pieces.size() : 1;
+                        for (std::size_t piece = 0; piece < piece_count; ++piece) {
+                            const bool first_piece = piece == 0;
+                            const bool last_piece = piece + 1 == piece_count;
+                            auto n = m.append_child("note");
+                            if (!rest->visible) n.append_attribute("print-object") = "no";
+                            auto rest_node = n.append_child("rest");
+                            emit_note_duration(n,
+                                               written ? written->pieces[piece].sounding
+                                                       : rest->duration,
+                                               divisions);
+                            if (written) {
+                                emit_written_value(
+                                    n, written->pieces[piece].value, voice_number, false);
+                            } else {
+                                if (whole_measure) rest_node.append_attribute("measure") = "yes";
+                                n.append_child("voice").text().set(voice_number);
+                            }
+                            emit_tuplet_time_modification(
+                                n, tuplets, written ? &*written : nullptr);
+                            if (staff_number > 0) n.append_child("staff").text().set(staff_number);
+                            emit_primary_beam(
+                                n, beam_for_piece(beam_projection, first_piece, last_piece));
+                            const auto& starts =
+                                first_piece ? tuplets.starts : std::vector<TupletBoundary>{};
+                            const auto& stops =
+                                last_piece ? tuplets.stops : std::vector<TupletBoundary>{};
+                            if (!starts.empty() || !stops.empty()) {
+                                auto notations = n.append_child("notations");
+                                emit_tuplet_boundaries(notations, starts, stops);
+                            }
                         }
                         cursor_units += beat_to_mxml_duration(rest->duration, divisions);
                         voice_incoming_ties.clear();

@@ -5,6 +5,7 @@
  *
  */
 
+#include <algorithm>
 #include <catch2/catch_test_macros.hpp>
 #include <sunny/core/post_tonal/twelve_tone.hpp>
 #include <sunny/core/score/mutations.hpp>
@@ -447,7 +448,7 @@ TEST_CASE("TechnicalDirection renders native fields and diagnoses extension fall
     CHECK(compiled->report.diagnostics.size() == 2);
 }
 
-TEST_CASE("tie forward produces <tie type=\"start\"/>", "[musicxml][format]") {
+TEST_CASE("tie forward produces <tie type=\"start\" />", "[musicxml][format]") {
     auto score = make_test_score();
 
     auto& voice = score.parts[0].measures[0].voices[0];
@@ -1276,9 +1277,23 @@ TEST_CASE("transposing instrument emits <transpose>", "[musicxml][format]") {
     REQUIRE(result.has_value());
     auto score = *result;
 
+    insert_c4_quarter(score);
+
+    // Replaces a check that merely found `<transpose`. MusicXML 4.0 adds
+    // <transpose> to the written <pitch> to obtain sounding pitch, so concert
+    // C4 on a B-flat clarinet (sounding a major second below written) is
+    // written D4 with diatonic -1 and chromatic -2, and the concert C-major
+    // signature is written D major (two sharps).
     auto compiled = compile_score_to_musicxml(score);
     REQUIRE(compiled.has_value());
-    CHECK(compiled->xml.find("<transpose") != std::string::npos);
+    const auto& xml = compiled->xml;
+    INFO(xml);
+    CHECK(xml.find("<transpose>\n") != std::string::npos);
+    CHECK(xml.find("<diatonic>-1</diatonic>") != std::string::npos);
+    CHECK(xml.find("<chromatic>-2</chromatic>") != std::string::npos);
+    CHECK(xml.find("<step>D</step>") != std::string::npos);
+    CHECK(xml.find("<step>C</step>") == std::string::npos);
+    CHECK(xml.find("<fifths>2</fifths>") != std::string::npos);
 }
 
 TEST_CASE("dynamic marking emits <dynamics>", "[musicxml][format]") {
@@ -1445,4 +1460,120 @@ TEST_CASE("manual BeamGroup emits MusicXML begin continue end", "[musicxml][form
     CHECK(count_occurrences(compiled->xml, "<beam number=\"1\">begin</beam>") == 1);
     CHECK(count_occurrences(compiled->xml, "<beam number=\"1\">continue</beam>") == 2);
     CHECK(count_occurrences(compiled->xml, "<beam number=\"1\">end</beam>") == 1);
+}
+
+// =============================================================================
+// Written durations (issue #10)
+// =============================================================================
+
+TEST_CASE("triplet eighths inserted one by one export with a 3:2 time modification",
+          "[musicxml][format][tuplet][regression]") {
+    // Three 1/12 notes fill one quarter beat: written eighths under 3:2.
+    auto score = make_test_score(1);
+    const auto part = score.parts[0].id;
+    for (int index = 0; index < 3; ++index) {
+        Note note;
+        note.pitch = SpelledPitch{static_cast<std::uint8_t>(index), 0, 4};
+        REQUIRE(insert_note(score, part, 1, 0, Beat{index, 12}, note, Beat{1, 12}));
+    }
+    for (const auto& event : score.parts[0].measures[0].voices[0].events) {
+        if (const auto* group = event.as_note_group()) {
+            REQUIRE(group->tuplet_context.has_value());
+            CHECK(group->tuplet_context->actual == 3);
+            CHECK(group->tuplet_context->normal == 2);
+            CHECK(group->tuplet_context->normal_type == Beat{1, 8});
+        }
+    }
+
+    auto compiled = compile_score_to_musicxml(score);
+    REQUIRE(compiled.has_value());
+    const auto& xml = compiled->xml;
+    INFO(xml);
+    CHECK(count_occurrences(xml, "<type>eighth</type>") == 3);
+    CHECK(count_occurrences(xml, "<actual-notes>3</actual-notes>") == 3);
+    CHECK(count_occurrences(xml, "<normal-notes>2</normal-notes>") == 3);
+    CHECK(count_occurrences(xml, "<tuplet type=\"start\"") == 1);
+    CHECK(count_occurrences(xml, "<tuplet type=\"stop\"") == 1);
+    // insert_note marks harmony stale, which has its own residual; no
+    // written-value residual may appear.
+    CHECK(std::ranges::none_of(compiled->report.diagnostics, [](const auto& diagnostic) {
+        return diagnostic.message.find("written") != std::string::npos;
+    }));
+}
+
+TEST_CASE("a 5/16 note exports as a tied quarter and sixteenth", "[musicxml][format][regression]") {
+    auto score = make_test_score(1);
+    Note note;
+    note.pitch = SpelledPitch{0, 0, 4};
+    REQUIRE(insert_note(score, score.parts[0].id, 1, 0, Beat::zero(), note, Beat{5, 16}));
+
+    auto compiled = compile_score_to_musicxml(score);
+    REQUIRE(compiled.has_value());
+    const auto& xml = compiled->xml;
+    INFO(xml);
+    CHECK(count_occurrences(xml, "<step>C</step>") == 2);
+    const auto quarter = xml.find("<type>quarter</type>");
+    const auto sixteenth = xml.find("<type>16th</type>");
+    REQUIRE(quarter != std::string::npos);
+    REQUIRE(sixteenth != std::string::npos);
+    CHECK(quarter < sixteenth);
+    CHECK(count_occurrences(xml, "<tie type=\"start\" />") == 1);
+    CHECK(count_occurrences(xml, "<tie type=\"stop\" />") == 1);
+    CHECK(count_occurrences(xml, "<tied type=\"start\" />") == 1);
+    CHECK(count_occurrences(xml, "<tied type=\"stop\" />") == 1);
+    CHECK(std::ranges::none_of(compiled->report.diagnostics, [](const auto& diagnostic) {
+        return diagnostic.message.find("written") != std::string::npos;
+    }));
+}
+
+TEST_CASE("a context-free 1/12 note exports as an eighth under 3:2",
+          "[musicxml][format][tuplet][regression]") {
+    // A Score built without a TupletContext still has one written form: an
+    // eighth note under a 3:2 time modification (1/8 x 2/3 = 1/12).
+    auto score = make_test_score(1);
+    auto& voice = score.parts[0].measures[0].voices[0];
+    voice.events.clear();
+    Note note;
+    note.pitch = SpelledPitch{0, 0, 4};
+    NoteGroup group;
+    group.notes.push_back(note);
+    group.duration = Beat{1, 12};
+    voice.events.push_back(Event{EventId{9100001}, Beat::zero(), group});
+    voice.events.push_back(Event{EventId{9100002}, Beat{1, 12}, RestEvent{Beat{1, 6}, true}});
+    voice.events.push_back(Event{EventId{9100003}, Beat{1, 4}, RestEvent{Beat{3, 4}, true}});
+
+    auto compiled = compile_score_to_musicxml(score);
+    REQUIRE(compiled.has_value());
+    const auto& xml = compiled->xml;
+    INFO(xml);
+    const auto note_start = xml.find("<step>C</step>");
+    REQUIRE(note_start != std::string::npos);
+    const auto note_end = xml.find("</note>", note_start);
+    const auto note_xml = xml.substr(note_start, note_end - note_start);
+    CHECK(note_xml.find("<type>eighth</type>") != std::string::npos);
+    CHECK(note_xml.find("<actual-notes>3</actual-notes>") != std::string::npos);
+    CHECK(note_xml.find("<normal-notes>2</normal-notes>") != std::string::npos);
+}
+
+TEST_CASE("a duration with no written form is reported rather than mislabelled",
+          "[musicxml][format][regression]") {
+    // 1/2048 of a whole note is shorter than MusicXML's smallest note type
+    // (1024th), so no <type> can be written and the loss must be reported.
+    auto score = make_test_score(1);
+    auto& voice = score.parts[0].measures[0].voices[0];
+    voice.events.clear();
+    Note note;
+    note.pitch = SpelledPitch{0, 0, 4};
+    NoteGroup group;
+    group.notes.push_back(note);
+    group.duration = Beat{1, 2048};
+    voice.events.push_back(Event{EventId{9200001}, Beat::zero(), group});
+    voice.events.push_back(
+        Event{EventId{9200002}, Beat{1, 2048}, RestEvent{Beat{2047, 2048}, true}});
+
+    auto compiled = compile_score_to_musicxml(score);
+    REQUIRE(compiled.has_value());
+    CHECK(std::ranges::any_of(compiled->report.diagnostics, [](const auto& diagnostic) {
+        return diagnostic.message.find("written") != std::string::npos;
+    }));
 }
