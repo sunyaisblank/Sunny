@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<?xml-stylesheet href="./c74ref.xsl" type="text/xsl"?>
+<c74object name="sunny.lfo~" module="msp" category="Sunny, MSP Generators">
+  <digest>Generate a bounded LFO signal</digest>
+  <description>
+    Generate one mono low-frequency oscillator signal. Message controls are serialized outside
+    the audio callback and take effect in order at the next signal-vector boundary.
+  </description>
+  <metadatalist>
+    <metadata name="author">Sunny contributors</metadata>
+    <metadata name="tag">Audio</metadata>
+    <metadata name="tag">LFO</metadata>
+    <metadata name="tag">Modulation</metadata>
+  </metadatalist>
+  <objarglist>
+    <objarg name="frequency" optional="1" type="float">
+      <digest>Set the initial frequency in hertz</digest>
+    </objarg>
+  </objarglist>
+  <methodlist>
+    <method name="float">
+      <arglist><arg name="frequency" optional="0" type="float" units="hz" /></arglist>
+      <digest>Set the frequency</digest>
+    </method>
+    <method name="frequency">
+      <arglist><arg name="frequency" optional="0" type="float" units="hz" /></arglist>
+      <digest>Set the frequency</digest>
+      <description>Accept a finite nonnegative frequency no greater than the active sample rate.</description>
+    </method>
+    <method name="waveform">
+      <arglist><arg name="shape" optional="0" type="symbol" /></arglist>
+      <digest>Select the waveform</digest>
+      <description>Choose sine, triangle, saw, square, or random.</description>
+    </method>
+    <method name="phase">
+      <arglist><arg name="phase" optional="0" type="float" /></arglist>
+      <digest>Set the normalized phase</digest>
+      <description>Accept a finite phase greater than or equal to 0 and less than 1.</description>
+    </method>
+    <method name="seed">
+      <arglist><arg name="seed" optional="0" type="int" /></arglist>
+      <digest>Seed the random waveform</digest>
+    </method>
+    <method name="reset">
+      <digest>Reset phase and random state</digest>
+    </method>
+    <method name="status">
+      <digest>Post and emit adapter status</digest>
+      <description>Post configuration, setup, control, current pending-control, process, and last-error evidence to the Max console. The right message outlet also emits the closed tuple `host_status configured sample_rate maximum_frames process_observed process_calls last_frame_count process_healthy last_error`; `process_calls` is an exact signed saturating callback count and the left outlet remains the sole signal outlet.</description>
+    </method>
+    <method name="clear_error">
+      <digest>Clear the retained error</digest>
+      <description>Clear the last-error code without clearing counters or DSP state.</description>
+    </method>
+  </methodlist>
+</c74object>

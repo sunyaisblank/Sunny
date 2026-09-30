@@ -1,8 +1,8 @@
 # Sunny Corpus IR — Formal Specification
 
-**Version:** 0.1.0-draft  
-**Date:** 2026-02-08  
-**Status:** Implemented (normative; source cites sections by number)
+**Version:** 0.2.0-draft
+**Date:** 2026-08-31
+**Status:** Normative model with an explicit implemented runtime profile
 **Dependencies:** Sunny Engine Formal Specification v0.1.0 (the "Theory Spec"); Sunny Score IR Specification v0.2.0 (the "Score IR Spec")
 
 ---
@@ -30,7 +30,7 @@ The Corpus IR is a *read-side* system. It consumes existing music (via ingestion
 The interface between the two sides is the agent. During composition, the agent queries the Corpus IR for insights, patterns, and style characteristics, then uses the production layers to realise its decisions. The Corpus IR never writes directly to the Score IR; it informs the agent, and the agent writes.
 
 ```
-Existing Music (MIDI, MusicXML, Audio)
+Existing Music (MIDI or uncompressed MusicXML)
     ↓ [Ingestion Pipeline]
 Corpus IR (structured analytical knowledge)
     ↓ [Agent queries]
@@ -45,9 +45,14 @@ New Music
 
 Inherits all conventions from preceding specifications. Additional conventions:
 
-- Statistical distributions are represented as histograms, kernel density estimates, or parametric distribution fits, depending on the property.
+- Runtime statistical distributions are finite ordered maps of counts or normalised frequencies;
+  the current model contains no kernel-density or fitted-parametric value type.
 - Frequencies of occurrence are given as counts or proportions (0.0–1.0) relative to the analytical unit (per piece, per phrase, per harmonic change).
 - Confidence intervals and sample sizes are reported alongside statistical summaries to prevent overconfident generalisation from small corpora.
+
+### 0.5 Implemented Runtime Profile
+
+The current runtime provides an in-memory CorpusDatabase, versioned JSON serialisation, MIDI and uncompressed MusicXML ingestion, analytical and lifecycle workflows, synchronised composer/period profiles, comparison, and 22 MCP tools. It does not ingest audio, MEI, ABC, Humdrum, or compressed `.mxl`; it has no SQLite index or automatic persistence. Those formats and storage extensions are not accepted by the current MCP surface.
 
 ---
 
@@ -57,50 +62,111 @@ Inherits all conventions from preceding specifications. Additional conventions:
 
 The ingestion pipeline converts external music representations into Score IR documents suitable for analysis. This is a one-way, lossy transformation: the external format is consumed and converted; the resulting Score IR is an analytical representation, not a publication-quality score. The goal is to capture the compositional substance — harmonic content, melodic material, rhythmic structure, formal proportions, dynamic shape — with sufficient fidelity for meaningful statistical and structural analysis.
 
-### 1.2 Supported Input Formats
+### 1.2 Runtime-Supported Input Formats
 
 | Format | Fidelity | Primary Use Case |
 |--------|----------|-----------------|
 | MIDI (SMF Type 0/1) | Medium | Piano reductions, keyboard works, sequenced arrangements |
-| MusicXML | High | Full scores with enharmonic spelling, articulations, dynamics, lyrics |
-| MEI (Music Encoding Initiative) | High | Scholarly editions, critical apparatus |
-| ABC Notation | Medium | Folk music, lead sheets |
-| Humdrum **kern | High | Analytical corpora (e.g., kern.humdrum.org) |
-| MusicXML (compressed .mxl) | High | Same as MusicXML, compressed |
+| MusicXML (uncompressed text) | Structural subset | Parts, canonical measures, numeric voices, notes/rests, chord ownership, typed single-chord harmony points, integer durations and spellings, globally coherent traditional key/metre maps |
+
+MEI, ABC, Humdrum **kern, audio, and compressed MusicXML (`.mxl`) are outside the implemented ingestion boundary and are rejected rather than guessed.
 
 ### 1.3 MIDI Ingestion
 
 MIDI is the most abundant format for existing music in digital form. Piano reductions of orchestral works, keyboard compositions, and sequenced arrangements are widely available as MIDI files. MIDI ingestion is therefore the most critical pipeline.
+
+The MIDI ingestion result is loss-accountable for valid event classes outside its analytical
+Score projection. Unknown meta events, SysEx, polyphonic aftertouch, channel pressure, and pitch
+bend are counted by the SMF parser and copied into `IngestionConfidence.manual_corrections`; their
+absence from Score IR is never represented as a lossless import.
+
+The four-field SMF Time Signature payload is also handled as a complete boundary. Same-tick events
+must agree in numerator, denominator, metronome clocks per click, and notated 32nds per MIDI
+quarter. Score uses the ordinary `bb=8` timing algebra; another value is rejected because it would
+change notation-to-clock scaling. `cc` is metronome intent rather than an ordered metre partition.
+Ingestion therefore applies the deterministic Score grouping for `nn/dd` and records every
+nonmatching click interval under `midi.time_signature_metronome_clicks` instead of inventing
+grouping semantics.
+
+Channel state has a narrower reversible subset. The ingester preserves a sole source note channel
+as the generated Part's 1-based rendering channel. On that channel, completed binary Damper
+(CC64) and Soft Pedal (CC67) state-change pairs become `SustainingPedal` and `UnaCorda`
+`PartDirective` spans. MIDI defines 0…63 as off and 64…127 as on; threshold-equivalent values are
+semantically imported but recorded under `midi.pedal_switch_values` because Score recompilation
+uses canonical 0/127 bytes. A same-tick off/on change, repeated state message, unmatched endpoint,
+controller on another channel, or any other CC remains in `midi.control_change_events`. Program
+changes remain in `midi.program_change_events`: an `ArticulationMapping` describes how a known
+Score articulation compiles and is not an arbitrary time-positioned source program carrier.
+When notes occupy multiple channels, no channel-local controller is globalised into the one-Part
+analytical reduction and `midi.note_channel_ownership` records that collapse. Type-1 track
+topology is likewise recorded under `midi.track_topology` even when some declared tracks are empty.
 
 **Challenges and solutions**:
 
 | Challenge | Description | Solution |
 |-----------|-------------|----------|
 | No enharmonic spelling | MIDI stores note numbers (0–127), not spelled pitches | Spelling inference from key context and melodic interval patterns [H] |
-| No explicit key signatures | Key must be inferred from pitch content | Key estimation via the Krumhansl-Schmuckler algorithm or profile correlation [H] |
-| No barline positions | Only tick offsets from the start of the file | Metre inference from onset patterns and quantisation grid [H] |
-| No formal structure | No section markers, phrase boundaries, or labels | Formal segmentation via novelty detection on harmonic and textural features [H] |
+| No explicit key signatures | Key must be inferred from pitch content | Use every valid SMF key event; infer a major/minor context only before the first event or when none exists [H] |
+| No barline positions | Only tick offsets from the start of the file | Derive the complete bar lattice from ordered, complete SMF time-signature events under the admitted `bb=8` scale; use 4/4 before the first event or when absent |
+| No formal structure | No section markers, phrase boundaries, or labels | Not inferred by the current ingester; analysis may leave the section plan empty |
 | No dynamics (often) | Velocity is present but may not reflect compositional dynamics | Velocity treated as relative dynamics; absolute dynamic levels are not inferred |
-| Quantisation noise | Performed MIDI has timing imprecision | Quantisation to the nearest grid value at a configurable resolution |
-| No articulation labels | Duration and velocity encode articulation implicitly | Articulation inference from note duration relative to inter-onset interval [H] |
+| Quantisation noise | Performed MIDI has timing imprecision | Quantise onset and duration independently by exact rational arithmetic and retain separate RMS losses |
+| No articulation labels | Duration and velocity encode articulation implicitly | Preserve duration/velocity only; do not invent articulation labels |
+| Channel-local state | CC and program events are ordered channel messages, while the compact ingester creates one analytical Part | Preserve the sole note channel and completed CC64/CC67 switch spans only; account for every other event and ownership collapse explicitly |
 
 #### 1.3.1 MIDI Ingestion Pipeline
 
-**Stage 1: Parse.** Read the MIDI file. Extract tracks, tempo map, time signature events (if present), note-on/note-off pairs with timing and velocity.
+**Stage 1: Parse.** Read the MIDI file. Extract declared tracks, tempo, time/key signatures,
+note-on/note-off pairs, control changes, and program changes with exact ticks, channels, source
+tracks, source order, attack velocity, and retained release velocity.
 
-**Stage 2: Quantise.** Snap note onsets and durations to the nearest rational grid value. The grid resolution is configurable (default: 32nd note). Quantisation uses a minimum-distance algorithm that considers the global tempo and any time signature metadata.
+**Stage 2: Quantise.** Let the positive integer grid parameter `g` denote `g` equal divisions of
+one whole note (default `g = 16`, a sixteenth note). For each non-negative onset and positive
+duration `x`, compute `xg` with checked rational arithmetic, round its non-negative integer quotient
+to the nearest integer with an exact half-grid tie rounded forward, and return that integer divided
+by `g`. A positive duration that would round to zero is raised to exactly `1/g`; onsets and
+durations otherwise use the same rule. Arithmetic failure rejects ingestion. Floating point is not
+used to choose the grid point. It is used only after the exact difference is known to report the
+two evidence metrics
 
-**Stage 3: Assign measures.** Using tempo and time signature metadata (if present) or inferred metre, divide the quantised note stream into measures. Each measure receives a bar number and a time signature.
+`onset_rms = sqrt(sum((onset_source - onset_grid)^2) / note_count)` and
+`duration_rms = sqrt(sum((duration_source - duration_grid)^2) / note_count)`,
 
-**Stage 4: Assign voices.** Within each measure, separate polyphonic note streams into distinct voices using a voice-separation algorithm. For keyboard music, the standard heuristic is to separate by register (above/below a split point, typically C4) and then by temporal overlap within each register. For more complex textures, a minimum-crossing algorithm assigns notes to voices such that voice crossings are minimised. [H]
+both in whole-note units and both zero for an empty note sequence. The grid is an internal Corpus
+analysis policy. It is not Live Clip launch quantisation, a Live groove, Max scheduler resolution,
+or a Max object's playback-quantisation policy.
 
-**Stage 5: Infer key.** Estimate the key signature for each section using pitch-class distribution correlation against major and minor key profiles (Krumhansl-Schmuckler, Temperley, or Albrecht-Shanahan). Key changes are detected by windowed analysis with a configurable window size (default: 4 measures). [H]
+**Stage 3: Assign measures.** Sort and reconcile time-signature events, require every actual change to lie on a boundary in the preceding metre, and derive the complete variable-metre bar lattice. Use 4/4 before the first event or when absent. An off-boundary change is rejected because `TimeSignatureMap` is bar-indexed.
 
-**Stage 6: Spell pitches.** Convert MIDI note numbers to SpelledPitch values using the inferred key context and melodic interval heuristics. Within a diatonic context, prefer spellings that minimise accidentals. For chromatic passages, prefer spellings that produce conventional interval names (augmented sixth rather than minor seventh for the German sixth chord, for example). [H]
+**Stage 4: Assign voices and routing evidence.** Group simultaneous onsets, order each group from
+highest to lowest pitch, and allocate the first lane whose preceding note has ended. Create every
+required Score voice before insertion. Notes crossing a barline are split into destination-first,
+same-pitch tie chains so every intermediate mutation remains valid and MIDI recompilation recovers
+one sounding note. A sole source note channel becomes the Part rendering channel. Multiple
+channels and Type-1 track topology remain correction evidence rather than inferred Parts. The
+confidence record reports how often polyphonic onsets required the assignment heuristic.
 
-**Stage 7: Construct Score IR.** Assemble the processed data into a Score IR document with the appropriate structure: Score → Parts → Measures → Voices → Events. Attach the inferred key signature map and time signature map. Mark the analytical confidence for each inferred property.
+**Stage 5: Resolve keys.** Preserve ordered SMF key-signature events as exact major/minor fifths-and-tonic contexts. Before the first explicit event, or when none exists, estimate a major or minor key by correlating the full pitch-class histogram against the 24 rotated Krumhansl-Kessler profiles. Windowed modulation detection is not part of the current ingester.
 
-**Stage 8: Validate.** Run Score IR validation. Flag any measures where voice durations do not fill the measure (quantisation artefacts) and apply corrective padding.
+**Stage 6: Spell pitches.** Convert MIDI note numbers to SpelledPitch values using the active explicit-or-inferred key's line-of-fifths context and deterministic default spelling.
+
+**Voice allocation.** Group quantised notes by onset. Within an onset, order notes by descending
+pitch and then retained source ordinal, and assign each to the first voice whose prior note has
+ended. An onset is *complex* when it contains more than one note or when any prior voice is still
+sounding. For `c` complex onsets among `n>0` onsets, record
+`clamp(1 - c/n, 0.3, 1.0)` and a `midi.voice_separation` correction carrying the exact `c/n`
+counts whenever `c>0`. This is deterministic uncertainty evidence, not recovered SMF voice
+identity. Release velocity and source ordinal travel with the selected note; they are never
+re-associated by equal-pitch sort instability.
+
+**Stage 7: Construct Score IR.** Assemble the processed data into Score → Parts → Measures → Voices
+→ Events. Attach exact immediate tempo, time-signature, and explicit/inferred key maps plus every
+admissible completed CC64/CC67 Part span. Conflicting same-tick metadata, a target-invalid rate,
+voice-capacity overflow, or any failed structural insertion fails ingestion. Every valid event not
+admitted by this Score projection receives named correction evidence. Mark the analytical
+confidence for each inferred property.
+
+**Stage 8: Analyse.** Revalidate the populated Score, run the implemented Score analysis, and store its result with `analysis_complete = true`.
 
 #### 1.3.2 Ingestion Confidence
 
@@ -111,35 +177,25 @@ Each ingested Score IR carries an *IngestionConfidence* record:
 | `key_confidence` | `f32` | Confidence in key estimation (0.0–1.0) |
 | `metre_confidence` | `f32` | Confidence in metre/barline placement |
 | `spelling_confidence` | `f32` | Confidence in enharmonic spelling |
-| `voice_separation_confidence` | `f32` | Confidence in voice assignment |
-| `quantisation_residual` | `f32` | Mean timing error introduced by quantisation (in ms) |
+| `voice_separation_confidence` | `f32` | Deterministic overlap-aware confidence in voice assignment |
+| `quantisation_residual` | `f32` | RMS onset error introduced by quantisation (in whole-note units) |
+| `duration_quantisation_residual` | `f32` | RMS duration error introduced by quantisation (in whole-note units) |
 | `source_format` | `String` | Original format |
-| `manual_corrections` | `Vec<ManualCorrection>` | Any human corrections applied post-ingestion |
+| `manual_corrections` | `Vec<ManualCorrection>` | Human corrections and machine-recorded source facts that the analytical Score projection did not preserve exactly |
 
-For MusicXML ingestion, key_confidence, metre_confidence, and spelling_confidence are 1.0 (these properties are explicit in the format). Voice separation confidence may still be less than 1.0 if the MusicXML encodes multiple voices ambiguously.
+For MusicXML ingestion, metre, spelling, and voice-separation confidence are currently recorded as
+1.0. Key confidence is 1.0 when an explicit key is found; otherwise it is the global pitch-profile
+estimate. Both quantisation residuals are zero because this path retains the admitted exact
+MusicXML durations rather than applying Stage 2. These values describe the implemented structural
+extraction, not preservation of every notation field.
 
 ### 1.4 MusicXML Ingestion
 
-MusicXML provides explicit key signatures, time signatures, enharmonic spellings, clefs, dynamics, articulations, and lyrics. The ingestion pipeline is a direct structural mapping from MusicXML elements to Score IR types (the inverse of the Score IR's MusicXmlCompiler, §9.6 of the Score IR Spec).
+The current ingester accepts uncompressed `<score-partwise>` MusicXML and maps a fail-closed structural subset into Score IR: declared parts, canonical 1…N measure numbering, numeric voices, sequential pitched notes/rests, equal-duration chord ownership, typed single-chord harmony points, integer divisions/durations/alterations, spelled pitches, and every globally coherent bar-level traditional key and time-signature change. A harmony point retains its exact cursor-relative measure offset and maps root-or-numeral, explicit numeral key, kind, bass, inversion, and ordered add/alter/subtract degrees into a `ChordSymbolEvent` in the primary voice. The numeral root spelling is derived by the same core authority used by Score validation. All parts must have the same measure count and effective key/metre context at each bar; divergent part-local contexts are rejected because this Corpus profile does not project them into `Measure.local_key` or `Measure.local_time`.
 
-| MusicXML Element | Score IR Type |
-|-----------------|---------------|
-| `<score-partwise>` | Score |
-| `<part>` | Part |
-| `<measure>` | Measure |
-| `<note>` | Note within NoteGroup |
-| `<rest/>` | Rest |
-| `<pitch>` | SpelledPitch |
-| `<key>` | KeySignature |
-| `<time>` | TimeSignature |
-| `<direction>` with tempo | TempoMap entry |
-| `<dynamics>` | Dynamic marking |
-| `<wedge>` | Hairpin |
-| `<articulations>` | Articulation |
-| `<slur>` | Slur annotation |
-| `<tied>` | Tie |
+The low-level reader rejects cursor `backup`/`forward`, mid-measure attributes, decimal timing and microtonal alterations, additive/composite metre syntax, string voice labels, non-numeric measure labels, multi-staff/transposition state, grace/cue/unpitched notes, and malformed or missing numeric fields. Harmony `function`, stacked chords, frames, fractional alterations, non-primary staff assignment, and unretained semantic/display attributes are likewise rejected. These are legal in broader MusicXML but absent from the compact type algebra. Traditional key ingestion retains the exact signed `<fifths>` value and every registered MusicXML mode (major, minor, the seven church modes, Ionian/Aeolian aliases); the tonic is derived with that mode's line-of-fifths adjustment. MusicXML's alternative non-traditional `key-step`/`key-alter` branch and interval-free `none` mode are rejected, never reinterpreted as C major. Every note insertion must preserve exact measure tiling, and every harmony offset must lie strictly inside its declared measure, after which the populated Score is revalidated and analysed.
 
-MusicXML ingestion is high-fidelity but still requires post-processing: the theory engine performs harmonic analysis, formal segmentation, and voice-leading analysis on the imported score. These derived analytical layers are not present in MusicXML and must be generated.
+This remains intentionally bounded corpus ingestion, not a total inverse of the MusicXML compiler. The typed harmony subset is invertible; free-form `kind` display text is retained only as one opaque extension where unambiguous and is never parsed as a second harmony language. Imported parts currently use Piano/Treble defaults, tempo defaults to 120 BPM, note velocity defaults to 80, and notation details such as dynamics, articulations, lyrics, slurs, ties, clef changes, and later map changes are not copied into the IngestedWork. The confidence record must not be interpreted as publication-quality round-trip fidelity.
 
 ### 1.5 Ingested Work
 
@@ -177,7 +233,7 @@ MusicXML ingestion is high-fidelity but still requires post-processing: the theo
 
 ### 2.1 Overview
 
-Once a work has been ingested into Score IR form, the Corpus IR performs a systematic analytical decomposition using the theory engine. This decomposition extracts every analytically significant property of the work at every structural level: individual notes, intervals, chords, phrases, sections, and the work as a whole. The result is a *WorkAnalysis* — a comprehensive, queryable analytical record.
+Once a work has been ingested into Score IR form, the Corpus IR performs a systematic analytical decomposition using the theory engine. The result is a *WorkAnalysis*: the complete runtime carrier for the supported evidence domains. “Complete” means field-complete with respect to this declared carrier; it does not mean that every musicological property is automatically inferred, or even represented. Section 3.15 distinguishes automatically analysed evidence, caller-supplied evidence, and properties that are not currently derivable.
 
 The decomposition is organised by analytical domain. Each domain addresses a different dimension of compositional practice.
 
@@ -203,14 +259,13 @@ The decomposition is organised by analytical domain. Each domain addresses a dif
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `annotations` | `Vec<HarmonicAnnotation>` | From the Score IR's HarmonicAnnotationLayer |
-| `chord_vocabulary` | `Map<ChordQuality, u32>` | Frequency count of each chord quality |
+| `chord_vocabulary` | `Map<String, u32>` | Frequency count by Roman-numeral/chord label |
 | `progression_inventory` | `Vec<ProgressionPattern>` | Catalogued chord progressions |
 | `modulation_inventory` | `Vec<ModulationEvent>` | Key changes with technique classification |
 | `harmonic_rhythm` | `HarmonicRhythmProfile` | Distribution of harmonic change rates |
 | `cadence_inventory` | `Vec<CadenceEvent>` | All cadences with type and position |
 | `chromatic_techniques` | `Vec<ChromaticEvent>` | Secondary dominants, augmented sixths, Neapolitans, common-tone diminished, etc. |
-| `tonicisation_frequency` | `Map<ScaleDegree, u32>` | How often each scale degree is tonicised |
+| `tonicisation_frequency` | `Map<u8, u32>` | How often each encoded scale degree is tonicised |
 | `tonal_plan` | `TonalPlan` | Sequence of key areas with durations |
 
 #### 2.3.1 ProgressionPattern
@@ -220,15 +275,15 @@ The decomposition is organised by analytical domain. Each domain addresses a dif
 | `roman_numerals` | `Vec<String>` | Sequence of Roman numerals (e.g., ["I", "IV", "V7", "I"]) |
 | `length` | `u8` | Number of chords in the pattern |
 | `occurrences` | `Vec<ScoreTime>` | Where this pattern appears in the score |
-| `key_context` | `KeySignature` | Key in which this pattern occurs |
+| `key_context` | `String` | Simplified key label in which this pattern occurs |
 
 #### 2.3.2 ModulationEvent
 
 | Field | Type | Description |
 |-------|------|-------------|
 | `position` | `ScoreTime` | Where the modulation occurs |
-| `from_key` | `KeySignature` | Key before modulation |
-| `to_key` | `KeySignature` | Key after modulation |
+| `from_key` | `String` | Simplified key label before modulation |
+| `to_key` | `String` | Simplified key label after modulation |
 | `technique` | `ModulationTechnique` | How the modulation is achieved |
 | `pivot_chord` | `Option<String>` | The pivot chord, if applicable |
 
@@ -268,8 +323,9 @@ The decomposition is organised by analytical domain. Each domain addresses a dif
 | Field | Type | Description |
 |-------|------|-------------|
 | `part_id` | `Id<Part>` | Which voice |
-| `range` | `(SpelledPitch, SpelledPitch)` | Lowest and highest pitch |
-| `tessitura` | `(SpelledPitch, SpelledPitch)` | Most frequently occupied register |
+| `note_count` | `u32` | Number of extracted melody notes; zero distinguishes an empty analytical sentinel from a measured voice |
+| `range_low`, `range_high` | `i8, i8` | Lowest and highest MIDI-note values in the compact runtime carrier |
+| `tessitura_low`, `tessitura_high` | `i8, i8` | Compact MIDI-note tessitura bounds |
 | `interval_distribution` | `Map<Interval, u32>` | Frequency of each melodic interval |
 | `contour_inventory` | `Vec<ContourSegment>` | Catalogued melodic contour shapes |
 | `scale_degree_distribution` | `Map<u8, u32>` | Frequency of each scale degree (1–7, chromatic) |
@@ -287,7 +343,7 @@ The decomposition is organised by analytical domain. Each domain addresses a dif
 | `end` | `ScoreTime` | End of the contour segment |
 | `shape` | `ContourShape` | Classification |
 | `pitch_range` | `Interval` | Span of the segment |
-| `duration` | `Beat` | Temporal span |
+| `duration_beats` | `f32` | Temporal span in beats |
 | `peak_position` | `f32` | Relative position of the highest pitch (0.0 = start, 1.0 = end) |
 | `nadir_position` | `f32` | Relative position of the lowest pitch |
 
@@ -299,9 +355,8 @@ The decomposition is organised by analytical domain. Each domain addresses a dif
 |-------|------|-------------|
 | `id` | `Id<ThematicUnit>` | Unique identifier |
 | `label` | `String` | e.g., "First theme", "Second theme", "Closing theme", "Motto" |
-| `pitches` | `Vec<SpelledPitch>` | Pitch sequence |
 | `intervals` | `Vec<Interval>` | Interval sequence (more stable across transpositions) |
-| `rhythm` | `Vec<Beat>` | Duration sequence |
+| `rhythm` | `Vec<f32>` | Duration sequence in beats |
 | `contour` | `Vec<i8>` | Contour reduction (−1, 0, +1 for descending, same, ascending) |
 | `occurrences` | `Vec<ThematicOccurrence>` | Where this theme appears |
 
@@ -312,7 +367,7 @@ The decomposition is organised by analytical domain. Each domain addresses a dif
 | `position` | `ScoreTime` | Location |
 | `part_id` | `Id<Part>` | Which voice carries it |
 | `transformation` | `ThematicTransformation` | How it relates to the original statement |
-| `key` | `KeySignature` | Key of this statement |
+| `key` | `String` | Simplified key label of this statement |
 
 **ThematicTransformation**: `Original`, `TransposedExact`, `TransposedTonal`, `Inverted`, `Retrograde`, `RetrogradeInversion`, `Augmented`, `Diminished`, `Fragmented`, `Extended`, `SequentialRepetition`, `Ornamented`, `Simplified`, `Developed`.
 
@@ -323,6 +378,7 @@ The decomposition is organised by analytical domain. Each domain addresses a dif
 | Field | Type | Description |
 |-------|------|-------------|
 | `duration_distribution` | `Map<Beat, u32>` | Frequency of each note duration |
+| `metre_distribution` | `Map<String, u32>` | Bars by canonical metre label; conventional simple/compound metres use `N/D`, explicit additive groupings use `g+g…/D` |
 | `onset_density` | `Vec<f32>` | Note onsets per beat, measured per bar |
 | `syncopation_index` | `f32` | Degree of syncopation (Longuet-Higgins/Lee or Witek metric) |
 | `rhythmic_motifs` | `Vec<RhythmicMotif>` | Recurring rhythmic patterns |
@@ -381,9 +437,9 @@ The decomposition is organised by analytical domain. Each domain addresses a dif
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `key_sequence` | `Vec<(String, KeySignature, u32)>` | (Section label, key, duration in bars) |
+| `key_sequence` | `Vec<(String, String, u32)>` | Ordered `(key label, chromatic relationship to opening tonic, start bar)` entries |
 | `key_area_count` | `u32` | Number of distinct key areas visited |
-| `most_distant_key` | `KeySignature` | Key most distant from the tonic on the circle of fifths |
+| `most_distant_key` | `String` | First key at the greatest pitch-class distance from the opening tonic on the circle of fifths |
 | `tonic_return_bar` | `Option<u32>` | Bar at which the tonic key returns for the final time |
 
 ### 2.7 Voice-Leading Analysis Record
@@ -422,7 +478,6 @@ The decomposition is organised by analytical domain. Each domain addresses a dif
 | `density_curve` | `Vec<(ScoreTime, u8)>` | Number of simultaneous voices at each time point |
 | `average_density` | `f32` | Mean number of simultaneous voices |
 | `density_by_section` | `Map<String, f32>` | Average density per formal section |
-| `register_span_curve` | `Vec<(ScoreTime, Interval)>` | Vertical span (lowest to highest pitch) over time |
 | `average_register_span` | `f32` | Mean vertical span in semitones |
 | `spacing_profile` | `SpacingProfile` | How voices are distributed across the register |
 | `texture_type_proportions` | `Map<String, f32>` | Proportion of the work in each texture type (monophonic, homophonic, polyphonic, etc.) |
@@ -461,7 +516,6 @@ The decomposition is organised by analytical domain. Each domain addresses a dif
 | `doubling_patterns` | `Vec<DoublingPattern>` | Common doublings |
 | `melody_carrier_distribution` | `Map<String, f32>` | Proportion of melody carried by each instrument |
 | `orchestral_crescendo_patterns` | `Vec<OrchestraCrescendoPattern>` | How orchestral build-ups are constructed |
-| `colour_changes` | `Vec<ColourChange>` | Points where orchestration changes dramatically |
 | `density_orchestration_correlation` | `f32` | Correlation between number of active instruments and dynamic level |
 
 **InstrumentCombination**:
@@ -489,7 +543,6 @@ The decomposition is organised by analytical domain. Each domain addresses a dif
 | `start` | `ScoreTime` | Beginning of the build |
 | `end` | `ScoreTime` | Peak |
 | `instrument_entry_order` | `Vec<(String, ScoreTime)>` | Order in which instruments enter |
-| `dynamic_arc` | `Vec<(f32, DynamicLevel)>` | Relative position → dynamic |
 | `register_expansion` | `bool` | Whether the register expands during the build |
 
 ### 2.11 Motivic Analysis Record
@@ -581,11 +634,11 @@ This allows the system to distinguish, for example, early Beethoven (op. 1–20,
 | Field | Type | Description |
 |-------|------|-------------|
 | `chord_vocabulary_size` | `u32` | Number of distinct chord types used |
-| `chord_frequency` | `Map<ChordQuality, f32>` | Normalised frequency of each chord quality |
+| `chord_frequency` | `Map<String, f32>` | Normalised frequency of each Roman-numeral/chord label |
 | `preferred_progressions` | `Vec<RankedProgression>` | Most frequent chord progressions |
 | `modulation_frequency` | `f32` | Average modulations per work |
 | `modulation_technique_preference` | `Map<ModulationTechnique, f32>` | Distribution of modulation techniques |
-| `preferred_key_relationships` | `Map<Interval, f32>` | Distribution of tonal relationships between sections |
+| `preferred_key_relationships` | `Map<String, f32>` | Distribution of named chromatic relationships in tonal-plan entries |
 | `chromatic_density` | `f32` | Average proportion of chromatic chords per work |
 | `secondary_dominant_frequency` | `f32` | How often secondary dominants appear |
 | `augmented_sixth_frequency` | `f32` | How often augmented sixth chords appear |
@@ -594,7 +647,7 @@ This allows the system to distinguish, for example, early Beethoven (op. 1–20,
 | `harmonic_rhythm_variance` | `f32` | Variability of harmonic rhythm |
 | `cadence_type_distribution` | `Map<CadenceType, f32>` | Preference for cadence types |
 | `deceptive_cadence_frequency` | `f32` | How often expected cadences are evaded |
-| `preferred_key_signatures` | `Map<KeySignature, u32>` | Preferred keys across the corpus |
+| `preferred_key_signatures` | `Map<String, u32>` | Preferred simplified key labels across tonal-plan entries |
 | `tonal_ambiguity_index` | `f32` | Frequency of passages where key is ambiguous or contested |
 
 **RankedProgression**:
@@ -631,13 +684,13 @@ This allows the system to distinguish, for example, early Beethoven (op. 1–20,
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `duration_distribution` | `Map<Beat, f32>` | Normalised note duration distribution |
-| `preferred_durations` | `Vec<Beat>` | Most frequent note values |
+| `duration_distribution` | `Map<String, f32>` | Normalised note-duration-label distribution |
+| `preferred_durations` | `Vec<String>` | Note-duration labels ranked by frequency |
 | `syncopation_index` | `f32` | Average syncopation across works |
 | `rhythmic_variety` | `f32` | Entropy of the duration distribution |
-| `preferred_metres` | `Map<TimeSignature, u32>` | Distribution of time signatures |
+| `preferred_metres` | `Map<String, u32>` | Distribution of canonical time-signature/grouping labels |
 | `metrical_complexity` | `f32` | Frequency of irregular metres and changes |
-| `tempo_preference` | `(f32, f32)` | Mean and standard deviation of preferred tempos |
+| `tempo_mean`, `tempo_stddev` | `f32, f32` | Population mean and standard deviation of observed tempo samples |
 | `rubato_tendency` | `f32` | Average rubato degree |
 | `rhythmic_motif_consistency` | `f32` | How consistently rhythmic motifs recur within a work |
 
@@ -679,7 +732,7 @@ This allows the system to distinguish, for example, early Beethoven (op. 1–20,
 | Field | Type | Description |
 |-------|------|-------------|
 | `average_density` | `f32` | Mean number of simultaneous voices |
-| `density_range` | `(f32, f32)` | Minimum and maximum typical density |
+| `density_range_low`, `density_range_high` | `f32, f32` | Minimum and maximum observed density samples |
 | `texture_type_distribution` | `Map<String, f32>` | Preference for monophonic/homophonic/polyphonic/etc. |
 | `register_span_preference` | `f32` | Average vertical span in semitones |
 | `density_dynamic_correlation` | `f32` | Correlation between textural density and dynamic level |
@@ -688,7 +741,7 @@ This allows the system to distinguish, for example, early Beethoven (op. 1–20,
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `dynamic_range_preference` | `(DynamicLevel, DynamicLevel)` | Typical extremes |
+| `dynamic_range_low`, `dynamic_range_high` | `String, String` | Softest and loudest non-empty dynamic labels observed |
 | `most_frequent_dynamic` | `DynamicLevel` | Most commonly used level |
 | `dynamic_change_rate` | `f32` | Average changes per bar |
 | `subito_frequency` | `f32` | Frequency of sudden dynamic changes |
@@ -729,24 +782,80 @@ This allows the system to distinguish, for example, early Beethoven (op. 1–20,
 |-------|------|-------------|
 | `id` | `Id<SignaturePattern>` | Unique identifier |
 | `description` | `String` | Human-readable description |
-| `domain` | `String` | Which analytical domain (harmonic, melodic, rhythmic, etc.) |
+| `domain` | `PatternDomain` | Closed analytical domain enum |
 | `pattern_data` | `PatternData` | The pattern itself |
 | `distinctiveness` | `f32` | How much more frequent this pattern is for this composer than for others (ratio or z-score) |
 | `examples` | `Vec<(Id<IngestedWork>, ScoreTime)>` | Specific instances |
 
-**PatternData**: A sum type covering different kinds of patterns:
+**PatternData** is the current four-alternative C++ sum type. `PatternDomain` supplies the musical
+meaning; the value alternative supplies the closed persisted shape:
 
 | Variant | Description | Example |
 |---------|-------------|---------|
-| `HarmonicProgression(Vec<String>)` | Chord progression | Chopin's "♭VI → V" approach to cadences |
-| `MelodicCell(Vec<Interval>)` | Interval sequence | Beethoven's short-short-short-long motto |
-| `RhythmicFigure(Vec<Beat>)` | Duration pattern | Dotted rhythm prevalence in French overture style |
-| `CadentialApproach(Vec<String>)` | How cadences are prepared | Bach's characteristic pre-cadential patterns |
-| `TexturalGesture(String)` | Described texture | Debussy's parallel chord planing |
-| `OrchestrationalSignature(Vec<String>)` | Instrument combination | Ravel's use of celesta + harp + muted strings |
-| `FormalProportion(Vec<f32>)` | Section length ratios | Haydn's compact development sections |
-| `RegistralSignature(String)` | Register usage | Liszt's extreme register contrasts |
-| `DynamicGesture(String)` | Dynamic pattern | Schubert's pianissimo codas |
+| `Vec<String>` | Symbolic sequence | Harmonic progression or cadential approach |
+| `Vec<i8>` | Signed interval cell | Melodic cell |
+| `Vec<f32>` | Numeric sequence | Rhythmic figure or formal proportions |
+| `String` | Described gesture/signature | Textural, registral, dynamic, or orchestrational description |
+
+The v3–v4 JSON tags are respectively `string_sequence`, `interval_sequence`, `float_sequence`, and
+`text`. No domain-dependent guessing occurs during decoding.
+
+### 3.15 Deterministic aggregation and tractability boundary
+
+For a composer or period, let W be its unique member works whose `analysis_complete` flag is true.
+A rebuild starts from a neutral `StyleProfile`, sets `sample_size` to `n`, the number of works in
+W, and sets `confidence = min(0.95, 1 - 1/(0.2n + 1))` when W is non-empty. It then applies the closed
+rules below. A normalised count distribution divides each merged count by the merged total. A
+per-work mean divides by `n`, so an analysed work's explicit zero contributes as zero. An
+evidence-only mean excludes records that cannot denote an observation (empty melodic sentinels,
+empty tempo curves, unmatched or constant correlation curves, or absent orchestration).
+
+| Domain | Deterministic aggregate from `WorkAnalysis` |
+|--------|------------------------------------------------|
+| Harmonic | Merge chord counts; normalise them and progression occurrence counts; rank progressions by descending occurrence then lexical sequence; union and lexically order their contexts. Average modulation count, harmonic-rhythm mean/variance, chromatic-event count divided by each work's chord count, and named chromatic/cadence event counts per work. Normalise modulation techniques, tonal-plan relationship entries, and cadence codes. Count tonal-plan key labels. `deceptive_cadence_frequency` is DC events per work. |
+| Melodic | Exclude an empty voice sentinel using `note_count` plus the legacy explicit-evidence fields. Merge and normalise interval, contour, and scale-degree counts; rank intervals by descending count then signed interval. Average voice conjunctness, chromaticism, and `range_high-range_low`. `sequence_frequency` is sequential thematic occurrences divided by all thematic occurrences. |
+| Rhythmic | Merge and normalise duration counts; rank duration labels by descending count then lexical label; merge metre counts; compute base-2 Shannon entropy over duration frequencies. Average syncopation, metrical complexity, and rubato per work. Tempo is the population mean and population standard deviation of every tempo-profile sample. Motif consistency is motifs with more than one occurrence divided by all catalogued motifs. |
+| Formal | Count form codes and average total bars. For each section label, average the supplied proportional observations. Average recapitulation/exposition ratios only for works containing both positive values, and development only where positive. A slow introduction requires the earliest section to be labelled introduction and have a lower positive tempo than the next section; a coda must be the final section. Transition `character` values are ranked by descending work-record count then lexical value. Climax position is an evidence-only mean. Golden adherence per observed climax is `clamp(1 - abs(position - 0.618)/0.618, 0, 1)`. |
+| Voice leading | Average parallel-fifth, parallel-octave, and crossing counts per work; average common-tone retention and independence. The preferred motion is the greatest aggregate proportion in deterministic order contrary, oblique, similar, parallel and stays empty if all are zero. Leading-tone and seventh resolution rates are weighted by each `ResolutionPattern.frequency`. Spacing counts at or below 12 semitones are close; above 12 are open; at least 60% selects close/open, otherwise mixed. |
+| Textural | Average work density and register span; take the global minimum/maximum density sample; sum each texture proportion and divide by `n`. For each work, inner-join density and dynamic curves by exact `ScoreTime`, compute Pearson correlation only with at least two samples and non-zero variance, then average the defined correlations. |
+| Dynamic | Select the softest/loudest non-empty labelled extremes, merge dynamic-level counts, and average change/subito counts per work. For each non-empty shape, map its maximum intensity to the nearest declared ordinary dynamic. A range at or below `1e-5` is stationary; an interior maximum/minimum at least 25% of the range beyond both endpoints is arch/inverted arch; at least two non-zero direction changes is oscillating; otherwise endpoint displacement of at least ±25% is ascending/descending, with the residual complex. Modal values are retained with stable enum/key tie-breaking. No shape leaves the neutral `Stationary` default. |
+| Orchestration | Include only present orchestration records. Average instrument-use and melody-carrier maps over those records. Canonicalise a combination's instrument set lexically, merge exact combination and doubling keys by summed frequency, and order them by key. Build-up techniques contain `register expansion` when declared and `instrument accretion` when a crescendo has more than one ordered entry. |
+| Motivic | Average thematic economy and density per work. Merge and normalise transformation-event codes. Fragmentation and sequence frequencies divide their corresponding event counts by all transformation events. |
+
+The following style fields currently have no source evidence carrier and therefore remain neutral
+after every deterministic rebuild: `tonal_ambiguity_index`, `average_phrase_length`,
+`phrase_length_variance`, `ornament_density`, `leitmotif_usage`, orchestral `tutti_proportion`,
+`solo_proportion`, and `colour_signature`, and `cross_movement_thematic_links`. Zero/false/empty in
+these positions means **unavailable in the current model**, not an observed absence. Signature
+patterns are also excluded from deterministic rebuild because their distinctiveness requires the
+separate cross-corpus detection lifecycle.
+
+The WorkAnalysis carrier is broader than the automatic Score analyser. For example, supplied
+resolution patterns, identified thematic transformations, and orchestral crescendo patterns are
+tractable once present, but the current automatic analyser does not infer every such record. A
+field is therefore described as (1) automatically produced, (2) derivable from supplied carrier
+evidence, or (3) unavailable; persistence completeness must never be used to upgrade (2) or (3)
+into an automatic-analysis claim.
+
+The current `analyze_score` boundary is exact:
+
+| Domain | Automatically produced from Score | Represented but only caller/annotation supplied in the current analyser |
+|---|---|---|
+| Harmonic | Chord vocabulary; bigram progressions and cadences when Score harmonic annotations exist; harmonic-rhythm mean/variance and per-bar curve; tonal plan | Modulations, chromatic techniques, tonicisation counts, section harmonic rates |
+| Melodic | Per-Part zero/non-zero note count, range, intervals, scale degrees, conjunctness, chromaticism, and primary Part by note count | Tessitura, contours, leap resolution, ascending/descending runs, thematic material |
+| Rhythmic | Durations, global metres, onset density, syncopation proxy, tempo samples, metrical-complexity proxy, rest proportion, section note density | Rhythmic motifs and rubato degree |
+| Formal | Top-level Score sections, their lengths/key labels/front-map tempo, proportions, limited binary/ternary/rondo label classification, and tonal plan | Section character/subsections, thematic assignments, symmetry analysis, richer form classification |
+| Voice leading | Adjacent-Part, first-note-per-bar motion proportions, parallel fifth/octave counts, crossing count, spacing counts | Voice independence, common-tone retention, tendency-tone resolution patterns |
+| Textural | Per-bar active-Part density, average span, section density, and monophonic/homophonic/polyphonic proportions | Spacing profile |
+| Dynamic | Explicit marking distribution/range, hairpins, marking changes, composite-accent count, evidence-only carried per-bar shape/climax, and section ranges | Nothing additional in the current record |
+| Orchestration | Multi-Part instrument use and highest-note melody carrier | Instrument combinations, doublings, crescendo patterns, density/orchestration correlation |
+| Motivic | Neutral empty record only | Thematic units, transformation inventory, developmental techniques, density, economy |
+
+These are algorithm identities, not musicological equivalence claims. In particular, the rhythmic
+syncopation value is an off-quarter-grid onset ratio, form recognition is label-pattern matching,
+texture density counts active Parts, and voice leading samples first notes in consecutive bars of
+adjacent Parts. Replacing any proxy with a richer analyser changes the evidence function and must
+receive tests, documentation, and schema/version review if persisted meaning changes.
 
 ---
 
@@ -890,11 +999,14 @@ The query matches the situation description against the formal, harmonic, textur
 |------|-------------|
 | `ingest_midi` | Ingest a MIDI file into the corpus |
 | `ingest_musicxml` | Ingest a MusicXML file |
-| `ingest_batch` | Ingest a directory of files |
+| `ingest_batch` | Ingest an explicit array of MIDI/MusicXML work payloads |
 | `create_composer_profile` | Create a new ComposerProfile |
+| `create_ingested_work` | Create a metadata-only work entry |
+| `remove_ingested_work` | Remove a work plus all composer/period reverse references without reusing its session id |
 | `assign_work_to_composer` | Associate an ingested work with a composer |
 | `assign_work_to_period` | Assign a work to a compositional period within a composer's profile |
-| `set_work_metadata` | Update metadata for an ingested work |
+| `add_period_profile` | Add a named compositional period to a composer |
+| `set_work_metadata` | Transactionally update metadata; a non-empty period resolves through actual membership and an empty period clears membership |
 
 **Analysis tools**:
 
@@ -916,15 +1028,22 @@ The query matches the situation description against the formal, harmonic, textur
 | `get_progression_examples` | Find examples of a specific chord progression in a composer's corpus |
 | `get_formal_template` | Get typical formal proportions and tonal plan for a form type from a composer |
 
+**Corpus inspection tools**:
+
+| Tool | Description |
+|------|-------------|
+| `validate_corpus` | Validate corpus integrity and return diagnostics |
+| `get_corpus_json` | Serialise the complete in-memory corpus |
+
 ### 6.2 Complete Ingestion Workflow
 
 1. **Collect**: Gather MIDI or MusicXML files for a composer.
 2. **Create profile**: `create_composer_profile("Sergei Rachmaninov", birth_year=1873, death_year=1943)`.
-3. **Ingest**: `ingest_batch("/corpus/rachmaninov/", format="midi")`. Each file is processed through the ingestion pipeline (§1).
+3. **Ingest**: call `ingest_batch` with an array of `{title, midi_base64/musicxml, composer_id, format}` objects. Each supplied document is processed through the ingestion pipeline (§1).
 4. **Assign**: `assign_work_to_composer(work_id, composer_id)` for each ingested work. Set metadata: title, opus, year, instrumentation, whether it is a reduction.
-5. **Assign periods** (optional): `assign_work_to_period(work_id, "Early")`, etc.
-6. **Analyse**: `analyze_work(work_id)` for each work. This runs the full analytical decomposition (§2) using the theory engine.
-7. **Build profile**: `rebuild_style_profile(composer_id)`. This aggregates all per-work analyses into the StyleProfile (§3).
+5. **Assign periods** (optional): `assign_work_to_period(work_id, composer_id, "Early")`, etc.
+6. **Analyse**: `analyze_work(work_id)` for each work. This runs the full analytical decomposition (§2) using the theory engine and synchronously refreshes affected composer and period aggregates.
+7. **Verify/rebuild profile** (optional): `rebuild_style_profile(composer_id)` deterministically recomputes the composer and period StyleProfiles from their analysed work memberships. Normal lifecycle workflows already perform this refresh; the explicit operation is useful after assembling or migrating a value outside those workflows.
 8. **Detect signatures**: `detect_signature_patterns(composer_id)`. This identifies statistically distinctive patterns by comparing against the corpus mean.
 9. **Query**: The profile is now available for composition-time queries.
 
@@ -933,10 +1052,10 @@ The query matches the situation description against the formal, harmonic, textur
 During composition, the agent interleaves production operations (Score IR, Timbre IR, Mix IR) with Corpus IR queries:
 
 1. Agent is composing a piano concerto in the style informed by Rachmaninov.
-2. Agent queries: `get_formal_template(composer_id, "Concerto")` → receives typical formal proportions, tonal plan, section characteristics.
-3. Agent creates the Score IR: `create_score` with formal plan based on the template.
+2. Agent queries: `get_formal_template(composer_id, form_type)` → receives typical formal proportions, tonal plan, section characteristics.
+3. Agent creates the Score IR with `score_create`, then applies a formal plan based on the template.
 4. Agent queries: `query_how_would_x_handle(composer_id, "Opening of the first movement, establishing the main theme in solo piano before orchestral entry")` → receives examples from Rachmaninov's concerto openings, statistical tendencies for phrase lengths, typical key and dynamic profile.
-5. Agent writes the opening melody: `write_melody` into the piano part, drawing on the melodic style profile (interval distribution, contour preferences, chromaticism rate).
+5. Agent writes the opening melody with `score_write_melody` into the piano part, drawing on the melodic style profile (interval distribution, contour preferences, chromaticism rate).
 6. Agent queries: `get_progression_examples(composer_id, ["i", "iv6", "V7", "i"])` → confirms this is within the harmonic vocabulary and finds examples of how Rachmaninov typically continues after this progression.
 7. Agent continues composing, querying the Corpus IR whenever a creative decision would benefit from historical grounding.
 
@@ -948,26 +1067,48 @@ The Corpus IR does not make the decisions. It informs them. The agent remains th
 
 ### 7.1 Corpus Database
 
-The Corpus IR is stored as a structured database, not as a single document. The data volumes can be substantial: a single fully analysed orchestral score may generate thousands of analytical entries, and a corpus of hundreds of works produces millions of data points.
+The current Corpus IR is an in-memory `CorpusDatabase` value that serialises as one versioned JSON document. Persistence is caller-owned.
 
 **Storage components**:
 
 | Component | Format | Description |
 |-----------|--------|-------------|
-| Ingested Score IRs | JSON or binary Score IR format | Full Score IR for each ingested work |
-| Work Analyses | JSON | Full analytical decomposition per work |
-| Composer Profiles | JSON | Style profiles with aggregated statistics |
-| Pattern Index | Indexed database (SQLite or similar) | Searchable index of all extracted patterns |
-| Signature Patterns | JSON | Per-composer distinctive patterns |
-| Comparison Cache | JSON | Cached StyleComparison results |
+| Ingested Score IRs | Embedded JSON | Score IR for each ingested work |
+| Work Analyses | Embedded JSON | Analytical decomposition per work |
+| Composer Profiles | Embedded JSON | Style profiles with aggregated statistics |
+| Signature Patterns | Embedded JSON | Per-composer distinctive patterns |
+
+There is no runtime SQLite pattern index, comparison cache, or binary storage backend.
+
+#### 7.1.1 JSON schema and migration boundary
+
+Corpus JSON schema version 4 is the current write format. Its strict projection covers every
+authoritative field of `IngestedWork`, `WorkMetadata`, `IngestionConfidence`, `WorkAnalysis`,
+`ComposerProfile`, `PeriodProfile`, `StyleProfile`, and `SignaturePattern`, including optional
+orchestration, composer active periods, all tonal plans and thematic structures, and the complete
+`PatternData` value. Optional values are omitted when disengaged; all non-optional fields are
+required. Numeric-key maps use ordered arrays of exact `{key, value}` records so signed and narrow
+integer keys are not reinterpreted as JSON object names. `PatternData` is an explicit tagged record
+whose `kind` is one of `string_sequence`, `interval_sequence`, `float_sequence`, or `text`.
+
+The version-1 reader remains a deliberately lenient migration path: it accepts flat ScoreTime
+records and fills historical omissions with defaults, and full-corpus v1 loads do not run
+validate-on-load. Version 2 remains a strict reader for the historical partial projection; fields
+that v2 never represented migrate to their declared C++ defaults rather than being fabricated from
+other statistics. Version 3 uses nested ScoreTime, rejects missing required fields, range-checks
+integer and enum encodings, rejects unknown `PatternData` tags, and was field-complete for its
+historical model. Version 4 adds the required `duration_quantisation_residual`, requires every
+confidence dimension to be finite and in `[0,1]`, and requires both residuals to be finite and
+non-negative. Versions 1–3 migrate the historically unobserved duration residual to zero; this is
+a migration default, not evidence that old ingestion preserved durations. Full-corpus versions 3
+and 4 run C14, C15, C16, and all other Error-severity validation rules. Version-2 migration loads
+retain their historical pre-freshness validation contract and therefore skip C15. Writers emit v4
+only. A supported-schema document round-trips every value represented by that schema; only v4 is
+field-complete with respect to the current Corpus IR.
 
 ### 7.2 Incremental Updates
 
-When a new work is ingested and analysed:
-1. The work's analysis is stored.
-2. The composer's StyleProfile is incrementally updated (distributions are recomputed with the additional data points, not rebuilt from scratch, unless `rebuild_style_profile` is explicitly called).
-3. Signature patterns are marked as potentially stale (the additional data may change distinctiveness scores).
-4. Cached comparisons involving this composer are invalidated.
+When ownership, analysis, period membership, or work existence changes through a lifecycle workflow, affected composer and period aggregates are rebuilt synchronously before the operation returns. Composer signature patterns are invalidated when their underlying composer membership or analysis set changes and are populated only by the explicit detection workflow. Period-only changes preserve composer signatures. There is no background refresh or background persistence. Directly assembled C++ values and migration loads can retain supplied aggregates until `rebuild_style_profile` or another lifecycle workflow is invoked; C15 reports this stale state during direct validation, and a v3/v4 corpus load rejects it. Strict v2–v4 corpus loads reject graph contradictions through C14.
 
 ---
 
@@ -980,7 +1121,7 @@ When a new work is ingested and analysed:
 | C1 | Warning | Ingestion confidence below 0.7 in any dimension |
 | C2 | Error | Ingested Score IR fails structural validation |
 | C3 | Warning | Key estimation confidence below 0.5 (key may be incorrect) |
-| C4 | Info | Work has no time signature metadata (inferred from content) |
+| C4 | Info | MIDI work has no time signature metadata (ingester defaulted to 4/4) |
 | C5 | Warning | Voice separation produced more than 6 voices (possible error) |
 
 ### 8.2 Analysis Validation
@@ -1000,6 +1141,9 @@ When a new work is ingested and analysed:
 | C11 | Info | Style profile based on fewer than 10 works (moderate reliability) |
 | C12 | Warning | Period profile has fewer than 3 works (insufficient for period characterisation) |
 | C13 | Info | Signature pattern distinctiveness below 1.5 standard deviations (may not be truly distinctive) |
+| C14 | Error | Corpus map identities, composer ownership, period membership, or bounded period ranges contradict one another |
+| C15 | Error | A composer or period's deterministic non-signature StyleProfile differs from the aggregate of its unique analysed work membership |
+| C16 | Error | A confidence dimension is non-finite or outside `[0,1]`, or an onset/duration quantisation residual is non-finite or negative |
 
 ---
 
@@ -1035,40 +1179,43 @@ The Corpus IR depends on the Theory Spec (it uses the theory engine for analysis
 
 ### 9.2 Tool Count
 
-The full MCP tool set across all five specifications:
+The full MCP tool set across the IR specifications and aggregate project model:
 
-| Layer | Tools | Examples |
-|-------|-------|---------|
-| Theory | ~7 | `analyze_harmony`, `voice_lead`, `generate_scale` |
-| Score IR | ~25 | `create_score`, `write_melody`, `reorchestrate` |
-| Timbre IR | ~18 | `set_sound_source`, `search_presets`, `compile_timbre` |
-| Mix IR | ~24 | `set_channel_level`, `compare_to_reference`, `compile_mix` |
-| Corpus IR | ~16 | `ingest_midi`, `query_style_profile`, `query_how_would_x_handle` |
+| Registration group | Tools | Examples |
+|--------------------|------:|----------|
+| Core and Ableton | 10 | `analyze_harmony`, `voice_lead`, `get_ableton_session_state` |
+| Score IR | 29 | `score_create`, `score_insert_chord_symbol`, `score_compile_to_ableton` |
+| Timbre IR | 23 | `set_sound_source`, `map_timbre_parameter`, `compile_timbre` |
+| Mix IR | 28 | `set_channel_relative_level`, `resolve_mix_fader_levels`, `compile_mix` |
+| Corpus IR | 22 | `ingest_midi`, `remove_ingested_work`, `query_how_would_x_handle` |
+| Project | 4 | `project_validate`, `project_plan_to_ableton`, `project_apply_ableton_plan`, `project_compile_to_ableton` |
 
-Total: approximately 90 MCP tools providing an agent with complete control over music analysis, composition, arrangement, sound design, mixing, and mastering, informed by structured knowledge of the compositional repertoire.
+Total: 116 MCP tools. `tools/list` is the runtime authority; `docs/reference.md` records the same inventory counts.
 
 ---
 
-## 10. Invariants
+## 10. Runtime Invariants and Validation Boundaries
 
 ### 10.1 Structural
 
-1. Every IngestedWork has a valid Score IR that passes structural validation.
-2. Every IngestedWork is assigned to exactly one ComposerProfile.
-3. Every ComposerProfile has at least one IngestedWork.
-4. StyleProfiles are recomputable from the underlying WorkAnalysis records (no information is in the profile that is not derivable from the analyses).
+1. An embedded Score, when present, is checked by Score structural validation.
+2. `assign_work_to_composer` gives a work at most one ComposerProfile owner; reassignment removes stale composer and period references.
+3. Empty and small ComposerProfiles are representable; C10–C12 report insufficient sample sizes.
+4. Successful lifecycle mutations synchronously recompute affected composer and period StyleProfiles from unique analysed work memberships; `rebuild_style_profile` provides an explicit deterministic refresh.
 
 ### 10.2 Analytical
 
-5. Harmonic analysis covers at least 80% of each ingested work.
-6. Formal analysis produces a non-empty section plan for every work longer than 8 bars.
-7. Statistical summaries in StyleProfiles report sample sizes alongside all aggregate values.
+5. C1–C9 and C16 expose low or malformed confidence, structural errors, weak harmonic coverage, missing thematic material, and other analytical limitations as diagnostics; ingestion does not manufacture coverage or a section plan to satisfy a threshold. C16 is evaluated before C1/C3 so a NaN cannot evade threshold comparisons.
+6. StyleProfile records `sample_size` and a bounded confidence derived from it.
 
 ### 10.3 Consistency
 
-8. If an IngestedWork is removed from the corpus, the composer's StyleProfile is updated to reflect the removal.
-9. Period assignments are non-overlapping: a work belongs to at most one PeriodProfile.
-10. Signature patterns are recomputed when the corpus changes (explicitly, not automatically).
+7. `assign_work_to_period` requires a coherent matching composer ownership and gives a work at most one PeriodProfile across the corpus graph; clearing updates both metadata and membership.
+8. Signature patterns are populated only by the explicit detection workflow and are invalidated when their underlying composer analysis set changes.
+9. `remove_ingested_work` removes all reverse references, refreshes affected aggregates, and never rewinds the session id sequence. Failed lifecycle and mixed metadata/period operations leave corpus state unchanged.
+10. C14 checks root map key/embedded-id agreement, ownership and reverse references, signature-example membership, unique period membership, metadata agreement, unique labels, valid ranges, and non-overlap for fully bounded period ranges.
+11. C15 compares every composer and period's deterministic aggregate against its analysed membership after C14 succeeds. Explicit signature patterns are excluded because they belong to the separate detection lifecycle. Version-2 migration loads skip this newer invariant; direct validation and v3/v4 loads enforce it.
+12. `IngestionConfidence` dimensions are finite values in `[0,1]`; onset and duration quantisation residuals are finite non-negative whole-note RMS errors. A zero migrated duration residual in schema v1–v3 means “historically absent,” not “measured lossless.”
 
 ---
 

@@ -85,7 +85,7 @@ For 12-TET, D₁₂ has order 24 and acts on **Z/12Z**.
 - *T*ₐ ∘ *I*ᵦ = *I*₍ₐ₊ᵦ₎ ₘₒ𝒹 ₙ
 - *I*ₐ ∘ *I*ᵦ = *T*₍ₐ₋ᵦ₎ ₘₒ𝒹 ₙ
 
-**Status**: Complete. PTDN001A: D₁₂ composition, inverse, apply, order, conjugacy classes (9), subgroup generation, named subgroups (Z₁–Z₁₂, D₁–D₁₂).
+**Status**: Complete. `pitch/dihedral_group`: D₁₂ composition, inverse, apply, order, conjugacy classes (9), subgroup generation, named subgroups (Z₁–Z₁₂, D₁–D₁₂).
 
 ### 1.3 The Free Abelian Group of Intervals
 
@@ -97,7 +97,7 @@ For 12-TET, D₁₂ has order 24 and acts on **Z/12Z**.
 
 This group is not cyclic; it has rank 2. The chromatic component alone projects onto **Z** (or **Z/12Z** for pitch classes); the diatonic component projects onto **Z/7Z** for diatonic contexts.
 
-**Status**: Implemented. PTDI001A: DiatonicInterval as (chromatic, diatonic) pair with quality derivation, interval addition, inversion, and application on SpelledPitch.
+**Status**: Implemented. `pitch/diatonic_interval`: DiatonicInterval as (chromatic, diatonic) pair with quality derivation, interval addition, inversion, and application on SpelledPitch.
 
 ### 1.4 Group Actions
 
@@ -126,7 +126,7 @@ The following group actions are foundational to the specification:
 3. **Transpositional-inversional equivalence** (TI-equivalence): *A* ∼_{TI} *B* iff there exists *g* ∈ D₁₂ such that *g*(*A*) = *B*.
 4. **Enharmonic equivalence**: Spelled pitches *p*₁ ∼_enh *p*₂ iff they map to the same element of **Z/12Z**.
 
-**Status**: Implemented. Octave equivalence, T-equivalence, and TI-equivalence via PTPS001A. Enharmonic equivalence via PTSP001A (SpelledPitch with pitch class realisation).
+**Status**: Implemented. Octave equivalence, T-equivalence, and TI-equivalence via `pitch/pitch_class_set`. Enharmonic equivalence via `pitch/spelled_pitch` (SpelledPitch with pitch class realisation).
 
 ---
 
@@ -219,7 +219,7 @@ The *absolute pitch realisation* (MIDI number) is:
 - An override mechanism for explicit enharmonic selection.
 - A context-sensitive algorithm selectable by policy (PS13, line-of-fifths, or rule-based).
 
-**Status**: Implemented. PTSP001A: SpelledPitch (letter, accidental, octave), SPN parsing, line-of-fifths mapping, enharmonic equivalence.
+**Status**: Implemented. `pitch/spelled_pitch`: SpelledPitch (letter, accidental, octave), SPN parsing, line-of-fifths mapping, enharmonic equivalence.
 
 ### 2.6 The Line of Fifths
 
@@ -238,7 +238,7 @@ The line of fifths provides a one-dimensional representation of spelled pitch cl
 - Diatonic collections are windows [*q*, *q* + 6].
 - The distance between two spelled pitch classes on the line of fifths is a measure of their enharmonic remoteness.
 
-**Status**: Implemented. PTSP001A: `line_of_fifths_position()` and `from_line_of_fifths()` constexpr functions.
+**Status**: Implemented. `pitch/spelled_pitch`: `line_of_fifths_position()` and `from_line_of_fifths()` constexpr functions.
 
 ### 2.7 Scientific Pitch Notation
 
@@ -250,7 +250,7 @@ where *accidental_str*(0) = "", *accidental_str*(1) = "♯", *accidental_str*(�
 
 Parsing is the inverse: given a valid SPN string, extract (*l*, *a*, *o*).
 
-**Status**: Implemented. PTSP001A: `from_spn()` and `to_spn()` provide first-class invertible SPN ↔ SpelledPitch conversion.
+**Status**: Implemented. `pitch/spelled_pitch`: `from_spn()` and `to_spn()` provide first-class invertible SPN ↔ SpelledPitch conversion.
 
 ---
 
@@ -373,7 +373,7 @@ More precisely: *a*′ = *c* − (δ(*d*) − δ(0)) + *a* ... this requires car
 
 This formulation is constructive and exact. Implementation should compute *midi*(*p*′) first, then recover (*l*′, *a*′, *o*′) from the known diatonic target and the required MIDI pitch.
 
-**Status**: Implemented. PTDI001A: interval quality derivation, interval inversion, and interval application on SpelledPitch.
+**Status**: Implemented. `pitch/diatonic_interval`: interval quality derivation, interval inversion, and interval application on SpelledPitch.
 
 ### 3.5 Interval Class Vector
 
@@ -439,7 +439,7 @@ The classical melodic minor uses the ascending form going up and the natural min
 | Mode 6 | (2, 1, 2, 1, 2, 2, 2) | Locrian ♮2 / half-diminished |
 | Mode 7 | (1, 2, 1, 2, 2, 2, 2) | Super Locrian / altered |
 
-**Status**: Implemented. All seven melodic minor modes present in SCDF001A (Dorian ♭2 and Mixolydian ♭6 added).
+**Status**: Implemented. All seven melodic minor modes present in `scale/definitions` (Dorian ♭2 and Mixolydian ♭6 added).
 
 #### 4.2.4 Symmetric Scales
 
@@ -518,7 +518,7 @@ For scales of other cardinalities, degrees are numbered ordinally (1 through *k*
 
 **Definition 4.3.2** [C]. *Scale degree alteration*: A chromatic alteration of a scale degree is expressed as ♭*n* or ♯*n* (e.g., ♭3, ♯4), indicating the degree is lowered or raised by one semitone relative to its position in the parent diatonic scale.
 
-**Status**: Implemented. HRFN001A: scale degree names and functional classification.
+**Status**: Implemented. `harmony/harmonic_function`: scale degree names and functional classification.
 
 ### 4.4 Scale Relationships
 
@@ -538,7 +538,7 @@ For scales of other cardinalities, degrees are numbered ordinally (1 through *k*
 
 The identification of modal interchange is heuristic because it requires contextual analysis to determine whether a non-diatonic chord functions as a borrowing or as a chromatic alteration, secondary function, or other device.
 
-**Status**: Implemented. SCRN001A: `find_borrowed_chords()`. HRST001A: `is_modal_interchange()`, `TransitionType::ModalInterchange`.
+**Status**: Implemented. `scale/relationships`: `find_borrowed_chords()`. `harmony/chord_scale`: `is_modal_interchange()`, `TransitionType::ModalInterchange`.
 
 ### 4.6 Generated Scales
 
@@ -552,7 +552,7 @@ The diatonic scale is generated by *g* = 7 (perfect fifth) with *k* = 7. The pen
 
 **Theorem 4.6.1**: A generated scale with generator *g* and cardinality *k* has the *deep scale property* (each interval class appears a distinct number of times in the ICV) iff gcd(*g*, 12) = 1 and *k* ≤ 12 / gcd(*g*, 12). The diatonic collection satisfies this.
 
-**Status**: Implemented. SCRN001A: `generate_scale_from_generator()`, `has_deep_scale_property()`.
+**Status**: Implemented. `scale/relationships`: `generate_scale_from_generator()`, `has_deep_scale_property()`.
 
 ---
 
@@ -611,7 +611,7 @@ The fundamental tertian chord types, specified as interval sets above root:
 
 **Definition 5.3.3** [C]. The *altered dominant* chord (dom7♭9♯9♯11♭13) contains all four altered extensions. Its pitch class content is identical to the Super Locrian (altered) scale built on the root.
 
-**Status**: Implemented. HRRN001A: all 34 Appendix B chord qualities including 11ths, 13ths, and altered extensions.
+**Status**: Implemented. `harmony/roman_numeral`: all 34 Appendix B chord qualities including 11ths, 13ths, and altered extensions.
 
 ### 5.4 Non-Tertian Chord Construction
 
@@ -760,7 +760,7 @@ inversion ::= "6" | "64" | "65" | "43" | "42"
 
 **Parsing**: Given a Roman numeral string and a key context (*scale type*, *root*), the parser yields a chord instance (pitch class set with root).
 
-**Status**: Implemented. HRRN001A: full §6.2 BNF grammar including chromatic alterations, Neapolitan, extensions, and figured bass inversion suffixes.
+**Status**: Implemented. `harmony/roman_numeral`: full §6.2 BNF grammar including chromatic alterations, Neapolitan, extensions, and figured bass inversion suffixes.
 
 ### 6.3 Secondary Dominants and Applied Chords
 
@@ -773,7 +773,7 @@ inversion ::= "6" | "64" | "65" | "43" | "42"
 
 **Constraint**: Secondary dominants are meaningful only when *X* is a major or minor triad (not diminished). In a major key, V/vii° is rarely used because vii° is diminished. The set of standard secondary dominants in a major key is: V/ii, V/iii, V/IV, V/V, V/vi.
 
-**Status**: Implemented. HRSD001A: secondary dominant generation, applied chord parsing, and target validation.
+**Status**: Implemented. `harmony/applied_chords`: secondary dominant generation, applied chord parsing, and target validation.
 
 ### 6.4 Chromatic Harmony
 
@@ -810,7 +810,7 @@ Example: In C major, the common-tone diminished over I is C♯°7 = {C♯, E, G,
 
 The 3rd of the original becomes the 7th of the substitution, and vice versa.
 
-**Status**: Implemented. HRCH001A: Neapolitan sixth, augmented sixth (Italian/French/German), tritone substitution, and common-tone diminished.
+**Status**: Implemented. `harmony/chromatic`: Neapolitan sixth, augmented sixth (Italian/French/German), tritone substitution, and common-tone diminished.
 
 ### 6.5 Harmonic Progression as State Transformation
 
@@ -879,7 +879,7 @@ When the chords have unequal cardinality, voice leading is a partial function or
 
 **Definition 7.2.2** [C]. The *nearest-tone algorithm* (greedy approximation): Assign each voice in *A* to its nearest unassigned pitch in *B*. This is O(*k*²) and produces optimal or near-optimal results for typical chord sizes.
 
-**Status**: Implemented. VLNT001A: nearest-tone greedy algorithm (`voice_lead_nearest_tone`) and O(k³) Hungarian algorithm (`voice_lead_optimal`).
+**Status**: Implemented. `voice_leading/voice_leading`: nearest-tone greedy algorithm (`voice_lead_nearest_tone`) and O(k³) Hungarian algorithm (`voice_lead_optimal`).
 
 ### 7.3 Motion Classification
 
@@ -956,7 +956,7 @@ Constraints:
 
 The specification provides these as constraint sets; an implementation may solve them as constraint satisfaction problems or use them to validate existing counterpoint.
 
-**Status**: Implemented. VLSC001A: validation for all five species (`check_first_species` through `check_fifth_species`, `check_species` dispatcher) plus first-species backtracking solver (`solve_first_species`).
+**Status**: Implemented. `voice_leading/counterpoint`: validation for all five species (`check_first_species` through `check_fifth_species`, `check_species` dispatcher) plus first-species backtracking solver (`solve_first_species`).
 
 ### 7.7 Figured Bass Realisation
 
@@ -976,7 +976,7 @@ Figured bass symbols and their interval meanings:
 
 Accidentals in figures: A slash through a number, or ♯/♭ before a number, raises/lowers the indicated interval. A standalone accidental applies to the 3rd.
 
-**Status**: Implemented. VLFB001A: `parse_figured_bass()`, `figured_bass_intervals()`, `realise_figured_bass()` (single-chord), `realise_figured_bass_sequence()` (voice-led progression integrating VLNT001A).
+**Status**: Implemented. `voice_leading/figured_bass`: `parse_figured_bass()`, `figured_bass_intervals()`, `realise_figured_bass()` (single-chord), `realise_figured_bass_sequence()` (voice-led progression integrating `voice_leading/voice_leading`).
 
 ---
 
@@ -1040,16 +1040,20 @@ These are heuristic preferences from common-practice style, not absolute rules.
 
 ### 9.1 Beat as Exact Rational
 
-**Definition 9.1.1** [C]. A *beat value* is an element of **Q+** (positive rationals), represented as an irreducible fraction *p*/*q* where *p*, *q* ∈ **Z+** and gcd(*p*, *q*) = 1.
+**Definition 9.1.1** [C]. A *Beat value* is an element of **Q**, represented canonically as an irreducible fraction *p*/*q* where *p* ∈ **Z**, *q* ∈ **Z+**, and gcd(|*p*|, *q*) = 1. Zero is `0/1`. Individual musical fields impose stricter domains: durations are positive, while offsets and absolute positions are non-negative. Signed Beat values remain available for differences and transformations.
+
+The unit is fixed: one Beat unit is one whole note. Thus `Beat{1,4}` is a quarter note and `Beat{1,8}` is an eighth note. MIDI PPQ and the Live Object Model instead count quarter notes; those boundaries apply the explicit scale map `host_beats = 4 × Beat`. A field named “beats” does not override this type-level unit.
 
 Arithmetic operations on beats use exact rational arithmetic:
 - Addition: *a*/*b* + *c*/*d* = (*ad* + *bc*) / *bd*, reduced.
 - Multiplication: (*a*/*b*) · (*c*/*d*) = *ac* / *bd*, reduced.
 - Comparison: *a*/*b* < *c*/*d* iff *ad* < *bc*.
 
-**Invariant**: No floating-point representation is used in any rhythmic calculation. All rhythmic positions and durations are exactly representable.
+**Invariant**: Every C++ `Beat` object is canonical by construction: its components are private, its accessors are read-only, the denominator is positive, and the stored fraction is in lowest terms. The literal-oriented two-argument constructor is a programming-contract surface and normalises its valid input. Dynamic integer input uses `Beat::from_ratio(p, q)`, which reports `InvalidBeat` for zero denominator and `ArithmeticOverflow` when the canonical pair is not representable. JSON and workflow parsers reject invalid domains before construction. Beat JSON writers emit lowest terms, so parse–serialise is a canonical fixed point even when a reader admitted an equivalent non-canonical fraction.
 
-**Status**: Implemented (Beat type with exact rational arithmetic).
+Beat-to-Beat arithmetic is exact or returns `ArithmeticOverflow` through its checked operation. Floating input crosses one explicit approximation boundary: `Beat::from_float(x, D)` accepts only finite `x` and positive maximum denominator `D`, returns the nearest representable rational with denominator at most `D`, and reports `InvalidBeat` or `ArithmeticOverflow` instead of fabricating zero. All subsequent rhythmic calculation uses the returned rational. Ties prefer the current continued-fraction convergent. Python construction uses the same checked ratio factory and exposes read-only properties.
+
+**Status**: Implemented (construction-safe canonical storage, checked integer/float boundaries, canonical persistence, and exact checked rational arithmetic).
 
 ### 9.2 Time Signature
 
@@ -1057,16 +1061,33 @@ Arithmetic operations on beats use exact rational arithmetic:
 
 **Definition 9.2.2** [C]. Time signatures are classified by their *metre type*:
 
-| Type | Condition | Beat Division | Examples |
-|------|-----------|--------------|---------|
-| Simple | Numerator = 2, 3, or 4; beats divide into 2 | Duple (binary) | 2/4, 3/4, 4/4 |
-| Compound | Numerator = 6, 9, or 12; beats divide into 3 | Triple (ternary) | 6/8, 9/8, 12/8 |
-| Asymmetric (additive) | Numerator not in {2,3,4,6,9,12} | Mixed | 5/8, 7/8, 11/8 |
-| Complex | Nested groupings | Hierarchical | 3+3+2/8 |
+| Type | Stored-group condition | Beat division | Examples |
+|------|------------------------|---------------|----------|
+| Simple | All groups are equal and each is one or two pulses | Unary/binary | (1+1+1+1)/4, (2+2)/8 |
+| Compound | All groups are equal and each is three pulses | Ternary | (3+3)/8, (3+3+3)/8 |
+| Asymmetric (additive) | Groups are unequal and every group is two or three pulses | Mixed binary/ternary | (3+2)/8, (3+2+2)/8 |
+| Complex | Any other admitted partition | Explicit source-defined | (5+5)/8 |
+
+Classification is a function of the stored partition, not of numerator/denominator alone. Thus a
+flat factory-created 5/8 containing five one-pulse groups is simple in Sunny's algebra, while an
+explicit (3+2)/8 is asymmetric. They have equal measure duration but unequal metrical identity.
 
 **Definition 9.2.3** [C]. An *additive metre* is specified as a partition of the numerator: e.g., 7/8 as (2+2+3) or (3+2+2). The partition determines the beat grouping and the accent pattern.
 
-**Representation**: A time signature is stored as a tuple (*groups*, *denominator*) where *groups* is a list of integers summing to the numerator. For simple and compound metres, this is a list of identical values (e.g., 4/4 = (1, 1, 1, 1)/4 or equivalently (4)/4).
+**Representation**: A time signature is stored as a tuple (*groups*, *denominator*) where *groups*
+is a non-empty list of positive integers summing to a representable positive numerator and the
+denominator is a positive power of two. Equal flat numerator/denominator pairs do not imply equal
+grouping identity: (3+2)/8 and (2+3)/8 have the same measure duration but different metrical
+structure. The deterministic flat-signature factory uses groups of three for compound numerators
+and otherwise one group per notated pulse; any other admitted partition remains explicit source
+intent.
+
+**Invariant**: Every C++ `TimeSignature` satisfies the representation by construction. The default
+is canonical 4/4, stored components are private and read-only, program construction enforces its
+contract, and dynamic/JSON input uses the checked `TimeSignature::from_groups` boundary. Invalid
+group lists, non-positive or overflowing numerators, and non-power-of-two denominators are rejected
+before a Score exists. Flattening to numerator/denominator is therefore a target projection, not a
+validation or grouping-preservation operation.
 
 ### 9.3 Metrical Hierarchy
 
@@ -1487,18 +1508,43 @@ Each temperament is specified as a table of 12 pitch deviations from 12-TET, mea
 
 The frequency for pitch class *p* in octave *o* under tuning table τ is:
 
-*f*(*p*, *o*) = *f*_ref · 2^((12 · *o* + *p* − 69 + τ(*p*)/1200))
+For scientific pitch octave *o* (`C4` has *o* = 4), the corresponding MIDI number is
+*m* = 12(*o* + 1) + *p*, and:
+
+*f*(*p*, *o*) = *f*_ref · 2^((*m* − 69)/12 + τ(*p*)/1200)
+
+The implemented frequency projection is defined only for a finite positive reference frequency,
+a finite selected table entry, and a finite positive result. Inputs or exponent ranges outside that
+tractable floating-point domain return `InvalidFrequency`; they do not produce NaN, infinity, or
+zero as successful musical data.
 
 ### 13.4 Scala File Support
 
-**Definition 13.4.1** [C]. The Scala .scl file format specifies a tuning as a list of *n* − 1 interval values (in cents or as ratios) defining the steps from the starting pitch to each subsequent degree, with the *n*-th degree implicitly being the octave (1200 cents or 2/1 ratio).
+**Definition 13.4.1** [C]. The Scala `.scl` file format specifies a tuning as *n*
+explicit interval values (in cents or as ratios) above an implicit degree zero of 1/1. The final
+explicit value is the formal period or interval of equivalence. That period is not necessarily an
+octave: Scala does not assume 1200 cents or 2/1.
 
 **Parsing**: A .scl file consists of:
 1. Description line (comment)
 2. Number of notes *n*
 3. *n* interval values, each either a decimal number (cents) or a ratio (*p*/*q*)
 
-The parsed result is a tuning table.
+The parsed result is a general `ScalaTuning`. Projection into Sunny's 12-entry `TuningTable` is
+defined only when *n* = 12 and the final period is exactly 1200 cents, because `TuningTable` is a
+deviation function on **Z/12Z** with octave recurrence. A valid non-octave Scala scale remains
+readable and writable but is not representable by that narrower projection.
+
+`ScalaTuning`, `TuningTable`, and `ScoreTuning` remain distinct layers. The Scala value retains its
+description, ratio-versus-cents spelling, formal period, and degree annotations; `TuningTable`
+retains only twelve octave-repeating cent deviations; `ScoreTuning` is a complete 128-index
+sounding-pitch function. `scala_to_cent_table` is therefore still a lossy partial projection.
+`scala_to_score_tuning`, by contrast, admits any non-empty Scala scale with a finite positive final
+period and expands it under an explicit keyboard-mapping condition: the selected reference MIDI
+index is degree zero, each adjacent index advances one Scala degree, and the final interval repeats
+as the formal period upward and downward. This preserves non-twelve and non-octave pitch intent in
+the Score domain, but does not retain ratio spelling/annotations and does not itself mutate
+Ableton Live or a render device.
 
 ---
 
@@ -1593,9 +1639,9 @@ The following types form the core data model. Each is specified with its fields,
 
 #### 15.1.4 Beat
 
-**Fields**: `numerator : Z`, `denominator : Z+`
+**Observations**: `numerator() : Z`, `denominator() : Z+`; neither component is independently mutable.
 
-**Invariant**: gcd(numerator, denominator) = 1.
+**Invariant**: gcd(|numerator|, denominator) = 1 and zero is represented only as `0/1`.
 
 #### 15.1.5 NoteEvent
 
@@ -1609,6 +1655,19 @@ The following types form the core data model. Each is specified with its fields,
 
 **Derived**: `bass() = notes[0]`, `soprano() = notes[last]`
 
+**Registered-quality realization**: Let `Q(quality) = (q_0, ..., q_{n-1})` be the chord-quality
+registry intervals with `q_0 = 0`. A complete realized voicing has at least one note, is strictly
+ascending, and has pitch-class set
+`{(root + q_i) mod 12 | 0 <= i < n}`; octave doublings do not change completeness. Its inversion
+is an index `k in [0, n)`, and `bass() mod 12 = (root + q_k) mod 12`.
+
+`generate_chord` and `generate_chord_from_numeral` have an all-or-none postcondition: success
+contains every registered interval and realizes any requested inversion. If the requested register
+makes an original or octave-raised member fall outside MIDI `[0, 127]`, generation fails instead of
+returning a partial or inversion-incoherent chord whose metadata would overstate its contents.
+Score harmonic annotations apply the stronger persisted-profile rules in Score IR §6.2; other
+analytical uses of `ChordVoicing` remain subject to their owning API's stated preconditions.
+
 #### 15.1.7 ScaleDefinition
 
 **Fields**: `name : String`, `intervals : [bool; 12]`, `note_count : Z`, `description : String`
@@ -1620,6 +1679,10 @@ The following types form the core data model. Each is specified with its fields,
 **Fields**: `groups : Vec<Z+>`, `denominator : Z+`
 
 **Derived**: `numerator() = sum(groups)`, `metre_type() : {Simple, Compound, Asymmetric}`
+
+**Invariant**: `groups` is non-empty, its sum is representable and positive, and `denominator` is
+a power of two. Components are construction-safe and read-only; dynamic input uses a checked
+factory.
 
 #### 15.1.9 TuningTable
 
@@ -1643,13 +1706,148 @@ The specification defines interfaces for the following external formats. Parsing
 
 | Format | Direction | Scope |
 |--------|-----------|-------|
-| MIDI (SMF) | Read / Write | Pitch, rhythm, velocity, tempo, time signature |
-| MusicXML | Read / Write | Full notation: pitch spelling, dynamics, articulation, form |
+| MIDI (SMF) | Read / Write | Notes, velocity, tempo, time/key signatures, CC, and program events within the declared SMF profile |
+| MusicXML | Read / Write | Feature-rich Score export; fail-closed sequential integer/numeric-voice compact import profile |
 | LilyPond | Write | Engraving-quality notation output |
-| ABC Notation | Read | Simple melody and chord input |
-| Scala (.scl) | Read | Tuning definitions |
-| OSC | Read / Write | Real-time control messages (existing) |
+| ABC Notation | Read | Simple monophonic notes/rests, durations, and standard tonic/modal key signatures |
+| Scala (.scl) | Read / Write | One scale, empty-or-single-line description, exact positive integer ratios or finite cents, and optional trailing degree text |
+| Ableton Live Object Model | Read / Write | Session state and structured Live mutations |
 | JSON-RPC (MCP) | Read / Write | Tool invocation (existing) |
+
+The low-level SMF profile requires the standard six-byte header, a final End-of-Track meta event
+in every declared track, no bytes beyond the declared tracks, and fully paired positive-duration
+notes. An unmatched note ending, an unterminated note start, or a same-tick zero-duration pair is
+invalid source rather than an event to erase. Valid but unmodelled SMF events may be skipped by the
+one-way Corpus ingestion projection; they are not represented as retained `MidiFile` fields. A
+Type-1 `MidiFile` retains its declared track count, including empty tracks, and every retained event
+stores its source track index and one-based within-track source order; paired notes retain separate
+Note On and Note Off orders. The current writer is deliberately Type 0 and requires exactly one
+track with every event assigned to track zero. Parsed models use their complete explicit order,
+including semantically significant same-tick ordering. Manually built models leave every order at
+zero and receive canonical event priority; mixing specified and unspecified order is rejected.
+`track_end_ticks` retains the absolute End-of-Track
+tick for every source track, including trailing silence; a manually constructed Type-0 file may
+leave it empty to derive the endpoint from its last emitted event.
+Time-signature events retain all four standard payload values: numerator, power-of-two denominator,
+MIDI clocks per metronome click, and notated 32nd notes per MIDI quarter. Explicit Note Off
+velocity is retained and written. Because wire Note Off messages identify only channel and key,
+the paired-note writer requires endpoints of overlapping same-channel/same-key instances to be
+nondecreasing in onset order; nested pairings that its FIFO parser could not recover are rejected.
+Valid event classes outside the retained
+`MidiFile` algebra—unknown meta, SysEx, polyphonic aftertouch, channel pressure, and pitch bend—are
+counted separately in `MidiParseLoss`. The exact low-level writer refuses a model carrying nonzero
+loss evidence; Corpus analysis may consume it only while recording each nonzero class as a manual
+correction.
+The `midi_to_note_events` analytical projection deliberately collapses valid track/channel
+ownership while preserving each admitted musical note's pitch, timing, attack velocity, and Note
+Off velocity; it rejects malformed channels and the in-memory-only keyswitch-ordering marker. The
+inverse flat adapter emits channel zero, requires a nonzero PPQ value with the SMPTE flag clear,
+preserves release velocity, and rejects muted source events because an SMF note cannot retain
+Sunny's mute bit. Thus the low-level `MidiFile`, generic `NoteEvent`, and analytical/Corpus path
+share the same release-velocity carrier instead of rejecting or erasing it.
+
+The low-level `MidiFile` parser/writer is payload-preserving: it neither derives nor replaces the
+two final time-signature bytes. The higher Score → `CompiledMidi` projection has a distinct source
+model and therefore must construct them. It writes `bb=8` and derives `cc` as
+`96*gcd(groups)/denominator` when that is an integral byte. This creates a deterministic
+group-boundary-aligned metronome grid, not a target grouping definition. Only non-default Sunny
+partitions enter the grouping requested count, and SMF writes zero of them even when the repeated
+click span matches. The exact Score projection also preflights its current numerator 1…255 and
+actual denominator ≤128 profile before narrowing.
+
+Corpus ingress preserves the distinction in reverse. It reconstructs Score grouping only from
+Sunny's deterministic numerator/denominator rule. A `cc` different from that rule's click
+projection becomes `midi.time_signature_metronome_clicks` manual-correction evidence; it is not
+reinterpreted as an ordered partition. Same-tick signatures must agree in all four payload fields.
+Because Sunny fixes eight notated 32nds per MIDI quarter throughout its Beat/bar algebra, a source
+`bb` other than 8 is unrepresentable and ingestion fails instead of silently rescaling notation or
+bar placement. Thus low-level SMF round-trip preservation, analytical ingestion, Score projection
+completeness, and Live/Max conformance remain separate propositions.
+
+Corpus channel-state ingestion is a second, explicitly narrower projection. If all retained notes
+use one wire channel, that channel is preserved in the generated Part and completed CC64/CC67
+switch pairs on it become binary pedal spans. The MIDI Association's controller table defines
+values through 63 as off and values from 64 as on for both controllers
+([MIDI 1.0 Control Change Messages](https://midi.org/midi-1-0-control-change-messages)). Score
+re-emits canonical 0/127, so other threshold-equivalent source bytes remain normalization evidence.
+The projection does not turn arbitrary controller or Program Change events into articulation
+mappings: those mappings require source Score articulation identity and are not free-standing
+tick events. Same-tick state changes, repetitions, unmatched switch endpoints, cross-channel
+pedals, other CCs, every Program Change, multi-channel ownership, and Type-1 track topology are
+separately recorded as Corpus manual-correction evidence. The low-level `MidiFile` remains the
+payload- and ownership-preserving model for all of them.
+
+The compact ABC reader implements a fail-closed, single-tune, monophonic subset of ABC 2.1. It
+requires one positive `X:` reference and one terminating `K:` field; accepts descriptive header
+fields, simple or free `M:`, positive rational `L:`, one positive-integer `Q:` rate with an exact
+single beat unit, letter notes, `z` rests, exact integer/slash length multipliers, default
+pitch-wide bar accidental propagation, plain bar lines, and comments. An absent `M:` remains free
+metre rather than becoming 4/4. An absent `L:` follows ABC's meter-derived rule: 1/16 below 3/4,
+otherwise 1/8, with free/common/cut time using 1/8. Note timing uses checked rational
+multiplication and accumulation; pitch outside MIDI 0…127 is rejected rather than clamped.
+The positive `X:` value is retained as the tune's `reference_number`. Repeated supported
+string-valued information fields `A/B/C/D/F/G/H/N/O/R/S/Z` are retained in source order as
+`descriptive_fields`; accepting documentation metadata does not make its presence observationally
+identical to its absence.
+
+Its key subset accepts major, minor, Ionian, Aeolian, Mixolydian, Dorian, Phrygian, Lydian, and
+Locrian names using the standard case-insensitive three-letter mode rule, derives the exact
+traditional fifths signature, and applies it to playback pitches. Explicit `exp`/modifier
+signatures, `K:none`, bagpipe keys, clef, and transposition modifiers are outside this NoteEvent-only
+profile and are rejected; they are not silently reinterpreted as major. Chords, chord symbols,
+repeats/endings, tuplets, broken rhythm, ties/slurs, grace/decorations, multi-measure rests,
+multiple voices, directives/macros, body/inline field changes, complex metre, multi-beat or textual
+tempo, malformed/duplicate recognized fields, and unknown body tokens are likewise rejected
+instead of being flattened into a sequential note stream.
+
+The compact MusicXML reader's type algebra is intentionally narrower than MusicXML 4.0. It
+accepts integer divisions/durations and alterations, one numeric voice lane per sequential event,
+canonical integer measure labels for Corpus ingestion, simple single-pair metres, and traditional
+keys. Decimal timing/microtones, string voices, additive/composite metres, cursor rewinds/advances,
+mid-measure attributes, multi-staff/transposition state, and grace/cue/unpitched notes are rejected
+rather than defaulted. A part must declare positive integer divisions before its first duration;
+subsequent declarations are normalized immediately into exact `Beat` values. `MusicXmlScore` does
+not expose a divisions field because a single scalar cannot retain part-local or changing source
+declarations, and the writer derives its own exact common encoding basis. Its writer uses checked
+positive `int` divisions and duration units, rejects
+an invalid Beat or an overflowing divisions LCM, and omits MusicXML's optional graphical `type`
+when an exact note-type-plus-dots decomposition does not exist; it never substitutes a quarter-note
+glyph for an arbitrary rational. Its flat NoteEvent adapters accept exactly one sequential part;
+preserve explicit rests, onset gaps, and equal-duration chord simultaneity; omit a meter rather than
+inventing 4/4 around an unbounded stream; and reject overlap, multiple parts, target-range failure,
+or non-default velocity evidence that `MusicXmlScore` cannot retain. Score-to-MusicXML compilation
+is a separate, richer output path. Its result is not generally an input to the compact parser:
+multi-voice and multi-staff export legitimately uses MusicXML `<backup>` and `<forward>` cursor
+elements that the sequential import algebra cannot represent. Only the intersection of those two
+profiles has an internal parse/export round trip.
+
+The Scala reader follows the `.scl` distinction that a period selects cents while a positive
+integer or one-slash pair selects a ratio. An empty description is data, comments begin with `!`,
+horizontal whitespace around ratios and trailing degree labels are accepted, and negative ratios,
+malformed attached suffixes, non-finite cents, inconsistent degree counts, or invalid writer state
+are rejected. Accepted degree labels are retained as canonical `trailing_text` and emitted by the
+writer; annotations therefore remain distinguishable rather than becoming unreported parse loss.
+Its public integer-ratio-to-cents helper has the same positive-ratio precondition and
+returns `Result`; invalid input is not mapped to the valid zero-cent unison. Cent-valued writer
+tokens use enough significant decimal digits to recover the exact stored `double` and always retain
+a decimal point, including for integral values, so write-parse neither rounds the value nor changes
+Scala's cents/ratio branch.
+The final listed interval remains the Scala scale's formal period. Because the fixed
+`TuningTable` target repeats pitch classes at 1200 cents, `scala_to_cent_table` additionally
+requires exactly twelve listed intervals and an exact 1200-cent final period; valid non-octave
+Scala tunings are retained by the interchange model but rejected by that narrower projection.
+The independent `scala_to_score_tuning` projection accepts a non-empty scale with a finite positive
+period and tiles its degrees over indices 0–127 relative to the caller's exact reference
+note/frequency. Negative index offsets use mathematical floor-period recurrence, so the mapping is
+the same on both sides of the reference. Expansion fails if any resulting Score frequency is
+non-finite or non-positive.
+
+The low-level LilyPond helper profile is also loss-accountable. Pitch, key, time-signature, note,
+rest, chord, and fragment construction return `Result` and reject invalid source state. Every
+positive rational duration is preserved: conventional values use LilyPond's power-of-two,
+long-value, and augmentation-dot tokens, while all other values use exact `1*N/D` duration
+multipliers. A flat `NoteEvent` fragment must be temporally ordered and non-overlapping; explicit
+gaps and muted events become rests, so absolute onset and mute/rest evidence are not erased.
 
 ---
 
@@ -1666,7 +1864,12 @@ The following round-trip operations must produce the identity:
 5. **Chord**: root + quality → pitch class set → root finding → original root + quality (for unambiguous chord types).
 6. **Roman numeral**: string → chord in key → string (for the canonical romanisation).
 7. **Tone row**: P₀ → twelve-tone matrix → read off P₀ from first row (exact).
-8. **Tuning**: Scala file → TuningTable → Scala file (within formatting tolerance).
+8. **Scala interchange**: `ScalaTuning` → Scala text → `ScalaTuning` preserves the admitted
+   semantic fields exactly (cent-valued tokens may use a different decimal spelling). The separate
+   `ScalaTuning` → `TuningTable` operation is partial and lossy and therefore has no inverse
+   round-trip law. `ScalaTuning` → `ScoreTuning` is likewise a one-way projection under the stated
+   keyboard-mapping condition; the complete resulting pitch function is deterministic, while
+   Scala token spelling and degree annotations are intentionally not reconstructible from it.
 
 ### 16.2 Conservation Laws [C]
 
@@ -1705,26 +1908,26 @@ The following table maps specification sections to their implementation status a
 
 | Section | Domain | Status | Priority | Rationale |
 |---------|--------|--------|----------|-----------|
-| §2.5 | Spelled Pitch | Complete | — | PTSP001A: SpelledPitch, SPN parsing, line-of-fifths |
-| §3.2–3.4 | Diatonic Intervals | Complete | — | PTDI001A: DiatonicInterval (Z×Z), apply, round-trip |
-| §5.3 | Extended Chords | Complete | — | HRCH001A: All 34 Appendix B chord qualities |
-| §6.3 | Secondary Dominants | Complete | — | HRSD001A: V/x, viio/x detection and generation |
-| §6.4 | Chromatic Harmony | Complete | — | HRCH001A: Neapolitan, augmented sixths, tritone sub |
-| §6.6 | Cadences | Complete | — | HRFN001A: PAC, IAC, HC, DC, PC templates |
-| §7.4 | Voice-Leading Constraints | Complete | — | VLCN001A: All 11 rules with configurable severity |
-| §9.2–9.3 | Time Signature / Metre | Complete | — | RHTS001A: TimeSignature, metrical hierarchy |
-| §9.4 | Tuplets | Complete | — | RHTU001A: Tuplet with exact rational arithmetic |
-| §11.1–11.3 | Neo-Riemannian / Tonnetz | Complete | — | NRPL001A: PLR, Tonnetz coordinate mapping |
-| §12.7–12.9 | Serialism | Complete | — | SRTW001A: Tone rows, matrix, combinatoriality |
-| §4.3–4.6 | Scale Relationships | Complete | — | SCGN001A, SCRN001A: Modal interchange, generation |
-| §8 | Melody | Complete | — | MLCT001A: Contour, statistics, sequences |
-| §10 | Form | Complete | — | FMST001A, FMMT001A: Phrase structure, sectional forms |
+| §2.5 | Spelled Pitch | Complete | — | `pitch/spelled_pitch`: SpelledPitch, SPN parsing, line-of-fifths |
+| §3.2–3.4 | Diatonic Intervals | Complete | — | `pitch/diatonic_interval`: DiatonicInterval (Z×Z), apply, round-trip |
+| §5.3 | Extended Chords | Complete | — | `harmony/chromatic`: All 34 Appendix B chord qualities |
+| §6.3 | Secondary Dominants | Complete | — | `harmony/applied_chords`: V/x, viio/x detection and generation |
+| §6.4 | Chromatic Harmony | Complete | — | `harmony/chromatic`: Neapolitan, augmented sixths, tritone sub |
+| §6.6 | Cadences | Complete | — | `harmony/harmonic_function`: PAC, IAC, HC, DC, PC templates |
+| §7.4 | Voice-Leading Constraints | Complete | — | `voice_leading/constraints`: All 11 rules with configurable severity |
+| §9.2–9.3 | Time Signature / Metre | Complete | — | `rhythm/meter`: TimeSignature, metrical hierarchy |
+| §9.4 | Tuplets | Complete | — | `rhythm/tuplet`: Tuplet with exact rational arithmetic |
+| §11.1–11.3 | Neo-Riemannian / Tonnetz | Complete | — | `transform/neo_riemannian`: PLR, Tonnetz coordinate mapping |
+| §12.7–12.9 | Serialism | Complete | — | `post_tonal/twelve_tone`: Tone rows, matrix, combinatoriality |
+| §4.3–4.6 | Scale Relationships | Complete | — | `scale/generation`, `scale/relationships`: Modal interchange, generation |
+| §8 | Melody | Complete | — | `melody/analysis`: Contour, statistics, sequences |
+| §10 | Form | Complete | — | `form/structure`, `form/motif`: Phrase structure, sectional forms |
 | §13 | Tuning & Temperament | Complete | — | TUET, TUJI, TUHT: ET, JI, historical temperaments |
 | §14 | Acoustics | Complete | — | ACHS, ACPL, ACRG, ACVP: Harmonic series, consonance |
 | §15.2 | External Formats | Complete | — | FMSL, FMLY, FMAB, FMMI, FMMX: Scala, LilyPond, ABC, MIDI, MusicXML |
-| §1.2 | D₁₂ Group Structure | Complete | — | PTDN001A: Composition, inverse, apply, order, conjugacy classes, subgroup generation, named subgroups |
-| §7.2 | Hungarian Algorithm | Complete | — | VLNT001A: voice_lead_optimal with O(k³) Kuhn-Munkres assignment |
-| §16.1.5–6 | Chord/Numeral Round-Trip | Complete | — | HRRN001A: recognize_chord (PCS → root/quality), chord_to_numeral (reverse roman numeral generation) |
+| §1.2 | D₁₂ Group Structure | Complete | — | `pitch/dihedral_group`: Composition, inverse, apply, order, conjugacy classes, subgroup generation, named subgroups |
+| §7.2 | Hungarian Algorithm | Complete | — | `voice_leading/voice_leading`: voice_lead_optimal with O(k³) Kuhn-Munkres assignment |
+| §16.1.5–6 | Chord/Numeral Round-Trip | Complete | — | `harmony/roman_numeral`: recognize_chord (PCS → root/quality), chord_to_numeral (reverse roman numeral generation) |
 
 ---
 

@@ -2,7 +2,7 @@
 
 **Version:** 0.1.0-draft  
 **Date:** 2026-02-08  
-**Status:** Implemented (normative; source cites sections by number)
+**Status:** Normative model with an explicit implemented runtime profile
 **Dependencies:** Sunny Engine Formal Specification v0.1.0 (the "Theory Spec"); Sunny Score IR Specification v0.2.0 (the "Score IR Spec")
 
 ---
@@ -29,7 +29,10 @@ For acoustic instruments rendered through sample libraries, the Timbre IR models
 
 3. **Correspondence to the Score IR**: Every Part in the Score IR has a corresponding TimbreProfile in the Timbre IR. The two are linked by Part ID. Changes to the Timbre IR do not affect the Score IR (the notes do not change); changes to the Score IR's Part assignments may require Timbre IR updates (if a part is reassigned to a different instrument).
 
-4. **Compilation to DAW state**: The Timbre IR compiles to Ableton device chains, plugin parameter states, and automation curves via the LOM bridge, deterministically and reproducibly.
+4. **Compilation to DAW state**: The Timbre IR compiler emits operations only where Sunny has a
+   verified target mapping and returns explicit capability or mapping diagnostics for the rest.
+   Public writability alone does not establish a correct semantic mapping. The compiler must not
+   invent device properties or treat mapping ranges as current values.
 
 ### 0.4 Notation Conventions
 
@@ -40,6 +43,10 @@ Inherits the conventions of the Theory Spec and Score IR Spec. Additional conven
 - Frequency values in the audio domain use **Hz** (hertz). Filter frequencies, oscillator frequencies, and LFO rates are all in Hz unless otherwise noted.
 - Time values in the audio domain use **seconds** (s) or **milliseconds** (ms). Envelope stages, delay times, and modulation rates are in these units.
 - Amplitude values use **dB** (decibels) relative to full scale (dBFS) for levels, or linear gain factors where specified.
+
+### 0.5 Implemented Runtime Profile
+
+The current runtime implements the typed TimbreProfile model, versioned JSON, mutations, parameter-derived semantic analysis, preset workflows, validation, and capability-aware compilation to native Ableton devices. It does not render or inspect PCM audio, load arbitrary plug-ins or browser presets, or author Ableton automation envelopes. Those target gaps remain represented in the IR and are returned as compiler warnings rather than approximated.
 
 ---
 
@@ -71,7 +78,7 @@ The signal flow within a TimbreProfile is a linear chain:
 SoundSource → InsertChain → [output to Mix IR channel]
 ```
 
-The SoundSource produces the raw audio signal. The InsertChain processes it through a sequence of effects. The output feeds into the Mix IR's channel strip for the corresponding part.
+The graph represents the intended raw-audio and insert-chain signal path. The current runtime models and deploys that path to supported Ableton devices; it does not itself synthesize or process PCM audio.
 
 Within the SoundSource itself, the signal flow may be more complex (multiple oscillators, FM operators, sample layers), modelled as an internal DAG.
 
@@ -372,6 +379,10 @@ The ADSR is representable as a 3-stage envelope (Attack → peak, Decay → sust
 | Field | Type | Description |
 |-------|------|-------------|
 | `routings` | `Vec<ModulationRouting>` | All active modulation connections |
+| `lfos` | `Vec<LFO>` | Index-addressed owned LFO generators |
+| `envelopes` | `Vec<Envelope>` | Index-addressed owned modulation envelopes |
+| `step_sequencers` | `Vec<StepSequencer>` | Index-addressed owned step generators |
+| `macro_knobs` | `Vec<MacroKnob>` | Identity-addressed macro controls |
 
 **ModulationRouting**:
 
@@ -403,21 +414,45 @@ The ADSR is representable as a 3-stage envelope (Attack → peak, Decay → sust
 | `AudioFollower { sidechain: Id<Part> }` | Envelope follower on another part's audio |
 | `MacroKnob { index: u8 }` | User-defined macro control |
 
+The representation is discriminated even though its C++ storage is a fixed payload. LFO,
+Envelope, and StepSequencer indices address their corresponding owned vectors; MacroKnob indices
+address the explicit macro `index`, not vector position. `CC.number` is in `[0,127]`.
+`AudioFollower.sidechain` is nonzero, differs from the owning profile's Part, and resolves to a
+Score Part at Project validation. Fields irrelevant to the selected discriminator are zero. The
+same rules apply to `via`. Routing depth is finite and in `[-1,1]`.
+
 ### 4.3 ModulationTarget
 
-**Definition 4.3.1**. Any numeric parameter within the TimbreProfile can be a modulation target. Targets are addressed by path:
+**Definition 4.3.1**. Any runtime-addressable continuous `f32` leaf within the active
+`TimbreProfile` structure can be a modulation target. Categorical values, integral counts,
+identities, resource references, and topology are not scalar modulation targets.
+
+The canonical grammar is:
+
+```text
+path       := identifier index* ("." identifier index*)*
+identifier := [A-Za-z_][A-Za-z0-9_]*
+index      := "[" ("0" | [1-9][0-9]*) "]"
+```
+
+Resolution consumes the entire path against the active `SoundSource`/`Effect` variant, present
+optional members, and current vector extents. Empty components, leading-zero or partially parsed
+indices, a valid prefix followed by a suffix, an absent optional member, and an out-of-range index
+are unresolved. Every path consumer—get, set, modulation, automation, preset loading, rendering
+mapping, and whole-document validation—uses this same authority.
 
 Examples:
 - `source.oscillators[0].tune_cents`
 - `source.filter.cutoff`
 - `source.filter.resonance`
-- `source.wavetable.position`
-- `insert_chain.effects[2].parameters.mix`
-- `source.granular.position`
-- `source.granular.grain_size`
-- `source.amplifier.envelope.stages[0].duration` (attack time)
+- `source.position` (when the active source is Wavetable or Granular)
+- `source.grain_size` (when the active source is Granular)
+- `insert_chain.effects[2].mix`
+- `source.amplifier.stages[0].duration` (when the active source exposes that amplifier)
 
-The path syntax mirrors the structural hierarchy of the TimbreProfile.
+Variant names such as `wavetable` or `granular` are type discriminators, not synthetic path
+segments. Effect parameters are fields of the active effect variant rather than members of a
+synthetic `parameters` object.
 
 ### 4.4 LFO
 
@@ -654,6 +689,8 @@ Semantic descriptors can be:
 - **Derived from parameters** [H] using heuristic rules (e.g., brightness correlates with filter cutoff relative to fundamental frequency and harmonic amplitude distribution).
 - **Derived from audio analysis** [E] by analysing a rendered sample of the sound (spectral centroid, spectral flux, attack transient analysis).
 
+The first two modes are implemented. `AudioDerived` is a reserved provenance value; the current runtime has no rendered-audio analyser.
+
 The derivation mode is stored alongside the descriptor:
 
 | Mode | Meaning |
@@ -684,6 +721,13 @@ The derivation mode is stored alongside the descriptor:
 | `value` | `f32` | Parameter value at this time |
 
 **InterpolationMode**: `Step` (hold until next breakpoint), `Linear`, `Smooth` (cubic Hermite), `Exponential`.
+
+An admitted lane has an exact resolvable continuous target, a defined interpolation value, and at
+least one breakpoint. Every value is finite; every time is at or after `SCORE_START`; times are
+strictly increasing. A single breakpoint is a constant lane. These target-independent checks run
+both at mutation and document-load boundaries. Whether a time lies within a particular Score's
+duration is a Project-level correspondence condition because a standalone TimbreProfile does not
+own the Score time map.
 
 Timbral automation is the mechanism by which an agent can, for example, gradually open a filter across the build section of an electronic track, or switch a string section from a sustain articulation to a tremolo articulation at a specific bar.
 
@@ -732,21 +776,84 @@ A preset library is a collection of TimbrePresets, searchable by:
 
 ### 9.1 Compilation to Ableton
 
-The *TimbreCompiler* maps each TimbreProfile to an Ableton instrument device chain.
+The *TimbreCompiler* maps each TimbreProfile to the supported portion of an Ableton instrument device chain. Its MCP result distinguishes acknowledged transport success from completeness and includes warnings for requested operations outside the public LOM surface.
+
+The production transport first obtains the externally observed target profile described in
+`docs/ableton-max-conformance.md`. The result carries that profile so support decisions are tied to
+a named Live version and bridge contract rather than connection status alone. A transport that
+cannot supply a profile fails before mutation; an offline recording transport must declare the
+modelled target against which its plan is compiled.
+All materialised device positions must fit the bridge's canonical non-negative signed-index domain.
+The complete enabled chain is checked before source insertion, while summary counters remain
+64-bit and independent of target addressing.
 
 **Mapping strategy**:
 
-For **Sampler**-type sources using established sample libraries (Kontakt, Spitfire, EastWest, etc.), the compiler:
-1. Creates a MIDI track in Ableton.
-2. Loads the specified plugin preset.
-3. Applies microphone position levels via plugin parameters.
-4. Inserts the effect chain as Ableton audio effects on the track.
+The Score compiler creates MIDI tracks. In standalone compilation the caller supplies the target
+track. In complete-project compilation the profile's typed `part_id` is resolved through the
+Score's authoritative Part-to-track map, so profile vector order is deliberately irrelevant. For
+the resolved track, the compiler:
 
-For **synthesiser**-type sources, the compiler:
-1. Creates a MIDI track.
-2. If a matching Ableton instrument exists (Operator for FM, Wavetable for wavetable, Simpler for sampler, Analog for subtractive), loads it and maps parameters.
-3. If no native match exists, loads a third-party VST/AU plugin and maps parameters.
-4. Applies the effect chain.
+1. Selects the configured native device name, or a faithful native category default (Analog for
+   subtractive, Operator for FM/additive, Wavetable for wavetable, Simpler for sampling, and
+   Collision for physical modelling). Granular and hybrid sources have no default native mapping;
+   the compiler preserves and reports them instead of substituting Simpler or an empty Instrument
+   Rack.
+2. Requires a read-only device-count observation proving the target's mixer-excluding insertable
+   chain is empty, then inserts that device at index zero using `Track.insert_device`. This avoids
+   silently composing with default-track devices that the Timbre IR does not own. A real
+   protocol-v41 peer must return an exact one-device count delta and the inserted device's public
+   identity, `type`, `is_active`, exact Boolean `can_have_chains`, `latency_in_samples`, and
+   `latency_in_ms` state, plus the enclosing
+   Track's `has_audio_output` and `has_midi_output` classification. The source is verified only when its class display identity
+   matches the requested Live UI name, its type is instrument, it is active, it cannot own Rack
+   chains, and Live reports that the track now has audio rather than residual MIDI output.
+3. Inserts enabled native effects in IR order. Each real insertion must prove an exact append,
+   requested display class, audio-effect type, non-Rack shape, activity, and continued Track audio-output
+   classification. A non-default wet balance is set by exact `DeviceParameter` name through the
+   Sunny bridge adapter unless an explicit mapping owns that IR path.
+4. Resolves every explicit rendering-map path to its current numeric IR value, performs the declared source/curve/target conversion, writes the named DeviceParameter, and retains immediate readback evidence.
+5. Returns paired `devices_requested`/`devices_created`/`devices_verified` and
+   `effects_requested`/`effects_inserted`/`effects_verified` counts, per-parameter evidence, and a warning list without
+   modifying the Timbre IR. Requested source-device count is one for the profile even when its
+   plug-in, granular, or hybrid materialisation is outside the admitted target; requested effects
+   count enabled effects unless the entire insert chain is bypassed. `device_deployments` retains
+   requested and observed source identity/type/activity/Rack-shape/reported-latency/output classification; a recording
+   transport leaves observation absent and cannot increment the verified counter.
+
+**Live capability boundary**:
+
+- `Track.insert_device` requires Live 12.3+ and can insert native Live devices only. An observed
+  older target skips source/effect insertion before mutation and returns explicit warnings.
+- A successful source insertion call is not active-instrument proof. Missing or malformed
+  insertion evidence from a real peer is a protocol error; a well-formed identity/type/activity
+  difference is retained and makes the result incomplete. A real unverified source is not a valid
+  dependency for effect or parameter mutation, so those downstream writes are skipped. An offline
+  recording plan may continue through its explicitly modelled unexecuted chain.
+- `Device.can_have_chains` is an exact public Rack discriminator. Sunny's current source/effect
+  intent is a flat serial device sequence and has no carrier for Rack-owned parallel/nested chains,
+  key/velocity/selector zones, chain mixer controls, pads, or return chains. A true observation is
+  retained through `flat_device_verified = false`, warns, and remains incomplete; it is not
+  recursively traversed or treated as malformed target state.
+- Public Device latency reports are retained as exact bounded facts, but are not summed. The public
+  Song/Track snapshot does not expose Delay Compensation, Reduced Latency When Monitoring, or
+  Track Delay, and it does not close routing, buffers/drivers, external hardware, or acoustic
+  propagation. Device results therefore keep `render_path_latency_fully_observed = false`.
+- The same evidence rule applies to Timbre audio effects with expected public type 2. Effect
+  acknowledgement and verified active audio-effect state remain separate counters.
+- `Song.create_midi_track` does not document an empty-device-chain postcondition. A missing
+  pre-insert count is a protocol error and a nonempty insertable chain is rejected before source
+  insertion; current compilation does not reconcile default/existing devices with Timbre indices.
+- Plug-in insertion and arbitrary preset/browser loading are unsupported by public LOM and produce warnings with no substitute command.
+- Only parameters named by `TimbreRenderingConfig.parameter_map` are applied. Unspecified source/effect values remain target-dependent and keep the result incomplete; a successful mapped scalar does not imply complete device or sonic equivalence.
+- Audio effects are inserted only after Sunny has materialised an instrument source. If a plug-in,
+  granular, or hybrid source is not materialised, the compiler does not assume that a suitable
+  instrument already occupies the MIDI track.
+- A mapping contains no duplicated current value: its map key is a typed Timbre path, and the compiler obtains the current value with `get_parameter`. Invalid paths, domains, curves, current values, or non-materialisable device indices fail before the first Live mutation.
+- Bridge protocol v43 matches `parameter_name` against exact public `name`/`original_name`, rejects disabled or non-changeable parameters, validates declared internal ranges against Live's `min`/`max` before the parameter write, and returns requested/observed value, resolved identity, actual bounds, quantisation, the conditional `default_value`/`value_items` domain, `is_enabled`, `state`, and `automation_state` evidence. Non-quantized evidence requires only a finite in-range floating default and null labels; quantized evidence requires a null default and an exact, possibly empty string vector. Labels remain opaque: their localization stability, uniqueness, value correspondence, and enum meaning are not inferred. Each result retains its requested range and explicit `not_applied`, `recorded_only`, or `set` action. State 1 is writable but inactive; any inactive or automated mapping remains incomplete even when scalar readback is equal. A quantized target also warns because one matching scalar and retained labels do not establish the continuous mapping semantics of a Timbre float leaf. Missing, extended, conditionally incoherent, or malformed evidence from a real transport is a protocol error. Recording transports cannot claim verification.
+- Public LOM exposes parameter value mutation and automation clearing, but not automation-envelope authoring. TimbreAutomation remains in the IR and produces an incomplete result. The result reports the cardinality of `parameter_automation` as `automation_lanes_requested` and zero as `automation_lanes_written`; these are 64-bit evidence counters, not target addresses.
+- Max for Live devices are not native devices for `Track.insert_device`. A future Max target must
+  have a separately installed `.amxd` deployment path and cannot be bootstrapped by this compiler.
 
 The parameter mapping is defined in `TimbreRenderingConfig`:
 
@@ -760,18 +867,45 @@ The parameter mapping is defined in `TimbreRenderingConfig`:
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `device_index` | `u8` | Index of the device in the chain |
-| `parameter_name` | `String` | Parameter name or index within the device |
-| `range` | `(f32, f32)` | Min/max in the device's native units |
-| `curve` | `MappingCurve` | Transfer function from normalised [0,1] to device range |
+| `device_index` | `u32` | Non-negative device-chain index; Ableton deployment requires it to fit the bridge's signed path index |
+| `parameter_name` | `String` | Exact public `DeviceParameter.name` or `original_name` |
+| `source_min`, `source_max` | `f32` | Finite, strictly increasing interval for the Timbre IR path |
+| `range_min`, `range_max` | `f32` | Finite, strictly increasing target interval |
+| `curve` | `MappingCurve` | Transfer function on normalised [0,1] |
+| `value_property` | `InternalValue \| DisplayValue` | Write public `value` (internal min/max domain) or GUI-visible `display_value` |
+
+For current IR value `x`, source interval `[s0,s1]`, target interval `[t0,t1]`, and curve `c`, the
+mapped value is
+
+`u = (x - s0) / (s1 - s0)` and `y = t0 + (t1 - t0)c(u)`.
+
+Sunny rejects `x` outside `[s0,s1]`; it does not silently clamp semantic input. Curve semantics are
+total and deterministic:
+
+| Curve | `c(u)` |
+|---|---|
+| Linear | `u` |
+| Exponential | `u²` |
+| Logarithmic | `sqrt(u)` |
+| SCurve | `u²(3 - 2u)` |
+| ReverseSCurve | `2u - u²(3 - 2u)` |
+| Custom | Piecewise-linear interpolation through strictly increasing finite `(x,y)` points in `[0,1]²`, beginning at `x=0` and ending at `x=1` |
+
+`InternalValue` is range-verifiable because LOM exposes `DeviceParameter.min` and `max`.
+`DisplayValue` is immediately read back but its declared target interval cannot be compared with
+the internal min/max; it therefore depends on a device/version conformance fixture. Quantised
+parameters may return a different observed value, which remains explicit evidence and a compiler
+warning rather than being called verified.
+
+Timbre schema version 2 introduced explicit rendering source intervals and value properties. A
+version-1 mapping migrates to its documented normalised source interval `[0,1]` and
+`InternalValue`; compilation rejects it if the concrete current IR value is not in that interval.
+Schema version 3 adds the modulation-envelope collection that the source algebra requires.
+Versions 1 and 2 migrate it to an empty collection without inventing generators.
 
 ### 9.2 Automation Compilation
 
-TimbreAutomation breakpoints compile to Ableton automation lanes:
-
-1. Each automated parameter maps to an automation lane on the corresponding track/device parameter.
-2. Breakpoint times are converted from ScoreTime to TickTime (via the Score IR's temporal coordinate system).
-3. Interpolation between breakpoints is rendered as a sequence of automation points at a configurable resolution (default: 1 point per tick for linear, 4 points per beat for smooth).
+TimbreAutomation breakpoints are target-independent IR data. A target may compile them only when its documented API supports envelope authoring. The current Ableton public-LOM target reports them as unsupported and emits no fictional `create_automation_envelope` call.
 
 ---
 
@@ -787,9 +921,12 @@ TimbreAutomation breakpoints compile to Ableton automation lanes:
 | T4 | Warning | Oscillator detune exceeds ±100 cents |
 | T5 | Warning | FM feedback exceeds stability threshold |
 | T6 | Error | Effect chain contains a cycle (should be impossible by structure) |
-| T7 | Warning | Modulation routing targets a non-existent parameter path |
+| T7 | Error | A modulation routing has an unresolved target, non-finite/out-of-range depth, undefined/non-canonical source payload, or missing owned source; the same applies to `via` |
 | T8 | Info | Semantic descriptors are stale (parameters changed since last derivation) |
 | T9 | Warning | TimbreRenderingConfig has unmapped parameters |
+| T10 | Error | A rendering map has an unresolved IR path, invalid/aliased target, invalid domain/curve/current value, or non-materialisable device index |
+| T11 | Error | An automation lane has an unresolved target, undefined interpolation, no breakpoints, a non-finite value, an invalid time, or non-increasing times |
+| T12 | Error | An owned LFO, modulation envelope, step sequencer, or macro violates its enum, numeric domain, curve, timing, target, or identity invariant |
 
 ### 10.2 Perceptual Validation [E]
 
@@ -813,8 +950,12 @@ These validations require audio rendering and analysis:
 | `set_sound_source` | Set or change the sound source type and parameters |
 | `add_effect` | Add an effect to the insert chain |
 | `remove_effect` | Remove an effect from the chain |
-| `reorder_effects` | Change effect order |
+| `reorder_effects` | Apply an exact effect-ID permutation; invalid length, duplicate IDs, or missing IDs leave the complete profile unchanged |
 | `set_parameter` | Set any parameter by path |
+| `get_parameter` | Read a numeric parameter by path |
+| `create_modulation_lfo` | Add a validated owned LFO source and return its index |
+| `create_modulation_envelope` | Add a validated owned envelope source and return its index |
+| `create_step_sequencer` | Add a validated owned step source and return its index |
 | `create_macro` | Create a macro knob with mappings |
 | `set_macro` | Set a macro knob value |
 | `add_modulation` | Add a modulation routing |
@@ -824,21 +965,25 @@ These validations require audio rendering and analysis:
 | `load_preset` | Apply a preset to a TimbreProfile |
 | `save_preset` | Save current state as a preset |
 | `morph_presets` | Set up a preset morph over a score time range |
-| `analyze_timbre` | Derive semantic descriptors from current parameters or rendered audio |
-| `compile_timbre` | Compile timbre configuration to DAW devices |
+| `analyze_timbre` | Derive semantic descriptors heuristically from current parameters |
+| `map_timbre_parameter` | Declare and preflight an IR-to-Ableton DeviceParameter mapping |
+| `compile_timbre` | Compile supported native devices and report completeness |
 | `validate_timbre` | Run validation |
 
 ---
 
 ## 12. Invariants
 
-1. Every Score IR Part has exactly one TimbreProfile.
-2. Signal flow within a TimbreProfile is acyclic.
-3. All parameter values are within their declared ranges.
-4. Modulation targets reference valid parameter paths.
-5. Timbral automation breakpoints reference valid ScoreTime positions within the score.
-6. Preset parameter states are complete (every parameter path has a value).
-7. The TimbreCompiler produces exactly one device chain per TimbreProfile.
+1. A TimbreProfile carries a typed PartId. `validate_project` and the Project MCP tools enforce
+   exactly one profile per Score Part and reject profiles bound to unknown Parts. Standalone
+   Timbre operations remain valid for callers that intentionally manage correspondence themselves.
+2. Signal flow within a TimbreProfile is structurally acyclic.
+3. Validation reports parameters outside their declared ranges.
+4. All parameter-path consumers use the canonical exact resolver; successful resolution consumes the whole path to a present continuous `f32` leaf in the active structure.
+5. Mutation and load boundaries reject invalid automation lanes. ScoreTime values are structurally validated; checking them against a particular Score duration requires caller context.
+6. Presets may be partial snapshots; loading changes only the parameter paths present in the preset.
+7. All rendering mappings resolve and convert before the first target mutation; invalid mapping state produces no command stream.
+8. The TimbreCompiler produces one deterministic supported command stream per TimbreProfile, retains requested/observed mapping evidence, and reports every unrepresentable requested feature.
 
 ---
 

@@ -2,7 +2,7 @@
 
 **Version:** 0.2.0-draft
 **Date:** 2026-02-12
-**Status:** Implemented (normative; source cites sections by number)
+**Status:** Normative model with an explicit implemented runtime profile
 **Dependency:** Sunny Engine Formal Specification v0.1.0 (the "Theory Spec")
 
 ---
@@ -11,7 +11,7 @@
 
 ### 0.1 Purpose
 
-This document defines the formal specification for the Sunny Score IR (Intermediate Representation), a hierarchical document model for representing complete musical works as structured, queryable, manipulable objects. The Score IR is the authoritative source document from which all downstream renderings — Ableton Live sessions, MIDI files, notation, audio — are derived.
+This document defines the formal specification for the Sunny Score IR (Intermediate Representation), a hierarchical document model for representing the symbolic, temporal, expressive, and tuning content of musical works as structured, queryable, manipulable objects. Score is authoritative for that domain. A complete production target is governed by the cross-IR Project tuple (Score, Timbre, Mix); Score alone does not claim device-chain, synthesis, routing, gain-structure, or audible-output authority.
 
 The Score IR occupies a distinct architectural layer from the Sunny music theory engine. The theory engine provides the vocabulary: pitch classes, intervals, chords, scales, voice-leading constraints, formal templates. The Score IR provides the document: the concrete instantiation of that vocabulary into a particular work, with particular instruments, particular notes at particular times, particular dynamics and articulations, arranged into a particular formal structure. The relationship is analogous to that between a programming language specification and a source file written in that language.
 
@@ -19,7 +19,7 @@ The Score IR occupies a distinct architectural layer from the Sunny music theory
 
 The Score IR is designed to satisfy five constraints simultaneously:
 
-1. **Completeness**: Every property of a musical work that affects its sounding result or its structural interpretation must be representable. A Score IR document must contain sufficient information to produce both a performance (via MIDI/DAW rendering) and a conventional score (via notation rendering) without supplementary data.
+1. **Domain completeness**: Every symbolic, temporal, expressive, articulation-mapping, and tuning property owned by Score must be representable. A Score contains sufficient information for conventional notation and nominal performance-event compilation without hidden musical context. Timbre/device realization and Mix/routing realization are deliberately separate Project inputs, and every target capability gap remains an explicit compilation residual.
 
 2. **Semantic fidelity**: The representation preserves compositional intent, not merely acoustic outcome. A staccato quarter note and a short eighth note followed by an eighth rest may produce identical MIDI output, but they carry different meanings and must remain distinguishable in the IR.
 
@@ -27,7 +27,7 @@ The Score IR is designed to satisfy five constraints simultaneously:
 
 4. **Incremental mutability**: An agent must be able to modify the document at any granularity — insert a note, reorchestrate a passage, restructure a section — while the IR maintains its internal consistency invariants automatically or reports violations explicitly.
 
-5. **Deterministic compilation**: The mapping from Score IR to each rendering target (Ableton session, MIDI file, MusicXML, LilyPond) must be a total function: every valid Score IR document produces exactly one output in each target format, and the output is reproducible.
+5. **Deterministic compilation**: The mapping from Score IR to each rendering target is reproducible. File targets are total for valid input. A stateful DAW target additionally returns capability diagnostics when its public API cannot represent an IR feature; it must never guess a substitute operation.
 
 ### 0.3 Notation Conventions
 
@@ -57,6 +57,10 @@ The Score IR imports the following types from the Theory Spec by reference:
 
 The Score IR does not redefine these types. Where the Score IR requires properties not present in the Theory Spec types, it wraps them in Score IR–specific structures that compose with, rather than duplicate, the theory layer.
 
+### 0.5 Implemented Runtime Profile
+
+The current Sunny runtime implements the C++ document model, validation and workflows; versioned JSON serialisation; MIDI event compilation; MusicXML and LilyPond text compilation; and capability-aware Ableton deployment. The public MCP surface is the inventory in §12.2 and `docs/reference.md`. There is no binary Score IR codec and no in-process PCM `AudioCompiler`; audio is produced by the deployed Ableton session after Score, Timbre, and Mix compilation. Sections that discuss either binary encoding or direct audio rendering define reserved design space, not a callable runtime capability.
+
 ---
 
 ## 1. Document Hierarchy
@@ -68,6 +72,7 @@ The Score IR is a tree with five principal levels. Each level owns its children 
 ```
 Score
  ├── ScoreMetadata
+ ├── ScoreTuning
  ├── TempoMap
  ├── GlobalKeySignatureMap
  ├── GlobalTimeSignatureMap
@@ -95,7 +100,7 @@ Every node in the hierarchy is addressable by a structural path. Two addressing 
 
 **Temporal address**: A (part, time) pair where time is a ScoreTime value. Example: `Part(2).At(bar=47, beat=Beat(3,4))` identifies whatever event is sounding in part 2 at the third beat of bar 47. This resolves to a hierarchical address by searching the measure and voice structure.
 
-**Region address**: A bounded span of score time, optionally restricted to a subset of parts. Example: `Region(parts=[0,1,2], from=ScoreTime(33,Beat(1,1)), to=ScoreTime(64,Beat(1,1)))` selects all content in parts 0–2 from bar 33 to bar 64. Regions are the primary operand for bulk operations (reorchestration, transposition, dynamic scaling).
+**Region address**: A bounded span of score time, optionally restricted to a subset of parts. Example: `Region(parts=[0,1,2], from=ScoreTime(33,Beat(0,1)), to=ScoreTime(64,Beat(0,1)))` selects all content in parts 0–2 from the start of bar 33 to the start of bar 64. Regions are the primary operand for bulk operations (reorchestration, transposition, dynamic scaling).
 
 ---
 
@@ -109,8 +114,9 @@ Every node in the hierarchy is addressable by a structural path. Two addressing 
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `id` | `Id<Score>` | Unique document identifier |
+| `id` | `Id<Score>` | Positive repository-selected document/lineage identifier; zero is the unassigned sentinel |
 | `metadata` | `ScoreMetadata` | Descriptive metadata |
+| `tuning` | `ScoreTuning` | Complete sounding-pitch function over the Score note-index domain |
 | `tempo_map` | `TempoMap` | Tempo as a function of score time |
 | `key_map` | `KeySignatureMap` | Key signatures as a function of score time |
 | `time_map` | `TimeSignatureMap` | Time signatures as a function of score time |
@@ -119,12 +125,49 @@ Every node in the hierarchy is addressable by a structural path. Two addressing 
 | `parts` | `Vec<Part>` | Ordered list of instrumental parts |
 | `harmonic_annotations` | `HarmonicAnnotationLayer` | Global harmonic analysis (§6) |
 | `orchestration_annotations` | `OrchestrationLayer` | Textural role assignments (§7) |
+| `tone_row` | `Option<ToneRow>` | Optional governing twelve-tone row (§11) |
+| `stale_harmonic_regions` | `Vec<ScoreRegion>` | Harmonic-analysis regions invalidated by edits (§7.2) |
+| `stale_orchestration_regions` | `Vec<ScoreRegion>` | Orchestration-analysis regions invalidated by edits (§7.2) |
 | `version` | `u64` | Monotonically increasing edit counter |
+
+Root identity belongs to the repository that owns multiple documents, not to a pure transformation
+or a process-global allocator. `ScoreSpec` carries the caller-selected identity (standalone creation
+defaults to one). Every API that constructs a derived standalone Score requires an explicit result
+identity and starts that new lineage at version one. In the MCP repository, the public `score_id`
+handle and stored `Score.id` are the same value; `score_get_json` therefore cannot expose a second,
+contradictory root identity. Repository allocation admits `UINT64_MAX` once, then reports exhaustion
+without wrapping or overwriting an existing document.
 
 **Invariants**:
 - `parts` is non-empty.
 - All parts have the same total duration (measured in score time); if a part has fewer notated events, it is padded with implicit rests.
 - `tempo_map`, `key_map`, and `time_map` are defined for the entire duration of the score (from bar 1 through the final bar).
+
+#### 2.1.1 ScoreTuning
+
+`ScoreTuning` makes the pitch semantics of every performance-admitted Score note explicit rather
+than relying on an ambient synthesizer or DAW setting. Its tractable domain is the closed MIDI/Live
+note-index interval `[0,127]`. A structurally retained `SpelledPitch` outside that interval remains
+an explicit compiler drop; it does not acquire an invented wrapped, clamped, or periodic frequency.
+Its fields are:
+
+| Field | Type | Description |
+|---|---|---|
+| `name` | `String` | Descriptive source label; it does not determine pitch |
+| `reference_midi_note` | `u8` | Reference index in `[0,127]` |
+| `reference_frequency_hz` | `f64` | Finite positive frequency assigned exactly to the reference index |
+| `cents_from_reference` | `[f64; 128]` | One relative cent position for every Score/MIDI note index |
+
+For note index *m*, the sounding-frequency intent is
+
+`frequency(m) = reference_frequency_hz × 2^(cents_from_reference[m] / 1200)`.
+
+The reference entry is exactly zero. Every table entry and every frequency derived by this
+equation must be finite and positive in the implementation's `double` domain. The representation
+does not impose monotonicity, twelve-degree cardinality, or octave recurrence: those are properties
+of particular tunings, not of the complete finite pitch function. The canonical default is
+12-TET over indices 0–127 with MIDI note 69 at 440 Hz. `SpelledPitch` still owns notation spelling;
+its MIDI index selects the corresponding entry in this independent sounding-pitch function.
 
 ### 2.2 ScoreMetadata
 
@@ -157,27 +200,36 @@ Every node in the hierarchy is addressable by a structural path. Two addressing 
 | `beat_unit` | `BeatUnit` | Which note value receives the beat (quarter, dotted quarter, half, etc.) |
 | `transition` | `TempoTransition` | How the previous tempo changes to this one |
 
-*Note*: `PositiveRational` is a strictly positive rational number (p/q where p, q ∈ ℤ⁺). It shares the same arithmetic as Beat but carries different semantics: Beat measures duration in quarter notes; PositiveRational measures a rate (beats per minute). This distinction prevents accidental composition of rates with durations.
+*Note*: `PositiveRational` is a canonical strictly positive rational number (p/q where p, q ∈ ℤ⁺ and gcd(p,q) = 1). It carries rate semantics rather than Beat's duration semantics, preventing accidental rate-duration composition. Every C++ value normalises at construction, exposes read-only components, and uses `PositiveRational::from_ratio(p,q)` for checked dynamic input. Score JSON readers reject non-positive components and writers emit the stored lowest-term pair. Thus equivalent spellings such as 240/2 and 120/1 have one source identity before tempo resolution, project planning, or target projection.
 
 **TempoTransition** variants:
 
 | Variant | Semantics |
 |---------|-----------|
 | `Immediate` | Instantaneous tempo change |
-| `Linear(duration: Beat)` | Linear interpolation (accelerando/ritardando) from previous tempo over the given duration |
-| `MetricModulation { old_unit: BeatUnit, new_unit: BeatUnit }` | Previous subdivision becomes new beat; BPM is derived from the ratio |
+| `Linear(duration: Beat)` | Incoming linear interpolation from the previous event's effective quarter tempo to this event's effective quarter tempo |
+| `MetricModulation { old_unit: BeatUnit, new_unit: BeatUnit }` | Instantaneous equality of the previous subdivision and the new subdivision; the stored target BPM is checked against the exact ratio |
 
 **BeatUnit** enumeration: `Whole`, `Half`, `DottedHalf`, `Quarter`, `DottedQuarter`, `Eighth`, `DottedEighth`, `Sixteenth`.
 
 The BeatUnit determines the denominator of the BPM fraction. A tempo of "dotted quarter = 120" in 6/8 means 120 dotted-quarter notes per minute; the effective eighth-note rate is 360 per minute.
 
-**Resolution**: Given a ScoreTime *t*, the TempoMap resolves to an instantaneous BPM by:
-1. Finding the latest TempoEvent at or before *t*.
-2. If its transition is `Immediate`, the BPM is the event's bpm.
-3. If its transition is `Linear(d)`, the BPM is linearly interpolated between the previous event's bpm and this event's bpm, over the duration *d*.
-4. If its transition is `MetricModulation`, the BPM is computed from the ratio of old and new beat units applied to the preceding tempo.
+**Resolution**: Let *Qᵢ* be event *i*'s exact effective quarter-note BPM and *xᵢ* its
+AbsoluteBeat. At an event point, that event's target rate is active. In an open interval
+`[xᵢ, xᵢ₊₁)`, the rate is constant at *Qᵢ* unless event *i+1* is `Linear`; in that case:
 
-**Invariant**: The TempoMap has at least one entry at ScoreTime(1, Beat(1,1)) (the beginning of the piece). BPM values are strictly positive.
+`Q(x) = Qᵢ + ((x - xᵢ) / (xᵢ₊₁ - xᵢ)) · (Qᵢ₊₁ - Qᵢ)`.
+
+Thus `transition` is owned by its destination, not its source. A Linear `duration` must equal the
+entire exact interval `xᵢ₊₁ - xᵢ`; shorter values that would imply an undocumented hold or jump are
+invalid. For a MetricModulation, `beat_unit = new_unit` and
+`Qᵢ₊₁ = Qᵢ · duration(new_unit) / duration(old_unit)` exactly.
+
+**Invariant**: The TempoMap begins exactly at `ScoreTime(1, Beat(0,1))`; its first event is
+`Immediate`; each BPM is a construction-safe canonical `PositiveRational`; transition and BeatUnit
+enum payloads are in-domain; only Linear carries a positive `linear_duration`; and S24 proves every
+Linear or MetricModulation relationship before clock conversion or target projection. Positivity
+and lowest-term rate identity are type/parser invariants rather than states discovered by S24.
 
 ### 2.4 KeySignatureMap
 
@@ -198,9 +250,22 @@ The BeatUnit determines the denominator of the BPM fraction. A tempo of "dotted 
 | `mode` | `ScaleDefinition` | Scale type (major, minor, dorian, etc.) |
 | `accidentals` | `i8` | Signed count: positive for sharps, negative for flats |
 
-**Derivation**: The `accidentals` field is derivable from `root` and `mode` for standard key signatures, but is stored explicitly to support non-standard or theoretical key signatures (e.g., more than 7 sharps or flats).
+**Derivation and identity**: For major, minor, Ionian, Dorian, Phrygian, Lydian,
+Mixolydian, Aeolian, and Locrian, `accidentals` is derivable from the tonic letter,
+tonic accidental, and mode. S21 requires the stored value to equal that derivation. For an
+unrecognized/custom or registered non-diatonic `ScaleDefinition`, the relation is not statically
+known and the explicitly stored `accidentals` remains authoritative. `ScaleDefinition.name` and
+`description` are owned strings, not borrowed views. A compilable definition has 1–12 active
+pitch-class offsets, begins at 0, increases strictly inside `[0,11]`, and zeroes its unused fixed
+capacity. If its non-empty name resolves case-insensitively to the built-in registry, the spelling
+must be the canonical registry name and its count/interval payload must equal that definition;
+unregistered names and anonymous definitions remain valid custom analysis scales. Key-state
+equality compares tonic spelling (ignoring octave), accidentals, mode name, note count, and interval
+sequence; description is persisted non-semantic metadata, and a mode-only change is therefore a
+real state transition.
 
-**Invariant**: At least one entry at ScoreTime(1, Beat(1,1)).
+**Invariant**: At least one entry in bar 1; a conventional initial entry is at
+`ScoreTime(1, Beat(0,1))`. Every standard-mode tonic/mode/fifths triple is coherent.
 
 ### 2.5 TimeSignatureMap
 
@@ -215,11 +280,20 @@ The BeatUnit determines the denominator of the BPM fraction. A tempo of "dotted 
 
 The time signature persists until the next entry. Every bar between two consecutive entries has the time signature of the earlier entry.
 
-**Derived property**: The *duration of a measure* in beats is computable from the TimeSignature: `numerator / denominator` expressed as a Beat value. For 4/4: Beat(4, 4) = Beat(1, 1) whole notes, or equivalently Beat(4, 1) quarter notes depending on the beat unit convention. The Score IR normalises measure duration to quarter-note beats: a 4/4 bar has duration Beat(4, 1); a 6/8 bar has duration Beat(3, 1) in dotted-quarter beats or Beat(6, 1) in eighth-note beats. The normalisation convention is: *measure duration in quarter notes* = Beat(numerator, denominator) × 4.
+**Derived property**: The *duration of a measure* is `Beat(numerator, denominator)` in Sunny's single whole-note coordinate. Thus 4/4 is `Beat(1,1)`, while 6/8 and 3/4 are both `Beat(3,4)`. There is no alternate internal Beat-unit convention.
 
-Example: 6/8 → Beat(6, 8) × 4 = Beat(3, 1) quarter notes. 3/4 → Beat(3, 4) × 4 = Beat(3, 1) quarter notes. Both are 3 quarter-note durations, which is correct.
+At a MIDI or Live boundary, the corresponding quarter-note count is `4 × Beat`: both 6/8 and 3/4 therefore span 3.0 host beats. This conversion is an adapter operation; it does not change the stored Beat value.
 
-**Compound vs simple metre**: The normalisation to quarter-note beats is purely a *duration* normalisation for the purpose of temporal arithmetic. The *metrical feel* (simple vs compound) is preserved in the time signature itself: if the numerator is divisible by 3 and the denominator is 8 or smaller, the metre is compound (beat unit = dotted quarter). This distinction affects:
+`TimeSignature` itself is construction-safe: groups are non-empty and positive, their sum is a
+representable positive numerator, and the denominator is a positive power of two. JSON readers use
+the checked grouped-metre factory, so malformed grouped metre is rejected before a `Score` can be
+published. S5 consequently validates map placement/order and score range; it does not rescan an
+impossible malformed `TimeSignature` object.
+
+**Grouped metre**: Metrical feel is preserved in the stored group partition rather than inferred
+again from measure duration. The deterministic flat-signature factory uses groups of three when
+the numerator is at least six and divisible by three, and otherwise uses one group per notated
+pulse; an explicit partition may override that default identity. This distinction affects:
 - Default beam grouping (§4.10): simple metres beam by quarter-note beats; compound metres beam by dotted-quarter-note beats.
 - Tempo interpretation: "♩ = 120" in 3/4 differs from "♩. = 120" in 6/8, even though both measures have the same duration in quarter notes.
 
@@ -255,9 +329,11 @@ The TempoMap's `beat_unit` field (§2.3) resolves this ambiguity by explicitly s
 **FormFunction** enumeration: `Expository`, `Developmental`, `Transitional`, `Cadential`, `Introductory`, `Closing`, `Parenthetical`. This classifies the *function* of a section independently of its label, allowing formal analysis across different naming conventions.
 
 **Invariants**:
+- Every node has a nonempty label, a valid non-empty half-open span within the score (whose end may
+  be the terminal bar line), and an in-domain optional FormFunction.
 - Sections at the same nesting level do not overlap.
 - Every child's time span is contained within its parent's time span.
-- The union of top-level sections covers the entire score duration (no gaps).
+- The map may be empty or partial; no implicit section is invented for uncovered score time.
 
 ### 2.7 RehearsalMark
 
@@ -284,7 +360,7 @@ The TempoMap's `beat_unit` field (§2.3) resolves this ambiguity by explicitly s
 | `definition` | `PartDefinition` | Instrument and playback configuration |
 | `measures` | `Vec<Measure>` | Ordered sequence of measures |
 | `part_directives` | `Vec<PartDirective>` | Part-scoped performance instructions |
-| `hairpins` | `Vec<Hairpin>` | Gradual dynamic changes spanning multiple events (§4.5.3) |
+| `hairpins` | `Vec<Hairpin>` | Gradual dynamic changes spanning multiple events (§4.5.5) |
 
 **Invariant**: `measures.len() == score.metadata.total_bars`. Every part has exactly one Measure for every bar in the score, even if that measure contains only rests.
 
@@ -304,7 +380,12 @@ The TempoMap's `beat_unit` field (§2.3) resolves this ambiguity by explicitly s
 | `range` | `PitchRange` | Playable range (soft limits) and comfortable range (hard limits) |
 | `articulation_vocabulary` | `Vec<ArticulationType>` | Articulations this instrument supports |
 | `staff_count` | `u8` | Number of staves (1 for most; 2 for piano, organ, harp) |
+| `staff_clefs` | `Vec<Clef>` | Optional initial clef for each staff, ordered top-to-bottom; empty means `clef` applies to every staff |
 | `rendering` | `RenderingConfig` | DAW-specific rendering parameters |
+
+`staff_count` is positive. If `staff_clefs` is populated it has exactly `staff_count` entries.
+No instrument-type heuristic invents a lower-staff clef: an older or compact definition with an
+empty vector uses the stored default `clef` on every staff.
 
 #### 3.2.1 InstrumentClass
 
@@ -387,9 +468,9 @@ Examples:
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `instrument_preset` | `Option<String>` | Ableton instrument or plugin preset path |
+| `instrument_preset` | `Option<String>` | Requested instrument/plugin preset metadata; the current public-LOM compiler reports it as unsupported rather than guessing a load operation |
 | `midi_channel` | `u8` | MIDI channel (1–16) |
-| `articulation_map` | `Map<ArticulationType, ArticulationMapping>` | How each articulation compiles to MIDI |
+| `articulation_map` | `Map<ArticulationType, ArticulationMapping>` | How each articulation projects to note-local performance fields and, where admitted, MIDI controls |
 | `expression_cc` | `u8` | CC number for expression/dynamics (default: CC 11) |
 | `pan` | `Option<f32>` | Stereo pan position (−1.0 to 1.0) |
 | `group` | `Option<String>` | Ableton group track assignment |
@@ -398,12 +479,24 @@ Examples:
 
 | Variant | Description |
 |---------|-------------|
-| `Keyswitch(SpelledPitch)` | Send a keyswitch note before the articulated note |
+| `Keyswitch(SpelledPitch)` | Send a velocity-127, one-tick keyswitch note at the articulated note's tick |
 | `CC(u8, u8)` | Send a CC message (controller number, value) |
 | `VelocityLayer(u8, u8)` | Map to a velocity range (min, max) |
 | `NoteDurationScale(f32)` | Scale note duration by a factor (e.g., staccato = 0.5) |
 | `ProgramChange(u8)` | Send a program change message |
 | `Combined(Vec<ArticulationMapping>)` | Multiple simultaneous mappings |
+
+The mapping is a validated tagged union: only the selected variant's payload is normative.
+Keyswitch pitch and every MIDI value must be in 0–127; velocity-layer bounds must be in 1–127
+with `min ≤ max`; a duration scale must be finite and positive; and `Combined` must be non-empty.
+Trees are bounded to depth 16 and 1024 total nodes. `Combined` children execute in stored order.
+An explicit mapping replaces the default articulation stage; when no mapping exists, the fixed
+duration/velocity treatment in §9.4–9.5 remains the deterministic fallback. A flat `NoteEvent`
+projection applies the representable `VelocityLayer` and `NoteDurationScale` effects and diagnoses
+every requested Keyswitch, CC, or ProgramChange child because its record has no control-event
+field. The stored IEEE-754 duration factor is converted to its exact binary rational at that
+boundary and must fit `Beat`; an exact-rational target does not silently substitute an
+approximation.
 
 ### 3.3 PartDirective
 
@@ -414,10 +507,23 @@ Examples:
 | `start` | `ScoreTime` | Effective from |
 | `end` | `ScoreTime` | Effective until |
 | `directive` | `DirectiveType` | The instruction |
+| `divisi_count` | `u8` | Required as at least two for `Divisi`; otherwise non-normative |
 
 **DirectiveType** examples: `Mute`, `Solo`, `ConSordino`, `SenzaSordino`, `Pizzicato`, `Arco`, `Divisi(u8)`, `Tutti`, `Tacet`, `ColLegno`, `SulPonticello`, `SulTasto`, `HalfPedal`, `SustainingPedal`, `UnaCorda`, `TreCorde`.
 
-These directives affect rendering (sordino might map to a keyswitch or a filter change in the DAW) and notation (they produce text instructions in the printed score).
+These directives express normative rendering and notation intent over a non-empty half-open Part
+span. MusicXML and LilyPond preserve both boundaries as exact visible instruction text, including
+the Divisi count. MIDI maps only the lossless MIDI 1.0 switch ranges: SustainingPedal to CC64 and
+UnaCorda to CC67, value 127 at start and 0 at end. Other technique/host state remains explicit
+non-deployment evidence; the compiler does not invent keyswitches, continuous half-pedal depth,
+prior-state restoration, devices, or Live automation. S20 owns range and conditional-payload
+validity.
+
+The reverse Corpus MIDI profile may construct `SustainingPedal`/`UnaCorda` spans only from
+completed CC64/CC67 switch transitions on the sole source note channel. MIDI switch thresholds
+are semantic, while this Score projection is canonical: non-0/127 source bytes are retained as
+normalization evidence. It never manufactures an `ArticulationMapping` from a raw CC or Program
+Change because the file contains no corresponding Score articulation identity.
 
 ---
 
@@ -437,21 +543,43 @@ These directives affect rendering (sordino might map to a keyswitch or a filter 
 | `local_time` | `Option<TimeSignature>` | Local time signature override |
 
 **Invariants**:
+- Measures in each Part are stored in strict score order and `measures[i].bar_number == i + 1`.
 - `voices` is non-empty (at minimum, one voice containing rests).
-- The total notated duration of each voice equals the measure duration derived from the active time signature. If events do not fill the measure, the voice is padded with implicit rests; if events exceed the measure duration, a validation error is raised.
+- Positive-duration NoteGroup/Rest intervals explicitly tile the measure duration derived from the
+  active time signature. Construction/mutation workflows materialise rests; validation does not
+  invent implicit rests for a malformed stored document.
+
+A local time signature is Part-specific notation and measure structure. MusicXML and LilyPond can
+retain a duration-changing local bar. The current MIDI, generic NoteEvent, and Ableton performance
+projections instead have one global ScoreTime-to-absolute-time function. They admit a local
+signature only when its exact measure duration equals the active global duration; a different
+grouping then remains notation metadata and increments `dropped_time_sig_events`. An unequal local
+duration returns `TargetValueUnrepresentable` before producing performance events or contacting
+Live, because placing the next Part bar on the global boundary would otherwise introduce an
+unstated gap or overlap.
 
 ### 4.2 Voice
 
-**Definition 4.2.1**. A *Voice* is a monophonic (or chordal) stream of events within a measure. Multiple voices within a single measure represent polyphonic writing on a single staff (e.g., soprano and alto on the treble staff of a choral score, or two independent melodic lines in a divisi string part).
+**Definition 4.2.1**. A *Voice* is a monophonic (or chordal) stream of events within a measure.
+Multiple Voices may share a staff, while `staff_index` assigns each complete Voice to one of the
+Part's staves for that measure. Cross-staff movement is representable at a measure boundary by a
+later Voice with the same `voice_index` and a different staff; a mid-measure cross-staff beam is not
+representable because staff ownership is not event-local.
 
 **Fields**:
 
 | Field | Type | Description |
 |-------|------|-------------|
 | `voice_index` | `u8` | 0-indexed voice number within the measure |
+| `staff_index` | `u8` | 0-indexed owning staff within the Part |
 | `events` | `Vec<Event>` | Ordered sequence of events |
 
-**Invariant**: Events are ordered by start time. No two note events within the same voice overlap in time (this is the monophonic constraint within a voice; chords are represented as simultaneous notes within a single event, not as overlapping independent notes).
+**Invariant**: Voices are stored by unique, strictly increasing `voice_index` (indices may be
+sparse after removal), and `staff_index < PartDefinition.staff_count`. Events are ordered by start
+time. No two measured note/rest events within the same voice overlap in time (this is the
+monophonic constraint within a voice; chords are represented as simultaneous notes within a
+single event, not as overlapping independent notes). Point Directions and ChordSymbols may occur
+within a measured span.
 
 ### 4.3 Event
 
@@ -472,22 +600,27 @@ All event types carry a common header:
 | `id` | `Id<Event>` | Unique event identifier |
 | `offset` | `Beat` | Start time relative to measure start (Beat(0,1) = downbeat) |
 
-**Invariant**: For any event in a measure with active time signature producing measure duration *D* (in quarter notes, per §2.5): offset ∈ [Beat(0,1), *D*). An event's span (offset + duration for NoteGroup/Rest) must not exceed *D*.
+**Invariant**: For any event in a measure with active time signature producing whole-note duration *D* (per §2.5): offset ∈ [Beat(0,1), *D*). An event's span (offset + duration for NoteGroup/Rest) must not exceed *D*.
 
 ### 4.4 NoteGroup
 
-**Definition 4.4.1**. A *NoteGroup* represents one or more simultaneous notes sounding at the same onset and sharing the same rhythmic value. A single melodic note is a NoteGroup of size 1. A chord played by a single instrument (e.g., a piano chord) is a NoteGroup of size > 1.
+**Definition 4.4.1**. A *NoteGroup* represents one or more simultaneous notes sounding at the same onset and sharing the same rhythmic value. A single melodic note is a NoteGroup of size 1. A chord played by a single instrument (e.g., a piano chord) is a NoteGroup of size > 1. The group's grace state is homogeneous: it contains either only ordinary notes or only grace notes of one `GraceType`. Grace notes cannot carry duration ties.
 
 **Fields**:
 
 | Field | Type | Description |
 |-------|------|-------------|
 | `notes` | `Vec<Note>` | One or more notes (non-empty) |
-| `duration` | `Beat` | Notated duration (exact rational) |
-| `tuplet_context` | `Option<TupletContext>` | Enclosing tuplet, if any |
+| `duration` | `Beat` | Exact structural allocation; for a tuplet member its written glyph comes from `normal_type` |
+| `tuplet_context` | `Option<TupletContext>` | Innermost enclosing tuplet, if any |
 | `beam_group` | `Option<Id<BeamGroup>>` | Beam grouping identifier |
 | `slur_start` | `bool` | Whether a slur begins here |
 | `slur_end` | `bool` | Whether a slur ends here |
+
+The two booleans encode one active slur identity per Voice. They can both be true on a shared
+NoteGroup to stop an incoming slur and then start an outgoing slur; incoming-stop ordering is
+normative. Overlapping/nested slurs need explicit identifiers that this profile does not store and
+are rejected by S23 rather than assigned target numbers heuristically.
 
 ### 4.5 Note
 
@@ -499,29 +632,65 @@ All event types carry a common header:
 |-------|------|-------------|
 | `pitch` | `SpelledPitch` | Concert pitch with enharmonic spelling |
 | `velocity` | `Velocity` | Attack intensity |
+| `release_velocity` | `u8` | Note Off intensity in `[0,127]`; canonical neutral default 64 |
 | `articulation` | `Option<Articulation>` | Articulation marking |
 | `dynamic` | `Option<Dynamic>` | Dynamic marking at this note |
 | `ornament` | `Option<Ornament>` | Ornamental figure |
 | `tie_forward` | `bool` | Whether this note is tied to the next occurrence of the same pitch |
 | `grace` | `Option<GraceType>` | Grace note classification, if this is a grace note |
 | `technical` | `Vec<TechnicalDirection>` | Instrument-specific performance instructions |
-| `lyric` | `Option<String>` | Lyric syllable (for vocal parts) |
+| `lyrics` | `Vec<LyricSyllable>` | Ordered verse-specific lyric syllables at this onset |
 | `notation_head` | `Option<NoteHead>` | Non-standard notehead (diamond, cross, slash, etc.) |
 
-#### 4.5.1 Velocity
+Attack and release ownership follow sounding boundaries. For an ordinary untied note, both values
+belong to that note. For a tie chain, the first segment owns attack velocity and the terminal
+segment owns release velocity; intermediate release values are retained state that becomes
+operative only if an edit makes that segment terminal. MIDI and Live compilation must consume the
+same resolved terminal value. A flat performance target with no tie field, including generic
+`NoteEvent`, must collapse the validated chain to one attack at the head, the exact summed
+duration, and one release at the terminal segment; emitting the stored segments independently
+would introduce false retriggers. Grace notes cannot carry ties and therefore own both boundaries.
 
-**Definition 4.5.2**. Velocity is represented as both a semantic dynamic level and a numeric value, to separate compositional intent from rendering output.
+#### 4.5.2 LyricSyllable
+
+**Definition 4.5.2**. A *LyricSyllable* is one verse-specific text-underlay token at a NoteGroup
+onset.
+
+| Field | Type | Description |
+|---|---|---|
+| `text` | `String` | Non-empty syllable text |
+| `verse` | `u16` | Positive verse number |
+| `syllabic` | `LyricSyllabic` | `Single`, `Begin`, `Middle`, or `End` position in a word |
+| `extend` | `bool` | This syllable continues across at least one following ordinary NoteGroup |
+
+Lyrics are onset-scoped: only the first Note in a NoteGroup owns them. At one onset verse entries
+are unique and strictly increasing. Within each `(Part, staff_index, voice_index, verse)` lane,
+`Begin (Middle)* End` is the only multi-syllable word sequence; `Single` occurs outside an open
+word. Lyrics do not attach to grace NoteGroups. An extended syllable is `Single` or `End`, spans at
+least one later ordinary NoteGroup, and ends immediately before the next syllable in the same lane
+or at the lane's last ordinary NoteGroup. This range algebra is sufficient to derive MusicXML
+extend endpoints and LilyPond extender/skip tokens without storing target syntax.
+
+#### 4.5.3 Velocity
+
+**Definition 4.5.3**. Velocity is represented as both a semantic dynamic level and a numeric value, to separate compositional intent from rendering output.
 
 | Field | Type | Description |
 |-------|------|-------------|
 | `written` | `Option<DynamicLevel>` | Semantic dynamic (if a dynamic marking is present at this note) |
-| `value` | `u8` | MIDI velocity (0–127), derived from context if `written` is absent |
+| `value` | `u8` | Explicit MIDI attack velocity in 1–127; zero is the unresolved sentinel |
 
-The numeric value is resolved during compilation by applying the current dynamic level, any hairpin in effect, the instrument's dynamic curve, and any accent or sforzando articulation.
+`Note.dynamic` and `VelocityValue.written` are coherent semantic carriers: when both are present R7
+requires equality, and `Note.dynamic` has precedence. If neither is present, a nonzero numeric value
+is explicit attack intent; zero delegates to the Voice's current semantic dynamic. Performance
+compilation then applies any hairpin, articulation mapping/fallback, and orchestration balance
+without mutating the stored value.
+A semantic dynamic stored on a tied continuation does not create another attack, but it updates the
+Voice's running dynamic state for later attacks after that continuation position.
 
-#### 4.5.2 Articulation
+#### 4.5.4 Articulation
 
-**Definition 4.5.3**. Articulation types, grouped by family:
+**Definition 4.5.4**. Articulation types, grouped by family:
 
 **Duration-affecting**:
 - `Staccato` — shortened to approximately half the written duration
@@ -537,12 +706,16 @@ The numeric value is resolved during compilation by applying the current dynamic
 
 **Technique-specific**:
 - `Fermata` — held beyond written duration (duration multiplied by a configurable factor, default 1.5–2.0)
-- `Trill { interval: Interval }` — rapid alternation with a note at the given interval. *Note*: Trill also appears in the Ornament type (§4.5.5). When both an Articulation.Trill and an Ornament.Trill are present, the Ornament takes precedence for notation rendering (it carries richer detail including accidental specification). The Articulation.Trill form is retained for instruments that map trills to keyswitches or CC via ArticulationMapping, where the ornamental detail is not required
+- `Trill { interval: Interval }` — rapid alternation with a note at the given interval. *Note*: Trill also appears in the Ornament type (§4.5.7). When both an Articulation.Trill and an Ornament.Trill are present, the Ornament takes precedence for notation rendering (it carries richer detail including accidental specification). The Articulation.Trill form is retained for instruments that map trills to keyswitches or CC via ArticulationMapping, where the ornamental detail is not required
 - `Mordent { inverted: bool }` — single alternation
 - `Turn { inverted: bool }` — four-note figure
 - `Tremolo { strokes: u8 }` — unmeasured repetition (1 = eighth-note, 2 = sixteenth, 3 = thirty-second)
 - `Harmonic { type: HarmonicType }` — natural or artificial harmonic
 - `GlissandoStart` / `GlissandoEnd` — continuous pitch slide between two notes
+
+The legacy glissando articulation flags similarly encode at most one active glissando per Voice.
+Chordal concurrent glissandi require numbered identities (as in MusicXML) and are outside this
+profile; S23 rejects them.
 - `SnapPizzicato` — (Bartók pizzicato) for strings
 - `DownBow` / `UpBow` — bowing direction for strings
 - `OpenString` / `Stopped` — for strings and brass
@@ -551,9 +724,9 @@ The numeric value is resolved during compilation by applying the current dynamic
 
 Each articulation has a default rendering behaviour (§9) that can be overridden per instrument in the RenderingConfig.
 
-#### 4.5.3 Dynamic
+#### 4.5.5 Dynamic
 
-**Definition 4.5.4**. Dynamic markings.
+**Definition 4.5.5**. Dynamic markings.
 
 **Instantaneous dynamics** (`DynamicLevel`):
 
@@ -587,20 +760,36 @@ The velocity ranges above are defaults; they are configurable per score and per 
 
 Hairpins are stored on the Part (not on individual notes) because they span multiple events. During velocity resolution, any active hairpin linearly interpolates between the starting dynamic and the target (or, if no target is specified, increases/decreases by one dynamic step).
 
-#### 4.5.4 GraceType
+#### 4.5.6 GraceType
 
-**Definition 4.5.5**. Grace notes are pre-beat or on-beat ornamental notes.
+**Definition 4.5.6**. Grace notes are pre-beat or on-beat ornamental notes.
 
 | Variant | Description | Rendering |
 |---------|-------------|-----------|
 | `Acciaccatura` | Crushed grace note (slashed stem) | Very short, before the beat |
 | `Appoggiatura` | Leaning grace note (no slash) | Takes time from the following note |
 
-Grace notes have a written duration (for notation) but their sounding duration is determined by convention and rendering policy. The Score IR stores them with their written duration; the compiler resolves their actual timing.
+Grace notes have a positive written duration that also reserves a structural allocation in the
+Score timeline and therefore participates in S2/S3 measure topology. This is a deliberate,
+tractable source-model convention; it is not a claim that MusicXML or LilyPond grace notation
+advances the notated cursor. Notation compilers preserve the grace class and written value but
+delegate playback convention to the notation target.
 
-#### 4.5.5 Ornament
+The MIDI/Live sounding policy is exact:
 
-**Definition 4.5.6**. Ornament types:
+- `Appoggiatura` sounds from the beginning of the allocation for its full duration.
+- `Acciaccatura` sounds for `min(allocation_duration, Beat(1,32))` and is right-aligned to the end
+  of the allocation.
+
+The fixed `Beat(1,32)` bound is one thirty-second note because Sunny `Beat` uses whole-note units.
+Articulation duration scaling is applied after grace resolution. The same resolved interval is
+presented to `compile_to_midi`, the NoteEvent projection, SMF conversion, and Ableton clip-note
+translation before each target's explicit tick, exact-rational, or floating conversion. The policy
+never creates a negative start time, including at score start.
+
+#### 4.5.7 Ornament
+
+**Definition 4.5.7**. Ornament types:
 
 | Ornament | Description |
 |----------|-------------|
@@ -620,6 +809,7 @@ Grace notes have a written duration (for notation) but their sounding duration i
 |-------|------|-------------|
 | `duration` | `Beat` | Duration of the rest |
 | `visible` | `bool` | Whether to render in notation (false for implicit padding rests) |
+| `tuplet_context` | `Option<TupletContext>` | Innermost enclosing tuplet, if any |
 
 ### 4.7 Direction
 
@@ -638,6 +828,27 @@ Grace notes have a written duration (for notation) but their sounding duration i
 | Pedal | Sustain pedal down/up, half-pedal, una corda, tre corde |
 | Breath | Breath mark or caesura |
 
+The programmed Direction payload is closed:
+
+| Field | Type | Owning variant |
+|---|---|---|
+| `text` | `Option<String>` | Required and non-empty for `Text` and `TempoText` |
+| `new_clef` | `Option<Clef>` | Required for `ClefChange` |
+| `ottava_shift` | `i8` semitones | Required as exactly `+12`, `-12`, `+24`, or `-24` for `OttavaStart`; zero otherwise |
+
+Missing required payload is an S19 Error. Populating one of these fields on another variant is an
+S19 Warning: the document remains compilable, but the irrelevant value is not part of that
+Direction's semantics.
+
+Ottava state is Staff-scoped; sustain-pedal state is Part-scoped because one physical damper pedal
+affects the instrument even though its notation point is visually anchored by a Voice on one Staff.
+S23 permits at most one active ottava per Staff and one active sustain-pedal state per Part,
+requires every ottava to stop, and rejects orphan stops, overlap, empty spans, or same-time
+endpoints whose order or pedal-change meaning is not stored. A final unmatched `PedalDown` is the
+one deliberate exception: it means sustain through the final bar line, matching LilyPond's
+documented omission of the terminal `\sustainOff`. If both Direction points and a
+`SustainingPedal` PartDirective encode the pedal, their inferred ranges must agree exactly.
+
 ### 4.8 ChordSymbol
 
 **Definition 4.8.1**. A *ChordSymbol* is a harmonic annotation in lead-sheet or Roman numeral form, attached to a time position. It does not produce sound directly; it annotates the harmonic context for the purpose of analysis, improvisation, or agent reasoning.
@@ -645,10 +856,37 @@ Grace notes have a written duration (for notation) but their sounding duration i
 | Field | Type | Description |
 |-------|------|-------------|
 | `root` | `SpelledPitch` | Root of the chord (letter + accidental) |
-| `quality` | `ChordQuality` | From the Theory Spec chord quality registry |
+| `quality` | non-empty `String` | Chord quality; registered spellings have native target mappings and other values remain exact display text |
 | `bass` | `Option<SpelledPitch>` | Slash bass note, if different from root |
-| `roman` | `Option<String>` | Roman numeral representation in current key |
-| `extensions` | `Vec<String>` | Textual extensions (e.g., "add9", "♯11") |
+| `roman` | `Option<non-empty String>` | Optional display spelling such as `V65`; never parsed to invent semantics |
+| `extensions` | `Vec<non-empty String>` | Legacy/free-form display residuals such as `add9` or `♯11` |
+| `numeral` | `Option<ChordNumeral>` | Structured scale-degree root, alteration, and explicit numeral key |
+| `inversion` | `Option<u16>` | Zero-based inversion (`0` is root position) |
+| `degrees` | `Vec<ChordDegree>` | Ordered structured add/alter/subtract operations |
+
+`ChordNumeral.root ∈ {1,…,7}` and `ChordNumeral.alteration` is an integer semitone count in
+`i8`. Its required key stores `fifths ∈ [-7,7]` and one closed MusicXML-compatible mode:
+`Major(0)`, `Minor(1)`, `NaturalMinor(2)`, `MelodicMinor(3)`, or `HarmonicMinor(4)`.
+`ChordDegree.value` is a positive `u16`, its alteration is an integer semitone count in `i8`, and
+its type is `Add(0)`, `Alter(1)`, or `Subtract(2)`.
+
+The separately useful playback/engraving `root` must agree with a structured numeral. Let *f* be
+the numeral key's fifths and let *q = f* for Major or *q = f + 3* for every minor mode. The tonic
+is `from_line_of_fifths(q)`. The expected root letter advances `numeral.root - 1` diatonic steps;
+its exact accidental is the difference between that target letter's natural pitch and the tonic
+plus the corresponding interval from
+Major `[0,2,4,5,7,9,11]`, Minor/Natural Minor `[0,2,3,5,7,8,10]`, Melodic Minor
+`[0,2,3,5,7,9,11]`, or Harmonic Minor `[0,2,3,5,7,8,11]`, plus the stored alteration. The
+calculation carries an octave when the diatonic step wraps from B to C. S25 rejects any exact
+letter/accidental contradiction, including a mod-12-equivalent but wrongly spelled root. This makes the root shared by notation,
+analysis, and playback a checked projection rather than a second independent assertion.
+
+The tractable profile owns one harmony chord per event and integer-semitone alterations. The
+compact MusicXML reader and Corpus ingester reconstruct this same root-or-numeral, key, kind,
+inversion, bass, ordered-degree, and exact measure-offset algebra. MusicXML stacked harmony chords
+and fractional `xs:decimal` microtonal alterations are outside this source domain and are rejected,
+not claimed as preserved. They must be added as typed source constructs before an importer or
+compiler may admit them.
 
 ### 4.9 TupletContext
 
@@ -662,23 +900,51 @@ Grace notes have a written duration (for notation) but their sounding duration i
 | `normal_type` | `Beat` | Duration of each normal note |
 | `nested_in` | `Option<Id<TupletContext>>` | Parent tuplet if nested |
 
-The total span of the tuplet is `normal × normal_type`. Each event within the tuplet has its written duration; the sounding duration is scaled by the factor `normal / actual`.
+Each measured event stores only its innermost context; following `nested_in` yields an acyclic
+outermost-to-innermost chain. A context's logical direct members are its directly tagged measured
+events plus its direct child contexts, and their count equals `actual`. All descendant measured
+events form one contiguous span.
 
-**Example**: A quarter-note triplet in 4/4. actual = 3, normal = 2, normal_type = Beat(1, 1) quarter note. Total span = 2 quarter notes. Each note's sounding duration = (2/3) × quarter note.
+Let `A(t)` be the ancestors of context *t*. Its structural span is
+
+`normal(t) × normal_type(t) × ∏[a ∈ A(t)] normal(a) / actual(a)`.
+
+The exact `duration` values of all events tagged with *t* or its descendants sum to that span.
+Thus `duration` is already the target-independent structural/sounding allocation; a notation
+compiler must not scale it again. The written note/rest type for a directly tagged member is
+`normal_type`. Nested scaling is the product of every context ratio.
+
+**Example**: A quarter-note triplet in 4/4 has `actual = 3`, `normal = 2`, and
+`normal_type = Beat(1,4)`. Its structural span is `Beat(1,2)` and three equal members each store
+`Beat(1,6)`. If a 3:2 eighth-note child replaces one outer member, its local quarter-note normal
+span is scaled by the outer 2:3 ratio to `Beat(1,6)`; three equal child events each store
+`Beat(1,18)`.
 
 ### 4.10 BeamGroup
 
-**Definition 4.10.1**. A *BeamGroup* identifies a set of events that share a beam in notation. Beam groups are computed automatically from the time signature's beat structure but may be overridden by the agent.
+**Definition 4.10.1**. A *BeamGroup* identifies one explicit primary beam in one Voice and
+Measure. The implemented runtime does not synthesize groups from metre; callers either store an
+explicit group or leave beaming to the target's defaults.
 
 | Field | Type | Description |
 |-------|------|-------------|
 | `id` | `Id<BeamGroup>` | Unique beam group identifier |
 | `event_ids` | `Vec<Id<Event>>` | Ordered events under this beam |
-| `beam_breaks` | `Vec<u8>` | Indices within `event_ids` where secondary beams break |
+| `beam_breaks` | `Vec<u8>` | Reserved secondary-beam metadata; must be empty in the compilable profile |
 
-**Default beam grouping**: In simple metres (2/4, 3/4, 4/4), events are grouped by beat. In compound metres (6/8, 9/8, 12/8), events are grouped by dotted-quarter-note beats. Events with durations of a quarter note or longer do not participate in beaming.
+For beaming, an event's *written duration* is its innermost `TupletContext.normal_type`, or its
+stored duration when it is not in a tuplet. A valid group has a globally unique ID and at least two
+members. Its member IDs are unique, strictly ordered as stored in the Voice, and contiguous among
+that Voice's measured events. Each member is a NoteGroup or Rest with a positive written duration
+shorter than a quarter note. A NoteGroup member is ordinary rather than grace material and carries
+the matching `beam_group` back-reference; every NoteGroup back-reference names exactly the local
+group that contains it. A Rest has no redundant back-reference.
 
-**Invariant**: Every event referenced by a BeamGroup must be a NoteGroup or Rest with duration shorter than a quarter note, and all events must belong to the same voice within the same measure.
+`beam_breaks` cannot be given a lossless meaning: a boundary index does not say which of the up to
+eight MusicXML beam levels breaks or whether a surviving beamlet is a forward or backward hook,
+and it does not provide LilyPond's per-stem left/right beam counts. S14 therefore rejects every
+non-empty value. A future secondary-beam model requires explicit per-level, per-side state rather
+than another exporter heuristic.
 
 ### 4.11 NoteHead
 
@@ -693,6 +959,7 @@ The total span of the tuplet is `normal × normal_type`. Each event within the t
 | `Triangle` | Triangle-shaped | Special percussion notation |
 | `CircleX` | Circled X | Specific extended techniques |
 | `Square` | Square-shaped | Early music notation, spoken text |
+| `Cue` | Sounding note rendered at cue size | Reduced or editorial context; not a silent cue event |
 
 ### 4.12 TechnicalDirection
 
@@ -727,7 +994,7 @@ The total span of the tuplet is `normal × normal_type`. Each event within the t
 | Field | Type | Description |
 |-------|------|-------------|
 | `bar` | `u32` | 1-indexed bar number |
-| `beat` | `Beat` | Position within the bar (Beat(0,1) = start of bar; Beat(1,1) = second quarter note in 4/4) |
+| `beat` | `Beat` | Whole-note offset within the bar (`Beat(0,1)` is the start; `Beat(1,4)` is the second quarter-note boundary in 4/4) |
 
 **Ordering**: ScoreTime values are totally ordered. (*b*₁, *β*₁) < (*b*₂, *β*₂) iff *b*₁ < *b*₂, or *b*₁ = *b*₂ and *β*₁ < *β*₂.
 
@@ -741,27 +1008,29 @@ This is a monotonically increasing function of ScoreTime and provides a single-a
 
 ### 5.3 RealTime
 
-**Definition 5.3.1**. *RealTime* is the clock time (in seconds) from the beginning of the piece, computed by integrating the TempoMap over AbsoluteBeat:
+**Definition 5.3.1**. *RealTime* is the clock time (in seconds) from the beginning of the piece. Let *B*<sub>q</sub> be the effective quarter-note BPM derived from the TempoEvent's `beat_unit`. Because AbsoluteBeat is measured in whole notes:
 
-RealTime(*t*) = ∫₀^{AbsoluteBeat(*t*)} (60 / BPM(τ)) dτ
+RealTime(*t*) = ∫₀^{AbsoluteBeat(*t*)} (240 / *B*<sub>q</sub>(τ)) dτ
 
 For piecewise-constant tempos, this is a sum of linear segments. For linear tempo transitions (accelerando/ritardando), the integral has the following closed-form solution.
 
-**Closed form for linear tempo interpolation**: If BPM varies linearly from *B*₁ to *B*₂ over a span of *d* beats (where *B*₁ ≠ *B*₂), the real-time duration of that span is:
+**Closed form for linear tempo interpolation**: If effective quarter-note BPM varies linearly from *B*₁ to *B*₂ over a span of *d* whole notes (where *B*₁ ≠ *B*₂), the real-time duration of that span is:
 
-Δt = 60 · *d* · ln(*B*₂ / *B*₁) / (*B*₂ − *B*₁)
+Δt = 240 · *d* · ln(*B*₂ / *B*₁) / (*B*₂ − *B*₁)
 
-This follows from integrating 60 / BPM(τ) where BPM(τ) = *B*₁ + (*B*₂ − *B*₁) · τ/*d* over τ ∈ [0, *d*]. The substitution u = *B*₁ + (*B*₂ − *B*₁) · τ/*d* yields the logarithmic form. In the degenerate case *B*₁ = *B*₂ (constant tempo), the formula reduces to Δt = 60 · *d* / *B*₁ by L'Hôpital's rule.
+This follows from integrating `240 / Bq(τ)` over τ ∈ [0, *d*]. In the degenerate constant-tempo case, the formula reduces to Δt = 240 · *d* / *B*₁.
 
 **Implementation note**: The natural logarithm and division introduce floating-point arithmetic into an otherwise exact-rational pipeline. Implementations should compute RealTime in double precision (IEEE 754 binary64) and accept the resulting representation error, which is bounded by machine epsilon (≈ 2.22 × 10⁻¹⁶) per segment. Accumulated error across *n* segments is bounded by *n* · ε · max(Δt), which remains negligible for practical scores (fewer than 10⁴ segments).
 
-RealTime is used for DAW compilation (MIDI event timestamps, automation curve timing) but is not used for internal Score IR operations, which operate in ScoreTime.
+RealTime is the clock-domain boundary for render/scheduling clients. MIDI and the current Ableton
+adapter retain exact ScoreTime/AbsoluteBeat until PPQ or quarter-note target conversion; they do not
+replace musical coordinates with seconds. Internal Score IR operations remain in ScoreTime.
 
 ### 5.4 Tick Time
 
 **Definition 5.4.1**. *TickTime* is the discretised time coordinate used by MIDI and DAW transport, measured in pulses per quarter note (PPQ). Given a PPQ resolution *R* (default: 480):
 
-TickTime(*t*) = AbsoluteBeat(*t*) × *R*
+TickTime(*t*) = AbsoluteBeat(*t*) × 4*R*
 
 Since AbsoluteBeat is an exact rational, TickTime is also an exact rational. However, MIDI files require integer ticks; the Score IR compiler rounds to the nearest integer tick and tracks the accumulated rounding error to prevent drift.
 
@@ -769,7 +1038,7 @@ Since AbsoluteBeat is an exact rational, TickTime is also an exact rational. How
 
 **Rounding algorithm**: For each measure, the compiler computes the exact rational tick count for the measure duration and rounds it to the nearest integer. Individual event ticks within the measure are computed by distributing the rounding residual using Bresenham-style error accumulation:
 
-1. Compute the exact tick position for each event: *t*_exact = AbsoluteBeat(event) × *R*.
+1. Compute the exact tick position for each event: *t*_exact = AbsoluteBeat(event) × 4*R*.
 2. Round to the nearest integer: *t*_rounded = round(*t*_exact).
 3. At each bar boundary, compute the cumulative error *e* = *t*_rounded − *t*_exact.
 4. If |*e*| > 0.5, adjust the final event in the measure by ±1 tick to bring the bar boundary error within tolerance.
@@ -813,6 +1082,26 @@ The layer is *derived* (computable from the note content plus the key signature 
 | `Ambiguous` | — | Function cannot be determined with confidence (e.g., chromatic or non-functional harmony) |
 
 The `Ambiguous` value is used when the harmonic context is insufficient to assign a clear function — common in chromatic passages, modal interchange, and non-functional harmony. The `confidence` field provides a continuous measure alongside this discrete classification.
+
+**Invariant 6.2.2 (annotation payload closure).** Each persisted annotation has a non-empty,
+strictly ascending MIDI-note voicing, non-empty quality and Roman-numeral labels, closed enum
+values, a non-empty optional secondary-function label, and finite confidence in `[0, 1]`. If the
+quality resolves through the chord-quality registry, the voicing's pitch-class set is exactly the
+registered interval set transposed from `root`; octave doublings are permitted. `inversion` is a
+valid registry interval index and the lowest note has that indexed pitch class. A quality outside
+the registry is retained for non-tertian/analytical material only in root position, with its bass
+pitch class equal to `root`, because no interval algebra exists from which to validate another
+inversion. `key_context` satisfies the same complete key-identity rule as a KeySignatureMap entry.
+
+**Invariant 6.2.3 (section-harmony derivation).** `set_section_harmony` treats each entry's spelled
+root octave as the exact source register and constructs every registered quality member or rejects
+the operation. An optional slash bass must be an exact chord member; it becomes the lowest note
+and determines inversion, while every other member is raised as needed to form one strictly
+ascending voicing. Non-chord slash basses fail closed because `ChordVoicing` has no independent
+pedal-bass carrier. Roman numeral and function are derived under the KeySignatureMap entry active
+at that chord's position, including its stored mode intervals; a region-wide key guess or
+fifths-sign heuristic is not admissible. Candidate construction and validation precede the one
+atomic document commit.
 
 ### 6.3 NonChordToneAnnotation
 
@@ -956,6 +1245,14 @@ This is the standard format for producing individual performer parts.
 
 **Definition 8.2.5**. A *RegionView* extracts a bounded region of the score (specified by a Region address, §1.2) as an independent Score IR fragment, preserving all layers (notes, harmony, orchestration) within the region.
 
+The current view unit is the complete set of source bars intersected by the Region. At the selected
+start-bar downbeat, the view materialises active time signature, key, and exact instantaneous
+effective-quarter tempo as new origin entries. If the boundary intersects a Linear tempo interval,
+the new tempo is Immediate and the retained destination's Linear duration is shortened to the exact
+remaining interval. Later source changes retain their relative positions. This history
+normalisation guarantees that a valid source produces S4/S5/S6/S24-coherent global maps instead of
+an orphaned incoming transition.
+
 This is useful for focused work on a single section, and for comparing parallel passages (e.g., the exposition and recapitulation of a sonata).
 
 ---
@@ -968,65 +1265,344 @@ This is useful for focused work on a single section, and for comparing parallel 
 
 ```
 Score IR ──┬──→ AbletonCompiler ──→ Ableton Live Session (via LOM bridge)
-           ├──→ MidiCompiler ──→ Standard MIDI File (.mid)
+           ├──→ MidiCompiler ──→ Typed MIDI event data
            ├──→ MusicXmlCompiler ──→ MusicXML (.musicxml)
-           ├──→ LilyPondCompiler ──→ LilyPond (.ly)
-           └──→ AudioCompiler ──→ Audio rendering (requires Timbre IR + Mix IR; see those specifications)
+           └──→ LilyPondCompiler ──→ LilyPond (.ly)
 ```
+
+The Ableton target becomes the audio-rendering environment after the aggregate project compiler
+configures Score, Timbre, and Mix in the same session using the identity and ordering rules in
+`sunny-project-model.md`. Sunny does not currently expose a separate PCM `AudioCompiler`.
 
 ### 9.2 AbletonCompiler
 
-**Definition 9.2.1**. The *AbletonCompiler* produces an Ableton Live session from the Score IR.
+**Definition 9.2.1**. The *AbletonCompiler* emits the supported Live Object Model operations for a Score IR and returns a compilation summary. The summary distinguishes transport success from completeness: `success` means all emitted operations were accepted and every evidence payload required from a real protocol-v41 transport was well formed; `complete` means no requested feature was outside the supported LOM surface and no observed scalar diverged from its request.
+
+Before emitting mutations, the production transport performs the versioned target-profile handshake
+defined in `docs/ableton-max-conformance.md`. The compiler records the observed Live version and
+capability states in its result. A missing, malformed, or internally contradictory profile is a
+pre-mutation protocol error, not a reason to guess. Recording transports must supply an explicit
+modelled profile and cannot obtain capabilities merely by omitting one.
+The Part-to-track ordinal range must also fit the bridge's canonical non-negative signed-index
+domain. An unrepresentable range fails before the target profile, scene count, or any mutation is
+requested. Compilation summary counters are 64-bit and therefore do not inherit that addressing
+limit.
+The initial meter must additionally inhabit Live's documented value domain: numerator 1–99 and
+denominator in {1, 2, 4, 8, 16}. Sunny's target-independent metre algebra remains broader; an
+initial value outside the target subset returns 4112 (`TargetValueUnrepresentable`) before target
+access. Later meter events are retained as unsupported automation and therefore need not satisfy
+the current-value subset.
+The initial tempo is normalised to effective quarter-note BPM before deployment and must inhabit
+Live's documented 20–999 Song.tempo range. A target-independent marking such as half-note = 60
+therefore deploys as Song.tempo = 120. An out-of-range value returns 4112 before target access.
 
 **Compilation steps**:
 
-1. **Track creation**: For each Part, create an Ableton MIDI track via the LOM bridge. Assign the instrument preset from `RenderingConfig.instrument_preset`. Assign the track to a group if `RenderingConfig.group` is specified. Set pan from `RenderingConfig.pan`.
+1. **Initial globals**: After the target-value preflight, set the Song's effective-quarter initial tempo and time signature. `tempo_events_requested` and `time_signature_events_requested` count source map points, while each corresponding `*_written` count is currently one. Later tempo transitions/events and meter events remain in the Score IR and produce capability warnings because the admitted public LOM surface exposes current Song scalars but no tempo- or meter-automation authoring operation.
 
-2. **Clip generation**: For each contiguous section (from the SectionMap), create an Ableton MIDI clip on the corresponding track. The clip's start and end times are computed from ScoreTime → TickTime (§5.4). Within the clip, each NoteGroup compiles to one or more MIDI note-on/note-off pairs:
+   Live's documented Song and Clip metre state contains only numerator and denominator scalars.
+   `time_signature_groupings_requested` therefore counts source partitions that differ from
+   Sunny's deterministic reconstruction for the same flat signature, while
+   `time_signature_groupings_written` is zero. Such a request emits a capability warning and makes
+   compilation incomplete even when scalar write/readback proves the requested flat value. A Live
+   `5/8` observation cannot establish whether source intent was `3+2`, `2+3`, or another partition.
+
+   Aggregate schema-14 evidence also observes exact Boolean Song transport-running, count-in,
+   Arrangement Record, Session Overdub, Automation Arm, `arrangement_overdub`, and `overdub`
+   state. The Song gate requires the six recording/count-in modes false; ordinary playback is
+   exported independently and does not by itself invalidate structural deployment. Sunny does not
+   change these controls, and it does not interpret the public integer `session_record_status`
+   because the current reference gives no value mapping.
+
+   After ensuring Scene 0 exists, set/read back its name from `Score.metadata.title`, then set/read
+   back both its tempo-override and meter-override enable flags as false. The single Session row
+   identifies the full Score while sections remain CuePoints. The Scene contract then uses Song
+   state when launched; an existing target Scene cannot silently replace the globals installed
+   above.
+
+   The final structural observer additionally retains exact Boolean `Scene.is_triggered` for every
+   Scene, not only Scene 0. Aggregate Song evidence requires the complete vector to be false. This
+   excludes a documented pending/blinking Scene launch only at those sequential reads; compilation
+   issues no Scene fire/stop command and proves neither launch completion, recording preferences,
+   atomicity with Clip/Track predicates, future stability, playback, nor sound.
+
+   Global and nonredundant Part-local keys contribute to
+   `key_signature_events_requested`; the current bridge writes zero and reports the residual
+   because a safe Live 12 scale write also needs observed tuning compatibility and an accepted
+   scale-name mapping.
+
+   The complete `ScoreTuning` contributes one `tuning_definitions_requested` record and is retained
+   verbatim as `requested_tuning`; `tuning_definitions_written` is currently zero. Live 12.1's
+   writable `live_set tuning_system` object is therefore recognized but not guessed at. The public
+   LOM reference specifies the semantic dictionary properties and says that `note_tunings` holds
+   one array, but does not close the member schemas needed for an exact write/readback protocol.
+   Non-standard source tuning adds a capability warning. Even canonical 12-TET remains an explicit
+   incomplete target obligation because an existing Live Set may have a different active tuning.
+
+2. **Track creation**: For each Part, create an Ableton MIDI track via the LOM bridge and set its name. Set and immediately read back exact Boolean `Track.arm = false` and `Track.implicit_arm = false`, exact integer `Track.mixer_device.crossfade_assign = 1`, Live's public “neither A nor B” value, and exact integer `panning_mode = 0` before setting `RenderingConfig.pan` through `Track.mixer_device.panning.value`. Live documents armed Tracks as admitting monitored input and recording/overdub participation; `implicit_arm` is its second public arm state used by Push. Live's Split Stereo mode (`1`) replaces the single Stereo Pan operation with independent left/right positions and is not a representation of Sunny's one pan scalar. Aggregate schema-14 evidence requires both arm states to remain false, the final crossfade assignment to remain 1, and final panning mode 0. It also requires the final Track's public `is_frozen` state to be false, because a frozen Session clip plays its freeze audio rather than the current MIDI/device state, and explicitly observed null Group Track membership: a parent Group can add a summing mixer/effects and commonly changes the Part's route without changing its own Track facts. This does not materialise or verify Sunny GroupBuses. Snapshot schema 34 additionally requires the created Part to retain exact `(has_audio_input, has_midi_input) = (false, true)`, plus exact selected input-routing type/channel dictionaries that are full-dictionary members of Live's corresponding advertised option arrays. This proves the expected MIDI-input Track class and a Live-valid current selection, not the semantic identity or neutrality of the selected source; Sunny performs no input-route mutation and never interprets a presentation label such as “No Input.” The same gate requires exact floating `input_meter_level = output_meter_level = 0.0` plus `input_meter_left = input_meter_right = output_meter_left = output_meter_right = 0.0`. Live documents the first pair as one-second hold peaks and the latter four as smoothed momentary peaks available on audio-output Tracks, with additional GUI load when observed. Sunny reads each once and exports separate hold, stereo-momentary, and conjunctive verdicts. These verdicts exclude bounded metered activity only at the sequential final reads; they do not prove continuous event/signal absence, monitoring state, interface behavior, or sound. Every normal Track also retains its complete ordered ClipSlot vector. Generated Part evidence requires exact slot cardinality/order and Clip occupancy agreement, and every slot to be non-Group, status-zero/not playing, not recording/not will-record, and not triggered. Stop Button presence remains observed target state rather than Sunny intent. This closes a pending action on a later empty cell at the sequential final read, without firing/stopping a slot or proving atomicity, future stability, recording preferences, playback, signal, or sound. On Live 11+, the same Track snapshot retains exact cardinalities for the separate `arrangement_clips` and `take_lanes` lists, and the generated Part gate requires zero for both; earlier modeled targets retain null and cannot verify these obligations. Count zero proves the requested Arrangement-content absence proposition without serializing private Clip objects. It also removes the Take Lane branch that Ableton documents as audible under Audition Mode, whose state is not exposed in the public LOM. Neither count proves atomicity, future stability, playback, or sound. Disarming does not establish the monitoring selector: the current public Track LOM omits the mode that Ableton documents as capable of suppressing clip output, so `monitoring_state_observed` and `clip_output_not_suppressed_by_monitoring_verified` remain false even for an unfrozen/disarmed Track gate. Arm/input-class/selection/meter-hold/Session/Arrangement/Take-Lane/crossfade/pan-mode closure does not prove external-input neutrality, output routing, Return-path neutrality, continuous signal, or sound.
+
+   Staff topology is notation layout inside a Part, not playback routing. `staff_count`,
+   `staff_clefs`, and `Voice.staff_index` therefore do not create additional Live tracks or clips;
+   every sounding Voice in the Part is compiled into that Part's single clip. Track identity remains
+   `PartId`, never staff ordinal.
+
+3. **Clip generation**: Create one Session View clip in slot zero per Part, spanning the greater of the structural score duration and the latest compiled musical note end. `ClipSlot.create_clip` specifies neither meter inheritance nor activator/loop/marker/launch/groove/envelope defaults. Set/read back start marker 0, end marker equal to that compiled length, `looping = false`, and `muted = false`, making the Score a finite active unlooped structural interval. Ableton defines an unlooped Clip's played range by these start/end markers; the independently stored loop brace is dormant and unobserved under the false loop invariant. Admitting a looped projection would require separate `loop_start`/`loop_end` intent and evidence. Snapshot schema 34 independently requires public audio false/MIDI true/Arrangement false identity and read-only `end_time` equality with the requested End Marker. On Live 11+, it also requires Session true/Take-Lane false, then sets/reads back `launch_mode = 0` (Trigger), `launch_quantization = 1` (None), `legato = false`, floating `velocity_amount = 0.0`, and the null `groove` object. An associated groove can non-destructively alter timing, random offsets, and velocity despite exact stored note dictionaries; generated clips therefore require final `has_groove = false`. The public Clip LOM exposes no Follow Action state even though Ableton documents Follow Actions that can stop, restart, or launch clips and override loop/region behavior. Sunny neither fires the Clip nor observes a playback trace, so the structural interval and bounded launch tuple do not prove one-shot playback. Final generated-Clip evidence first requires the complete occupied Session-slot set on its Track to equal exactly `{0}`; target-owned content in any other slot remains observed but makes the projection incomplete. Snapshot schema 34 retains exact Boolean `is_playing`, `is_recording`, `is_overdubbing`, `is_triggered`, and `will_record_on_start` state. A generated Clip verifies only when all five are false at the sequential final observation; Sunny does not issue a stop, claim atomicity, or guarantee that a later user/controller action cannot change them. Before inserting notes, call the public all-envelope clear through the exact no-argument adapter and require immediate Boolean `has_envelopes = false`; aggregate evidence requires the same final state. Clip Envelopes can otherwise automate/modulate mixer or device controls and carry MIDI controller data. Also set/read back the initial Score signature on each created Clip before inserting notes. Within the clip, each NoteGroup compiles to one or more Live note dictionaries:
    - Pitch: `midi(note.pitch)` from the Theory Spec.
    - Velocity: `note.velocity.value` (resolved; see §9.5).
-   - Start: TickTime of the event offset within the clip.
-   - Duration: Sounding duration after articulation adjustment (§9.4).
+   - Start: TickTime of the event offset within the clip, after grace timing resolution when applicable.
+   - Duration: Grace timing resolution followed by articulation adjustment (§9.4).
+   - Mute: the compiled note activator state.
+   - Probability: adapter-owned floating `1.0` (always play).
+   - Velocity deviation: adapter-owned floating `0.0` (no random attack deviation).
+   - Release velocity: floating projection of the Score-owned terminal `release_velocity`.
 
-3. **Articulation rendering**: For each articulated note, apply the ArticulationMapping from the part's RenderingConfig:
-   - Keyswitches are inserted as note-on/note-off pairs preceding the articulated note by a configurable lead time (default: 1 tick).
-   - CC messages are inserted at the note's start time.
-   - Duration scaling is applied to the note's MIDI duration.
+   `notes_requested` counts the ordinary note dictionaries produced by the shared MIDI projection;
+   `notes_written` counts dictionaries in successful `add_new_notes` calls. The distinction remains
+   visible when a target below Live 11 preserves note intent but cannot admit the call.
+   Each nonempty Part call also creates a `note_deployments` record. A real transport requires the
+   exact list of unique integer note IDs documented as the call's return value and verifies its
+   cardinality against the requested batch; missing, duplicate, or wrong-sized evidence is a
+   protocol error. It then calls `get_notes_by_id` with those IDs and an exact selected return list
+   containing ID plus pitch/start/duration/velocity/mute, adapter-owned floating probability
+   1.0 and velocity deviation 0.0, and Score-owned floating release velocity. The insertion dictionary explicitly
+   sends the same deterministic values. The response must contain the same unique
+   ID set and exact record schema. It also calls `get_all_notes_extended` with the same selected
+   fields and requires exactly the same complete record multiset, proving that the newly generated
+   Clip contains no additional or missing notes. Requested and observed eight-property tuples are
+   compared as multisets, so no undocumented return-order correspondence is assumed. A
+   well-typed, consistent property difference is retained as unverified and warned; extra/missing
+   notes, inconsistent queries, or malformed evidence are protocol errors. Recording
+   transports use `recorded_only`, return no IDs/readback, and increment no executed, returned-ID,
+   verified-batch, or verified-note counter.
+   `pitch` is the Score's integer note index; its intended frequency comes from `ScoreTuning`, not
+   intrinsically from 12-TET. On Live 12, an active Set tuning can reinterpret that index. Snapshot
+   schema 34 observes the version-available Song scale tuple and every documented global
+   TuningSystem property, preserving its four dictionaries exactly but without interpreting their
+   undocumented members. It still cannot map that target payload to `ScoreTuning` or observe target
+   track/device bypass/support conditions. Nonempty Live-12 note deployment therefore carries an explicit
+   audible-pitch warning; neither requested nor written count proves frequency equivalence.
 
-4. **Dynamic rendering**: Hairpins and dynamic markings compile to CC automation lanes (using `RenderingConfig.expression_cc`). Instantaneous dynamics set the CC value at the event's time point. Hairpins produce linear CC ramps between start and end positions.
+4. **MIDI preparation**: The existing MIDI compiler resolves velocity, duration, temporal conversion, and supported articulation data before LOM translation. The Ableton phase does not make musical decisions.
 
-5. **Tempo rendering**: The TempoMap compiles to Ableton's master tempo automation. Immediate changes produce step automation; linear transitions produce ramp automation.
+5. **Section markers**: Top-level Section starts compile through the bridge's `sunny_set_cue` adapter. The adapter uses Song's current-time cue method, preserves the playhead, and renames an existing cue instead of toggling it away. Nested nodes remain explicit residuals because CuePoints are flat and time-keyed: projecting a child that shares its parent's start would overwrite rather than preserve both labels. Results expose total/projected/unprojected section-node counts and a capability warning when hierarchy is retained only in the IR.
 
-6. **Time signature rendering**: The TimeSignatureMap compiles to Ableton's time signature track.
+Initial Song tempo/signature, Scene-0 name/override flags, each created Clip's finite active
+unlooped marker/loop/activator state, Live-11+ bounded launch tuple and null groove association,
+and signature, track name, optional pan, and clip name are generic property writes. Each produces a
+`property_deployments` record containing path, property,
+requested value, optional observed value, and `verified`. A real transport must return typed
+set/readback evidence; missing or malformed evidence is a protocol error. A different but
+well-typed observed value is retained, makes that record unverified, and produces a completeness
+warning. A recording transport retains the command plan with null observations and cannot claim
+verification. Structural calls—track creation, clip creation, note insertion, and cue adaptation—
+remain call-outcome evidence and are not promoted to scalar-state verification. In particular,
+`notes_written` means accepted by the adapter call and returned IDs prove creation cardinality.
+The separate all-envelope clear retains requested/executed/verified counts and one per-Part
+deployment with requested absence, optional observed `has_envelopes`, action, and verdict. A real
+transport requires the exact one-Boolean response; a recording transport claims only intent.
+The paired `get_notes_by_id`/`get_all_notes_extended` evidence verifies Sunny's five Score-derived
+note properties, the three fixed adapter properties, and exact Clip-note-set cardinality. Each
+deployment exposes the requested eight-field Live-domain tuple multiset as well as `observed_notes`, `properties_verified`,
+`notes_verified`, and `note_batches_verified`; the Boolean verdict is therefore derivable from its
+stored proposition and observation rather than trusted opaquely. It still is not
+audible-output proof or evidence about per-note MPE expression.
+Clearing and finally observing no Clip groove closes one documented playback transformation. The
+bounded launch tuple separately removes launch-mode, clip-quantization, Legato-offset, and
+launch-velocity scaling ambiguity, but the public Clip LOM exposes no Follow Action state.
+`launch_behavior_verified` therefore does not imply `follow_actions_observed`,
+`one_shot_playback_verified`, rendered timing, or rendered velocity. The device chain, latency,
+routing, scheduling, and audio output also remain outside the stored-note proposition. Ableton's
+UI additionally supports launch-time MIDI Clip bank/sub-bank/Program Change, but the public Clip
+LOM exposes no corresponding state and clip creation promises no neutral default. Therefore
+`midi_bank_program_state_observed` and `program_change_suppression_verified` remain false even when
+Device identity and mapped parameters verify.
+The all-envelope clear plus immediate and final `has_envelopes = false` closes the independently
+tractable public Clip-envelope layer. It does not author automation and does not establish absence
+of MPE note expression, control/modulation outside the Clip, or audible behavior.
+Ableton separately documents note-owned Pitch, Slide, and Pressure MPE envelopes, but the current
+public Clip note dictionaries expose no curves or expression-clear operation. Therefore aggregate
+generated-Clip evidence retains false `mpe_note_expression_state_observed` and
+`mpe_note_expression_neutrality_verified`; the selected ordinary note-property verdict cannot
+imply neutral expression.
+Current protocol-v41 project evidence can retain each top-level Device's reported sample/millisecond
+latency, but those values do not close delay compensation/monitoring mode, Track Delay, routing,
+buffers/drivers, external hardware, or an audible reference event; they therefore do not change
+this false timing verdict.
+An offline transport labels the batch `recorded_only`; an observed pre-Live-11 target labels it
+`unsupported`. Neither action carries created IDs or observed tuples.
+For aggregate execution, each inserted batch's stored tuples and IDs become a distinct final-state
+obligation: after all compiler phases and the structural post snapshot, a second closed complete-note
+query must retain the exact ID set and property multiset. That sequential postcondition does not
+change this Score compiler's insertion-time counters or imply atomic observation.
 
-7. **Section markers**: Section boundaries from the SectionMap compile to Ableton arrangement locators (named markers in the arrangement view).
+**Live capability boundary**:
 
-8. **Part directives**: Directives such as `ConSordino` or `Pizzicato` compile to CC messages or keyswitches according to the ArticulationMapping, inserted at the directive's start time, with a restoration message at the end time.
+- Clip note insertion targets Live 11+ `Clip.add_new_notes`. For an observed older target, the
+  compiler still creates representable structure but skips note calls and reports incompleteness.
+- Arbitrary instrument/plugin preset loading and Group Track creation/assignment are not public LOM operations. Requests for them produce warnings and no command.
+- Custom velocity-layer and duration-scale mappings are already reflected in the musical notes
+  sent to Live. Keyswitch, CC, and program-change events remain outside the current public-LOM
+  deployment path; results expose separate `articulation_control_events_requested` and
+  `articulation_control_events_written` counts and warn only when such an event was actually
+  compiled. The written count is currently zero.
+- Tempo and time-signature automation, CC automation, and clip automation-envelope authoring are
+  not exposed by Sunny's closed public-LOM algebra. Their IR data is preserved and reported as
+  incomplete; the public all-envelope clear only removes state from the fresh generated Clip and
+  is not an authoring projection.
+- Explicit time-signature grouping is likewise not a documented Song/Clip property. Flat
+  numerator/denominator writes do not increment `time_signature_groupings_written`; distinct
+  source grouping is retained and reported as an incomplete residual.
+- Live 12.1 exposes writable current `TuningSystem` properties, and Score retains one complete
+  128-note pitch function. The bridge still has no closed member schema for Live's semantic tuning
+  dictionaries. Snapshot schema 34 retains the exact dictionary payloads opaquely and validates
+  only their documented outer shapes; opaque observation supplies stale-plan evidence, not the
+  semantic mapping required for safe mutation.
+  `requested_tuning` and requested/written counts expose the exact residual; no tuning mutation or
+  tuned-sound equivalence is claimed.
+- Live 12 can apply a Set tuning to already stored MIDI note indices. The bridge preserves the
+  integer note dictionaries and observes bounded global pitch context, including opaque target
+  tuning dictionaries; their Score meaning, per-track bypass, and instrument/MPE support remain
+  unobserved. Therefore Live-12 note compilation
+  explicitly leaves audible pitch unverified even when `notes_written == notes_requested`.
+- Native device-chain materialisation belongs to the Timbre compiler (§9 of the Timbre IR specification).
+- Max for Live availability is not implied by a Live version and remains `unknown` unless a future
+  deployable target can prove it independently.
+
+The implemented Score-to-MIDI behaviours are:
+
+1. **Articulation rendering**: A mapped articulation executes its validated mapping tree and
+   produces keyswitch, control-change, program-change, velocity-layer, and/or duration-scale
+   effects. An unmapped articulation uses the fixed fallback factors. Exact duplicate control
+   events at the same tick are deduplicated. The generic NoteEvent projection applies the same
+   note-local velocity and duration effects; it emits a location-bearing residual for mapping
+   controls that the flat record cannot carry.
+
+2. **Dynamic rendering**: Instantaneous dynamics and hairpins contribute to resolved note velocity. The current compiler does not emit CC automation lanes.
+
+3. **Grace rendering**: Homogeneous grace groups use the exact allocation policy in §4.5.6. The
+   generic NoteEvent projection and the MIDI/Ableton path share it; grace notes are neither omitted
+   nor treated as ordinary full-slot notes.
+
+4. **Tie rendering**: MIDI, generic NoteEvent, SMF, and Ableton performance projections collapse a
+   validated ordinary tie chain to one physical attack/release interval. Exact segment durations
+   are checked and summed, attack state comes from the head, release velocity comes from the
+   terminal segment, and semantic dynamics encountered on consumed continuations still govern
+   later attacks. Point events do not interrupt S7 measured-event adjacency. A target-domain drop
+   counts the physical chain once rather than exposing its continuations as independent notes.
+
+5. **Tempo rendering**: TempoMap entries compile to tick-positioned Set Tempo data. The compiler does not invent intermediate approximation events.
+
+6. **Time and key signatures**: The corresponding maps compile to tick-positioned metadata records.
+   Standard MIDI key-signature metadata retains the exact signed fifths count only in its
+   −7…+7 domain and has only a major/minor flag. Wider signatures are counted and diagnosed as
+   dropped metadata. Major/Ionian and minor/Aeolian map natively; other Sunny scales use the
+   deterministic third-degree proxy and produce a compilation diagnostic rather than claiming
+   that the analytical mode survived.
+
+6. **Pedals, Part directives, and markers**: Paired PedalDown/PedalUp Directions and
+   SustainingPedal PartDirectives compile to the same exact CC64 switch ranges; duplicate exact
+   representations are deduplicated, while S23 blocks disagreement. A terminal PedalDown is closed
+   with CC64 off at the score endpoint so state cannot leak beyond playback. UnaCorda compiles to
+   CC67. Other directives remain semantic Score IR data with compilation diagnostics. Markers are
+   not emitted by the current MIDI event compiler.
 
 ### 9.3 MidiCompiler
 
-**Definition 9.3.1**. The *MidiCompiler* produces a Standard MIDI File (SMF) Type 1.
+**Definition 9.3.1**. The implemented *MidiCompiler* produces a deterministic `CompiledMidi` event model. The C++ API returns that type and `score_compile_to_midi` returns its JSON representation; it does not return `.mid` file bytes. The infrastructure layer has a separate SMF reader/writer for file interchange.
+
+Each note event retains both its requested MIDI channel and its source `PartId`. The Ableton compiler routes by `PartId`, so two parts that share a MIDI channel still deploy to separate tracks without duplicating or exchanging notes.
 
 **Mapping**:
 
 | Score IR Element | MIDI Event |
 |-----------------|------------|
-| Part | Track |
+| Part | MIDI channel selected by its RenderingConfig |
 | NoteGroup → Note | Note On / Note Off |
 | TempoMap entry | Meta event: Set Tempo |
-| TimeSignatureMap entry | Meta event: Time Signature |
-| KeySignatureMap entry | Meta event: Key Signature |
-| Dynamic (instantaneous) | CC message (expression) |
-| Hairpin | Sequence of CC messages (interpolated) |
-| Articulation (CC-mapped) | CC message |
-| Articulation (keyswitch) | Note On / Note Off |
-| PartDirective | CC or program change |
-| RehearsalMark | Meta event: Marker |
-| Section boundary | Meta event: Cue Point |
+| TimeSignatureMap entry | Complete SMF Time Signature meta event (`nn`, encoded denominator exponent, `cc`, `bb`) when it fits the exact target profile |
+| KeySignatureMap entry | Meta event retaining exact fifths only within SMF's −7…+7 domain; wider signatures are explicitly dropped; major/minor-family mode is native, all other analytical modes produce explicit proxy evidence |
+| Dynamic and Hairpin | Resolved note velocity |
+| GraceType | Resolved start and base sounding duration from §4.5.6 |
+| Unmapped articulation | Default duration/velocity adjustment |
+| `Keyswitch` mapping | One-tick Note On / Note Off pair |
+| `CC` mapping | Control Change |
+| `ProgramChange` mapping | Program Change |
+| `VelocityLayer` mapping | Affine note-velocity remapping |
+| `NoteDurationScale` mapping | Sounding-duration multiplier |
+| Paired PedalDown/PedalUp Directions | CC64 value 127/0 at exact points; terminal open state receives off at score end |
+| SustainingPedal PartDirective | CC64 value 127 at start and 0 at end |
+| UnaCorda PartDirective | CC67 value 127 at start and 0 at end |
+| Other PartDirective | No fabricated MIDI event; compilation diagnostic retains the unsupported intent |
+| ScoreTuning | Canonical 12-TET/A4=440 is the admitted nominal MIDI baseline; every other complete pitch function is retained as one requested/zero-written tuning definition with a diagnostic |
 
 **Resolution**: 480 PPQ (configurable).
 
-**Limitation**: MIDI does not preserve enharmonic spelling, articulation semantics, or orchestration metadata. The MIDI compiler is lossy with respect to these properties. The Score IR remains the source of truth.
+SMF Set Tempo is a point-valued 24-bit unsigned microseconds-per-quarter word. Immediate and
+MetricModulation targets emit one rounded word at their tick. A Linear destination is projected as
+deterministic held-step samples on the PPQ lattice. Before 24-bit word quantisation, the qBPM hold
+error is bounded by `max(0.5, |Qtarget-Qstart|/ramp_ticks)`: the second term is the irreducible
+one-tick limit. Each ramp admits at most 4096 generated Set Tempo events; a rate outside the 24-bit
+word domain, a source-event tick collision, or a ramp exceeding that bound returns
+`InvalidMidiTempo` rather than weakening the guarantee or allocating without bound. The separate
+tempo-word error at a sample is exactly
+`|60,000,000 / round(60,000,000/Q) - Q|`.
+
+An SMF Time Signature payload is `FF 58 04 nn dd cc bb`. `CompiledMidi` keeps the
+denominator as its actual power-of-two value; the infrastructure writer converts it to the `dd`
+base-two exponent. Sunny's current exact profile admits source numerators 1…255 and actual
+denominators no greater than 128. The compiler checks those bounds before integer narrowing;
+outside them the event is not emitted and the report retains the target loss. `bb` is 8 because
+Sunny's score projection uses the ordinary eight notated 32nd notes per MIDI quarter.
+
+Let the stored group sizes be \(g_1,\ldots,g_n\), let \(d\) be the denominator, and let
+\(G=\gcd(g_1,\ldots,g_n)\). Since MIDI defines 24 clocks per quarter and therefore 96 per Sunny
+whole note, the compiler emits
+
+\[
+cc = \frac{96G}{d}
+\]
+
+when that value is an integral byte in 1…255. This is the longest uniform click interval whose
+grid contains every stored group boundary. If no such byte exists, `cc` falls back to the
+conventional 24-clock quarter. The value has metronome semantics; it is not an SMF ordered-group
+field. Consequently even an equal-group click interval does not count as a written grouping.
+Canonical `6/8 = 3+3/8` emits `cc=36` without creating a non-default grouping obligation. An
+explicit non-default `2+2/4` emits a matching `cc=48`, but its grouping remains requested and zero
+written. `3+2/8` emits the common eighth-note grid `cc=12`; neither click value is promoted into a
+claim that an SMF consumer received Sunny's source partition.
+
+The MIDI report's time-signature event requested count covers every global map point plus every
+nonredundant equal-duration Part-local residual. Its grouping requested count covers only
+partitions that differ from Sunny's deterministic flat-signature constructor; grouping written is
+zero because SMF has no ordered-group property. Either event or grouping shortfall makes
+`has_drops()` true. Ableton uses the same definition of explicit grouping intent at its separate
+flat-scalar boundary.
+
+`CompilationReport` distinguishes two summary predicates. `has_drops()` is deliberately narrow:
+it reports nonzero dropped-event counters and requested/written capability shortfalls.
+`has_residuals()` is the target-completeness predicate and is true when `has_drops()` is true or
+when any compilation diagnostic exists. The latter covers a usable approximation that retained
+event cardinality but lost a semantic distinction, such as projecting a Dorian key through SMF's
+major/minor bit. Both Boolean values and the complete diagnostic array are exposed in MCP report
+JSON. Score and aggregate Ableton `complete` use `has_residuals()`; consumers need not reconstruct
+that rule from counters and array cardinality.
+The standalone Score MCP tools and aggregate Project MCP tools call the same private Infrastructure
+encoder for this report. The Core model owns the evidence and summary algebra; Infrastructure owns
+its JSON projection. No handler-local duplicate field list is an independent schema authority.
+
+The infrastructure converter makes the channel basis explicit: `CompiledMidi` uses the
+human-facing range 1–16 and SMF channel bytes use 0–15. It emits metadata first, then program
+changes, control changes, same-tick note-offs, keyswitch note-ons, and musical note-ons. The SMF
+reader/writer round-trips tempo, time signature, key signature, notes, CC, and program changes.
+
+**Limitation**: MIDI does not preserve enharmonic spelling, source `PartId`, or the semantic name
+of an articulation. A parsed note cannot be reclassified as a keyswitch without Score IR context.
+It also has one global meter meta-event stream. Equal-duration measure-local regroupings remain
+playable but enter `dropped_time_sig_events`; unequal-duration local bars are outside the shared
+performance projection and fail before note timing is emitted. SMF key-signature metadata likewise
+carries one global stream: a nonredundant `Measure.local_key` remains notation state and increments
+`dropped_key_sig_events` instead of being silently conflated with the active global key. The Score
+IR remains the source of truth.
 
 ### 9.4 Articulation Duration Resolution
 
@@ -1034,30 +1610,49 @@ Score IR ──┬──→ AbletonCompiler ──→ Ableton Live Session (via 
 
 | Articulation | Duration Factor | Notes |
 |-------------|----------------|-------|
-| (none / legato) | 1.0 | Full written duration |
-| Tenuto | 1.0 | Full duration, explicit |
-| Portato | 0.75 | Between legato and staccato |
-| Staccato | 0.50 | Half of written duration |
-| Staccatissimo | 0.25 | Quarter of written duration |
-| Accent | 1.0 | Duration unchanged; velocity affected |
-| Marcato | 0.85 | Slightly separated |
-| Fermata | configurable (1.5–2.5) | Held beyond written duration |
+| (none / legato) | `1/1` | Full written duration |
+| Tenuto | `1/1` | Full duration, explicit |
+| Portato | `3/4` | Between legato and staccato |
+| Staccato | `1/2` | Half of written duration |
+| Staccatissimo | `1/4` | Quarter of written duration |
+| Accent | `1/1` | Duration unchanged; velocity affected |
+| Marcato | `17/20` | Slightly separated |
+| Fermata | `7/4` | Held beyond written duration |
 
-These factors are defaults. The RenderingConfig may override them per instrument, and the ArticulationMapping may replace them entirely with a different rendering strategy (e.g., keyswitch instead of duration scaling).
+These factors apply only when the note has no custom mapping for its articulation. A custom
+mapping replaces this stage. `NoteDurationScale` children multiply in `Combined` order; the final
+MIDI tick duration is rounded to the nearest tick and clamped to at least one tick. Generic
+`NoteEvent` instead multiplies its exact `Beat` duration by the exact rational represented by the
+stored IEEE-754 float. It returns `TargetValueUnrepresentable` when that rational cannot fit the
+signed 64-bit `Beat` domain and never uses an approximate rational conversion.
 
 ### 9.5 Velocity Resolution
 
 **Definition 9.5.1** [C]. The MIDI velocity of a note is resolved by the following procedure:
 
-1. **Base velocity**: Determined by the most recent DynamicLevel in the part. Use the midpoint of the DynamicLevel's velocity range (from §4.5.3).
+1. **Base velocity**: Choose, in order, `Note.dynamic`, `Note.velocity.written`, an explicit
+   numeric `Note.velocity.value` in 1–127, or the most recent semantic dynamic in the voice
+   (default `mf`). Numeric zero is the unresolved sentinel and does not replace the semantic
+   default.
 
-2. **Hairpin adjustment**: If a Hairpin is active at the note's time position, interpolate linearly between the starting dynamic's velocity and the ending dynamic's velocity based on the note's relative position within the hairpin.
+2. **Hairpin adjustment**: If a Hairpin is active at the note's time position, interpolate linearly
+   in exact cumulative whole-note time between the starting dynamic's velocity and the ending
+   dynamic's velocity. If no target is stored, Crescendo/Diminuendo moves one step up/down the
+   continuous `pppp`…`ffff` ladder; attack-shaped dynamics choose the nearest ladder level first.
+   The starting dynamic is the chronologically latest semantic marking at or before the hairpin's
+   start across the Part's voices (default `mf`). The Part-level dynamics query uses this same
+   lookup, recognizing both `Note.dynamic` and `Note.velocity.written` with the former taking
+   precedence. Earlier markings cannot override later ones through voice storage order. For
+   simultaneous markings, the last marked note in canonical voice/event/note order wins. Numeric
+   attack velocities do not change semantic state; ordinary non-hairpin defaults remain voice-local.
 
-3. **Articulation adjustment**:
+3. **Articulation adjustment**: If a custom mapping exists, it replaces this fixed adjustment.
+   `VelocityLayer(min,max)` maps the resolved 1–127 velocity affinely into `[min,max]`. Otherwise:
    - Accent: velocity += 20 (clamped to 127).
    - Marcato: velocity += 30 (clamped to 127).
    - Sforzando: velocity = min(127, base + 40).
-   - FortePiano: attack velocity as sforzando; subsequent velocity drops to piano level.
+   - ForzandoPiano: attack velocity as sforzando. The MIDI note model has no independent
+     post-attack amplitude segment.
 
 4. **Dynamic balance adjustment**: If OrchestrationLayer assigns the part a DynamicBalance:
    - Foreground: no adjustment.
@@ -1080,6 +1675,39 @@ where *v*_target is the velocity at the hairpin's end dynamic.
 
 This compiler is the most information-preserving: MusicXML supports enharmonic spelling, articulations, dynamics, lyrics, clef changes, tuplets, beaming, slurs, ties, rehearsal marks, and multi-voice notation. The compilation is a structural mapping from the Score IR hierarchy to MusicXML elements.
 
+The admitted MusicXML profile has no complete 128-note sounding-pitch carrier. Canonical
+12-TET/A4=440 is its nominal baseline; any other `ScoreTuning` yields one requested/zero-written
+tuning definition and a compilation diagnostic while notation pitch remains preserved.
+The current notation profile also has no admitted release-velocity carrier. Every non-default
+Score value therefore remains visible as a location-aware compilation diagnostic; it is not
+reinterpreted as MusicXML playback metadata.
+Both coherent semantic-dynamic carriers compile to the same `<dynamics>` direction. A numeric-only
+attack velocity remains a location-aware residual: MusicXML's documented `dynamics` sound
+suggestion is a percentage of the standard forte velocity 90, not an exact MIDI-byte field, so the
+admitted notation profile neither drops the byte silently nor substitutes an approximate percent.
+The document-level `SectionMap`, persisted harmonic and orchestration analysis, optional governing
+tone row, and both stale-analysis region sets are outside this notation profile. Each populated
+layer produces an explicit compilation diagnostic. In particular, Voice `ChordSymbol` events are
+not silently substituted for the distinct global harmonic-analysis layer, and orchestration
+`dynamic_balance` remains rendering policy rather than a MusicXML notation mark.
+
+The separate compact `MusicXmlScore` reader/writer used by interchange tests and Corpus ingestion
+has an explicit traditional-key profile. It preserves signed `fifths`, an optional value from
+MusicXML 4's closed ten-value mode vocabulary, and a correctly mode-adjusted derived tonic.
+Non-traditional `key-step`/`key-alter` signatures are rejected because that compact type does not
+store the ordered diatonic alteration sequence; absence of `<fifths>` is never interpreted as zero.
+Its source `<divisions>` values are parse-local scale factors normalized into exact `Beat`
+durations. They are not retained as one misleading score-wide scalar, and the compact writer
+computes the exact positive integer divisions required by the normalized durations. Its flat
+`NoteEvent` adapter rejects non-default release velocity because that result type has no residual
+report in which the discarded value could remain visible. Its harmony profile retains one
+root-or-numeral chord at an exact measure-local `Beat`: a structured numeral requires its explicit
+key and derives the canonical spelled root through the same core function used by S25; kind, bass,
+inversion, and ordered integer-semitone degree operations are preserved. Cursor-relative offsets
+are resolved against the live sequential cursor. Deprecated `function`, stacked chord sequences,
+frames, non-primary staff assignment, fractional alterations, and unretained harmony attributes
+are rejected rather than flattened.
+
 | Score IR | MusicXML |
 |----------|----------|
 | Score | `<score-partwise>` |
@@ -1088,28 +1716,173 @@ This compiler is the most information-preserving: MusicXML supports enharmonic s
 | Voice | `<voice>` elements within a measure |
 | NoteGroup (single note) | `<note>` |
 | NoteGroup (chord) | First `<note>`, subsequent `<note>` with `<chord/>` |
-| Rest | `<note>` with `<rest/>` |
+| Rest | `<note>` with `<rest/>`; `visible=false` sets `note@print-object="no"` |
 | SpelledPitch | `<pitch>` with `<step>`, `<alter>`, `<octave>` |
-| Duration (Beat) | `<duration>` (integer divisions) + `<type>` (note type) |
+| Duration (Beat) | Exact integer `<duration>`; optional graphical `<type>` plus zero or more `<dot>` elements when the rational value has an exact MusicXML note-type decomposition |
+| GraceType | `<grace slash="yes|no">`; no MusicXML duration |
 | Articulation | `<articulations>` or `<technical>` within `<notations>` |
-| Dynamic | `<dynamics>` within `<direction>` |
+| Ornament | Native child of `<ornaments>`, or `<arpeggiate>` |
+| TechnicalDirection | Native `<technical>` / `<articulations>` child where lossless; otherwise `<other-technical>` plus a compilation diagnostic |
+| NoteHead | Native `<notehead>` value; `Cue` uses `<type size="cue">` so the note remains sounding |
+| LyricSyllable | Numbered `<lyric>` with native `<syllabic>`, `<text>`, and derived `<extend type="start|continue|stop">` state on the first chord note |
+| Semantic dynamic (`Note.dynamic` or `VelocityValue.written`) | `<dynamics>` within `<direction>` |
+| Numeric-only attack velocity | Location-aware residual; no exact admitted carrier |
 | Hairpin | `<wedge>` within `<direction>` |
-| Tie | `<tie>` and `<tied>` |
+| Tie | `<tie>` and `<tied>`, with inferred stop and stored forward-start endpoints |
 | Slur | `<slur>` within `<notations>` |
-| TupletContext | `<tuplet>` within `<notations>` + `<time-modification>` |
-| KeySignature | `<key>` within `<attributes>` |
-| TimeSignature | `<time>` within `<attributes>` |
+| TupletContext | Numbered `<tuplet type="start|stop">` boundaries at every nesting level + cumulative `<time-modification>` on each member; written `<type>` comes from the innermost `normal_type` |
+| BeamGroup | Exact primary `<beam number="1">begin|continue|end</beam>` sequence; S14 rejects under-specified secondary-break state before projection |
+| KeySignature | Stored `accidentals` as `<fifths>` plus native major/minor/church `<mode>` within `<attributes>` |
+| TimeSignature | `<time>` within `<attributes>`; unequal stored groups use additive `<beats>` text such as `3+2` |
 | Clef | `<clef>` within `<attributes>` |
-| TempoMap entry | `<sound tempo="...">` + `<direction>` with tempo text |
+| Part staff topology | `<staves>` plus numbered initial `<clef>` elements; 0-based Sunny staff order becomes MusicXML's 1-based top-to-bottom numbering |
+| Voice staff ownership | `<staff>` on notes, rests, forwards, harmonies, and Voice-scoped directions in multi-staff Parts |
+
+For a chained slur on one NoteGroup, MusicXML's required musical-score order is emitted as
+`type="stop"` followed by `type="start"`. S23 makes the omitted `number` safe by proving that no
+concurrent slur/glissando/ottava identity needs disambiguation.
+| TempoMap entry | Structured `<metronome>` preserving stored beat unit/rational rate plus point-valued effective-quarter `<sound tempo="...">` |
+| Linear tempo transition | Explicit words at the previous event (the transition start), structured endpoint metronome mark, and a diagnostic that standard MusicXML sound tempo does not encode the continuous curve |
+| MetricModulation | Exact old/new `<beat-unit>` relationship with `<metronome-relation>equals</metronome-relation>` plus the structured target rate |
 | RehearsalMark | `<rehearsal>` within `<direction>` |
-| Section boundary | `<bookmark>` or rehearsal marks |
+| PartDirective | Exact start text and explicit `end …` text within `<direction>` |
+| Hierarchical SectionMap | Location-aware residual; no partial bookmark/rehearsal flattening is claimed |
 | Transposition | `<transpose>` in `<attributes>` |
+
+When both `Articulation.Trill` and the richer `Ornament.Trill` occur on one Note, only the Ornament
+is emitted. Its half-step, whole-step, or unison interval is encoded as MusicXML `trill-step`, and
+its accidental is encoded as `accidental-mark` when MusicXML has an exact accidental value.
+Unsupported interval or accidental values retain the visible trill and produce a compilation
+diagnostic rather than being silently narrowed. The other first-class Ornament variants map to
+their native MusicXML 4.0 elements; arpeggio direction maps to the `arpeggiate` direction
+attribute.
+
+Fingering, string number, bend, breath mark, and caesura have native lossless mappings. Sunny
+technical variants whose model does not contain MusicXML's required linkage state (for example,
+hammer-on, pull-off, and slide start/stop pairing), or for which MusicXML has no native element,
+are preserved as textual `other-technical` extensions and reported as lossy-standard-mapping
+diagnostics. The compiler does not invent start/stop semantics.
+
+MusicXML's note child sequence is normative at this boundary. For ordinary notes, Sunny emits
+duration, zero or more sound-tie endpoints, voice, any exactly derivable graphical type/dots, time modification,
+notehead, notations, and lyric in schema order. Because Score IR stores only `tie_forward`, the
+compiler derives the destination `stop` endpoint from the validated next measured event in the
+same Voice; a middle note in a tie chain carries both stop and start. An ordinary tie may not
+terminate on a grace note. Tuplet display markers occur only on the first and last member rather
+than being repeated as starts on every member.
+
+`Acciaccatura` emits `grace slash="yes"`; `Appoggiatura` emits `grace slash="no"`. MusicXML remains
+a symbolic notation target: Sunny does not add target-specific steal-time percentages because its
+exact allocation/sounding policy is already defined by §4.5.6 and no cross-engraver playback
+equivalence is claimed. Because a MusicXML grace Note has no duration, the compiler follows each
+grace NoteGroup with a Voice-scoped `forward` equal to its positive structural allocation. Thus the
+following stored event retains its exact Score IR onset without falsely giving the grace Note a
+MusicXML duration.
+
+MusicXML has a mutable within-measure cursor. Measured NoteGroup/Rest events advance it; point
+Direction and ChordSymbol events do not. A point emitted after an overlapping measured span carries
+a signed `offset` equal to `event_offset - current_cursor`. Global TempoMap, RehearsalMark, and
+Hairpin boundaries are emitted once per Part while the cursor is at the measure start, so their
+offset is the absolute within-measure position. A Hairpin target Dynamic is emitted at the same
+endpoint, including an endpoint represented as beat zero immediately after the final measure.
+The compiler computes one divisions LCM over every emitted rational timing value: event durations
+and offsets, global point positions, span boundaries, and global or measure-local measure
+durations. Its tractable implementation profile requires both that LCM and every resulting
+non-negative duration-unit value to fit `int`; an unrepresentable valid Score returns
+`ArithmeticOverflow` before a partial document is emitted. Thus a denominator used only by a
+mid-measure tempo, key, rehearsal, Direction, Hairpin, or PartDirective cannot be truncated merely
+because the notes use a coarser grid.
+Clef and barline nodes do not carry offsets; for
+those point variants the compiler uses positive `backup`/`forward` pairs to visit the exact point
+and restore the Voice cursor. This cursor restoration is required for subsequent notes and for the
+multi-Voice backup invariant.
+
+ChordSymbol root, bass, registered quality, inversion, and degree operations use structured
+MusicXML fields. A structured numeral selects MusicXML's mutually exclusive `numeral` branch in
+place of `root`: it emits the one-based numeral root, optional integer alteration, and required
+`numeral-key` fifths/mode. Optional `roman` becomes only the numeral-root display spelling; it does
+not replace the typed semantics. Ordered degrees emit required value, alteration, and
+add/alter/subtract type children. A structured symbol without free-form extensions therefore
+produces no harmony-loss diagnostic.
+
+Without `numeral`, legacy `roman` remains visible together with `extensions` in `kind` display text
+and produces a compilation diagnostic. Free-form extensions likewise remain a diagnosed display
+residual even when a numeral exists; callers use `degrees` for semantic target alignment. Unknown
+qualities retain their original spelling as display text with MusicXML kind `other`.
+
+The validated `KeySignature.accidentals` field is authoritative for MusicXML `fifths`; the
+compiler does not independently reinterpret it from the tonic. S21 has already proved coherence
+for standard modes, while custom scales deliberately retain their stored fifths. MusicXML 4's native `major`, `minor`,
+`ionian`, `dorian`, `phrygian`, `lydian`, `mixolydian`, `aeolian`, and `locrian` mode values retain
+those Sunny scale names. Other scale definitions retain the exact fifths count, emit mode `none`,
+and produce a diagnostic. MusicXML's non-traditional alternative is not emitted: it requires an
+explicit ordered set of altered diatonic steps and alterations, while Sunny's current custom-scale
+payload contains chromatic offsets plus a separately authoritative traditional fifths count and
+cannot supply those spellings without invention. A global key entry inside a measure is positioned with an exact
+`forward`/`attributes`/`backup` cursor visit; it is not pulled back to the downbeat. A one-measure
+local key or time override is compared against the next measure's effective global state, so the
+compiler emits the required reset. Unequal `TimeSignature.groups` are serialized as an additive
+MusicXML numerator (for example, groups `[3,2]` become `3+2`), while equal simple/compound groups
+retain the conventional summed numerator.
 
 ### 9.7 LilyPondCompiler
 
 **Definition 9.7.1**. The *LilyPondCompiler* produces LilyPond input files (.ly) for engraving-quality PDF score generation.
 
-The compilation maps the Score IR hierarchy to LilyPond's textual music notation language. LilyPond's expressive power exceeds MIDI and approaches MusicXML; it supports fine-grained control over layout, spacing, and typography.
+The compilation maps the Score IR hierarchy to LilyPond 2.24 textual music notation. For the
+properties covered below, the target boundary has three dispositions: a lossless native construct;
+a visible textual construct plus a compilation diagnostic when LilyPond lacks the required
+semantic algebra; or rejection by the shared structural preflight. Target-external PartDirective
+semantics remain governed by §3.3 rather than being implicitly claimed as engraving constructs.
+The same boundary applies to tuning and release velocity: the admitted profile preserves notation
+pitch but not a complete 128-note sounding-pitch function or Note Off intensity. Non-standard
+tuning is a counted compilation residual, and every non-default release velocity is a
+location-aware diagnostic; neither is silently discarded or translated into an ad hoc Scheme
+fragment. Coherent `Note.dynamic` and `VelocityValue.written` state both produce the corresponding
+dynamic command. An active numeric-only attack velocity produces a location-aware diagnostic
+because the admitted profile has no exact per-note MIDI-byte construct. The compact `NoteEvent`
+fragment adapter rejects a non-default release value because it cannot return residual evidence.
+The document-level `SectionMap`, persisted harmonic and orchestration analysis, optional governing
+tone row, and both stale-analysis region sets likewise produce explicit diagnostics when populated.
+Voice `ChordSymbol` events remain distinct from the global harmonic-analysis layer, and rendering
+`dynamic_balance` is not reinterpreted as an engraving dynamic.
+
+| Score IR property | LilyPond projection |
+|---|---|
+| Arbitrary positive `Beat` | Conventional duration token when available; otherwise exact `*N/M` duration multiplier |
+| `RestEvent.visible=false` | Spacer rest `s`, never printed `r`/`R` |
+| Hierarchical SectionMap and document analysis layers | Location-aware compilation residuals; no partial engraving flattening is claimed |
+| Per-note chord tie/articulation/fingering/string/notehead | Attachment inside the `< … >` chord construct |
+| Dynamic / sforzando / forzando-piano | Chord-level dynamic post-event; conflicting per-note ownership is diagnosed; a Hairpin target is emitted at its exact endpoint |
+| Grace NoteGroup | Whole note or chord in `\acciaccatura` / `\appoggiatura`, followed by an exact spacer for Sunny's structural allocation |
+| Native NoteHead | Per-note `\tweak style`; `Cue` is a sounding `font-size #-2` note |
+| Square NoteHead | Ordinary sounding head plus visible `square notehead` marker and diagnostic because 2.24 has no standard square style |
+| Ornament | Native trill/mordent/turn/reverse-turn/shake/arpeggio where the model is sufficient |
+| TechnicalDirection | Native fingering, string number, rational-cent `\bendAfter`, breath, or caesura; otherwise visible note text plus diagnostic |
+| LyricSyllable | One named `NullVoice` alignment lane plus native `Lyrics \lyricsto` context per verse; `--`, `_`, and `__` project word, skip, and melisma state exactly |
+| BeamGroup | Exact explicit primary `[` / `]` manual beam; S14 rejects secondary-break state that would require per-stem left/right beam counts |
+| Nested TupletContext | Nested `\tuplet actual/normal { ... }` blocks; notes and rests use the innermost stored `normal_type` |
+| PartDirective | Exact-time italic start text and explicit `end …` text in the Part's annotation layer |
+| ChordSymbol | Exact-time bold display text retaining root, quality, bass, Roman text, and extensions; structured numeral/key/inversion/degree state remains source-owned and produces a chordmode-semantic residual |
+| TempoMap | Exact stored beat unit and rational rate; a Linear label is placed at the previous event and its exact target mark at the destination; metric units remain visible; target curve limits are diagnosed |
+| KeySignature | Native major/minor and seven church-mode commands; other scales set the exact stored traditional signature through `Staff.keyAlterations` and diagnose the target-external analytical tonic/scale |
+| Unequal TimeSignature groups | `\compoundMeter` with the stored group sequence |
+| Part staff topology | One `PianoStaff` containing ordered `Staff` contexts with their effective initial clefs |
+| Voice staff ownership | Voice music and point annotations are emitted only in the owning `Staff`; a staff with no Voice receives an exact spacer timeline |
+
+LilyPond note/chord music and zero-duration metadata use separate synchronized layers. The measured
+voice contains only NoteGroups and Rests. A parallel spacer voice visits the sorted union of
+Direction, ChordSymbol, TempoMap, RehearsalMark, KeySignature, and Hairpin boundary offsets, emits
+the target command at that exact point, and fills the remaining measure duration with exact
+spacers. This preserves a direction inside a sustained note/rest instead of moving it to the
+span's end. Global tempo/rehearsal events appear only on the first Staff; Part hairpins and
+voice-owned point events appear once in their owning Staff.
+
+LilyPond permits partial chord ties and per-note articulations inside a chord but requires dynamics
+and hairpins at chord/voice scope. The compiler follows that ownership rule. All programmed
+`ArticulationType` variants have exactly one compile-time-checked disposition. First-class Ornament
+metadata supersedes a matching legacy ornament articulation, while richer trill interval or
+accidental state that a simple LilyPond script cannot retain produces explicit evidence.
 
 ---
 
@@ -1117,16 +1890,18 @@ The compilation maps the Score IR hierarchy to LilyPond's textual music notation
 
 ### 10.1 Validation Model
 
-The Score IR maintains a set of invariants that are checked by validation. Validation is performed:
-- After construction (initial validation).
-- After each mutation (incremental validation of affected regions).
-- Before compilation (full validation).
+The Score IR maintains a set of invariants checked by explicit validation. Construction workflows
+validate their result; mutation operations enforce their own transactional preconditions and mark
+affected analysis layers stale; callers use `validate_score` for a complete diagnostic view.
+Compilers apply structural preflight plus the domain rules owned by their target. The historical
+`is_compilable` name is the target-independent structural predicate, not an assertion that every
+musical or rendering diagnostic is absent.
 
 Validation produces a list of diagnostics, each classified by severity:
 
 | Severity | Meaning | Effect |
 |----------|---------|--------|
-| `Error` | Invariant violation; document is structurally inconsistent | Compilation blocked |
+| `Error` | Invariant or target-domain violation | Blocks its owning validator/target policy; an explicitly degradable musical event may instead be dropped with typed compilation evidence |
 | `Warning` | Potential problem; document is valid but may not render as intended | Compilation proceeds; diagnostic reported |
 | `Info` | Observation for the agent's consideration | No effect on compilation |
 
@@ -1134,17 +1909,35 @@ Validation produces a list of diagnostics, each classified by severity:
 
 | Rule | Severity | Description |
 |------|----------|-------------|
+| S0/S0b | Error | A score has at least one Part and every Measure has at least one Voice |
 | S1 | Error | Every part has exactly `total_bars` measures |
-| S2 | Error | Every voice's events fill exactly the measure duration |
-| S3 | Error | No overlapping events within a voice |
-| S4 | Error | TempoMap has an entry at bar 1 |
-| S5 | Error | TimeSignatureMap has an entry at bar 1 |
-| S6 | Error | KeySignatureMap has an entry at bar 1 |
-| S7 | Error | All tied notes have matching pitch and adjacent positions |
-| S8 | Error | Tuplet events sum to the tuplet's total span |
+| S2 | Error | Positive-duration NoteGroup/Rest events tile `[0, measure_duration)` exactly; every event offset is in range and no measured span crosses the boundary |
+| S3 | Error | Events are ordered by offset and positive-duration NoteGroup/Rest spans do not overlap; point events may occur within a measured span |
+| S4 | Error | TempoMap begins exactly at `ScoreTime(1, 0)`; every entry is an in-score, in-meter point; entries are strictly ordered |
+| S5 | Error | TimeSignatureMap begins at bar 1 and its entries are in-score and ordered; group positivity/numerator representability/power-of-two denominator are `TimeSignature` construction and parser invariants, so validation emits no diagnostic for an impossible malformed value |
+| S6 | Error | KeySignatureMap begins exactly at `ScoreTime(1, 0)`; every entry is an in-score, in-meter point; entries are strictly ordered |
+| S7 | Error | A tied note's next measured event in the same voice is a NoteGroup containing the same ordinary (non-grace) pitch; intervening point events do not break adjacency |
+| S8 | Error | Tuplet definitions agree; ratios are positive; nesting is acyclic; logical members are contiguous and match `actual`; descendant durations sum to the ancestor-scaled structural span |
 | S9 | Error | Section spans do not overlap at the same nesting level |
 | S10 | Error | Section hierarchy is properly nested |
 | S11 | Error | Tone row (if present) is a valid permutation of 12 pitch classes |
+| S12 | Type invariant | Reserved: every `Beat` is canonical with a positive denominator by construction; JSON readers reject malformed ratios before a Score exists, so validation emits no S12 diagnostic |
+| S13 | Error | Root Score identity is assigned (nonzero), and Event, Part, and Section identifiers are unique in their document scope. Authoring operations choose the lowest unused positive component value in the candidate document; imported high values do not force wrap or collision. |
+| S14 | Error/Warning | BeamGroup IDs, membership, order, contiguity, written-duration eligibility, and NoteGroup back-references satisfy the explicit-primary-beam profile; Tuplet references are valid; stale NonChordTone analysis references are advisory |
+| S15 | Error | Harmonic annotations are ordered and non-overlapping; every entry has a positive exact span wholly inside the score and a closed, complete, ascending, inversion-coherent chord-analysis payload (§6.2) |
+| S16 | Error | Orchestration annotations have existing Part ownership, valid non-overlapping in-score spans per Part, closed role values, and exactly the required valid role-specific references/payloads |
+| S17 | Error | A NoteGroup does not mix ordinary/grace notes or grace types, and a grace note has no duration tie |
+| S18 | Error | Measures use canonical 1-based vector-order bar numbers and Voices have unique strictly increasing indices |
+| S19 | Error/Warning | Direction variants contain their required payload (`text`, `new_clef`, or a supported ottava shift); irrelevant populated payload fields are advisory |
+| S20 | Error/Warning | Hairpin and PartDirective spans are non-empty and within their Part; hairpins do not overlap; enum payloads are in range; Divisi requires a count of at least two and irrelevant counts are advisory |
+| S21 | Error | Every scale payload has a canonical ordered pitch-class profile; any registry-resolving name exactly matches its registered definition; standard major/minor/church-mode keys—including HarmonicAnnotation key contexts—have coherent tonic/mode/fifths identity, while other scales retain their independent stored count |
+| S22 | Error | `staff_count` is positive; per-staff clefs are empty or complete and in-domain; every Voice staff assignment is within its owning Part |
+| S23 | Error | Slur/glissando endpoints form one non-overlapping paired span per Voice; ottava points form coherent Staff state; pedal points form coherent Part state and agree with any duplicate SustainingPedal directive; ottavas close and a terminal open pedal explicitly continues through the final bar line |
+| S24 | Error | `PositiveRational` rate validity is a type/parser invariant; tempo enum payloads are valid; the first transition is Immediate; Linear duration equals its complete preceding interval; MetricModulation beat units and exact derived effective-quarter rate agree |
+| S25 | Error | NoteGroup, Note, ChordSymbol, Ornament, TechnicalDirection, and their nested enum/pitch/velocity payloads are in their closed structural domains; a structured chord numeral's explicit key/degree/alteration must derive the exact same root letter and accidental as the stored ChordSymbol root |
+| S26 | Error | Lyrics are first-note onset metadata with canonical unique verses; every verse lane has closed word chains and each melisma spans a later ordinary NoteGroup |
+| S27 | Error | Every Section node has a nonempty label, a non-empty in-score half-open span, and an in-domain optional FormFunction; empty or partial SectionMaps remain valid |
+| S28 | Error | ScoreTuning has an in-domain reference index, finite positive reference frequency, exactly 128 finite cent positions, zero at the reference index, and a finite positive derived frequency for every note |
 
 ### 10.3 Musical Validation Rules
 
@@ -1165,11 +1958,13 @@ Validation produces a list of diagnostics, each classified by severity:
 
 | Rule | Severity | Description |
 |------|----------|-------------|
-| R1 | Warning | Part has no RenderingConfig.instrument_preset (will use default) |
+| R1 | Warning | Part has no RenderingConfig.instrument_preset (the compiled track remains without an explicitly requested instrument) |
 | R2 | Warning | Articulation used but not present in part's articulation_vocabulary |
 | R3 | Warning | Articulation used but no ArticulationMapping defined for it |
 | R4 | Info | Grace note duration exceeds half the following note's duration |
 | R5 | Warning | TickTime rounding error exceeds 0.5 ticks for a bar |
+| R6 | Error | Rendering channel, expression CC, pan, or articulation mapping is outside its domain |
+| R7 | Error | Explicit numeric attack or release velocity exceeds 127, or `Note.dynamic` conflicts with `VelocityValue.written` |
 
 ---
 
@@ -1177,25 +1972,48 @@ Validation produces a list of diagnostics, each classified by severity:
 
 ### 11.1 Mutation Model
 
-The Score IR supports mutations at every level of the hierarchy. Each mutation is an atomic operation that:
+The Score IR supports mutations at every level of the hierarchy. Mutations are the primary
+interface through which an agent or user modifies a valid score; they are operations on the model,
+not raw field assignments. A successful mutation increments the document version, marks the
+applicable analysis layers stale, and, when an `UndoStack` is supplied, records the exact prior
+document snapshot. A rejected mutation leaves the document, version, and undo/redo stacks
+unchanged.
 
-1. Modifies the document state.
-2. Runs incremental validation on the affected region.
-3. Marks affected annotation layers (harmonic, orchestration) as stale.
-4. Increments the document version counter.
-5. Pushes an inverse operation onto the undo stack.
+Topology-changing operations construct or prove the complete affected measure partition before
+commit. Semantic endpoint deletion cascades to its paired endpoint. A transform that cannot retain
+a Voice-scoped span or BeamGroup identity removes the complete relation and returns a `MUT1`
+warning; it never leaves an orphan or silently assigns a new identity. Event-ID allocation is
+document-local rather than process-global: each candidate operation indexes the identifiers already
+present, including deserialised values, and assigns the lowest unused positive value. Part and
+Section authoring uses the same rule. Rejection discards the local allocation state, so it consumes
+no hidden process identity. A present `UINT64_MAX` does not itself exhaust the domain when a lower
+positive hole exists, and no allocator performs a wrapping increment. Pure reduction views that
+replace all event content number their new events deterministically from one; a part extraction
+that preserves source events indexes those retained identifiers before adding cues. On supported
+64-bit targets a materialised derived-view event vector exhausts addressable memory before its
+fresh positive `uint64` cursor; the legacy Score-returning view APIs have no separate allocation
+error channel.
 
-Mutations are the primary interface through which an agent or user modifies the score. They are defined as operations on the Score IR, not as raw field assignments; this allows the Score IR to maintain invariants.
+The version domain is the closed `uint64` interval. Before any raw mutation that would publish a
+new Score state, the implementation admits the operation only if `version < UINT64_MAX`. An
+exhausted version returns `ArithmeticOverflow` before changing the Score, stale-region state, or
+either side of an attached `UndoStack`; it never wraps to zero. Lower-level candidate validation
+also uses a checked increment, so version safety is not dependent on unchecked integer arithmetic.
+For a raw mutation entry point, version admission is the first check and `ArithmeticOverflow`
+therefore takes precedence over operation-specific argument errors. Undo and redo first determine
+whether their requested history direction exists because an unavailable traversal is not a state
+transition; only an available traversal then applies the exhaustion check.
 
 ### 11.2 Event-Level Mutations
 
 | Operation | Parameters | Effect |
 |-----------|-----------|--------|
-| `InsertNote` | part, bar, voice, offset, note, duration | Inserts a NoteGroup at the specified position; displaces subsequent events |
-| `DeleteEvent` | event_id | Removes an event; fills gap with rest |
+| `InsertNote` | part, bar, voice, offset, note, duration | Replaces exact rest coverage, or merges an exact coincident ordinary chord; partial musical overlap is rejected and an intersected BeamGroup is removed with `MUT1` |
+| `DeleteEvent` | event_id | Replaces measured content with an equal rest or removes a point; paired notation endpoints cascade |
 | `ModifyPitch` | event_id, note_index, new_pitch | Changes the pitch of a note within a NoteGroup |
-| `ModifyDuration` | event_id, new_duration | Changes the duration; validates measure fill |
+| `ModifyDuration` | event_id, new_duration | Changes a fixed-onset measured duration; growth consumes only rests, shrinkage creates rests, and collisions reject atomically |
 | `ModifyVelocity` | event_id, note_index, new_velocity | Changes the velocity |
+| `ModifyReleaseVelocity` | event_id, note_index, new_release_velocity | Changes Note Off velocity in `[0,127]` |
 | `SetArticulation` | event_id, note_index, articulation | Adds or changes an articulation |
 | `SetDynamic` | part_id, position, dynamic_level | Inserts a dynamic marking |
 | `InsertHairpin` | part_id, start, end, type, target | Inserts a crescendo/diminuendo |
@@ -1206,12 +2024,12 @@ Mutations are the primary interface through which an agent or user modifies the 
 
 | Operation | Parameters | Effect |
 |-----------|-----------|--------|
-| `InsertMeasure` | after_bar, count | Inserts empty measures in all parts; updates SectionMap, TempoMap, etc. |
-| `DeleteMeasure` | bar, count | Removes measures from all parts; updates global maps |
-| `SetTimeSignature` | bar, time_signature | Updates the TimeSignatureMap; revalidates measure fill for affected bars |
-| `SetKeySignature` | position, key_signature | Updates the KeySignatureMap |
+| `InsertMeasure` | after_bar, count | Inserts positive-count empty measures after an existing bar; shifts all nested points/spans and recomputes exact incoming ramp durations |
+| `DeleteMeasure` | bar, count | Removes a proper subset of measures; clips/collapses crossing spans, repairs endpoints, and materialises exact splice state for global maps |
+| `SetTimeSignature` | bar, time_signature | Retiles rest coverage until the next meter entry and recomputes incoming ramp durations; clipping musical/point content rejects atomically |
+| `SetKeySignature` | position, key_signature | Updates an in-score/in-meter key point and rejects an invalid resulting key identity |
 | `AddVoice` | part, bar | Adds a new voice to a measure |
-| `RemoveVoice` | part, bar, voice_index | Removes a voice (must be empty or contain only rests) |
+| `RemoveVoice` | part, bar, voice_index | Removes a non-final Voice and repairs any notation span crossing its boundary |
 
 ### 11.4 Part-Level Mutations
 
@@ -1228,22 +2046,22 @@ Mutations are the primary interface through which an agent or user modifies the 
 | Operation | Parameters | Effect |
 |-----------|-----------|--------|
 | `TransposeRegion` | region, interval | Transposes all notes in the region by a diatonic interval |
-| `CopyRegion` | source_region, target_position | Copies note content to a new location |
-| `MoveRegion` | source_region, target_position | Moves note content (copy + delete source) |
+| `CopyRegion` | source_region, target_position | Copies NoteGroups into exact rest coverage; complete slur/glissando pairs survive, boundary-crossing endpoints are stripped, and source-local BeamGroup references are removed with `MUT1` |
+| `MoveRegion` | source_region, target_position | Moves note content (copy + delete source), removing source/destination beam identity with `MUT1` |
 | `DeleteRegion` | region | Replaces all content in the region with rests |
 | `SetDynamicRegion` | region, dynamic_level | Applies a dynamic to all parts in the region |
 | `ScaleVelocityRegion` | region, factor | Multiplies all velocities in the region by a factor |
-| `RetrogradeRegion` | region | Reverses the temporal order of events in the region |
+| `RetrogradeRegion` | region | Reverses measured payloads within each affected measure, repacks unequal durations, keeps point times, and removes touched slur/glissando spans and BeamGroups with `MUT1` |
 | `InvertRegion` | region, axis_pitch | Inverts all pitches about a given axis |
-| `AugmentRegion` | region, factor | Multiplies all durations by a rational factor |
-| `DiminuteRegion` | region, factor | Divides all durations by a rational factor |
+| `AugmentRegion` | region, factor | Multiplies fixed-onset non-tuplet NoteGroup durations; rest coverage is reconstructed, musical collisions reject atomically, and touched BeamGroups are removed for re-beaming with `MUT1` |
+| `DiminuteRegion` | region, factor | Divides fixed-onset non-tuplet NoteGroup durations, materialises the resulting rest coverage, and removes touched BeamGroups for re-beaming with `MUT1` |
 
 ### 11.6 Orchestration Mutations
 
 | Operation | Parameters | Effect |
 |-----------|-----------|--------|
-| `Reorchestrate` | source_part, target_part, region, role | Moves melodic content from one part to another, updating orchestration annotations |
-| `DoubleAtInterval` | source_part, target_part, region, interval | Writes the source part's melody into the target part, transposed |
+| `Reorchestrate` | source_part, target_part, region | Copies melodic content to the target Part; Voice-scoped spans and BeamGroup references are stripped with `MUT1` because their identity is not cross-Part |
+| `DoubleAtInterval` | source_part, target_part, region, interval | Copies transposed melody to the target Part and applies the same `MUT1` notation-identity rule |
 | `SetTextureRole` | part_id, region, role | Updates the orchestration annotation for a part in a region |
 | `ApplyVoiceLeading` | region, constraints | Runs the Theory Spec's voice-leading algorithm on the harmonic content in the region and distributes voices to parts according to their roles |
 
@@ -1258,6 +2076,8 @@ Every mutation records its inverse. The undo stack is a sequence of inverse oper
 - After edit A (version 1 → 2), undo (version 2 → 3), redo (version 3 → 4): the version is 4, not 2.
 - The version counter is strictly monotonically increasing and is never reused, even across undo/redo cycles.
 - Two documents with the same version number are guaranteed to represent the same state only if they share a common lineage (same document identity). The version counter is a Lamport timestamp: it provides a total order on state transitions but not a content hash.
+- If the live version is `UINT64_MAX`, an otherwise available undo or redo returns
+  `ArithmeticOverflow` before popping, pushing, or replacing either the Score or history state.
 
 **Undo stack capacity**: The undo stack depth is unbounded (limited only by available memory). Implementations may optionally offer a configurable maximum depth, discarding the oldest entries when exceeded. The spec does not mandate a specific limit.
 
@@ -1299,49 +2119,65 @@ The Score IR exposes its operations as MCP (Model Context Protocol) tools, exten
 
 | Tool | Description |
 |------|-------------|
-| `create_score` | Initialise a new Score IR with metadata, parts, tempo, key, and time signature |
-| `set_formal_plan` | Define the SectionMap (e.g., "sonata form in D major, 3 sections") |
-| `add_part` | Add an instrument to the score |
-| `set_section_harmony` | Write a chord progression for a section |
+| `score_create` | Initialise a new Score IR with metadata, parts, tempo, key, time signature, optional complete tuning (otherwise canonical 12-TET/A4=440), and a root identity equal to the returned repository handle |
+| `score_set_tuning` | Atomically replace the name, reference note/frequency, and exact 128-entry cent function |
+| `score_set_formal_plan` | Define the SectionMap (e.g., "sonata form in D major, 3 sections") |
+| `score_add_part` | Add an instrument to the score |
+| `score_set_section_harmony` | Atomically construct complete registered chord voicings and per-position local-key analyses for a section; reject out-of-range members, unknown qualities, and non-chord slash basses |
 
 **Arrangement tools** (mid-level, operating on parts and regions):
 
 | Tool | Description |
 |------|-------------|
-| `write_melody` | Write a melodic line into a part for a region |
-| `write_harmony` | Write chord voicings into one or more parts |
-| `reorchestrate` | Move musical material between parts |
-| `double_part` | Create a doubling of one part in another |
-| `set_dynamics` | Apply dynamic markings to a region |
-| `set_articulation` | Apply articulations to notes in a region |
+| `score_write_melody` | Write a melodic line into a part for a region |
+| `score_write_harmony` | Write chord voicings into one or more parts |
+| `score_reorchestrate` | Move musical material between parts |
+| `score_double_part` | Create a doubling of one part in another |
+| `score_set_dynamics` | Apply dynamic markings to a region |
+| `score_set_articulation` | Apply articulations to notes in a region |
+| `score_set_articulation_mapping` | Set or remove one validated part/articulation MIDI mapping |
 
 **Detail tools** (low-level, operating on individual events):
 
 | Tool | Description |
 |------|-------------|
-| `insert_note` | Insert a single note |
-| `modify_note` | Change pitch, duration, velocity, or articulation |
-| `delete_event` | Remove an event |
-| `transpose` | Transpose a note, event, or region |
+| `score_insert_note` | Insert a bounded note by carving covered rests, or merge it into an exactly coincident chord; reject partial musical overlap |
+| `score_insert_chord_symbol` | Insert one zero-duration typed harmony event; validate numeral/root coherence atomically and preserve undo identity |
+| `score_modify_note` | Change pitch, duration, attack velocity, release velocity, or articulation |
+| `score_delete_event` | Remove an event |
+| `score_transpose` | Transpose a note, event, or region |
 
 **Analysis tools** (read-only):
 
 | Tool | Description |
 |------|-------------|
-| `analyze_harmony` | Get harmonic analysis for a region |
-| `get_orchestration` | Get textural role assignments |
-| `get_reduction` | Get a piano reduction or short score |
-| `validate_score` | Run validation and return diagnostics |
-| `get_form_summary` | Get the formal structure overview |
+| `score_analyze_harmony` | Get harmonic analysis for a region |
+| `score_get_orchestration` | Get textural role assignments |
+| `score_get_reduction` | Get a piano, short-score, or harmonic-skeleton reduction under a newly allocated root identity; reject unknown views/regions |
+| `score_validate` | Run validation and return diagnostics |
+| `score_get_form_summary` | Get the formal structure overview |
+| `score_get_json` | Serialise the complete Score IR document |
+
+**Query tools**:
+
+| Tool | Description |
+|------|-------------|
+| `score_query_harmony_at` | Find the harmonic annotation active at an exact score time |
+| `score_find_motif` | Find occurrences of a pitch-class motif within a region |
 
 **Compilation tools**:
 
 | Tool | Description |
 |------|-------------|
-| `compile_to_ableton` | Compile and push to Ableton via LOM bridge |
-| `compile_to_midi` | Compile to MIDI file |
-| `compile_to_musicxml` | Compile to MusicXML |
-| `compile_to_lilypond` | Compile to LilyPond |
+| `score_compile_to_ableton` | Compile supported operations to Ableton and report completeness |
+| `score_compile_to_midi` | Compile to MIDI event data |
+| `score_compile_to_musicxml` | Compile to MusicXML |
+| `score_compile_to_lilypond` | Compile to LilyPond |
+
+`score_create` always constructs a complete standard key identity. Its `minor` flag selects the
+registered major or minor scale definition. When `key_accidentals` is omitted, the signed fifths
+count is derived from the tonic spelling and selected mode; a supplied contradictory count is
+rejected by S21 rather than being forwarded to different target interpretations.
 
 ### 12.3 Agent Workflow Patterns
 
@@ -1349,37 +2185,37 @@ The following are reference workflow patterns for different compositional tasks.
 
 **Solo piano piece**:
 
-1. `create_score` with one Piano part.
-2. `set_formal_plan` (e.g., ABA ternary).
-3. For each section: `set_section_harmony` → `write_melody` → `write_harmony` (inner voices).
-4. `set_dynamics` and `set_articulation` for expression.
-5. `validate_score`.
-6. `compile_to_ableton`.
+1. `score_create` with one Piano part.
+2. `score_set_formal_plan` (e.g., ABA ternary).
+3. For each section: `score_set_section_harmony` → `score_write_melody` → `score_write_harmony` (inner voices).
+4. `score_set_dynamics` and `score_set_articulation` for expression.
+5. `score_validate`.
+6. `score_compile_to_ableton`.
 
 **Orchestral work**:
 
-1. `create_score` with full orchestral parts (strings, woodwinds, brass, percussion).
-2. `set_formal_plan` (sonata form: Exposition, Development, Recapitulation, Coda).
-3. Compose the harmonic skeleton: `set_section_harmony` for each section.
-4. Compose primary thematic material: `write_melody` into a lead part (e.g., Violin I).
-5. Orchestrate: `reorchestrate` and `double_part` to distribute material across the ensemble.
-6. Add countermelodies: `write_melody` into secondary parts.
-7. Fill harmonic support: `write_harmony` into sustaining instruments.
-8. Add rhythmic material: `write_melody` for ostinato or rhythmic patterns.
-9. Apply dynamics and articulations: `set_dynamics`, `set_articulation`.
-10. Review via `get_reduction` (piano reduction) for harmonic coherence.
-11. `validate_score` — resolve any range, doubling, or voice-leading issues.
-12. `compile_to_ableton`.
+1. `score_create` with full orchestral parts (strings, woodwinds, brass, percussion).
+2. `score_set_formal_plan` (sonata form: Exposition, Development, Recapitulation, Coda).
+3. Compose the harmonic skeleton: `score_set_section_harmony` for each section.
+4. Compose primary thematic material: `score_write_melody` into a lead part (e.g., Violin I).
+5. Orchestrate: `score_reorchestrate` and `score_double_part` to distribute material across the ensemble.
+6. Add countermelodies: `score_write_melody` into secondary parts.
+7. Fill harmonic support: `score_write_harmony` into sustaining instruments.
+8. Add rhythmic material: `score_write_melody` for ostinato or rhythmic patterns.
+9. Apply dynamics and articulations: `score_set_dynamics`, `score_set_articulation`.
+10. Review via `score_get_reduction` (piano reduction) for harmonic coherence.
+11. `score_validate` — resolve any range, doubling, or voice-leading issues.
+12. `score_compile_to_ableton`.
 13. Listen, revise at the Score IR level, re-compile.
 
 **Electronic / production track**:
 
-1. `create_score` with synthesiser and drum machine parts.
-2. `set_formal_plan` (Intro, Verse, Chorus, Bridge, Drop, Outro).
+1. `score_create` with synthesiser and drum machine parts.
+2. `score_set_formal_plan` (Intro, Verse, Chorus, Bridge, Drop, Outro).
 3. Use `apply_euclidean_rhythm` (existing MCP tool) for rhythmic patterns.
-4. `write_melody` for synth leads.
-5. `set_section_harmony` for harmonic content.
-6. `compile_to_ableton` — the DAW becomes the primary editing environment for sound design, while the Score IR manages structure and arrangement.
+4. `score_write_melody` for synth leads.
+5. `score_set_section_harmony` for harmonic content.
+6. `score_compile_to_ableton` — the DAW becomes the primary editing environment for sound design, while the Score IR manages structure and arrangement.
 
 ---
 
@@ -1387,23 +2223,44 @@ The following are reference workflow patterns for different compositional tasks.
 
 ### 13.1 On-Disk Format
 
-The Score IR is serialised as a single JSON document (for human readability and tool interoperability) or as a binary format (for performance with large scores). Both formats represent the same logical structure.
+The implemented Score IR format is a single versioned JSON document for human readability and tool interoperability.
 
-**JSON schema**: Follows the type definitions in this specification directly. Field names are snake_case. Enumerations are serialised as strings. Beat values are serialised as `{"n": numerator, "d": denominator}`. SpelledPitch is serialised as `{"letter": "C", "accidental": 0, "octave": 4}`. Ids are serialised as strings.
+**JSON schema**: Follows the type definitions in this specification directly. Field names are snake_case. Enumerations use their checked integer representation. Beat values are serialised as `{"n": numerator, "d": denominator}`. SpelledPitch is serialised as `{"letter": 0, "accidental": 0, "octave": 4}`, where `letter` is in `[0, 6]`. Typed IDs are unsigned JSON integers.
 
-**Binary format**: For scores exceeding 10,000 events where JSON parsing overhead becomes measurable, a compact binary encoding is available. The binary format uses a fixed header (magic bytes `SNSC`, schema version as u32, total byte count as u64) followed by a sequence of type-length-value (TLV) records mirroring the JSON structure. Beat values are stored as two varint-encoded integers (numerator, denominator). SpelledPitch is stored as three bytes (letter index 0–6, accidental as signed byte, octave as unsigned byte). Ids are stored as 64-bit unsigned integers. The binary format is canonical: the same logical document always produces the same byte sequence, enabling content-addressable storage and integrity verification via cryptographic hash.
+**Reserved binary format**: A canonical compact encoding may be added for very large scores, but no `SNSC`/TLV binary codec is implemented or advertised by the current runtime. Clients must use JSON.
 
 ### 13.2 Versioning
 
-The serialisation format includes a schema version number. The Score IR library supports:
-- **Forward compatibility**: A newer library can read older format versions by applying default values for newly added fields.
-- **Backward compatibility**: An older library can read newer format versions by ignoring unknown fields (within the same major version).
-
-Major version increments indicate breaking changes that require migration.
+The serialisation format includes a schema version number. The current library writes schema
+version 8 and accepts versions 1 through 8, applying its version-specific defaults while loading
+older documents. Schema versions 1–3 used one optional unstructured `lyric` string; loading
+migrates it to verse 1, `Single`, without an extender. Version 4 writes the structured `lyrics`
+array and persists the owned key-mode `name` and non-semantic `description`; an older key payload
+that lacks those strings migrates as an anonymous scale while retaining its interval profile.
+Versions 1–4 may contain an integer `state` field whose `Draft`, `Valid`, `Compiled`, and `Locked`
+labels were never enforced and could become stale after any edit. Version 5 range-checks that
+legacy field while loading and discards it; current output omits it, and a v5 input containing it
+is rejected rather than accepted as false lifecycle authority.
+Version 6 adds the required `tuning` object with exactly 128 cent entries. Versions 1–5 without
+that object migrate to the canonical 12-TET/A4=440 pitch function; a legacy-labelled document that
+already contains the complete object preserves it rather than silently discarding source intent.
+Version 7 requires every Note to carry integer `release_velocity` in `[0,127]`; versions 1–6
+migrate its historical absence to the neutral value 64. A legacy-labelled document that already
+contains the field preserves and validates it rather than discarding forward source evidence. A
+current document may not omit it. Version 8 adds optional structured `numeral`, `inversion`, and
+`degrees` fields to ChordSymbol. Versions 1–7 migrate their absence to empty option/vector values;
+a legacy-labelled document already carrying them preserves and validates that forward evidence.
+When present, every nested numeral key and degree field is mandatory.
+Missing, zero, or future versions are rejected explicitly; clients must not assume that an
+older runtime can read a newer document.
 
 ### 13.3 Invariant Re-Validation on Load
 
-When a Score IR document is deserialised, full validation (§10) runs before the document is made available. This ensures that a document saved by one version of the library and loaded by another is always in a consistent state.
+When a Score IR document is deserialised, full validation (§10) runs before the document is made
+available. Structural (`S*`) and rendering-domain (`R*`) errors reject the document. Musical
+diagnostics remain available to target policies that explicitly degrade individual events with
+typed evidence. Tagged articulation mappings are additionally validated while parsing, before
+they can enter the document graph.
 
 ---
 
@@ -1411,49 +2268,64 @@ When a Score IR document is deserialised, full validation (§10) runs before the
 
 ### 14.1 State Machine
 
-A Score IR document transitions through the following states:
+A Score has no persisted lifecycle-state enumeration. Construction, validation, mutation,
+compilation, and serialisation are operations over a value, not stable mutually exclusive states:
+a caller may serialise an immutable snapshot while another transaction prepares a later candidate,
+and compilation success for one target says nothing about a later target or version.
 
-```
-            create_score()
-                 ↓
-  ┌──────── Initialising ────────┐
-  │              ↓               │
-  │          Validating          │  (initial validation)
-  │              ↓               │
-  │      ┌── Active ──┐         │
-  │      │     ↕      │         │
-  │      │  Mutating   │         │  (normal operation: mutations, queries, compilation)
-  │      │     ↕      │         │
-  │      │  Compiling  │         │
-  │      └────────────┘         │
-  │              ↓               │
-  │          Serialising ───→ On-disk (JSON/binary)
-  │              ↓               │
-  └──────── Closed ──────────────┘
-```
+`create_score` and `score_from_json` construct private candidates and return no Score until their
+required validation succeeds. A raw Score is usable for the duration of its C++ value lifetime and
+requires exclusive ownership for mutation. A `ScoreDocument` is usable while at least one handle
+exists; retained immutable snapshots have independent shared lifetime. Destruction of the last
+owner is the only close operation. There is no explicit `close()` method and no valid reference is
+invalidated by a hidden state transition.
 
-**Initialising**: The document is being constructed from `create_score` parameters or deserialised from disk. No queries or mutations are permitted.
-
-**Active**: The document is ready for queries, mutations, and compilation. This is the steady-state.
-
-**Closed**: The document has been explicitly closed or the owning process has terminated. References to a closed document are invalid.
+Validity is derived by the validation functions for the exact version examined. Compilation is a
+result with target-specific evidence for that exact input version. Editability is an ownership and
+synchronisation property. None is cached as `Draft`, `Valid`, `Compiled`, or `Locked`; doing so
+without a versioned proof would become stale and falsely constrain or authorize later operations.
 
 ### 14.2 Concurrency Model
 
-The Score IR is a **single-writer, multiple-reader** document. At any instant, at most one mutation may be in progress; concurrent reads (queries, view computation, compilation) are permitted while no mutation is active.
+The C++ `Score` structure is the serialisable value representation. It contains no lock, supplies
+no mutable thread-safety, and may be mutated only by one owner at a time. A `const Score` can be
+read concurrently only when no thread can mutate that same value.
+
+`ScoreDocument` is the implemented **single-writer, multiple-reader** ownership boundary. Copies of
+one `ScoreDocument` are handles to the same logical document. `snapshot()` returns a
+`shared_ptr<const Score>` to the current immutable version. A retained snapshot never changes and
+remains valid after later commits, so queries, view computation, serialisation, and compilation may
+run concurrently on it without retaining a document lock.
+
+`transact(f)` has the following state transition for current snapshot (S_v):
+
+1. Acquire the document's writer serializer and retain (S_v).
+2. Copy (S_v) to a private candidate (C); readers continue to obtain (S_v).
+3. Invoke `f(C)`. The callable returns `Result<T>`, may compose lower-level mutation routines, and
+   must not recursively transact on the same document.
+4. On a callable error or failed structural validation, discard (C). Snapshot identity and
+   version remain exactly (S_v).
+5. If `v` is the maximum `uint64` value, reject with `ArithmeticOverflow` before invoking `f`.
+6. Otherwise set `C.version = v + 1`, construct an immutable snapshot, and replace the current
+   snapshot under one exclusive commit lock.
+
+The version increment denotes one externally visible transaction, even if its candidate work
+composes several raw mutations. The callable must confine transaction-dependent side effects to
+the candidate; effects on caller-owned objects are not rollback-managed by `ScoreDocument`.
 
 **Rationale**: Musical documents are authored sequentially — a composer (human or agent) makes one change at a time. Concurrent writes introduce merge conflicts whose resolution in a musical context is underdetermined (two agents inserting different notes at the same position have no automatic reconciliation). The single-writer model avoids this class of problems entirely.
 
-**Implementation guidance**: Implementations may enforce single-writer semantics through:
-- A read-write lock (shared for reads, exclusive for writes).
-- A message queue that serialises all mutations through a single thread while dispatching queries to a thread pool.
-- A copy-on-write strategy where mutations produce new document versions and readers hold immutable references to prior versions.
-
-The spec does not mandate a specific mechanism; it mandates the observable semantics: no mutation is visible to concurrent readers until it completes, and no two mutations overlap.
+The implementation uses copy-on-write plus two distinct synchronization roles: a writer mutex
+serialises all candidate work, while a shared snapshot lock protects only pointer acquisition and
+the final pointer replacement. Consequently no two transactions overlap, a reader sees either
+(S_v) or (S_{v+1}), no partial candidate state is observable, and slow candidate validation does
+not prevent readers from retaining the last committed version. Process-global ID allocators used
+by raw mutation helpers are atomic so transactions on independent documents do not race; this does
+not make concurrent raw mutation of the same `Score` valid.
 
 ### 14.3 Error Codes
 
-The Score IR extends the Sunny error code system (TNTP001A §ErrorCode) with the following ranges:
+The Score IR extends the Sunny error code system (`types/music_types` §ErrorCode) with the following ranges:
 
 | Range | Category | Description |
 |-------|----------|-------------|
@@ -1494,12 +2366,12 @@ The Score IR depends on the existing Sunny infrastructure through abstract inter
 
 | Interface | Contract | Provided By |
 |-----------|----------|-------------|
-| `CompilationTarget` | **Pre**: valid Score IR document (full validation passes). **Post**: rendering target is produced deterministically. **Invariant**: Score IR is not modified. | AbletonCompiler, MidiCompiler, MusicXmlCompiler, LilyPondCompiler |
-| `BridgeTransport` | **Pre**: connection is established (ConnectionState::Connected). **Post**: command is delivered and acknowledged, or an error is returned within the configured timeout. | LOM Bridge (INBR001A) |
-| `RealtimeTransport` | **Pre**: connection is established. **Post**: event is dispatched with best-effort delivery (UDP semantics). **Invariant**: no event reordering within a single channel. | OSC Transport |
+| `CompilationTarget` | **Pre**: valid Score IR document (full validation passes). **Post**: output or acknowledged operations plus explicit capability diagnostics are produced deterministically. **Invariant**: Score IR is not modified. | AbletonCompiler, MidiCompiler, MusicXmlCompiler, LilyPondCompiler |
+| `ProjectCompiler` | **Pre**: Score, Timbre, and Mix local validation and exact Part correspondence pass. **Post**: a target-read-only exact plan or a guarded journalled apply resolves downstream Live targets through the Score-derived Part map. | `plan_project_to_ableton`, `apply_project_ableton_plan` |
+| `BridgeTransport` | **Pre**: connection is established (ConnectionState::Connected). **Post**: command is delivered and acknowledged, or an error is returned within the configured timeout. | LOM Bridge (`infrastructure/ableton/lom_protocol`) |
 | `ToolRegistry` | **Pre**: tool function signature matches MCP schema. **Post**: tool is invocable by MCP clients. | MCP Server |
 
-These contracts are structural (required for compilation and type resolution) except for `RealtimeTransport`, which is behavioural (required only for live playback). Implementations may be injected at construction time, enabling isolated testing of the Score IR without a running DAW or MCP server.
+These contracts are structural requirements for compilation and type resolution. Implementations may be injected at construction time, enabling isolated testing of the Score IR without a running DAW or MCP server.
 
 ### 15.3 Compilation Pipeline
 
@@ -1508,20 +2380,26 @@ The full pipeline from agent intent to sounding music:
 ```
 Agent Intent
     ↓ (MCP tool calls)
-Score IR (mutations + queries)
-    ↓ (compilation)
-Rendering Target (Ableton session / MIDI / MusicXML)
-    ↓ (playback / engraving)
-Sounding Music / Printed Score
-    ↓ (agent listening / analysis)
-Score IR (revisions via MCP)
+Score IR + Timbre IR + Mix IR
+    ↓ project validation (local rules + exact Part correspondence)
+Project compiler (Score order → authoritative Part-to-track map)
+    ↓ Score → Timbre → Mix deployment
+Ableton Live Set
+
+Score IR ──→ MIDI event data / MusicXML / LilyPond
 ```
 
-The Score IR is the single point of truth throughout this cycle. The agent never edits the rendering target directly; it always operates through the Score IR.
+The three validated IR documents are the source of truth for their disjoint domains throughout this
+cycle: Score for musical structure/performance intent, Timbre for source/device realization, and Mix
+for routing/level/spatial realization. `ProjectView` and its exact `PartId` bijections are the
+authoritative production composition. The agent does not bypass that composition by silently
+editing target state and then treating the target as source truth.
 
 ---
 
 ## 16. Invariant Summary
+
+This section states the full normative document ideal. The current validator enforces the applicable structural and reference checks, while annotations may be partial and only mutations that expose an inverse participate in undo. The implemented runtime profile in §0.5 is authoritative for callable guarantees.
 
 ### 16.1 Structural Invariants
 
@@ -1536,28 +2414,46 @@ The Score IR is the single point of truth throughout this cycle. The agent never
 9. Tied notes have matching pitch at adjacent temporal positions.
 10. Tuplet events sum to their declared span.
 11. Event offsets are within [0, measure_duration) and event spans do not exceed the measure boundary.
-12. BeamGroup events belong to the same voice and measure, with durations shorter than a quarter note.
+12. A BeamGroup is one explicit primary beam with globally unique identity, at least two ordered
+    contiguous measured members of eligible written duration, and exact NoteGroup back-references;
+    under-specified secondary-beam metadata is not compilable.
+13. Every KeySignature has a closed ordered scale profile; registry names match their definitions,
+    and a standard mode's tonic, definition, and stored fifths count are coherent.
+14. Every Voice belongs to exactly one configured Part staff, and differentiated initial clefs are complete.
+15. Every stored single-identity notation span has coherent endpoints in its Voice or Staff scope.
+16. Every lyric verse lane has unambiguous onset ownership, closed word state, and a derivable
+    melisma endpoint.
 
 ### 16.2 Compilation Invariants
 
-13. ScoreTime → AbsoluteBeat is monotonically increasing.
-14. AbsoluteBeat → TickTime is monotonically increasing.
-15. TickTime rounding error does not exceed 0.5 ticks per bar.
-16. For every valid Score IR, each compiler produces exactly one output.
-17. Concert pitch storage: all Note pitches are sounding pitch, never written pitch.
+17. ScoreTime → AbsoluteBeat is monotonically increasing.
+18. AbsoluteBeat → TickTime is monotonically increasing.
+19. TickTime rounding error does not exceed 0.5 ticks per bar.
+20. For every valid Score IR, each compiler produces exactly one output.
+21. Concert pitch storage: all Note pitches are sounding pitch, never written pitch.
 
 ### 16.3 Annotation Layer Invariants
 
-18. HarmonicAnnotation entries are non-overlapping and cover the score duration.
-19. OrchestrationAnnotation entries for a single part are non-overlapping within that part.
-20. Stale annotation regions are tracked and reported by validation.
+22. The optional HarmonicAnnotation layer is ordered and non-overlapping; each present entry has
+    a positive in-score span and the complete payload/inversion/key identity of §6.2. No total-score
+    coverage is required.
+23. OrchestrationAnnotation entries for a single part are non-overlapping within that part.
+24. Stale annotation regions are tracked and reported by validation.
 
 ### 16.4 Mutation Invariants
 
-21. Every mutation has a computable inverse.
-22. Applying a mutation followed by its inverse restores the previous document state exactly.
-23. The version counter increases monotonically and is never reused (including across undo/redo).
-24. At most one mutation is in progress at any instant (single-writer semantics).
+25. Every mutation has a computable inverse.
+26. Applying a mutation followed by its inverse restores the previous document state exactly.
+27. The version counter increases monotonically and is never reused (including across undo/redo).
+28. For one `ScoreDocument`, at most one transaction callable is in progress at any instant.
+29. A retained `ScoreDocument` snapshot is immutable; a reader observes one complete committed
+    version even while a later candidate is being prepared.
+30. `ScoreDocument` rejection preserves the current snapshot identity and version. Raw mutation
+    rejection changes neither Score state nor version nor undo/redo history.
+31. A successful topology-changing mutation preserves exact measured tiling and paired-endpoint coherence.
+32. Bar splices transform every position-bearing map, nested span, directive, and stale-analysis region under one half-open splice function.
+33. A meter change retimes only derived rest coverage; it never clips musical or point content.
+34. Semantic loss forced by the current identity model is returned as a typed mutation diagnostic.
 
 ---
 
@@ -1609,7 +2505,7 @@ Reference definitions for common orchestral instruments.
 | **OrchestrationLayer** | Annotations describing the textural role of each part |
 | **Part** | A single instrumental line in the score |
 | **PartDirective** | A scoped performance instruction for an entire part |
-| **PositiveRational** | A strictly positive rational number; used for BPM (§2.3) |
+| **PositiveRational** | A canonical strictly positive rational rate with checked dynamic construction; used for BPM (§2.3) |
 | **RealTime** | Clock time in seconds, derived from AbsoluteBeat and TempoMap |
 | **Region** | A bounded span of score time, optionally restricted to a subset of parts |
 | **RenderingConfig** | DAW-specific configuration for compiling a part |

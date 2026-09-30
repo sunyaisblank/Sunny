@@ -1,0 +1,20 @@
+/**
+ * @file bridge_contract.hpp
+ * @brief Generated Ableton bridge contract versions
+ *
+ * Generated from remote_script/Sunny/bridge_contract.json. Do not edit this
+ * file or its generated output by hand.
+ */
+
+#pragma once
+
+#include <cstdint>
+
+namespace sunny::infrastructure {
+
+inline constexpr std::uint32_t SUNNY_BRIDGE_PROTOCOL_VERSION =
+    static_cast<std::uint32_t>(@SUNNY_BRIDGE_PROTOCOL_VERSION_VALUE@);
+inline constexpr std::uint32_t SUNNY_TARGET_SNAPSHOT_SCHEMA_VERSION =
+    static_cast<std::uint32_t>(@SUNNY_TARGET_SNAPSHOT_SCHEMA_VERSION_VALUE@);
+
+} // namespace sunny::infrastructure

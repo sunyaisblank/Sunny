@@ -1,0 +1,16 @@
+/**
+ * @file version.hpp
+ * @brief Generated Sunny project version authority
+ *
+ * Generated from the root CMake project version. Do not edit generated output.
+ */
+
+#pragma once
+
+#include <string_view>
+
+namespace sunny {
+
+inline constexpr std::string_view SUNNY_VERSION = "@PROJECT_VERSION@";
+
+} // namespace sunny

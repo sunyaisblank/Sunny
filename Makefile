@@ -14,7 +14,9 @@
 # Quick reference:
 #   make              — build + test (default)
 #   make build        — configure + compile (Release)
-#   make test         — run 1560 Catch2 tests
+#   make test         — run the Catch2 suite
+#   make package-check — verify the installed CMake package downstream
+#   make max-sdk-header-check — compile wrappers against pinned official headers
 #   make analysis     — codeql + mull (full analysis suite)
 #   make codeql       — static analysis with custom queries
 #   make mull         — mutation testing
@@ -24,9 +26,9 @@
 #
 # =============================================================================
 
-.PHONY: all build configure compile test \
+.PHONY: all build configure compile test package-check max-sdk-header-check \
         analysis codeql mull coverage \
-        python-test python-lint python-check \
+        python-test python-lint python-typecheck python-stubtest python-check \
         clean clean-build clean-analysis clean-mull clean-codeql clean-coverage \
         help info
 
@@ -47,6 +49,7 @@ LLVM_PROFDATA := llvm-profdata-18
 
 # Directories
 BUILD_DIR     := .bin
+MAX_SDK_HEADER_DIR := $(BUILD_DIR)-max-sdk-headers
 MULL_DIR      := .mull-build
 CODEQL_DB     := .codeql-db
 CODEQL_OUT    := .codeql-results
@@ -78,11 +81,11 @@ COV_CMAKE     := -G Ninja \
 # Parallelism
 JOBS          ?= $(shell nproc 2>/dev/null || echo 4)
 
-# Test targets (all four Catch2 executables)
-TEST_BINS     := Sunny.Test.Core Sunny.Test.Render Sunny.Test.Infrastructure Sunny.Test.Max
+# Test targets (one executable per supported C++ layer)
+TEST_BINS     := sunny_core_tests sunny_render_tests sunny_infrastructure_tests
 
 # Subdirectory where CMake places test executables (relative to build root)
-TEST_SUBDIR   := src/Sunny.Test
+TEST_SUBDIR   := tests
 
 # =============================================================================
 # Default target
@@ -110,6 +113,23 @@ build: compile
 
 test: build
 	ctest --test-dir $(BUILD_DIR) --output-on-failure -j$(JOBS)
+
+# Prove that the installed package, including fetched transitive dependencies,
+# is usable by an isolated downstream CMake project.
+package-check: build
+	cmake --install $(BUILD_DIR) --prefix $(BUILD_DIR)/package-prefix
+	cmake -S tests/package -B $(BUILD_DIR)/package-consumer \
+		-DCMAKE_PREFIX_PATH=$(abspath $(BUILD_DIR)/package-prefix)
+	cmake --build $(BUILD_DIR)/package-consumer -j$(JOBS)
+	ctest --test-dir $(BUILD_DIR)/package-consumer --output-on-failure
+
+# Compile the actual Max wrapper translation units against the exact official
+# max-sdk-base revision pinned by max-package/CMakeLists.txt. This is portable
+# header/API evidence; loading the external remains a supported-host obligation.
+max-sdk-header-check:
+	python3 tests/max_sdk_headers/validate_metadata.py
+	cmake -S tests/max_sdk_headers -B $(MAX_SDK_HEADER_DIR) -G Ninja
+	cmake --build $(MAX_SDK_HEADER_DIR) -j$(JOBS)
 
 # Verbose: show each test name
 test-verbose: build
@@ -266,23 +286,26 @@ full: build test analysis coverage
 # =============================================================================
 
 python-test:
-	PYTHONPATH=src uv run pytest src/Sunny.Test/Python/ -v --tb=short
+	PYTHONPATH=python:remote_script:.bin/python uv run pytest tests/python/ -v --tb=short
 
 python-lint:
 	uv run ruff format --check .
 	uv run ruff check .
 
 python-typecheck:
-	uv run mypy src/sunny --ignore-missing-imports
+	uv run mypy python/sunny --ignore-missing-imports
 
-python-check: python-lint python-typecheck python-test
+python-stubtest: build
+	SUNNY_NATIVE_BUILD_DIR=$(BUILD_DIR)/python uv run python tests/python/run_native_stubtest.py
+
+python-check: python-lint python-typecheck python-stubtest python-test
 
 # =============================================================================
 # Clean
 # =============================================================================
 
 clean-build:
-	rm -rf $(BUILD_DIR)
+	rm -rf $(BUILD_DIR) $(MAX_SDK_HEADER_DIR)
 
 clean-codeql:
 	rm -rf $(CODEQL_DB) $(CODEQL_OUT)
@@ -332,7 +355,9 @@ help:
 	@echo "Build & Test:"
 	@echo "  make              Build (Release) and run all tests"
 	@echo "  make build        Configure + compile"
-	@echo "  make test         Run 1560 Catch2 tests"
+	@echo "  make test         Run the Catch2 suite"
+	@echo "  make package-check Verify the installed CMake package downstream"
+	@echo "  make max-sdk-header-check Check actual wrappers against pinned Max SDK headers"
 	@echo "  make test-verbose Run tests with verbose output"
 	@echo ""
 	@echo "Analysis:"
@@ -359,6 +384,7 @@ help:
 	@echo "  make python-test      Run Python test suite"
 	@echo "  make python-lint      Ruff format + lint"
 	@echo "  make python-typecheck Mypy type checking"
+	@echo "  make python-stubtest  Compare native runtime with its authored type stub"
 	@echo "  make python-check     All Python checks"
 	@echo ""
 	@echo "Clean:"

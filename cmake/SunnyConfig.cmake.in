@@ -1,0 +1,22 @@
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+find_dependency(Threads)
+find_dependency(nlohmann_json 3.11.3)
+find_dependency(pugixml 1.14)
+
+include("${CMAKE_CURRENT_LIST_DIR}/SunnyTargets.cmake")
+
+set_property(
+    TARGET sunny::core
+    APPEND PROPERTY INTERFACE_LINK_LIBRARIES nlohmann_json::nlohmann_json
+)
+set_property(
+    TARGET sunny::infrastructure
+    APPEND PROPERTY
+        INTERFACE_LINK_LIBRARIES
+            nlohmann_json::nlohmann_json
+            "$<LINK_ONLY:pugixml::pugixml>"
+)
+
+check_required_components(Sunny)

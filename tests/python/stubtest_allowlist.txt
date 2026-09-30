@@ -1,0 +1,29 @@
+# pybind11 runtime classes use pybind11_type rather than Python's type metaclass.
+^sunny_native\.Arpeggiator$
+^sunny_native\.Beat$
+^sunny_native\.BridgeMessage$
+^sunny_native\.ChordVoicing$
+^sunny_native\.Envelope$
+^sunny_native\.Lfo$
+^sunny_native\.NoteEvent$
+^sunny_native\.Orchestrator$
+^sunny_native\.OrchestratorResult$
+^sunny_native\.SampleAndHold$
+^sunny_native\.Transport$
+^sunny_native\.TransportPosition$
+^sunny_native\.VoiceLeadingResult$
+
+# pybind11 IntEnum shims expose __members__, which PEP 484 enum stubs infer implicitly.
+^sunny_native\.ArpDirection\.__members__$
+^sunny_native\.BridgeMessageType\.__members__$
+^sunny_native\.EnvelopeState\.__members__$
+^sunny_native\.ErrorCode\.__members__$
+^sunny_native\.LfoWaveform\.__members__$
+^sunny_native\.TransportState\.__members__$
+
+# Result/view types have pybind11's generic non-constructible runtime signature.
+^sunny_native\.BridgeMessage\.__init__$
+^sunny_native\.NoteEvent\.__init__$
+^sunny_native\.OrchestratorResult\.__init__$
+^sunny_native\.TransportPosition\.__init__$
+^sunny_native\.VoiceLeadingResult\.__init__$

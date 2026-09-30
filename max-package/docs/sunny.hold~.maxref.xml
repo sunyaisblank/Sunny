@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<?xml-stylesheet href="./c74ref.xsl" type="text/xsl"?>
+<c74object name="sunny.hold~" module="msp" category="Sunny, MSP Generators">
+  <digest>Hold a bounded message value as a signal</digest>
+  <description>
+    Generate one mono signal containing the most recently accepted normalized message value.
+    Message controls are serialized outside the audio callback and take effect in order at the
+    next signal-vector boundary. This object has no signal sampler or trigger inlet.
+  </description>
+  <metadatalist>
+    <metadata name="author">Sunny contributors</metadata>
+    <metadata name="tag">Audio</metadata>
+    <metadata name="tag">Hold</metadata>
+    <metadata name="tag">Modulation</metadata>
+  </metadatalist>
+  <methodlist>
+    <method name="float">
+      <arglist><arg name="value" optional="0" type="float" /></arglist>
+      <digest>Hold a normalized message value</digest>
+      <description>Accept a finite value from -1 through 1 at the next vector boundary.</description>
+    </method>
+    <method name="value">
+      <arglist><arg name="value" optional="0" type="float" /></arglist>
+      <digest>Hold a normalized message value</digest>
+      <description>Accept a finite value from -1 through 1 at the next vector boundary.</description>
+    </method>
+    <method name="reset">
+      <digest>Reset the held value to zero</digest>
+    </method>
+    <method name="status">
+      <digest>Post and emit adapter status</digest>
+      <description>Post configuration, setup, control, current pending-control, process, and last-error evidence to the Max console. The right message outlet also emits the closed tuple `host_status configured sample_rate maximum_frames process_observed process_calls last_frame_count process_healthy last_error`; `process_calls` is an exact signed saturating callback count and the left outlet remains the sole signal outlet.</description>
+    </method>
+    <method name="clear_error">
+      <digest>Clear the retained error</digest>
+      <description>Clear the last-error code without clearing counters, the held value, or DSP state.</description>
+    </method>
+  </methodlist>
+</c74object>

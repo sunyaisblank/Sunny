@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<?xml-stylesheet href="./c74ref.xsl" type="text/xsl"?>
+<c74object name="sunny.clock~" module="msp" category="Sunny, MSP Generators">
+  <digest>Generate Sunny local quarter-note position as a signal</digest>
+  <description>
+    Generate one mono signal containing the local clock position in quarter notes at the start of
+    each sample. This object is not a Max transport or Ableton Live song-position observer.
+    Message controls are serialized outside the audio callback and take effect in order at the
+    next valid signal-vector boundary.
+  </description>
+  <metadatalist>
+    <metadata name="author">Sunny contributors</metadata>
+    <metadata name="tag">Audio</metadata>
+    <metadata name="tag">Clock</metadata>
+  </metadatalist>
+  <objarglist>
+    <objarg name="ppq" optional="1" type="int">
+      <digest>Set local pulses per quarter note in the range 1 to 65535</digest>
+    </objarg>
+  </objarglist>
+  <methodlist>
+    <method name="tempo">
+      <arglist><arg name="bpm" optional="0" type="float" units="bpm" /></arglist>
+      <digest>Set local constant tempo</digest>
+      <description>Accept a finite value in the range 20 to 999 BPM.</description>
+    </method>
+    <method name="position">
+      <arglist><arg name="ticks" optional="0" type="int" /></arglist>
+      <digest>Seek the local integer tick position</digest>
+      <description>Accept a nonnegative tick and clear the retained fractional tick.</description>
+    </method>
+    <method name="play">
+      <digest>Enter the local Playing state</digest>
+    </method>
+    <method name="record">
+      <digest>Enter the local Recording state</digest>
+      <description>Recording advances the local clock but does not capture MIDI or audio.</description>
+    </method>
+    <method name="pause">
+      <digest>Pause and retain the exact local position</digest>
+    </method>
+    <method name="stop">
+      <digest>Stop and reset the local position to zero</digest>
+    </method>
+    <method name="status">
+      <digest>Post and emit adapter status</digest>
+      <description>Post configuration, setup, control, current pending-control, process, and last-error evidence to the Max console. The right message outlet also emits the closed tuple `host_status configured sample_rate maximum_frames process_observed process_calls last_frame_count process_healthy last_error`; `process_calls` is an exact signed saturating callback count and the left outlet remains the sole signal outlet.</description>
+    </method>
+    <method name="clear_error">
+      <digest>Clear the retained error</digest>
+      <description>Clear the last-error code without clearing counters or clock state.</description>
+    </method>
+  </methodlist>
+</c74object>

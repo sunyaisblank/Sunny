@@ -1,0 +1,121 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<?xml-stylesheet href="./c74ref.xsl" type="text/xsl"?>
+<c74object name="sunny.events" module="max" category="Sunny, Scheduling">
+  <digest>Schedule bounded MIDI note lists on Max's global ITM transport</digest>
+  <description>
+    Schedule one-shot pitch/attack-or-zero/release-velocity lists at strictly future integer Sunny ticks. A fixed pool of
+    256 permanent ITM events is tied to Max's unnamed global transport; in Max for Live that
+    transport synchronizes to Live. This object does not start, stop, seek, rename, or set the
+    resolution of the host transport. Delivery is sample accurate only when Overdrive and
+    Scheduler in Audio Interrupt are enabled, the incoming command reaches the high-priority
+    scheduler before its target, and the downstream Max object supports sample-accurate events.
+    Successful dispatch stops every permanent slot in the equal-tick group before fixed-slot reuse.
+    Relative commands sample that same transport and derive an integer target, but the normal
+    strict-future check still rejects a target made stale by command-queue or scheduler latency.
+  </description>
+  <metadatalist>
+    <metadata name="author">Sunny contributors</metadata>
+    <metadata name="tag">MIDI</metadata>
+    <metadata name="tag">Scheduling</metadata>
+  </metadatalist>
+  <objarglist>
+    <objarg name="ppq" optional="1" type="int">
+      <digest>Set Sunny pulses per quarter note in the range 1 to 65535</digest>
+    </objarg>
+  </objarglist>
+  <methodlist>
+    <method name="event">
+      <arglist>
+        <arg name="tick" optional="0" type="int" />
+        <arg name="pitch" optional="0" type="int" />
+        <arg name="velocity" optional="0" type="int" />
+        <arg name="release_velocity" optional="1" type="int" />
+      </arglist>
+      <digest>Schedule one MIDI note-on or note-off list</digest>
+      <description>
+        Tick must map injectively into Max's double ITM domain and be strictly later than the
+        global transport position when the queued command is applied. Pitch is 0 to 127 and
+        velocity is 0 to 127; zero velocity represents note-off. Release velocity is 0 to 127 and
+        defaults to 64. Every output list is pitch, attack-or-zero velocity, release velocity. The
+        help patch explicitly translates that state to xnoteout: it selects attack velocity with a
+        nonzero note flag for note-on and release velocity with a zero flag for note-off. Channel 1
+        is only a formatting example; no MIDI output port is selected.
+      </description>
+    </method>
+    <method name="event_after">
+      <arglist>
+        <arg name="delay_ticks" optional="0" type="int" />
+        <arg name="pitch" optional="0" type="int" />
+        <arg name="velocity" optional="0" type="int" />
+        <arg name="release_velocity" optional="1" type="int" />
+      </arglist>
+      <digest>Schedule one event relative to the sampled global transport position</digest>
+      <description>
+        Delay must be nonnegative. Zero chooses the first Sunny tick whose ITM mapping is strictly
+        after the sampled host tick; positive values add that many Sunny ticks after this boundary.
+        This does not reserve host time: application still rejects a target reached or passed in
+        the interval between sampling and scheduler consumption. Pitch and velocity rules and the
+        output shape are identical to event.
+      </description>
+    </method>
+    <method name="note">
+      <arglist>
+        <arg name="tick" optional="0" type="int" />
+        <arg name="pitch" optional="0" type="int" />
+        <arg name="duration_ticks" optional="0" type="int" />
+        <arg name="velocity" optional="0" type="int" />
+        <arg name="release_velocity" optional="1" type="int" />
+      </arglist>
+      <digest>Atomically schedule a note-on and note-off pair</digest>
+      <description>
+        Duration must be a positive integral Sunny tick count, attack velocity must be 1 to 127,
+        and release velocity must be 0 to 127 (default 64). The
+        pair is rejected as one operation if validation, command capacity, event capacity, host
+        timing, or target representability fails.
+      </description>
+    </method>
+    <method name="note_after">
+      <arglist>
+        <arg name="delay_ticks" optional="0" type="int" />
+        <arg name="pitch" optional="0" type="int" />
+        <arg name="duration_ticks" optional="0" type="int" />
+        <arg name="velocity" optional="0" type="int" />
+        <arg name="release_velocity" optional="1" type="int" />
+      </arglist>
+      <digest>Atomically schedule a note pair relative to the sampled transport</digest>
+      <description>
+        The relative target rule and possible stale-target rejection are identical to event_after.
+        Duration, attack velocity, release velocity, and atomic rejection are identical to note.
+      </description>
+    </method>
+    <method name="clear">
+      <digest>Cancel every retained one-shot event in command order</digest>
+    </method>
+    <method name="transport_status">
+      <digest>Emit the sampled global ITM transport facts used by relative scheduling</digest>
+      <description>
+        The right outlet emits `transport_status current_tick ticks_per_quarter running
+        transport_name`. Running is zero or one and the name may be the empty symbol for Max's
+        unnamed global transport. The tuple reports one non-transactional observation using only
+        public ITM APIs; it neither mutates transport state nor proves Live identity, event
+        delivery, scheduler priority, or sample accuracy.
+      </description>
+    </method>
+    <method name="status">
+      <digest>Post and emit phase-separated command, event, callback, and last-error evidence</digest>
+      <description>
+        Post the current pending-command count, event-capacity reservations, and events actually
+        retained by the scheduler as distinct gauges. Reserved events include both pending-command
+        events and scheduler-retained events. Scheduled, cancelled, and fired counters require the
+        corresponding SDK scheduling or stopping action invocation; they do not prove host
+        acceptance, callback delivery, host delivery, MIDI delivery, or sound. The right outlet
+        also emits the closed tuple `event_status command_observed scheduled_observed fired_observed
+        cancelled_observed callbacks_healthy reserved_events retained_events last_error`; the left
+        outlet remains the event-list outlet.
+      </description>
+    </method>
+    <method name="clear_error">
+      <digest>Clear the retained error without clearing counters or events</digest>
+    </method>
+  </methodlist>
+</c74object>

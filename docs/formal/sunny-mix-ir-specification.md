@@ -1,8 +1,9 @@
 # Sunny Mix IR — Formal Specification
 
-**Version:** 0.1.0-draft  
-**Date:** 2026-02-08  
-**Status:** Implemented (normative; source cites sections by number)
+**Version:** 0.2.0-draft
+
+**Date:** 2026-08-29
+**Status:** Normative model with an explicit implemented runtime profile
 **Dependencies:** Sunny Engine Formal Specification v0.1.0 (the "Theory Spec"); Sunny Score IR Specification v0.2.0 (the "Score IR Spec"); Sunny Timbre IR Specification v0.1.0 (the "Timbre IR Spec")
 
 ---
@@ -33,11 +34,19 @@ The Mix IR receives the output of each Timbre IR channel (post-insert chain) and
 
 2. **Semantic intent preservation**: Every processing decision is annotated with its purpose. A high-pass filter at 80 Hz on a vocal channel is not just "EQ band 1: HPF 80 Hz" — it carries the semantic annotation "remove low-frequency rumble below the vocal's fundamental range." This allows an agent to understand *why* a processing choice was made and to make informed modifications.
 
-3. **Reference-aware mixing**: The Mix IR supports comparison against reference mixes (analysed from existing recordings), providing targets for spectral balance, dynamic range, loudness, and spatial width that an agent can work toward.
+3. **Reference-aware mixing**: The Mix IR supports comparison against caller-supplied reference profiles, providing targets for spectral balance, dynamic range, loudness, and spatial width that an agent can work toward. Deriving those profiles from recordings is reserved design space, not a current runtime analyser.
 
-4. **Non-destructive and automatable**: All processing is non-destructive (the source signal is never modified; processing is applied in real time) and every parameter is automatable over score time.
+4. **Non-destructive and automation-capable model**: Processing and time-varying intent are represented without modifying source material. Whether a parameter can be deployed is target-dependent; the current Ableton target reports automation as unsupported.
 
-5. **Deterministic compilation**: The Mix IR compiles to Ableton's mixer, effects racks, and automation via the LOM bridge.
+5. **Deterministic compilation**: The Mix IR compiler emits operations only for verified target
+   mappings and reports every requested capability or mapping gap it encounters. The existence of
+   a writable LOM parameter is not by itself proof that it realises a Mix IR field. The compiler
+   never substitutes a merely similar track, property, or method.
+
+6. **Single coherent routing graph**: `ChannelStrip.group_assignment` is an exact mirror of
+   `GroupBus.member_channels`, and a grouped `GroupBus.output` is an exact mirror of its parent's
+   `member_groups`. Contradictory, missing, or duplicate mirror edges are invalid rather than being
+   resolved by choosing one representation opportunistically.
 
 ### 0.4 Notation Conventions
 
@@ -48,6 +57,10 @@ Inherits conventions from all preceding specifications. Additional conventions:
 - Frequency values in Hz. Bandwidth in octaves or Q factor.
 - Time constants (attack, release) in milliseconds.
 - Spatial positions use a coordinate system defined in §6.
+
+### 0.5 Implemented Runtime Profile
+
+The current runtime implements the typed MixGraph model, including first-class mix-stage delay and reverberation, versioned JSON, static parameter/reference comparison, validation, and capability-aware Ableton mixer compilation. Reference measurements are supplied by the caller; Sunny does not analyse the referenced audio file. It does not render PCM audio, implement immersive rendering, or author Ableton automation envelopes. Unsupported target operations remain in the IR and make compilation incomplete with explicit warnings.
 
 ---
 
@@ -146,7 +159,38 @@ ChannelStrip[] ──→ GroupBus[] ──→ MasterBus ──→ Output
 
 **LevelReference**: `MasterTarget { lufs: f32 }` (absolute target loudness), `Channel { id: Id<ChannelStrip>, relationship: String }` (e.g., "3 dB below Violin I"), `Group { id: Id<GroupBus> }` (relative to the group's internal balance).
 
-Relative levels are resolved to absolute dB values during compilation. When the reference level changes, all dependent levels update proportionally. This is the mechanism by which an agent can say "the oboe should sit just below the first violins" without specifying exact dB values — the relationship is maintained as the overall mix level changes.
+Let the fader nodes be
+
+\[
+V = C \cup G \cup \{M\},
+\]
+
+where `C` is the set of channel faders, `G` the set of group faders, and `M` the master fader. Every
+node has an explicit fallback value `e(v)`. A Channel or Group reference from `v` to `r` declares
+the exact additive constraint
+
+\[
+L(v) = L(r) + \Delta_v,
+\]
+
+where `Δv = offset_db`; the free-form Channel `relationship` string is explanatory and cannot
+override this equation. The reference graph must be closed and acyclic. Its unique statically
+tractable solution is obtained by deterministic dependency-first evaluation. All explicit and
+derived values must be finite and no greater than +12 dB.
+
+A `MasterTarget` reference instead constrains measured programme loudness to `lufs + offset_db`.
+There is no target-independent function from LUFS intent to a channel/group/master fader position:
+the result depends on rendered signal energy, summation, and downstream nonlinear processing.
+Accordingly it has status `requires_loudness_measurement`; any Channel/Group dependant has status
+`blocked_by_unresolved_reference`. Both retain their explicit `level_db` fallback. Sunny never
+pretends that LUFS and fader dB are interchangeable.
+
+`resolve_relative_levels` returns one proof record for every channel, group, and master fader with
+status `explicit`, `resolved`, `requires_loudness_measurement`, or
+`blocked_by_unresolved_reference`. The Ableton compiler applies exact resolved values. It applies
+the explicit fallback only for the two measurement-dependent states and reports each residual,
+making compilation incomplete. Setting a channel's absolute level clears its prior relative
+constraint; relative mutation is transactional and rejects missing references or cycles.
 
 ### 2.3 AuxSendLevel
 
@@ -207,6 +251,7 @@ Relative levels are resolved to absolute dB values during compilation. When the 
 | `effect_type` | `MixEffectType` | Processing algorithm |
 | `enabled` | `bool` | Bypass state |
 | `parameters` | `MixEffectParameters` | Type-specific parameters |
+| `parameter_map` | `Map<String, MixDeviceParameter>` | Effect-relative scalar source path → explicit Live target mapping |
 
 ### 3.3 Mix-Stage EQ
 
@@ -330,6 +375,72 @@ Relative levels are resolved to absolute dB values during compilation. When the 
 | `mid_side_balance` | `f32` | Mid/side balance (0.0 = mid only, 0.5 = equal, 1.0 = side only) |
 | `mono_below` | `Option<f32>` | Collapse frequencies below this Hz to mono |
 
+### 3.7 Delay and Reverberation
+
+Mix-stage spatial effects are distinct members of `MixEffectParameters`; an aux bus never uses an
+EQ or dynamics processor as a stand-in for a requested delay or reverb.
+
+**MixDelay**:
+
+| Field | Type | Constraint |
+|-------|------|------------|
+| `tempo_synced` | `bool` | Selects exact beat division or free milliseconds |
+| `delay_ms` | `f32` | Active when free-running; `(0, 10000]` ms |
+| `beat_division` | `Beat` | Active when tempo-synchronised; positive exact rational |
+| `feedback` | `f32` | `[0, 1]` |
+| `stereo_mode` | `MixDelayMode` | `Mono`, `Stereo`, `PingPong` |
+| `stereo_offset` | `f32` | `[0, 1000]`, in ms or beat offset according to mode |
+| `low_cut_hz`, `high_cut_hz` | `f32` | `20 <= low < high <= 20000` Hz |
+| `modulation_rate` | `f32` | `[0, 20]` Hz |
+| `modulation_depth` | `f32` | `[0, 100]` ms |
+| `mix` | `f32` | Dry/wet `[0, 1]` |
+
+**MixReverb**:
+
+| Field | Type | Constraint |
+|-------|------|------------|
+| `algorithm` | `MixReverbAlgorithm` | `Algorithmic`, `Convolution`, `Plate`, `Spring`, `Chamber`, `Hall`, `Room`, `Shimmer` |
+| `impulse_response` | `String` | Required and non-empty for `Convolution` |
+| `shimmer_pitch` | `f32` | Active for `Shimmer`; `[-24, 24]` semitones |
+| `decay_time` | `f32` | RT60 in `(0, 120]` seconds |
+| `pre_delay` | `f32` | `[0, 500]` ms |
+| `damping`, `diffusion`, `size` | `f32` | Each in `[0, 1]` |
+| `early_reflections_level` | `f32` | `[0, 1]` |
+| `low_cut_hz`, `high_cut_hz` | `f32` | `20 <= low < high <= 20000` Hz |
+| `mix` | `f32` | Dry/wet `[0, 1]`; normally `1` on an aux return |
+
+### 3.8 Explicit target parameter mapping
+
+**Definition 3.8.1**. A `MixDeviceParameter` declares a conversion from one materialised numeric,
+boolean, or enum-valued field of its owning `MixEffect` into one public Live
+`DeviceParameter`. It does not infer target names or ranges from the native-device type.
+
+| Field | Type | Constraint |
+|-------|------|------------|
+| `parameter_name` | `String` | Non-empty exact public `name` or `original_name` |
+| `source_min`, `source_max` | `f32` | Finite, `source_min < source_max` |
+| `range_min`, `range_max` | `f32` | Finite target interval, `range_min < range_max` |
+| `curve` | `MappingCurve` | `Linear`, `Exponential`, `Logarithmic`, `SCurve`, `ReverseSCurve`, or validated piecewise-linear `Custom` |
+| `value_property` | `DeviceParameterValueProperty` | Internal `value` or GUI-visible `display_value` |
+
+For current source value `x`, define `u = (x-source_min)/(source_max-source_min)`. Validation
+requires `x` inside the declared source interval. The deployed value is
+
+`y = range_min + (range_max-range_min) C(u)`,
+
+where `C` is the selected deterministic curve from the Timbre mapping algebra. A custom curve has
+finite points ordered from `(0,0)` to `(1,1)` and uses linear interpolation between adjacent
+points. Mapping two source paths in the same effect to the same target name is an error.
+
+The scalar path inventory is total over the active semantic fields of the materialised effect value: vector indices use
+`bands[i]`/`crossover_frequencies[i]`, nested fields use dots, booleans map to `0` or `1`, and enums
+map to their schema ordinal. Optional fields exist only when engaged; discriminated fields exist
+only for the selected algorithm/mode (for example synced `beat_division` versus free `delay_ms`,
+and `shimmer_pitch` only for Shimmer). External
+sidechain IDs, saturation tube-model strings, and convolution impulse-response identifiers are
+reported separately as non-`DeviceParameter` residual paths; scalar coverage never implies that
+those routing/resource obligations were deployed.
+
 ---
 
 ## 4. Group Bus
@@ -355,7 +466,7 @@ Relative levels are resolved to absolute dB values during compilation. When the 
 
 **GroupOutput**: `Master` (directly to master bus) or `Group { id: Id<GroupBus> }` (to a parent group).
 
-**GroupIntent**: 
+**GroupIntent**:
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -458,7 +569,7 @@ These are heuristic guidelines; the specific values depend on the reverb's chara
 | `depth` | Near–Far | 0.0 to 1.0 | 0.0 = closest, 1.0 = most distant |
 | `elevation` | Low–High | −1.0 to +1.0 | For immersive formats; 0.0 = ear level |
 
-For stereo output, only `pan` is directly rendered; `depth` is rendered through reverb send level, pre-delay, HF roll-off, and level. For surround and immersive formats, all three axes are rendered to speaker or object positions.
+The normative rendering intent maps stereo `depth` through reverb send level, pre-delay, HF roll-off, and level, and maps all three axes for surround/immersive targets. The current Ableton compiler applies `pan` only; `depth`, `elevation`, `width`, and immersive placement remain IR data and are not rendered.
 
 ### 6.2 SpatialPosition
 
@@ -480,6 +591,8 @@ For stereo output, only `pan` is directly rendered; `depth` is rendered through 
 ### 6.3 Spatial Automation
 
 Spatial positions can be automated over score time for moving sources (e.g., a melody that moves from left to right across the sound stage, or a source that approaches from the distance).
+
+This is an IR capability. The current Ableton compiler preserves these lanes and reports the public-LOM automation capability gap rather than writing envelopes.
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -740,57 +853,210 @@ Examples:
 
 ### 10.1 Compilation to Ableton
 
-The *MixCompiler* maps the Mix IR to Ableton's mixer and effects infrastructure.
+The *MixCompiler* maps the Mix IR to the supported portion of Ableton's mixer and effects infrastructure. Its result distinguishes accepted calls, immediate scalar readback equality, and semantic completeness, and includes warnings for requested operations outside the public LOM surface.
+
+The production transport first obtains the versioned target profile defined in
+`docs/ableton-max-conformance.md`; its absence is a pre-mutation protocol failure, including for an
+offline recording transport that has not declared a modelled target. When AuxBuses are present, it also requires the existing
+return-track count before mutation so new AuxBus IDs resolve to the returns actually appended to a
+non-empty set. Missing count evidence is a protocol failure; a graph with no AuxBus neither needs
+nor reads that target fact.
 
 **Mapping**:
 
 | Mix IR Element | Ableton Element |
 |---------------|-----------------|
 | ChannelStrip | Track (MIDI or Audio) mixer section |
-| ChannelStrip.fader | Track Volume |
-| ChannelStrip.spatial.pan | Track Pan |
-| ChannelStrip.mute / solo | Track Mute / Solo |
-| ChannelStrip.insert_chain | Audio Effect Rack on the track |
-| GroupBus | Group Track |
-| GroupBus.insert_chain | Audio Effect Rack on the group track |
+| ChannelStrip.fader | `Track.mixer_device.volume.display_value` |
+| ChannelStrip.spatial.pan | `Track.mixer_device.panning.value` |
+| ChannelStrip.mute / solo | Track Mute / Solo plus exact Track Activator `mute ? 0.0 : 1.0` |
+| ChannelStrip.insert_chain | Native devices inserted on the track |
+| GroupBus | Capability warning; public LOM cannot create Group Tracks |
+| GroupBus.insert_chain | Preserved in IR; not emitted without a Group Track |
 | AuxBus | Return Track |
-| AuxBus.effect_chain | Audio Effects on the return track |
-| AuxSendLevel | Track Send level to corresponding return |
+| AuxBus.effect_chain | Native devices inserted on the return track |
+| AuxBus.return_level | `ReturnTrack.mixer_device.volume.display_value` |
+| AuxBus.return_spatial.pan | `ReturnTrack.mixer_device.panning.value` in Stereo Pan mode |
+| AuxBus implicit gate | Return mute/solo false; crossfade assignment none; Track Activator 1.0 |
+| AuxSendLevel.level_db | `Track.mixer_device.sends[index].display_value` |
+| AuxSendLevel.pre_fader | Explicit unsupported pre/post-mode obligation |
 | MasterBus | Master Track |
-| MasterBus.insert_chain | Audio Effects on the master track |
-| MixAutomation | Automation lanes on the corresponding tracks |
+| MasterBus.insert_chain | Native devices inserted on the master track |
+| MasterBus.fader | `MasterTrack.mixer_device.volume.display_value` |
+| MasterBus implicit neutral controls | Main Track Activator 1.0; Stereo Pan mode; pan 0.0 |
+| MixAutomation | Capability warning; public LOM cannot author envelopes |
 
 **Compilation steps**:
 
-1. **Track structure**: Create group tracks for each GroupBus. Assign channel tracks to groups. Create return tracks for each AuxBus.
+1. **Preflight and fader algebra**: Validate the graph and solve the complete relative-fader
+   dependency system before the first target mutation. Invalid references/cycles fail. Preserve
+   exact static solutions and measurement-dependent residual states in the result. Every derived
+   channel, return, send, and device path must fit the bridge's canonical non-negative signed-index
+   domain; reject an unrepresentable range before mutation. Summary counters are 64-bit and do not
+   inherit this addressing limit.
 
-2. **Channel processing**: For each ChannelStrip, insert the MixEffectChain as an Audio Effect Rack. Each MixEffect maps to an Ableton native device or third-party plugin according to the MixRenderingConfig.
+2. **Track structure**: Use the channel tracks created by the Score compiler. If AuxBuses are
+   requested, inspect the current return count and fail before mutation when it is unavailable;
+   otherwise create one return track per AuxBus starting at that exact count. GroupBus requests are
+   reported, not replaced with audio tracks. Each generated Return receives an explicit false
+   mute/solo gate, crossfade assignment 1 (neither A nor B), panning mode 0 (Stereo), Track
+   Activator 1.0, and a retained
+   AuxBus-ID/index deployment record; no host default supplies these obligations.
 
-3. **Routing**: Set send levels from each channel to the configured return tracks. Set group assignments. Configure sidechain routing (Ableton supports sidechain input selection per compressor instance).
+3. **Channel processing**: In aggregate project compilation, resolve each ChannelStrip's `part_id`
+   through the Score-derived Part-to-track map, independently of ChannelStrip collection order,
+   then insert enabled effects in IR order. The legacy standalone compiler accepts an explicit
+   `base_track` and therefore uses channel collection order by contract. Device insertion requires
+   Live 12.3+. Whenever at least one enabled effect is materialisable, inspect the track's current
+   device count before insertion. If the count is `n`, the first inserted effect is appended and
+   verified as `devices[n]`, the next as `devices[n+1]`, and so on; an unavailable count is a
+   protocol failure rather than a guessed index. Each real response must prove the exact count/index
+   delta, requested display class, audio-effect type, false `can_have_chains`, activity,
+   non-negative reported latency in samples/milliseconds, and audio-output/non-MIDI-output Track
+   classification. A Rack is not a faithful lowering of one flat `MixEffect`: its parallel/nested
+   chains and chain-owned selection/mixer state have no source carrier.
 
-4. **Levels and spatial**: Set fader levels, pan positions, and mute/solo states.
+4. **Routing**: Resolve each AuxSendLevel by `aux_bus_id` to its preflighted return-track index and
+   set the corresponding send-level DeviceParameter. Count the independent pre/post-mode request
+   but do not infer it from a Track default: the current admitted surface writes zero modes and
+   therefore zero complete logical sends. An unknown aux reference violates validation rule
+   X6 and rejects the complete graph before mutation; it is not a partial-deployment warning. The
+   compiler also inventories every Channel, Group, and Aux output edge as an exact source→target
+   residual. The public Track API exposes writable output-routing dictionaries, but their
+   identifiers are target-owned and `Song.create_midi_track`/`create_return_track` document no
+   Master-routing postcondition. With no explicit binding, Sunny writes and verifies zero such
+   edges rather than trusting a default. A caller may admit an exact named-target type/channel pair
+   plus provenance for a materialisable Channel/Aux-to-Master edge; the compiler then performs the
+   protocol-v42 two-stage membership/readback transaction. Group and unbound edges remain
+   residuals, and verification remains conditional on the admitted mapping.
 
-5. **Master chain**: Insert the master bus processing chain on the master track.
+5. **Levels and spatial**: Set each statically resolved channel/master value; for
+   measurement-dependent entries set the explicit fallback and retain an exact residual. Then set
+   channel pan positions and mute/solo states, lowering each Channel mute to exact floating Track
+   Activator 0.0/1.0. Set every Aux return level, modeled pan, and Activator 1.0. Because MasterBus
+   has no mute or pan intent while Live's Main Track owns both controls, set the faithful neutral
+   projection: Main Activator 1.0, panning mode 0, and pan 0.0. Retain depth, elevation, width,
+   non-default pan law, and non-simple spatial mode as explicit warnings.
 
-6. **Automation**: Write automation lanes for all MixAutomation entries, converting ScoreTime to TickTime via the Score IR's temporal coordinate system.
+6. **Master chain**: Insert the master bus processing chain on the master track.
+
+7. **Effect parameters**: Resolve each declared effect-relative source path, apply Definition 3.8.1,
+   select exactly one enabled target parameter by exact `name`/`original_name`, validate internal
+   target ranges where applicable, write the mapped value, and retain the requested range and
+   action plus resolved identity, observed internal bounds, quantisation, the conditional
+   continuous-default or opaque quantized-label domain, enabled,
+   active/automation state, and immediate readback evidence. Equal readback with inactive state or
+   non-zero automation state remains incomplete. A real effect that fails structural verification
+   cannot anchor a parameter address: retain the resolved requested deployment without issuing the
+   dependent write. Recording plans may continue through modeled unexecuted structure. Report total scalar paths, explicit mappings, exact missing
+   paths, non-parameter residual paths, deployed mappings, and verified mappings separately.
+
+8. **Readback**: For return names, faders, pan, activators, mute, solo, sends, Main pan mode, and
+   master level, require the
+   protocol-v41 bridge to return the property, echoed request, and immediate observed value. Retain
+   one `property_deployments` record per write and report a divergent observation.
+
+9. **Automation**: Preserve MixAutomation in the IR and report it as unsupported by the current public-LOM target. Return `automation_lanes_requested = |automation|` and `automation_lanes_written = 0` as distinct 64-bit evidence counters, so absence of a request cannot be confused with failure to deploy one.
+
+The result applies the same cardinality rule to structural projections: requested/created pairs for
+Group and Return Tracks, requested/inserted/verified for every enabled effect across channel, group, aux, and
+master chains, requested/configured for enabled sends and channel strips, and
+`output_routes_requested`/`output_routes_written`/`output_routes_verified` for output edges. Exact
+unwritten edges appear in `output_route_residuals`. An effect retained on
+an unmaterialisable GroupBus therefore remains requested even though it cannot enter the inserted
+count. `device_deployments` retains every attempted materialised effect in deterministic traversal
+order, including bounded public Device latency reports. Those reports are not summed and the result
+keeps complete render-path latency false because compensation/monitoring mode, Track Delay,
+routing, buffers/drivers, external hardware, and acoustic propagation remain outside the model;
+successful-call counters remain distinct from verified target state.
+
+**Live capability boundary**:
+
+- `Track.insert_device` requires Live 12.3+ and supports native Live devices only; plug-ins and Max
+  for Live devices are not inserted. An observed older target skips effects before mutation while
+  applying the remaining representable mixer state.
+- A real effect insertion with missing/malformed evidence is a protocol failure. Well-formed wrong
+  identity/type, Rack shape, inactivity, or loss of audio-output classification is retained and
+  makes the result incomplete. Dependent parameter writes are skipped for that effect. Recording
+  plans claim zero effect verification but retain their modeled parameter commands. Sunny does not
+  guess Rack chains, zones, selectors, chain mixers, pads, return chains, or nested devices.
+- Public LOM cannot create or assign Group Tracks, configure all sidechain relationships, or author automation envelopes.
+- Public Track `output_routing_type` and `output_routing_channel` are get/set dictionaries whose
+  values must come from the target's available-routing collections. Protocol v43/schema 34 retains
+  both exact selected dictionaries and the exact one-key available type/channel wrappers on every
+  normal and Return Track. With no binding, every output edge remains an explicit residual. A
+  caller may conditionally bind a materialisable Channel or Aux-to-Master edge to one exact
+  type/channel pair returned by a named target, but must retain non-empty mapping provenance;
+  Sunny does not infer semantic identity from either target-owned string. Group destinations are
+  never bindable because no corresponding Track is materialised.
+- A bound output route is two separate journalled mutations. The type stage requires current
+  advertised membership before setting and exact membership/readback afterward. Because changing
+  type may replace the channel collection, the channel stage revalidates the selected type and
+  both current collections before setting, then requires stable type, exact channel readback, and
+  final membership. Both peers independently close every nested evidence shape. A recording plan
+  reports `recorded_only` and verifies nothing; only complete real evidence removes that edge's
+  residual. Project postconditions require the exact final pair and the retained admitted mapping.
+  This verification is conditional on provenance, not an independent proof that an opaque symbol
+  means Main. Plan equality includes the complete binding and provenance. Partial mutation,
+  named-Live private representation, future changes, Main hardware output, signal, and sound remain
+  explicit external obligations; `has_audio_output` remains signal-type classification rather than
+  destination evidence.
+- Normal Track input routing is retained as a separate target-state boundary for generated Parts.
+  Protocol v43/schema 34 requires exact audio/MIDI-input Booleans and, when input-capable, selected
+  type/channel dictionaries that occur in the corresponding exact available-option arrays. The
+  Mix IR has no input-source carrier, so membership is not promoted to source identity or external
+  input neutrality and no input-routing write is admitted.
+- Protocol v43/schema 34 also retains exact `[0,1]` floating input/output one-second hold peaks on
+  audio/MIDI normal Tracks. It retains exact left/right momentary input/output meter floats only
+  when the normal Track reports audio output, with explicit nulls otherwise. Generated Parts
+  require both hold peaks and all four channel values to be exactly zero, under separate hold,
+  momentary-stereo, and conjunctive verdicts. The adapter reads each documented meter once because
+  Live warns that the channel meters add GUI load. Continuous input/output silence stays false:
+  this is bounded sequential activity evidence, not the Mix IR's loudness/true-peak model, a
+  signal-path trace, or rendered-audio validation.
+- Input trim, polarity, non-pan spatial fields, pre/post-fader send mode, non-master aux output,
+  non-stereo output, dithering, and automatic loudness targeting are preserved but not applied; any
+  non-default request is reported. Channel/Group relative levels are solved statically. A
+  `MasterTarget` relation remains a measured-audio residual and uses its explicit fallback.
+- Only explicitly mapped scalar effect fields are applied. Partial coverage, target-ineligible group
+  chains, external sidechain routing IDs, tube-model strings, and convolution resource loading
+  remain explicit residuals; no device-default or approximate parameter-name guess is permitted.
+- Missing or malformed property evidence from a real transport is a protocol failure. A recording
+  transport emits the same deterministic property plan with null observations and no verification
+  claim.
+- Snapshot schema 34 records finite internal bounds, exact Boolean quantisation/enablement, the
+  conditional finite in-range continuous default or exact opaque quantized-label vector, active
+  state, and automation state for every selected mixer parameter. Final scalar evidence
+  requires the requested value, the operation's documented domain class, enabled true,
+  `state = 0`, and `automation_state = 0`: Track Activators are quantised; volume, panning, and
+  sends are unquantised. Internal-value requests must also lie inside the observed bounds;
+  display-value requests retain those internal bounds without comparing incompatible domains.
+  Separate Part/Return/Main gates impose the same rule on Track Activators, and the Main gate
+  additionally requires an unquantised centered Stereo Pan. Equal numbers on a wrong-domain,
+  disabled, inactive, or automated control are not effective-state proofs.
+- Unsupported or observably divergent requests make `complete` false. Scalar readback equality does
+  not prove effect parameterisation, signal routing outside the mapped fields, or audible equivalence.
 
 ### 10.2 Device Mapping
 
-Each MixEffect type maps to a specific Ableton device or plugin:
+Each MixEffect type maps to a deterministic native Ableton device name:
 
-| MixEffect Type | Ableton Device | Alternative (Plugin) |
-|---------------|---------------|---------------------|
-| EQ (parametric) | EQ Eight | FabFilter Pro-Q, iZotope Ozone EQ |
-| Compressor | Compressor / Glue Compressor | FabFilter Pro-C, SSL Bus Compressor |
-| Gate | Gate | — |
-| Limiter | Limiter | FabFilter Pro-L, iZotope Ozone Maximizer |
-| Multiband Dynamics | Multiband Dynamics | FabFilter Pro-MB |
-| Saturation | Saturator | Softube Tape, Plugin Alliance bx_saturator |
-| Reverb | Reverb / Convolution Reverb Pro | Valhalla Room, Altiverb |
-| Delay | Delay / Echo | Valhalla Delay, Soundtoys EchoBoy |
-| Stereo Width | Utility (Width) | — |
+| MixEffect Type | Ableton Device |
+|---------------|----------------|
+| EQ (parametric) | EQ Eight |
+| Compressor | Compressor |
+| Gate | Gate |
+| Limiter | Limiter |
+| Multiband Dynamics | Multiband Dynamics |
+| Saturation | Saturator |
+| Stereo Width | Utility |
+| Delay | Delay |
+| Reverb | Reverb |
 
-The mapping is configurable per project; the defaults use Ableton native devices.
+The effect-to-device-name mapping is fixed by the current compiler. Parameter names, domains, and
+curves are not fixed: they are declared per effect through `parameter_map`, because Live exposes
+them as device/version facts. The exact inserted device address is compiler-derived, not
+caller-supplied.
 
 ---
 
@@ -800,12 +1066,33 @@ The mapping is configurable per project; the defaults use Ableton native devices
 
 | Rule | Severity | Description |
 |------|----------|-------------|
+| X0 | Error | Channel, group, aux, reference, and MixEffect identities are unique; effect IDs are unique across the entire graph |
 | X1 | Error | Every Score IR Part has a corresponding ChannelStrip |
 | X2 | Error | Signal flow graph is acyclic |
 | X3 | Error | Every channel reaches the master bus through some path |
 | X4 | Warning | Channel has no insert processing (intentional?) |
 | X5 | Warning | Channel fader is at −∞ (silence) but not muted |
 | X6 | Error | Sidechain source references a non-existent channel or bus |
+| X7 | Error | Any effect variant violates its documented finite numeric/cardinality domain |
+| X8 | Error | An effect target mapping has an unresolved path, invalid domain/curve, empty target, or same-effect target alias |
+| X9 | Error | Relative faders contain a missing reference, dependency cycle, non-finite value, invalid loudness target, or derived value above +12 dB |
+| X10 | Error | Channel/group assignments or child/parent group routing do not exactly mirror the corresponding member list, including dangling or duplicate members |
+| X11 | Error | A Channel/Group send level is non-finite or the same source contains more than one send record for an AuxBus |
+
+X7 uses a deliberately target-independent, tractable source envelope. Device-specific intervals
+remain mapping facts:
+
+| Family | Source-domain envelope |
+|--------|------------------------|
+| EQ | at most 8 bands; frequency `[20,20000]` Hz; gain `[-120,120]` dB; Q `(0,100]`; dynamic threshold `[-160,60]`, ratio `[1,1000]`, attack `[0,60000]` ms, release `(0,60000]` ms |
+| Compressor | threshold `[-160,60]` dB; ratio `[1,1000]`; attack `[0,60000]` ms; release `(0,60000]` ms; knee `[0,60]` dB; makeup `[-120,120]` dB; stereo link `[0,1]` |
+| Gate | compressor time/ratio envelopes; hold `[0,60000]` ms; attenuation range `[-160,0]` dB |
+| Sidechain filter | frequency `[20,20000]` Hz; Q `(0,100]` |
+| Limiter | ceiling `[-60,6]` dBFS; release `(0,60000]` ms; lookahead `[0,1000]` ms |
+| Multiband | at most 7 strictly increasing crossovers in `[20,20000]`; band count equals crossover count plus one when configured; nested dynamics obey their own envelopes; band gain `[-120,120]` dB |
+| Saturation | drive/mix `[0,1]`; output `[-120,120]` dB; Tape bias `[-1,1]`; Tube requires a non-empty model identifier |
+| Stereo | width `[0,4]`; mid/side balance `[0,1]`; optional mono-below `[20,20000]` Hz |
+| Delay/Reverb | exact envelopes in §3.7 |
 
 ### 11.2 Audio Quality Validation [E]
 
@@ -840,9 +1127,11 @@ The mapping is configurable per project; the defaults use Ableton native devices
 | Tool | Description |
 |------|-------------|
 | `create_mix_graph` | Initialise the Mix IR from the Score IR's part list |
-| `create_group_bus` | Create a group bus and assign channels |
+| `create_group_bus` | Reject missing/duplicate members before mutation, create a group bus, and move each requested channel to one exact mirrored membership edge |
 | `create_aux_bus` | Create an auxiliary bus with effects |
-| `assign_channel_to_group` | Route a channel to a group bus |
+| `assign_channel_to_group` | Remove every stale/duplicate reverse edge and route the channel to exactly one group bus |
+| `assign_group_to_group` | Transactionally route one GroupBus into another with one exact mirror edge, rejecting cycles/depth violations |
+| `route_group_to_master` | Transactionally remove every parent mirror edge and route the GroupBus directly to Master |
 | `set_channel_send` | Set a channel's send level to an aux bus |
 | `apply_seating_template` | Apply an orchestral seating preset to spatial positions |
 | `set_output_format` | Set stereo, surround, or immersive output |
@@ -852,34 +1141,29 @@ The mapping is configurable per project; the defaults use Ableton native devices
 | Tool | Description |
 |------|-------------|
 | `add_channel_effect` | Add an EQ, compressor, or other effect to a channel |
-| `add_bus_effect` | Add processing to a group or aux bus |
+| `add_bus_effect` | Add processing to a group bus |
+| `add_aux_effect` | Add processing to an aux bus |
 | `add_master_effect` | Add processing to the master bus chain |
-| `set_channel_eq` | Configure EQ bands on a channel |
-| `set_channel_compression` | Configure compression on a channel |
-| `set_sidechain` | Configure sidechain routing |
-| `set_channel_level` | Set fader level (absolute or relative) |
+| `map_mix_effect_parameter` | Declare and preflight an effect-relative source-to-DeviceParameter mapping |
+| `set_channel_level` | Set an absolute fader value and clear prior relative intent |
+| `set_channel_relative_level` | Set and transactionally preflight a channel relation |
+| `resolve_mix_fader_levels` | Return the complete static solution and measured residuals without contacting Ableton |
 | `set_channel_pan` | Set spatial position |
 | `set_channel_depth` | Set depth position |
+| `set_loudness_target` | Set the master loudness target |
 
 **Automation tools**:
 
 | Tool | Description |
 |------|-------------|
 | `add_mix_automation` | Add parameter automation |
-| `automate_level` | Automate fader level over a region |
-| `automate_pan` | Automate spatial position over a region |
-| `automate_send` | Automate aux send level over a region |
 
 **Analysis and reference tools**:
 
 | Tool | Description |
 |------|-------------|
-| `create_reference_profile` | Analyse a reference recording |
+| `create_reference_profile` | Store caller-supplied measurements for a reference recording |
 | `compare_to_reference` | Compare current mix to a reference |
-| `get_spectral_analysis` | Get the current mix's spectral profile |
-| `get_loudness_analysis` | Get LUFS, peak, and dynamic range measurements |
-| `get_stereo_analysis` | Get correlation and width measurements |
-| `check_mono_compatibility` | Analyse mono fold-down for phase issues |
 
 **Intent tools**:
 
@@ -887,14 +1171,14 @@ The mapping is configurable per project; the defaults use Ableton native devices
 |------|-------------|
 | `set_channel_intent` | Set the mixing intent for a channel |
 | `set_group_intent` | Set the mixing intent for a group |
-| `set_depth_staging` | Assign depth positions across channels for a coherent sound stage |
 
 **Compilation**:
 
 | Tool | Description |
 |------|-------------|
-| `compile_mix` | Compile the Mix IR to Ableton's mixer infrastructure |
+| `compile_mix` | Compile supported mixer operations and report completeness |
 | `validate_mix` | Run all validation rules |
+| `get_mix_json` | Serialise the current Mix IR graph |
 
 ### 12.2 Agent Workflow: Mixing an Orchestral Work
 
@@ -909,7 +1193,7 @@ The mapping is configurable per project; the defaults use Ableton native devices
 9. For each group: `add_bus_effect` — gentle bus compression for section cohesion.
 10. Master chain: `add_master_effect` — surgical EQ, bus compression, limiter.
 11. `set_loudness_target` — e.g., StreamingDynamic at −16 LUFS for classical.
-12. `create_reference_profile` — analyse a reference recording.
+12. `create_reference_profile` — store measurements obtained from a reference recording.
 13. `compare_to_reference` — identify spectral and dynamic deviations.
 14. Iterate: adjust EQ, levels, reverb sends based on comparison.
 15. `validate_mix` — check for clipping, phase issues, intent consistency.
@@ -921,13 +1205,13 @@ The mapping is configurable per project; the defaults use Ableton native devices
 2. `create_group_bus` — Drums, Bass, Harmonic, Lead, FX.
 3. `create_aux_bus("Room Verb")`, `create_aux_bus("Plate Verb")`, `create_aux_bus("Delay")`.
 4. Set spatial positions: kick and bass centre; hi-hats slightly off-centre; pads wide; lead centre.
-5. `set_sidechain` — bass ducking from kick (sidechain compressor on bass channel, source = kick).
-6. `set_channel_eq` — high-pass on everything except kick and bass; presence boost on lead.
+5. `add_channel_effect(effect_type="compressor", sidechain_source=...)` — bass ducking from kick.
+6. `add_channel_effect(effect_type="eq", bands=...)` — high-pass on everything except kick and bass; presence boost on lead.
 7. `add_bus_effect` on Drums — parallel compression for punch.
 8. `add_mix_automation` — filter sweep on pads through the build; reverb throw on vocal in the pre-chorus.
 9. Master chain: saturation → EQ → compression → limiter.
 10. `set_loudness_target(StreamingLoud, -14 LUFS)`.
-11. `create_reference_profile` from a reference track.
+11. `create_reference_profile` with caller-supplied measurements from a reference track.
 12. Iterate toward reference.
 13. `compile_mix`.
 
@@ -937,7 +1221,13 @@ The mapping is configurable per project; the defaults use Ableton native devices
 
 ### 13.1 On-Disk Format
 
-The Mix IR is serialised as JSON (same conventions as the Score IR: snake_case fields, Beat values as `{"n": ..., "d": ...}`, enumerations as strings) or as a binary compact format for large mixes.
+The implemented Mix IR format is schema version 3 JSON (same conventions as the Score IR:
+snake_case fields, Beat values as `{"n": ..., "d": ...}`, enumerations as integers according to
+the current schema). Version 2 added `delay` and `reverb`; version 3 requires every encoded effect
+to carry a `parameter_map` object. The reader migrates version 1 and 2 effects to an empty map,
+without inventing target facts. Unknown effect discriminators or malformed mappings are format
+errors, and full X0–X8 validation runs after parsing. No binary Mix IR codec is implemented or
+advertised.
 
 ### 13.2 Invariant Re-Validation on Load
 
@@ -965,30 +1255,37 @@ The complete Sunny production system consists of four formally specified layers:
 - The Timbre IR depends on the Score IR (one TimbreProfile per Part).
 - The Mix IR depends on the Score IR (one ChannelStrip per Part) and the Timbre IR (the channel input is the Timbre IR output).
 
-**Compilation order**: Score IR compiles first (generates MIDI events and structural metadata). Timbre IR compiles second (generates instrument device chains). Mix IR compiles third (generates mixer configuration, routing, and processing). All three compilations target the same Ableton session.
+**Compilation order**: The aggregate project compiler validates exact Part correspondence, derives
+the Score-authoritative Part-to-track map, then compiles Score, Timbre, and Mix in that order into
+the same Ableton session. See `sunny-project-model.md`.
 
 ### 14.2 The Score IR's DynamicBalance and the Mix IR's Fader
 
 The Score IR's OrchestrationLayer includes a `DynamicBalance` annotation (Foreground, MiddleGround, Background). The Mix IR's ChannelStrip includes a `Fader` with absolute and relative levels. These interact as follows:
 
 - The Score IR compiler uses DynamicBalance to adjust MIDI velocities (§9.5 of the Score IR Spec).
-- The Mix IR uses DynamicBalance as an *input signal* for setting initial fader levels and reverb send levels, mapping Foreground → higher fader / less reverb, Background → lower fader / more reverb.
+- A Mix authoring policy may use DynamicBalance as an *input signal* for choosing initial fader and
+  reverb-send levels (Foreground → higher fader / less reverb, Background → lower fader / more
+  reverb). The current project compiler does not derive or overwrite MixGraph values from this
+  annotation; explicit Mix IR state remains authoritative and independently inspectable.
 - The two systems are complementary, not redundant: the Score IR's velocity adjustment affects the *performance intensity* of the instrument, while the Mix IR's level adjustment affects the *mix balance*. A fortissimo violin in the background (high velocity, low fader) sounds different from a piano violin in the foreground (low velocity, high fader), even at the same perceived loudness.
 
 ### 14.3 Unified Agent Interface
 
 The MCP server exposes tools from all four layers in a unified namespace. An agent composing and producing a piece uses tools from all layers in a single workflow, moving fluidly between composition ("write a melody"), sound design ("set a warm pad sound"), and mixing ("send this to the hall reverb at −6 dB").
 
-The full tool set, across all four specifications:
+The deployed MCP server exposes the following registration groups:
 
-| Layer | Tool Count (approximate) | Examples |
-|-------|------------------------|----------|
-| Theory | 7 (existing) | `analyze_harmony`, `generate_negative_harmony`, `voice_lead` |
-| Score IR | ~25 | `create_score`, `write_melody`, `reorchestrate`, `compile_to_ableton` |
-| Timbre IR | ~18 | `set_sound_source`, `add_effect`, `search_presets`, `compile_timbre` |
-| Mix IR | ~24 | `set_channel_level`, `add_channel_effect`, `compare_to_reference`, `compile_mix` |
+| Registration group | Tool count | Examples |
+|--------------------|-----------:|----------|
+| Core and Ableton | 10 | `analyze_harmony`, `create_progression_clip`, `get_ableton_session_state` |
+| Score IR | 29 | `score_create`, `score_insert_chord_symbol`, `score_compile_to_ableton` |
+| Timbre IR | 23 | `set_sound_source`, `map_timbre_parameter`, `compile_timbre` |
+| Mix IR | 28 | `set_channel_relative_level`, `resolve_mix_fader_levels`, `compile_mix` |
+| Corpus IR | 22 | `ingest_midi`, `remove_ingested_work`, `query_style_profile` |
+| Project | 4 | `project_validate`, `project_plan_to_ableton`, `project_apply_ableton_plan`, `project_compile_to_ableton` |
 
-Total: approximately 74 tools providing complete agent control over every stage of music production from compositional conception to mastered output.
+Total: 116 tools. `tools/list` is the runtime authority; `docs/reference.md` records the same inventory counts.
 
 ---
 
@@ -1001,15 +1298,22 @@ Total: approximately 74 tools providing complete agent control over every stage 
 3. Every channel reaches the master bus.
 4. Group bus nesting does not exceed a configurable maximum depth (default: 4).
 5. Aux send levels are finite (no +∞ dB sends).
+6. The relative-fader dependency graph is referentially closed and acyclic; only
+   measurement-dependent loudness targets may remain unresolved.
+7. Channel/group assignments and parent/child group membership lists are exact bidirectional
+   mirrors with no duplicate or dangling member.
+8. Each Channel or Group has at most one finite send level per AuxBus; every send target exists.
 
-### 15.2 Audio Quality
+### 15.2 Empirical Audio-Quality Targets
 
-6. Master bus output does not exceed the configured true-peak ceiling.
-7. No individual channel or bus output exceeds 0 dBFS before gain staging is applied.
+The following require rendered-audio measurement and are not enforced by the current parameter-only runtime:
+
+6. Master bus output should not exceed the configured true-peak ceiling.
+7. No individual channel or bus output should exceed 0 dBFS before gain staging is applied.
 
 ### 15.3 Compilation
 
-8. The MixCompiler produces exactly one Ableton mixer configuration per Mix IR.
+8. The MixCompiler produces one deterministic supported command stream per Mix IR and reports every unrepresentable requested feature.
 9. All automation breakpoints reference valid ScoreTime positions.
 10. Sidechain sources reference existing channels or buses.
 

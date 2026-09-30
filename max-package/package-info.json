@@ -1,0 +1,25 @@
+{
+  "author": "Sunny contributors",
+  "authors": [],
+  "description": "Bounded C++23 modulation, local-clock, and Max ITM event externals backed by Sunny's host-neutral render model",
+  "displayname": "Sunny",
+  "extends": "",
+  "extensible": 0,
+  "homepatcher": "",
+  "max_version_max": "none",
+  "max_version_min": "8.2.0",
+  "name": "Sunny",
+  "os": {
+    "macintosh": {
+      "platform": ["x64", "aarch64"],
+      "min_version": "10.15.x"
+    },
+    "windows": {
+      "platform": ["x64"],
+      "min_version": "10"
+    }
+  },
+  "tags": ["audio", "midi", "scheduling", "modulation", "lfo", "envelope", "hold", "clock"],
+  "version": "0.4.0",
+  "website": "https://github.com/sunyaisblank/Sunny"
+}

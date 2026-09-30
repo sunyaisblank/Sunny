@@ -1,0 +1,160 @@
+include(Catch)
+
+add_test(
+    NAME architecture.layer-policy-rejections
+    COMMAND
+        "${CMAKE_COMMAND}"
+        "-DSUNNY_SOURCE_DIR=${PROJECT_SOURCE_DIR}"
+        "-DSUNNY_BINARY_DIR=${PROJECT_BINARY_DIR}"
+        -P "${PROJECT_SOURCE_DIR}/tests/architecture/rejection_test.cmake"
+)
+
+if(TARGET sunny-max-evidence)
+    add_test(NAME infrastructure.max-evidence-cli-help COMMAND sunny-max-evidence --help)
+    add_test(
+        NAME infrastructure.max-evidence-cli-roundtrip
+        COMMAND
+            "${CMAKE_COMMAND}"
+            "-DSUNNY_MAX_EVIDENCE_TOOL=$<TARGET_FILE:sunny-max-evidence>"
+            "-DSUNNY_SOURCE_DIR=${PROJECT_SOURCE_DIR}"
+            "-DSUNNY_BINARY_DIR=${PROJECT_BINARY_DIR}"
+            -P "${PROJECT_SOURCE_DIR}/tests/infrastructure/max/evidence_cli_test.cmake"
+    )
+endif()
+
+add_executable(sunny_core_tests)
+target_link_libraries(sunny_core_tests PRIVATE sunny::core Catch2::Catch2WithMain)
+target_sources(
+    sunny_core_tests
+    PRIVATE
+        core/acoustics/acoustics_test.cpp
+        core/corpus/aggregation_test.cpp
+        core/corpus/analysis_test.cpp
+        core/corpus/document_test.cpp
+        core/corpus/schema_migration_test.cpp
+        core/corpus/serialization_test.cpp
+        core/corpus/types_test.cpp
+        core/corpus/validation_test.cpp
+        core/corpus/workflows_test.cpp
+        core/form/form_test.cpp
+        core/harmony/applied_chords_test.cpp
+        core/harmony/cadence_test.cpp
+        core/harmony/chord_scale_test.cpp
+        core/harmony/chromatic_test.cpp
+        core/harmony/harmonic_function_test.cpp
+        core/harmony/negative_harmony_test.cpp
+        core/harmony/non_tertian_test.cpp
+        core/harmony/progression_test.cpp
+        core/harmony/roman_numeral_test.cpp
+        core/melody/analysis_test.cpp
+        core/mix/document_test.cpp
+        core/mix/serialization_test.cpp
+        core/mix/types_test.cpp
+        core/mix/validation_test.cpp
+        core/mix/workflows_test.cpp
+        core/pitch/diatonic_interval_test.cpp
+        core/pitch/dihedral_group_test.cpp
+        core/pitch/invariants_test.cpp
+        core/pitch/midi_note_test.cpp
+        core/pitch/pitch_class_set_test.cpp
+        core/pitch/pitch_class_test.cpp
+        core/pitch/spelled_pitch_test.cpp
+        core/post_tonal/twelve_tone_test.cpp
+        core/project/validation_test.cpp
+        core/rhythm/euclidean_test.cpp
+        core/rhythm/meter_test.cpp
+        core/rhythm/tuplet_test.cpp
+        core/scale/definitions_test.cpp
+        core/scale/generation_test.cpp
+        core/scale/relationships_test.cpp
+        core/score/compilation_diagnostics_test.cpp
+        core/score/document_test.cpp
+        core/score/harmony_analysis_test.cpp
+        core/score/midi_compiler_test.cpp
+        core/score/mutations_test.cpp
+        core/score/score_document_test.cpp
+        core/score/serialization_test.cpp
+        core/score/types_test.cpp
+        core/score/tuning_test.cpp
+        core/score/undo_identity_test.cpp
+        core/score/undo_test.cpp
+        core/score/validation_and_mutation_test.cpp
+        core/score/validation_rules_test.cpp
+        core/score/views_and_queries_test.cpp
+        core/score/workflow_tools_test.cpp
+        core/score/workflows_test.cpp
+        core/timbre/document_test.cpp
+        core/timbre/serialization_test.cpp
+        core/timbre/types_test.cpp
+        core/timbre/validation_test.cpp
+        core/timbre/workflows_test.cpp
+        core/transform/generalized_interval_system_test.cpp
+        core/transform/k_net_test.cpp
+        core/transform/neo_riemannian_test.cpp
+        core/tuning/equal_temperament_test.cpp
+        core/tuning/historical_temperament_test.cpp
+        core/tuning/just_intonation_test.cpp
+        core/types/music_types_test.cpp
+        core/types/validated_pitch_test.cpp
+        core/voice_leading/constraints_test.cpp
+        core/voice_leading/counterpoint_test.cpp
+        core/voice_leading/figured_bass_test.cpp
+        core/voice_leading/voice_leading_test.cpp
+)
+sunny_enable_warnings(sunny_core_tests)
+catch_discover_tests(sunny_core_tests TEST_PREFIX "core.")
+
+add_executable(sunny_render_tests)
+target_link_libraries(
+    sunny_render_tests
+    PRIVATE sunny::render sunny::max_adapter Catch2::Catch2WithMain
+)
+target_sources(
+    sunny_render_tests
+    PRIVATE
+        render/arpeggiator_test.cpp
+        render/block_event_scheduler_test.cpp
+        render/max_clock_adapter_test.cpp
+        render/max_itm_event_adapter_test.cpp
+        render/max_modulation_adapter_test.cpp
+        render/modulation_test.cpp
+        render/transport_test.cpp
+)
+sunny_enable_warnings(sunny_render_tests)
+catch_discover_tests(sunny_render_tests TEST_PREFIX "render.")
+
+add_executable(sunny_infrastructure_tests)
+target_link_libraries(
+    sunny_infrastructure_tests
+    PRIVATE sunny::infrastructure Catch2::Catch2WithMain
+)
+target_sources(
+    sunny_infrastructure_tests
+    PRIVATE
+        infrastructure/ableton/dispatcher_test.cpp
+        infrastructure/ableton/lom_protocol_test.cpp
+        infrastructure/ableton/target_profile_test.cpp
+        infrastructure/ableton/target_snapshot_test.cpp
+        infrastructure/ableton/transport_test.cpp
+        infrastructure/ableton/validation_record_test.cpp
+        infrastructure/compilation_workflows_test.cpp
+        infrastructure/corpus/ingestion_test.cpp
+        infrastructure/formats/abc_test.cpp
+        infrastructure/formats/ableton_project_test.cpp
+        infrastructure/formats/ableton_mix_test.cpp
+        infrastructure/formats/ableton_score_test.cpp
+        infrastructure/formats/ableton_timbre_test.cpp
+        infrastructure/formats/lilypond_test.cpp
+        infrastructure/formats/midi_file_test.cpp
+        infrastructure/formats/musicxml_test.cpp
+        infrastructure/formats/scala_test.cpp
+        infrastructure/formats/score_to_lilypond_test.cpp
+        infrastructure/formats/score_to_musicxml_test.cpp
+        infrastructure/max/max_test_result_test.cpp
+        infrastructure/max/release_matrix_test.cpp
+        infrastructure/max/validation_record_test.cpp
+        infrastructure/mcp/server_test.cpp
+        infrastructure/orchestrator_test.cpp
+)
+sunny_enable_warnings(sunny_infrastructure_tests)
+catch_discover_tests(sunny_infrastructure_tests TEST_PREFIX "infrastructure.")

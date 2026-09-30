@@ -41,5 +41,5 @@ indent_size = 4
 indent_size = 4
 
 # Remote Script (Ableton Python)
-[Sunny.RemoteScript/*.py]
+[remote_script/Sunny/*.py]
 indent_size = 4

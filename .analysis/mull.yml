@@ -22,7 +22,8 @@ excludePaths:
   - .*nlohmann.*
   - .*json.*
 includePaths:
-  - src/Sunny\.Core/.*
-  - src/Sunny\.Infrastructure/.*
-  - src/Sunny\.Render/.*
+  - src/core/.*
+  - src/infrastructure/.*
+  - src/max/.*
+  - src/render/.*
 timeout: 30000

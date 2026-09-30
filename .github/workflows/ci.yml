@@ -17,7 +17,13 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake ninja-build python3-dev
+          sudo apt-get install -y clang-format cmake ninja-build python3-dev
+
+      - name: Check C++ formatting
+        run: >-
+          find include src tests apps max-package -type f
+          \( -name '*.cpp' -o -name '*.hpp' -o -name '*.h' \)
+          -print0 | xargs -0 clang-format --dry-run --Werror
 
       - name: Configure CMake
         run: cmake --preset release
@@ -25,15 +31,20 @@ jobs:
       - name: Build C++
         run: cmake --build --preset release
 
+      - name: Check Max SDK wrapper headers
+        run: make max-sdk-header-check BUILD_DIR=.bin JOBS=2
+
       - name: Run C++ tests
         run: ctest --preset release
 
-      - name: Upload sunny_native module
-        uses: actions/upload-artifact@v4
-        with:
-          name: sunny-native-linux
-          path: .bin/src/Sunny.Infrastructure/sunny_native*.so
-          if-no-files-found: error
+      - name: Verify installed CMake package
+        run: |
+          cmake --install .bin --prefix "${{ runner.temp }}/sunny-install"
+          cmake -S tests/package -B "${{ runner.temp }}/sunny-package-smoke" \
+            -G Ninja \
+            -DCMAKE_PREFIX_PATH="${{ runner.temp }}/sunny-install"
+          cmake --build "${{ runner.temp }}/sunny-package-smoke"
+          ctest --test-dir "${{ runner.temp }}/sunny-package-smoke" --output-on-failure
 
   # CodeQL static analysis
   codeql:
@@ -65,11 +76,10 @@ jobs:
 
   # Python tests (with native module)
   python-test:
-    needs: cpp-build
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ['3.11', '3.12']
+        python-version: ['3.10', '3.11', '3.12']
 
     steps:
       - uses: actions/checkout@v4
@@ -79,12 +89,6 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: Download sunny_native module
-        uses: actions/download-artifact@v4
-        with:
-          name: sunny-native-linux
-          path: .bin/src/Sunny.Infrastructure/
-
       - name: Install uv
         uses: astral-sh/setup-uv@v4
         with:
@@ -93,9 +97,34 @@ jobs:
       - name: Install dependencies
         run: uv sync --all-extras
 
+      - name: Build native module for this Python
+        run: |
+          cmake -S . -B .bin-python -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DSUNNY_BUILD_TESTS=OFF \
+            -DSUNNY_BUILD_MCP_SERVER=OFF
+          cmake --build .bin-python --target sunny_native sunny-max-evidence
+
       - name: Run tests
         run: |
-          PYTHONPATH=src uv run pytest src/Sunny.Test/Python/ -v --tb=short
+          SUNNY_MAX_EVIDENCE_TOOL=.bin-python/sunny-max-evidence \
+          PYTHONPATH=python:remote_script:.bin-python/python \
+          uv run pytest tests/python/ -v --tb=short
+
+      - name: Verify native runtime against type stub
+        run: >-
+          SUNNY_NATIVE_BUILD_DIR=.bin-python/python
+          uv run python tests/python/run_native_stubtest.py
+
+      - name: Build and install wheel
+        run: |
+          uv build --out-dir "${{ runner.temp }}/sunny-wheel"
+          uv venv "${{ runner.temp }}/sunny-wheel-venv"
+          uv pip install \
+            --python "${{ runner.temp }}/sunny-wheel-venv/bin/python" \
+            "${{ runner.temp }}"/sunny-wheel/sunny-*.whl
+          "${{ runner.temp }}/sunny-wheel-venv/bin/python" -c \
+            "from sunny.core.engine import TheoryEngine; assert TheoryEngine().get_scale_notes('C', 'major', 4)[0] == 60"
 
   # Python linting
   lint:
@@ -123,10 +152,9 @@ jobs:
         run: uv run ruff check .
 
       - name: Run type checking
-        run: uv run mypy src/sunny --ignore-missing-imports
+        run: uv run mypy python/sunny --ignore-missing-imports
 
-  # Security scanning (advisory: bandit findings on the Remote Script's
-  # deliberate 0.0.0.0 bind are accepted; see docs/decisions.md)
+  # Security scanning
   security:
     runs-on: ubuntu-latest
     steps:
@@ -149,8 +177,9 @@ jobs:
         run: uv pip install bandit
 
       - name: Run bandit security scanner
-        run: uv run bandit -r src/sunny -ll -ii
-        continue-on-error: true
+        run: >-
+          uv run bandit -r python/sunny remote_script/Sunny
+          max-package/misc/validation/export-max-test-sqlite.py -ll -ii
 
   # macOS build (for cross-platform verification)
   cpp-build-macos:
@@ -169,3 +198,57 @@ jobs:
 
       - name: Run C++ tests
         run: ctest --preset release
+
+      - name: Build staged Max package
+        run: |
+          cmake -S max-package -B .bin-max -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build .bin-max --target sunny_max_archive
+
+      - name: Validate exact staged Max package
+        run: >-
+          python3 tests/max_sdk_headers/validate_staged_package.py
+          --source max-package
+          --staged .bin-max/package
+          --archive "$(find .bin-max -maxdepth 1 -name 'Sunny-*.zip' -print -quit)"
+          --platform macos
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sunny-max-macos
+          path: |
+            .bin-max/package
+            .bin-max/Sunny-*.zip
+            .bin-max/Sunny-*.zip.sha256
+
+  max-package-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Configure staged Max package
+        run: >-
+          cmake -S max-package -B .bin-max
+          -G "Visual Studio 17 2022" -A x64
+
+      - name: Build staged Max package
+        run: cmake --build .bin-max --config Release --target sunny_max_archive
+
+      - name: Validate exact staged Max package
+        run: >-
+          python tests/max_sdk_headers/validate_staged_package.py
+          --source max-package
+          --staged .bin-max/package
+          --archive .bin-max/Sunny-0.4.0-windows-x86_64.zip
+          --platform windows
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sunny-max-windows
+          path: |
+            .bin-max/package
+            .bin-max/Sunny-*.zip
+            .bin-max/Sunny-*.zip.sha256

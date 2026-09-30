@@ -1,0 +1,371 @@
+{
+  "schema_version": 1,
+  "plan_name": "sunny-max-named-host-run",
+  "sunny_version": "0.4.0",
+  "release_manifest": "max-release-matrix.json",
+  "observation_template": "max-validation-observation.example.json",
+  "baseline_environment": {
+    "sample_rate": 48000.0,
+    "io_vector_size": 512,
+    "signal_vector_size": 64,
+    "overdrive": true,
+    "scheduler_in_audio_interrupt": true
+  },
+  "official_contracts": [
+    {
+      "subject": "max_test",
+      "url": "https://github.com/Cycling74/max-test",
+      "claim": "Self-starting .maxtest.maxpat tests terminate through test.terminate and retain results in SQLite."
+    },
+    {
+      "subject": "sample_accurate_scheduling",
+      "url": "https://docs.cycling74.com/userguide/sample_accurate_messages/",
+      "claim": "Sample-accurate event-to-audio behavior requires Overdrive, Scheduler in Audio Interrupt, a high-priority event, and a supported downstream object."
+    },
+    {
+      "subject": "max_for_live_timing",
+      "url": "https://docs.cycling74.com/legacy/max8/vignettes/live_timing",
+      "claim": "Unnamed transports in Live devices follow Live; preview-mode transitions may disrupt continuity."
+    },
+    {
+      "subject": "midi_delivery",
+      "url": "https://docs.cycling74.com/userguide/midi/",
+      "claim": "MIDI output and input objects bind named ports; source-list output alone is not receiving-port evidence."
+    },
+    {
+      "subject": "audio_capture",
+      "url": "https://docs.cycling74.com/userguide/recording/",
+      "claim": "record~ or sfrecord~ can retain the actual MSP signal rather than a message-domain proxy."
+    }
+  ],
+  "max_test": {
+    "repository": "https://github.com/Cycling74/max-test.git",
+    "revision": "8c5d833d4b1e454238ced7c866c34acedb69cc07",
+    "max_sdk_base_revision": "b6d635cc69bac680c35a63fcfebba9d523ab0d6c",
+    "package_version": "1.2.1",
+    "configuration": {
+      "port-send": 4792,
+      "port-listen": 4791
+    },
+    "runner": "ruby/test.rb",
+    "macos_architecture_arguments": [
+      "x86_64",
+      "arm64"
+    ],
+    "runner_caveat": "At the pinned revision any second argument selects macOS architecture and also suppresses test.rb's explicit process exit; retain the complete console transcript and terminate only the finished Ruby wrapper if it remains alive after printing the database path and summary."
+  },
+  "max_for_live_assertions": {
+    "device_kind": "max_audio_effect",
+    "source_harness": "max-test-harness.json",
+    "source_harness_sha256": "1d26434e9c3a00b5604070c9bd950755365c2a82a7f642fd205fb17d95db39bc",
+    "source_generator": "prepare-m4l-device-source.py",
+    "console_exporter": "export-m4l-assertions.py",
+    "pinned_console_source_sha256": "fe8084df5a1350380f18d9299714865d6a68d2e28bb3cfbe5fbf1398f2df3028",
+    "protocol": {
+      "begin": "SUNNY_M4L_ASSERTIONS_BEGIN|<run-id>",
+      "assertion": "SUNNY_M4L_ASSERTION|<run-id>|<name>|Pass-or-Fail",
+      "end": "SUNNY_M4L_ASSERTIONS_END|<run-id>|64"
+    },
+    "assertion_count": 64,
+    "shared_checks": [
+      "package_discovery",
+      "public_class_surface",
+      "signal_topology",
+      "dsp_setup",
+      "perform_callback",
+      "finite_signal_output",
+      "disconnected_processing",
+      "reconnect_continuity",
+      "control_dispatch",
+      "itm_schedule_fire",
+      "itm_equal_tick_ordering",
+      "itm_clear_reassign",
+      "release_velocity_formatting"
+    ]
+  },
+  "evidence_directories": [
+    "max-test",
+    "active-dsp-teardown",
+    "scheduler-timing",
+    "downstream-midi",
+    "rendered-audio",
+    "live-transport-discontinuities"
+  ],
+  "retained_artifacts": [
+    "exact package archive and .sha256 sidecar",
+    "exact extracted package tree",
+    "complete max-test console transcript",
+    "quiescent max-test SQLite database",
+    "normalized SQLite extraction",
+    "unhashed MaxValidationObservation",
+    "assembled MaxValidationRecord",
+    "per-record verification transcript",
+    "raw diagnostics, MIDI capture, timing capture, and PCM render used by residual checks"
+  ],
+  "normalized_residual_result": {
+    "schema_version": 1,
+    "indexer": "index-max-host-run.py",
+    "evidence_relative_path": "host-run-result.json",
+    "file_roles": [
+      {
+        "role": "teardown_counts",
+        "relative_path": "active-dsp-teardown/cycle-counts.json"
+      },
+      {
+        "role": "teardown_console",
+        "relative_path": "active-dsp-teardown/host-console.txt"
+      },
+      {
+        "role": "teardown_memory_diagnostic",
+        "relative_path": "active-dsp-teardown/memory-diagnostic.txt"
+      },
+      {
+        "role": "scheduler_settings",
+        "relative_path": "scheduler-timing/scenario-settings.json"
+      },
+      {
+        "role": "scheduler_offsets",
+        "relative_path": "scheduler-timing/impulse-offsets.json"
+      },
+      {
+        "role": "scheduler_audio",
+        "relative_path": "scheduler-timing/timing-capture.wav"
+      },
+      {
+        "role": "midi_ports",
+        "relative_path": "downstream-midi/ports.json"
+      },
+      {
+        "role": "midi_received",
+        "relative_path": "downstream-midi/received-midi.json"
+      },
+      {
+        "role": "midi_receiver_transcript",
+        "relative_path": "downstream-midi/receiver-transcript.txt"
+      },
+      {
+        "role": "render_settings",
+        "relative_path": "rendered-audio/render-settings.json"
+      },
+      {
+        "role": "render_audio",
+        "relative_path": "rendered-audio/sunny-render.wav"
+      },
+      {
+        "role": "render_comparison_transcript",
+        "relative_path": "rendered-audio/comparison.json"
+      }
+    ],
+    "max_for_live_file_roles": [
+      {
+        "role": "live_saved_device",
+        "relative_path": "live-transport-discontinuities/sunny-validation-device.amxd"
+      },
+      {
+        "role": "live_assertion_contract",
+        "relative_path": "live-transport-discontinuities/max-test-harness.json"
+      },
+      {
+        "role": "live_shared_assertions",
+        "relative_path": "live-transport-discontinuities/shared-assertions.json"
+      },
+      {
+        "role": "live_scenario_results",
+        "relative_path": "live-transport-discontinuities/scenario-results.json"
+      },
+      {
+        "role": "live_console",
+        "relative_path": "live-transport-discontinuities/host-console.txt"
+      }
+    ]
+  },
+  "residual_checks": [
+    {
+      "check": "active_dsp_teardown",
+      "minimum_cycles_per_object": 1000,
+      "objects": [
+        "sunny.lfo~",
+        "sunny.adsr~",
+        "sunny.hold~",
+        "sunny.clock~",
+        "sunny.events"
+      ],
+      "required_observations": [
+        "DSP was active before each scripted destruction cycle",
+        "all construction and destruction cycles completed",
+        "the host terminated normally without crash or hang",
+        "the platform diagnostic reported zero invalid accesses and zero definitely lost allocations"
+      ],
+      "required_files": [
+        "cycle-counts.json",
+        "host-console.txt",
+        "memory-diagnostic.txt"
+      ]
+    },
+    {
+      "check": "scheduler_timing",
+      "tempo_bpm": 120.0,
+      "ticks_per_quarter": 480,
+      "event_count": 32,
+      "tick_interval": 48,
+      "expected_sample_interval_at_baseline": 2400,
+      "scenarios": [
+        {
+          "name": "supported_enabled_timely",
+          "overdrive": true,
+          "scheduler_in_audio_interrupt": true,
+          "downstream": "click~",
+          "expectation": "Every adjacent captured impulse is exactly 2400 samples apart at the baseline sample rate."
+        },
+        {
+          "name": "supported_without_siai",
+          "overdrive": true,
+          "scheduler_in_audio_interrupt": false,
+          "downstream": "click~",
+          "expectation": "Retain observed offsets as a negative control; do not require or claim sample accuracy."
+        },
+        {
+          "name": "supported_without_overdrive",
+          "overdrive": false,
+          "scheduler_in_audio_interrupt": false,
+          "downstream": "click~",
+          "expectation": "Retain observed offsets as a negative control; do not require or claim sample accuracy."
+        },
+        {
+          "name": "late_absolute_target",
+          "overdrive": true,
+          "scheduler_in_audio_interrupt": true,
+          "downstream": "click~",
+          "expectation": "A target at or before the freshly observed transport tick is rejected and produces no callback or impulse."
+        },
+        {
+          "name": "ordinary_message_consumer",
+          "overdrive": true,
+          "scheduler_in_audio_interrupt": true,
+          "downstream": "timer",
+          "expectation": "Retain message-domain timing only; do not promote it to target-to-audio evidence."
+        }
+      ],
+      "required_files": [
+        "scenario-settings.json",
+        "impulse-offsets.json",
+        "timing-capture.wav"
+      ]
+    },
+    {
+      "check": "downstream_midi_delivery",
+      "channel": 1,
+      "source_callback_lists": [
+        [
+          60,
+          100,
+          23
+        ],
+        [
+          60,
+          0,
+          23
+        ],
+        [
+          64,
+          101,
+          73
+        ],
+        [
+          64,
+          0,
+          73
+        ]
+      ],
+      "expected_received_bytes": [
+        144,
+        60,
+        100,
+        128,
+        60,
+        23,
+        144,
+        64,
+        101,
+        128,
+        64,
+        73
+      ],
+      "required_observations": [
+        "the exact selected output port name",
+        "the exact independently selected input port and receiver name/version",
+        "the raw received byte stream in order",
+        "no missing, additional, or reordered channel-1 note bytes"
+      ],
+      "required_files": [
+        "ports.json",
+        "received-midi.json",
+        "receiver-transcript.txt"
+      ]
+    },
+    {
+      "check": "rendered_audio",
+      "format": "WAVE float32 or float64 without lossy encoding",
+      "minimum_frames": 4096,
+      "objects": [
+        {
+          "object": "sunny.lfo~",
+          "configuration": "frequency 0, saw, reset",
+          "measurable_criterion": "Every retained settled sample equals -1 within 1e-7."
+        },
+        {
+          "object": "sunny.adsr~",
+          "configuration": "attack 0, decay 0, sustain 0.375, release 0, reset, gate 1",
+          "measurable_criterion": "Every retained settled sample equals 0.375 within 1e-7."
+        },
+        {
+          "object": "sunny.hold~",
+          "configuration": "value -0.25",
+          "measurable_criterion": "Every retained settled sample equals -0.25 within 1e-7."
+        },
+        {
+          "object": "sunny.clock~",
+          "configuration": "tempo 120, position 0, play",
+          "measurable_criterion": "Every adjacent retained sample advances by 1/24000 quarter note within 1e-10 at the baseline sample rate."
+        }
+      ],
+      "required_files": [
+        "render-settings.json",
+        "sunny-render.wav",
+        "comparison.json"
+      ]
+    }
+  ],
+  "max_for_live_transport_scenarios": [
+    {
+      "name": "stop_start",
+      "invariant": "A pending future event fires at most once after transport resumes; callbacks remain healthy and gauges return to zero."
+    },
+    {
+      "name": "seek_forward_and_backward",
+      "invariant": "No fired one-shot is emitted twice and no cancelled/reassigned slot emits stale output across either seek direction."
+    },
+    {
+      "name": "arrangement_loop",
+      "invariant": "Crossing the scheduled tick on later loop iterations cannot replay an already consumed one-shot."
+    },
+    {
+      "name": "tempo_change",
+      "invariant": "The event remains tied to its ITM tick; observed wall-clock/sample placement is retained without inferring constant-tempo phase."
+    },
+    {
+      "name": "preview_enter_exit",
+      "invariant": "Any documented preview discontinuity is retained; after exit the object remains usable, callback health is true, and no stale slot output appears."
+    },
+    {
+      "name": "scheduler_settings",
+      "invariant": "Enabled and disabled Overdrive/SIAI observations remain separate and only the fully enabled supported path may claim sample accuracy."
+    }
+  ],
+  "named_live_run": {
+    "runner": "run-named-live-validation.py",
+    "default_mode": "plan_only",
+    "apply_requires_flag": "--apply",
+    "required_result": "A non-null strict AbletonValidationRecord from a consumed guarded plan, retained with the complete JSON-RPC transcript, installed server and Remote Script tree digests, and before/after Live log snapshots."
+  }
+}

@@ -34,7 +34,18 @@ docs/
 .claude/
 
 # Ableton Remote Script (not needed in container)
-lib/
+remote_script/
+
+# Python facade and typing support (native server image only)
+python/
+stubs/
+
+# Local build and analysis output
+.bin*/
+.analysis/
+.codeql-*/
+.mull-*/
+.coverage-cpp/
 
 # Local config
 *.local.*

@@ -1,0 +1,309 @@
+{
+  "schema_version": 1,
+  "harness": {
+    "name": "cycling74-max-test",
+    "repository": "https://github.com/Cycling74/max-test.git",
+    "revision": "8c5d833d4b1e454238ced7c866c34acedb69cc07",
+    "package_version": "1.2.1",
+    "minimum_max_version": "8.2",
+    "host_kind": "standalone_max",
+    "result_database": {
+      "format": "sqlite3",
+      "test_table": "tests",
+      "test_id_column": "test_id",
+      "test_name_column": "test_name",
+      "test_start_column": "test_start",
+      "test_finish_column": "test_finish",
+      "assertion_table": "assertions",
+      "assertion_id_column": "assertion_id",
+      "assertion_test_id_column": "test_id_ext",
+      "assertion_name_column": "assertion_name",
+      "assertion_outcome_column": "assertion_value",
+      "assertion_finish_column": "assertion_finish",
+      "admitted_outcomes": [
+        "Pass",
+        "Fail"
+      ]
+    }
+  },
+  "patchers": [
+    "patchers/sunny-runtime-smoke.maxtest.maxpat",
+    "patchers/sunny.assert-host-status.maxpat",
+    "patchers/sunny.assert-event-status.maxpat",
+    "patchers/sunny.assert-event-list.maxpat",
+    "patchers/sunny.assert-host-lifecycle.maxpat"
+  ],
+  "test_runs": [
+    {
+      "database_test_name": "sunny-runtime-smoke.maxtest",
+      "patcher": "patchers/sunny-runtime-smoke.maxtest.maxpat",
+      "self_start_object": "loadbang",
+      "terminator_object": "test.terminate"
+    }
+  ],
+  "artifact_assertions": [
+    {
+      "object_name": "sunny.lfo~",
+      "required_assertions": [
+        "lfo:configured",
+        "lfo:process-observed",
+        "lfo:process-healthy",
+        "lfo:last-error-zero",
+        "sunny-lfo-output"
+      ]
+    },
+    {
+      "object_name": "sunny.adsr~",
+      "required_assertions": [
+        "adsr:configured",
+        "adsr:process-observed",
+        "adsr:process-healthy",
+        "adsr:last-error-zero",
+        "sunny-adsr-output"
+      ]
+    },
+    {
+      "object_name": "sunny.hold~",
+      "required_assertions": [
+        "hold:configured",
+        "hold:process-observed",
+        "hold:process-healthy",
+        "hold:last-error-zero",
+        "sunny-hold-output"
+      ]
+    },
+    {
+      "object_name": "sunny.clock~",
+      "required_assertions": [
+        "clock:configured",
+        "clock:process-observed",
+        "clock:process-healthy",
+        "clock:last-error-zero",
+        "sunny-clock-output"
+      ]
+    },
+    {
+      "object_name": "sunny.events",
+      "required_assertions": [
+        "events:command-observed",
+        "events:scheduled-observed",
+        "events:fired-observed",
+        "events:cancelled-observed",
+        "events:callbacks-healthy",
+        "events:reservations-empty",
+        "events:retained-empty",
+        "events:last-error-zero",
+        "events:transport-position-nonnegative",
+        "events:transport-resolution-positive",
+        "events:transport-running",
+        "events:transport-sequence-complete",
+        "itm-first:list",
+        "itm-equal-off:list",
+        "itm-equal-on:list",
+        "itm-note-on:list",
+        "itm-note-off:list",
+        "itm-replacement:list",
+        "sunny-runtime-smoke:Console"
+      ]
+    }
+  ],
+  "check_assertions": [
+    {
+      "check": "package_discovery",
+      "automation": "max_test",
+      "required_assertions": [
+        "lfo:configured",
+        "adsr:configured",
+        "hold:configured",
+        "clock:configured",
+        "events:callbacks-healthy",
+        "sunny-runtime-smoke:Console"
+      ]
+    },
+    {
+      "check": "public_class_surface",
+      "automation": "max_test",
+      "required_assertions": [
+        "sunny-runtime-smoke:Console",
+        "sunny-lfo-output",
+        "sunny-adsr-output",
+        "sunny-hold-output",
+        "sunny-clock-output"
+      ]
+    },
+    {
+      "check": "signal_topology",
+      "automation": "max_test",
+      "required_assertions": [
+        "sunny-lfo-output",
+        "sunny-adsr-output",
+        "sunny-hold-output",
+        "sunny-clock-output"
+      ]
+    },
+    {
+      "check": "dsp_setup",
+      "automation": "max_test",
+      "required_assertions": [
+        "lfo:configured",
+        "lfo:sample-rate-positive",
+        "lfo:maximum-frames-positive",
+        "adsr:configured",
+        "adsr:sample-rate-positive",
+        "adsr:maximum-frames-positive",
+        "hold:configured",
+        "hold:sample-rate-positive",
+        "hold:maximum-frames-positive",
+        "clock:configured",
+        "clock:sample-rate-positive",
+        "clock:maximum-frames-positive"
+      ]
+    },
+    {
+      "check": "perform_callback",
+      "automation": "max_test",
+      "required_assertions": [
+        "lfo:process-observed",
+        "lfo:last-frame-positive",
+        "lfo:process-healthy",
+        "adsr:process-observed",
+        "adsr:last-frame-positive",
+        "adsr:process-healthy",
+        "hold:process-observed",
+        "hold:last-frame-positive",
+        "hold:process-healthy",
+        "clock:process-observed",
+        "clock:last-frame-positive",
+        "clock:process-healthy"
+      ]
+    },
+    {
+      "check": "finite_signal_output",
+      "automation": "max_test",
+      "required_assertions": [
+        "sunny-lfo-output",
+        "sunny-adsr-output",
+        "sunny-hold-output",
+        "sunny-clock-output"
+      ]
+    },
+    {
+      "check": "disconnected_processing",
+      "automation": "max_test",
+      "required_assertions": [
+        "lfo:disconnected-process-advanced",
+        "adsr:disconnected-process-advanced",
+        "hold:disconnected-process-advanced",
+        "clock:disconnected-process-advanced",
+        "lifecycle:sequence-complete"
+      ]
+    },
+    {
+      "check": "reconnect_continuity",
+      "automation": "max_test",
+      "required_assertions": [
+        "lfo:reconnected-process-advanced",
+        "adsr:reconnected-process-advanced",
+        "hold:reconnected-process-advanced",
+        "clock:reconnected-process-advanced",
+        "sunny-lfo-reconnected-output",
+        "sunny-adsr-reconnected-output",
+        "sunny-hold-reconnected-output",
+        "sunny-clock-reconnected-output",
+        "lifecycle:sequence-complete"
+      ]
+    },
+    {
+      "check": "control_dispatch",
+      "automation": "max_test",
+      "required_assertions": [
+        "sunny-runtime-smoke:Console",
+        "sunny-lfo-output",
+        "sunny-adsr-output",
+        "sunny-hold-output",
+        "sunny-clock-output"
+      ]
+    },
+    {
+      "check": "active_dsp_teardown",
+      "automation": "not_automated",
+      "required_assertions": []
+    },
+    {
+      "check": "itm_schedule_fire",
+      "automation": "max_test",
+      "required_assertions": [
+        "events:scheduled-observed",
+        "events:fired-observed",
+        "events:callbacks-healthy",
+        "events:last-error-zero",
+        "events:transport-sequence-complete",
+        "itm-first:list",
+        "itm-note-on:list",
+        "itm-note-off:list"
+      ]
+    },
+    {
+      "check": "itm_equal_tick_ordering",
+      "automation": "max_test",
+      "required_assertions": [
+        "events:transport-sequence-complete",
+        "itm-equal-off:list",
+        "itm-equal-on:list"
+      ]
+    },
+    {
+      "check": "itm_clear_reassign",
+      "automation": "max_test",
+      "required_assertions": [
+        "events:cancelled-observed",
+        "events:reservations-empty",
+        "events:retained-empty",
+        "events:last-error-zero",
+        "events:transport-sequence-complete",
+        "itm-replacement:list"
+      ]
+    },
+    {
+      "check": "release_velocity_formatting",
+      "automation": "max_test",
+      "required_assertions": [
+        "events:transport-sequence-complete",
+        "itm-first:list",
+        "itm-note-on:list",
+        "itm-note-off:list"
+      ]
+    },
+    {
+      "check": "scheduler_timing",
+      "automation": "not_automated",
+      "required_assertions": []
+    },
+    {
+      "check": "downstream_midi_delivery",
+      "automation": "not_automated",
+      "required_assertions": []
+    },
+    {
+      "check": "rendered_audio",
+      "automation": "not_automated",
+      "required_assertions": []
+    },
+    {
+      "check": "live_transport_discontinuities",
+      "automation": "not_applicable",
+      "required_assertions": []
+    },
+    {
+      "check": "standalone_transport_identity",
+      "automation": "max_test",
+      "required_assertions": [
+        "events:transport-position-nonnegative",
+        "events:transport-resolution-positive",
+        "events:transport-running",
+        "events:transport-sequence-complete",
+        "itm-first:list"
+      ]
+    }
+  ]
+}

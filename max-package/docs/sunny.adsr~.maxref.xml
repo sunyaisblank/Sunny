@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<?xml-stylesheet href="./c74ref.xsl" type="text/xsl"?>
+<c74object name="sunny.adsr~" module="msp" category="Sunny, MSP Generators">
+  <digest>Generate a bounded ADSR signal</digest>
+  <description>
+    Generate one mono attack-decay-sustain-release envelope signal. Message controls are
+    serialized outside the audio callback and take effect in order at the next signal-vector
+    boundary.
+  </description>
+  <metadatalist>
+    <metadata name="author">Sunny contributors</metadata>
+    <metadata name="tag">Audio</metadata>
+    <metadata name="tag">Envelope</metadata>
+    <metadata name="tag">Modulation</metadata>
+  </metadatalist>
+  <methodlist>
+    <method name="float">
+      <arglist><arg name="gate" optional="0" type="float" /></arglist>
+      <digest>Set the gate state</digest>
+      <description>Trigger for a finite positive value; release for a finite zero or negative value.</description>
+    </method>
+    <method name="gate">
+      <arglist><arg name="gate" optional="0" type="float" /></arglist>
+      <digest>Set the gate state</digest>
+      <description>Trigger for a finite positive value; release for a finite zero or negative value.</description>
+    </method>
+    <method name="trigger">
+      <digest>Begin the attack stage</digest>
+    </method>
+    <method name="release">
+      <digest>Begin the release stage</digest>
+    </method>
+    <method name="attack">
+      <arglist><arg name="seconds" optional="0" type="float" /></arglist>
+      <digest>Set the attack duration</digest>
+      <description>Accept a finite nonnegative duration in seconds.</description>
+    </method>
+    <method name="decay">
+      <arglist><arg name="seconds" optional="0" type="float" /></arglist>
+      <digest>Set the decay duration</digest>
+      <description>Accept a finite nonnegative duration in seconds.</description>
+    </method>
+    <method name="sustain">
+      <arglist><arg name="level" optional="0" type="float" /></arglist>
+      <digest>Set the sustain level</digest>
+      <description>Accept a finite normalized level from 0 through 1.</description>
+    </method>
+    <method name="release_time">
+      <arglist><arg name="seconds" optional="0" type="float" /></arglist>
+      <digest>Set the release duration</digest>
+      <description>Accept a finite nonnegative duration in seconds.</description>
+    </method>
+    <method name="reset">
+      <digest>Reset to the idle state</digest>
+    </method>
+    <method name="status">
+      <digest>Post and emit adapter status</digest>
+      <description>Post configuration, setup, control, current pending-control, process, and last-error evidence to the Max console. The right message outlet also emits the closed tuple `host_status configured sample_rate maximum_frames process_observed process_calls last_frame_count process_healthy last_error`; `process_calls` is an exact signed saturating callback count and the left outlet remains the sole signal outlet.</description>
+    </method>
+    <method name="clear_error">
+      <digest>Clear the retained error</digest>
+      <description>Clear the last-error code without clearing counters or DSP state.</description>
+    </method>
+  </methodlist>
+</c74object>

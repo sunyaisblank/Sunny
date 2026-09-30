@@ -1,11 +1,11 @@
 # Sunny MCP Server Docker Image
 # Builds the C++ sunny-mcp binary; the container speaks MCP on stdio and
-# connects out to Ableton's SunnyRemoteScript when SUNNY_ABLETON_HOST is set.
+# connects to Sunny's Ableton Remote Script when SUNNY_ABLETON_HOST is set.
 
 # =============================================================================
 # Build Stage
 # =============================================================================
-FROM debian:bookworm-slim AS builder
+FROM ubuntu:24.04 AS builder
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
@@ -15,6 +15,9 @@ RUN apt-get update && \
 WORKDIR /build
 
 COPY CMakeLists.txt CMakePresets.json ./
+COPY apps ./apps
+COPY cmake ./cmake
+COPY include ./include
 COPY src ./src
 
 # Lean server build: no tests, no Python bindings
@@ -27,9 +30,12 @@ RUN cmake -B .bin -G Ninja \
 # =============================================================================
 # Runtime Stage
 # =============================================================================
-FROM debian:bookworm-slim AS runtime
+FROM ubuntu:24.04 AS runtime
 
-RUN useradd --create-home --shell /bin/bash sunny
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends libstdc++6 \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --create-home --shell /bin/bash sunny
 
 COPY --from=builder /build/.bin/sunny-mcp /usr/local/bin/sunny-mcp
 
