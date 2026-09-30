@@ -20,7 +20,9 @@
 #include <latch>
 #include <limits>
 #include <set>
+#include <sstream>
 #include <string>
+#include <sunny/core/detail/serialization_integer.hpp>
 #include <sunny/infrastructure/mcp/core_tools.hpp>
 #include <sunny/infrastructure/mcp/corpus_tools.hpp>
 #include <sunny/infrastructure/mcp/mix_tools.hpp>
@@ -28,6 +30,7 @@
 #include <sunny/infrastructure/mcp/score_tools.hpp>
 #include <sunny/infrastructure/mcp/server.hpp>
 #include <sunny/infrastructure/mcp/timbre_tools.hpp>
+#include <vector>
 
 using namespace sunny::infrastructure;
 using json = nlohmann::json;
@@ -400,6 +403,158 @@ TEST_CASE("notification returns null", "[mcp][protocol]") {
     auto resp = server.dispatch({{"jsonrpc", "2.0"}, {"method", "notifications/initialized"}});
 
     CHECK(resp.is_null());
+}
+
+// =============================================================================
+// Stdio loop conformance (JSON-RPC 2.0 sections 4-6)
+// =============================================================================
+
+namespace {
+
+/// Drive the real newline-delimited run loop and return every line it wrote.
+std::vector<json> run_stdio_session(McpServer& server, const std::vector<std::string>& lines) {
+    std::string input;
+    for (const auto& line : lines)
+        input += line + "\n";
+    std::istringstream in(input);
+    std::ostringstream out;
+    server.run(in, out);
+
+    std::vector<json> responses;
+    std::istringstream written(out.str());
+    std::string line;
+    while (std::getline(written, line)) {
+        INFO("server wrote: " << line);
+        responses.push_back(json::parse(line));
+    }
+    return responses;
+}
+
+} // namespace
+
+TEST_CASE("stdio loop answers each non-object message with -32600 and keeps serving",
+          "[mcp][protocol][stdio]") {
+    TestMcpServer server;
+    server.add_tool("echo", [](const json& params) -> json { return params; });
+    const std::string tools_list = R"({"jsonrpc":"2.0","method":"tools/list","id":)";
+
+    const auto responses = run_stdio_session(server,
+                                             {"[]",
+                                              tools_list + "1}",
+                                              R"("just a string")",
+                                              tools_list + "2}",
+                                              "5",
+                                              tools_list + "3}",
+                                              "null",
+                                              tools_list + "4}",
+                                              "[1,2]",
+                                              tools_list + "5}",
+                                              "{not json",
+                                              tools_list + "6}"});
+
+    REQUIRE(responses.size() == 12);
+    for (std::size_t index = 0; index < responses.size(); index += 2) {
+        CAPTURE(index);
+        const auto& error = responses[index];
+        const auto& listed = responses[index + 1];
+        CHECK(error["jsonrpc"] == "2.0");
+        CHECK(error["id"].is_null());
+        CHECK(error["error"]["code"] == (index == 10 ? -32700 : -32600));
+        CHECK(listed["id"] == static_cast<int>(index / 2 + 1));
+        CHECK(listed["result"]["tools"].size() == 1);
+    }
+}
+
+TEST_CASE("stdio loop answers ping with an empty result", "[mcp][protocol][stdio]") {
+    TestMcpServer server;
+
+    const auto responses = run_stdio_session(server,
+                                             {R"({"jsonrpc":"2.0","method":"ping","id":"p-1"})",
+                                              R"({"jsonrpc":"2.0","method":"ping","id":2})"});
+
+    REQUIRE(responses.size() == 2);
+    CHECK(responses[0]["id"] == "p-1");
+    CHECK(responses[0]["result"] == json::object());
+    CHECK_FALSE(responses[0].contains("error"));
+    CHECK(responses[1]["id"] == 2);
+    CHECK(responses[1]["result"] == json::object());
+}
+
+TEST_CASE("stdio loop never answers notifications or client responses", "[mcp][protocol][stdio]") {
+    TestMcpServer server;
+
+    const auto responses =
+        run_stdio_session(server,
+                          {R"({"jsonrpc":"2.0","method":"notifications/initialized"})",
+                           R"({"jsonrpc":"2.0","method":"notifications/initialized","params":[1]})",
+                           R"({"jsonrpc":"2.0","method":"notifications/cancelled","params":"x"})",
+                           R"({"jsonrpc":"2.0","method":"tools/list"})",
+                           R"({"jsonrpc":"2.0","method":"unknown/method","params":7})",
+                           R"({"jsonrpc":"2.0","id":5,"result":{}})",
+                           R"({"jsonrpc":"2.0","id":"s-6","error":{"code":-1,"message":"no"}})",
+                           R"({"jsonrpc":"2.0","method":"ping","id":9})"});
+
+    REQUIRE(responses.size() == 1);
+    CHECK(responses[0]["id"] == 9);
+    CHECK(responses[0]["result"] == json::object());
+}
+
+TEST_CASE("stdio loop rejects structurally invalid request objects with a null id",
+          "[mcp][protocol][stdio]") {
+    TestMcpServer server;
+
+    const auto responses = run_stdio_session(server,
+                                             {R"({"jsonrpc":"2.0"})",
+                                              R"({"method":"ping","id":{"nested":true}})",
+                                              R"({"jsonrpc":"2.0","method":"ping","id":1.5})",
+                                              R"({"jsonrpc":"2.0","method":"ping","id":null})",
+                                              R"({"jsonrpc":"2.0","method":"ping","id":3})"});
+
+    REQUIRE(responses.size() == 5);
+    for (std::size_t index = 0; index < 4; ++index) {
+        CAPTURE(index);
+        CHECK(responses[index]["id"].is_null());
+        CHECK(responses[index]["error"]["code"] == -32600);
+    }
+    CHECK(responses[4]["id"] == 3);
+    CHECK(responses[4]["result"] == json::object());
+}
+
+TEST_CASE("integer schemas accept numbers with a zero fractional part", "[mcp][tools][schema]") {
+    TestMcpServer server;
+    server.register_tool("count",
+                         "count tool",
+                         {{"type", "object"},
+                          {"properties",
+                           {{"count", {{"type", "integer"}}},
+                            {"values", {{"type", "array"}, {"items", {{"type", "integer"}}}}}}},
+                          {"required", json::array({"count"})}},
+                         [](const json& params) -> json {
+                             int total = sunny::core::detail::checked_integer<int>(
+                                 params.at("count"), "count");
+                             for (const auto& value : params.value("values", json::array()))
+                                 total += sunny::core::detail::checked_integer<int>(value, "value");
+                             return {{"total", total}};
+                         });
+
+    const auto responses = run_stdio_session(
+        server,
+        {R"({"jsonrpc":"2.0","method":"tools/call","id":1,"params":{"name":"count","arguments":{"count":4.0}}})",
+         R"({"jsonrpc":"2.0","method":"tools/call","id":2,"params":{"name":"count","arguments":{"count":1e2,"values":[2.0,-3]}}})",
+         R"({"jsonrpc":"2.0","method":"tools/call","id":3,"params":{"name":"count","arguments":{"count":4.5}}})",
+         R"({"jsonrpc":"2.0","method":"tools/call","id":4,"params":{"name":"count","arguments":{"count":1,"values":[0.25]}}})"});
+
+    REQUIRE(responses.size() == 4);
+    CHECK(responses[0]["result"]["isError"] == false);
+    CHECK(responses[0]["result"]["structuredContent"]["total"] == 4);
+    CHECK(responses[1]["result"]["isError"] == false);
+    CHECK(responses[1]["result"]["structuredContent"]["total"] == 99);
+    CHECK(responses[2]["result"]["isError"] == true);
+    CHECK(responses[2]["result"]["structuredContent"]["error"] ==
+          "arguments.count must be of type integer");
+    CHECK(responses[3]["result"]["isError"] == true);
+    CHECK(responses[3]["result"]["structuredContent"]["error"] ==
+          "arguments.values[0] must be of type integer");
 }
 
 TEST_CASE("parsed MCP requests serialize handler execution", "[mcp][concurrency]") {

@@ -8,13 +8,14 @@
  * delimited JSON-RPC 2.0 and supports both the legacy handshake era
  * and the stateless 2026-07-28 discovery era.
  *
- * Handles: server/discover, initialize, tools/list, tools/call
+ * Handles: server/discover, initialize, ping, tools/list, tools/call
  */
 
 #pragma once
 
 #include <atomic>
 #include <functional>
+#include <iosfwd>
 #include <map>
 #include <mutex>
 #include <nlohmann/json.hpp>
@@ -58,13 +59,19 @@ class McpServer {
                        McpToolHandler handler);
 
     /**
-     * @brief Run the server (blocking)
+     * @brief Run the server on the process's stdio (blocking)
      *
-     * Reads stdin line by line, dispatches JSON-RPC requests,
-     * writes responses to stdout. Returns when stdin closes or
-     * stop() is called.
+     * Equivalent to run(std::cin, std::cout).
      */
     void run();
+
+    /**
+     * @brief Run the server over newline-delimited streams (blocking)
+     *
+     * Reads one JSON-RPC message per line, dispatches it, and writes each
+     * response as one line. Returns when input ends or stop() is called.
+     */
+    void run(std::istream& input, std::ostream& output);
 
     /**
      * @brief Signal shutdown
@@ -72,15 +79,20 @@ class McpServer {
     void stop();
 
     /**
-     * @brief Process one parsed JSON-RPC request
+     * @brief Process one parsed JSON-RPC message
      *
-     * This is the same dispatcher used by run(). Keeping the parsed-request
+     * This is the same dispatcher used by run(). Keeping the parsed-message
      * seam public lets embedders and tests exercise the real protocol path
      * without redirecting process-wide stdin/stdout. Calls are serialized on
      * one server instance, including handler execution; tool registration must
      * be complete before the first request.
+     *
+     * Pre:  message is any parsed JSON value
+     * Post: returns the response to write, or null when JSON-RPC forbids a
+     *       reply (notifications and client responses); a message that is not
+     *       a valid Request yields -32600 with a null id when none is readable
      */
-    [[nodiscard]] nlohmann::json process_request(const nlohmann::json& request);
+    [[nodiscard]] nlohmann::json process_request(const nlohmann::json& message);
 
   private:
     struct ToolEntry {

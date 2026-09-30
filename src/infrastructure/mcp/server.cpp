@@ -6,6 +6,8 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
+#include <cstdint>
 #include <iostream>
 #include <stdexcept>
 #include <string>
@@ -90,18 +92,45 @@ nlohmann::json normalise_input_schema(const nlohmann::json& schema) {
     return {{"type", "object"}, {"properties", properties}, {"required", required}};
 }
 
+/// JSON Schema 2020-12 validation section 6.1.1: an integer is any number
+/// whose fractional part is zero, so 4.0 and 1e2 qualify.
+bool is_integral_number(const nlohmann::json& value) {
+    if (value.is_number_integer() || value.is_number_unsigned()) return true;
+    if (!value.is_number_float()) return false;
+    const double number = value.get<double>();
+    return std::isfinite(number) && std::trunc(number) == number;
+}
+
+/// Re-encode an integral float as a JSON integer so handlers, which read
+/// integers through checked_integer, see the value the schema accepted.
+/// Values outside the 64-bit domains stay floats and fail the handler's
+/// representability check with a precise message.
+void canonicalise_integer(nlohmann::json& value) {
+    if (!value.is_number_float()) return;
+    const double number = value.get<double>();
+    // Both bounds are powers of two and therefore exact doubles.
+    constexpr double INT64_BOUND = 9223372036854775808.0;   // 2^63
+    constexpr double UINT64_BOUND = 18446744073709551616.0; // 2^64
+    if (number >= -INT64_BOUND && number < INT64_BOUND) {
+        value = static_cast<std::int64_t>(number);
+    } else if (number >= INT64_BOUND && number < UINT64_BOUND) {
+        value = static_cast<std::uint64_t>(number);
+    }
+}
+
 bool type_matches(const nlohmann::json& value, std::string_view type) {
     if (type == "object") return value.is_object();
     if (type == "array") return value.is_array();
     if (type == "string") return value.is_string();
-    if (type == "integer") return value.is_number_integer() || value.is_number_unsigned();
+    if (type == "integer") return is_integral_number(value);
     if (type == "number") return value.is_number();
     if (type == "boolean") return value.is_boolean();
     if (type == "null") return value.is_null();
     return false;
 }
 
-bool validate_schema_value(const nlohmann::json& value,
+/// Validate value against schema, canonicalising integral numbers in place.
+bool validate_schema_value(nlohmann::json& value,
                            const nlohmann::json& schema,
                            const std::string& path,
                            std::string& error) {
@@ -113,6 +142,7 @@ bool validate_schema_value(const nlohmann::json& value,
             error = path + " must be of type " + type;
             return false;
         }
+        if (type == "integer") canonicalise_integer(value);
     }
 
     if (schema.contains("enum") && schema["enum"].is_array() &&
@@ -155,6 +185,14 @@ bool validate_schema_value(const nlohmann::json& value,
     return true;
 }
 
+/// The request id when it is one MCP admits (string or integer), else null.
+nlohmann::json request_id_or_null(const nlohmann::json& message) {
+    if (!message.is_object() || !message.contains("id")) return nullptr;
+    const auto& id = message["id"];
+    if (id.is_string() || id.is_number_integer() || id.is_number_unsigned()) return id;
+    return nullptr;
+}
+
 nlohmann::json tool_result(nlohmann::json result, bool is_error, bool modern) {
     nlohmann::json response = {
         {"content", nlohmann::json::array({{{"type", "text"}, {"text", result.dump()}}})},
@@ -190,33 +228,49 @@ void McpServer::register_tool(std::string name,
 }
 
 void McpServer::run() {
+    run(std::cin, std::cout);
+}
+
+void McpServer::run(std::istream& input, std::ostream& output) {
     running_.store(true, std::memory_order_relaxed);
     std::string line;
 
     constexpr std::size_t MAX_LINE_LENGTH = std::size_t{4} * 1024 * 1024; // 4 MiB
 
-    while (running_.load(std::memory_order_relaxed) && std::getline(std::cin, line)) {
+    // Replacement keeps one malformed UTF-8 byte in a tool payload from
+    // aborting the write and, with it, the session.
+    const auto write_line = [&output](const nlohmann::json& message) {
+        output << message.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace) << "\n"
+               << std::flush;
+    };
+
+    while (running_.load(std::memory_order_relaxed) && std::getline(input, line)) {
         if (line.empty()) continue;
 
         if (line.size() > MAX_LINE_LENGTH) {
-            auto error = make_error(nullptr, -32600, "Request exceeds size limit");
-            std::cout << error.dump() << "\n" << std::flush;
+            write_line(make_error(nullptr, -32600, "Request exceeds size limit"));
             continue;
         }
 
-        nlohmann::json request;
+        nlohmann::json message;
         try {
-            request = nlohmann::json::parse(line);
+            message = nlohmann::json::parse(line);
         } catch (const nlohmann::json::parse_error&) {
-            auto error = make_error(nullptr, -32700, "Parse error");
-            std::cout << error.dump() << "\n" << std::flush;
+            write_line(make_error(nullptr, -32700, "Parse error"));
             continue;
         }
 
-        auto response = process_request(request);
-        if (!response.is_null()) {
-            std::cout << response.dump() << "\n" << std::flush;
+        nlohmann::json response;
+        try {
+            response = process_request(message);
+        } catch (const std::exception&) {
+            // process_request validates every field it reads, so reaching this
+            // handler is a server defect. The session survives it; a
+            // notification still receives no reply (JSON-RPC 2.0 section 4.1).
+            if (!message.is_object() || !message.contains("id")) continue;
+            response = make_error(request_id_or_null(message), -32603, "Internal error");
         }
+        if (!response.is_null()) write_line(response);
     }
 
     running_.store(false, std::memory_order_relaxed);
@@ -226,29 +280,41 @@ void McpServer::stop() {
     running_.store(false, std::memory_order_relaxed);
 }
 
-nlohmann::json McpServer::process_request(const nlohmann::json& request) {
+nlohmann::json McpServer::process_request(const nlohmann::json& message) {
     std::unique_lock request_lock(request_mutex_);
 
-    // Validate JSON-RPC 2.0
-    if (!request.contains("jsonrpc") || request["jsonrpc"] != "2.0") {
-        auto id = request.value("id", nlohmann::json(nullptr));
-        return make_error(id, -32600, "Invalid Request: missing jsonrpc 2.0");
+    // JSON-RPC 2.0 section 5: when the id cannot be read from an invalid
+    // Request, the error response carries a null id. A non-object message
+    // (array, string, number, null) has no id to read.
+    if (!message.is_object()) {
+        return make_error(nullptr, -32600, "Invalid Request: message must be a JSON object");
     }
 
-    if (!request.contains("method") || !request["method"].is_string()) {
-        auto id = request.value("id", nlohmann::json(nullptr));
-        return make_error(id, -32600, "Invalid Request: missing method");
+    // A response to a server-initiated request is never answered (section 5).
+    if (!message.contains("method") && (message.contains("result") || message.contains("error"))) {
+        return nullptr;
     }
 
-    auto method = request["method"].get<std::string>();
-    const bool notification = method.rfind("notifications/", 0) == 0;
-    if (!notification && (!request.contains("id") ||
-                          !(request["id"].is_string() || request["id"].is_number_integer() ||
-                            request["id"].is_number_unsigned()))) {
+    const auto error_id = request_id_or_null(message);
+    if (!message.contains("jsonrpc") || message["jsonrpc"] != "2.0") {
+        return make_error(error_id, -32600, "Invalid Request: missing jsonrpc 2.0");
+    }
+    if (!message.contains("method") || !message["method"].is_string()) {
+        return make_error(error_id, -32600, "Invalid Request: missing method");
+    }
+
+    // A well-formed Request without an id is a notification (section 4.1):
+    // the server must not reply, even when its method or params are invalid.
+    // No notification Sunny receives changes server state.
+    if (!message.contains("id")) return nullptr;
+
+    // MCP narrows JSON-RPC ids to strings and integers; null is excluded.
+    if (error_id.is_null()) {
         return make_error(nullptr, -32600, "Invalid Request: id must be a string or integer");
     }
-    auto id = request.value("id", nlohmann::json(nullptr));
-    auto params = request.value("params", nlohmann::json::object());
+    const auto& id = message["id"];
+    const auto method = message["method"].get<std::string>();
+    const auto params = message.value("params", nlohmann::json::object());
     if (!params.is_object()) return make_error(id, -32602, "params must be an object");
 
     bool modern = false;
@@ -273,20 +339,12 @@ nlohmann::json McpServer::process_request(const nlohmann::json& request) {
         modern = true;
     }
 
-    if (method == "server/discover") {
-        return handle_discover(id);
-    } else if (method == "initialize") {
-        return handle_initialize(id, params);
-    } else if (method == "tools/list") {
-        return handle_tools_list(id, modern);
-    } else if (method == "tools/call") {
-        return handle_tools_call(id, params, modern);
-    } else if (method.rfind("notifications/", 0) == 0) {
-        // JSON-RPC notifications have no "id" and require no response
-        return nullptr;
-    } else {
-        return make_error(id, -32601, "Method not found: " + method);
-    }
+    if (method == "server/discover") return handle_discover(id);
+    if (method == "initialize") return handle_initialize(id, params);
+    if (method == "ping") return make_response(id, nlohmann::json::object());
+    if (method == "tools/list") return handle_tools_list(id, modern);
+    if (method == "tools/call") return handle_tools_call(id, params, modern);
+    return make_error(id, -32601, "Method not found: " + method);
 }
 
 nlohmann::json McpServer::handle_discover(const nlohmann::json& id) {
