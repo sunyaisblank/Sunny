@@ -211,25 +211,27 @@ void for_each_event_in_region(Score& score, const ScoreRegion& region, Fn&& fn) 
     }
 }
 
-/// Push a pre-mutation snapshot onto the undo stack (if provided), clearing
-/// redo. When group_depth > 0, only the first snapshot of the group is kept:
-/// the earliest 'before' state covers the whole group.
+/// Record a pre-mutation snapshot when the caller supplied an undo stack.
 void push_snapshot(UndoStack* undo, std::optional<Score>&& before, std::string desc) {
-    if (!undo || !before) return;
-    const std::uint64_t snapshot_version = before->version;
-    UndoEntry entry{
-        snapshot_version, std::make_shared<const Score>(std::move(*before)), std::move(desc)};
-    if (undo->group_depth > 0) {
-        if (!undo->group_has_snapshot) {
-            entry.description = undo->group_description;
-            undo->undo_entries.push_back(std::move(entry));
-            undo->redo_entries.clear();
-            undo->group_has_snapshot = true;
-        }
-    } else {
-        undo->undo_entries.push_back(std::move(entry));
-        undo->redo_entries.clear();
-    }
+    if (undo && before) undo->record(std::move(*before), std::move(desc));
+}
+
+/// apply_interval asserts when the result leaves the SpelledPitch octave or
+/// accidental domain; a mutation rejects such input instead.
+Result<SpelledPitch> checked_apply_interval(SpelledPitch pitch, DiatonicInterval interval) {
+    const long long letter_sum = static_cast<long long>(pitch.letter) + interval.diatonic;
+    const long long octave_offset = letter_sum >= 0 ? letter_sum / 7 : (letter_sum - 6) / 7;
+    const long long octave = static_cast<long long>(pitch.octave) + octave_offset;
+    const long long letter = letter_sum - 7 * octave_offset;
+    const long long target = static_cast<long long>(midi_value(pitch)) + interval.chromatic;
+    const long long natural =
+        12 * (octave + 1) + static_cast<long long>(nat(static_cast<std::uint8_t>(letter)));
+    const long long accidental = target - natural;
+    constexpr long long low = std::numeric_limits<std::int8_t>::min();
+    constexpr long long high = std::numeric_limits<std::int8_t>::max();
+    if (octave < low || octave > high || accidental < low || accidental > high)
+        return std::unexpected(ErrorCode::InvalidMutation);
+    return apply_interval(pitch, interval);
 }
 
 /// Mark a region as stale for harmonic re-analysis
@@ -2817,8 +2819,11 @@ reorchestrate(Score& score, const ScoreRegion& region, PartId target, UndoStack*
     return result;
 }
 
-Result<MutationResult> double_at_interval(
-    Score& score, const ScoreRegion& region, PartId target, std::int8_t interval, UndoStack* undo) {
+Result<MutationResult> double_at_interval(Score& score,
+                                          const ScoreRegion& region,
+                                          PartId target,
+                                          DiatonicInterval interval,
+                                          UndoStack* undo) {
     if (detail::score_version_exhausted(score))
         return std::unexpected(ErrorCode::ArithmeticOverflow);
     if (!valid_score_region(score, region)) return std::unexpected(ErrorCode::InvalidRegion);
@@ -2844,17 +2849,16 @@ Result<MutationResult> double_at_interval(
             auto* ng = std::get_if<NoteGroup>(&event.payload);
             if (!ng) return;
 
-            // Clone and transpose each note by the semitone interval
+            // Clone and transpose each note: the letter advances by the
+            // diatonic step count and the accidental carries the remainder.
             NoteGroup transposed = *ng;
             for (auto& note : transposed.notes) {
-                int new_midi = midi_value(note.pitch) + interval;
-                int new_octave = (new_midi / 12) - 1;
-                // Keep the same letter name; adjust accidental
-                SpelledPitch candidate{note.pitch.letter, 0, static_cast<std::int8_t>(new_octave)};
-                int candidate_midi = midi_value(candidate);
-                std::int8_t new_acc = static_cast<std::int8_t>(new_midi - candidate_midi);
-                note.pitch =
-                    SpelledPitch{note.pitch.letter, new_acc, static_cast<std::int8_t>(new_octave)};
+                auto doubled = checked_apply_interval(note.pitch, interval);
+                if (!doubled) {
+                    allocation_error = doubled.error();
+                    return;
+                }
+                note.pitch = *doubled;
             }
             stripped_spans = strip_voice_span_metadata(transposed) || stripped_spans;
 
@@ -3087,6 +3091,24 @@ Result<MutationResult> apply_voice_leading(Score& score,
 // =============================================================================
 // Undo Grouping
 // =============================================================================
+
+void UndoStack::record(Score before, std::string description) {
+    if (group_depth > 0) {
+        if (group_has_snapshot) return;
+        description = group_description;
+        group_has_snapshot = true;
+    }
+    redo_entries.clear();
+    if (capacity == 0) return;
+    const std::uint64_t snapshot_version = before.version;
+    undo_entries.push_back(UndoEntry{snapshot_version,
+                                     std::make_shared<const Score>(std::move(before)),
+                                     std::move(description)});
+    if (undo_entries.size() > capacity) {
+        const auto excess = static_cast<std::ptrdiff_t>(undo_entries.size() - capacity);
+        undo_entries.erase(undo_entries.begin(), undo_entries.begin() + excess);
+    }
+}
 
 void UndoStack::begin_group(std::string description) {
     if (group_depth == 0) {

@@ -9,6 +9,8 @@
 
 #include <algorithm>
 #include <array>
+#include <charconv>
+#include <cmath>
 #include <limits>
 #include <set>
 #include <sunny/core/harmony/roman_numeral.hpp>
@@ -24,26 +26,38 @@ namespace sunny::core {
 
 namespace {
 
-/// Push a pre-mutation snapshot onto the undo stack (if provided), clearing
-/// redo. Mirrors the  helper: when group_depth > 0, only the first
-/// snapshot of the group is kept because the earliest 'before' state covers
-/// the whole group.
+/// Record a pre-mutation snapshot when the caller supplied an undo stack;
+/// UndoStack::record owns grouping and the capacity bound.
 void push_snapshot(UndoStack* undo, std::optional<Score>&& before, std::string desc) {
-    if (!undo || !before) return;
-    const std::uint64_t snapshot_version = before->version;
-    UndoEntry entry{
-        snapshot_version, std::make_shared<const Score>(std::move(*before)), std::move(desc)};
-    if (undo->group_depth > 0) {
-        if (!undo->group_has_snapshot) {
-            entry.description = undo->group_description;
-            undo->undo_entries.push_back(std::move(entry));
-            undo->redo_entries.clear();
-            undo->group_has_snapshot = true;
+    if (undo && before) undo->record(std::move(*before), std::move(desc));
+}
+
+/// The decimal a caller wrote, recovered as the shortest fixed-notation
+/// string that round-trips the double, stored as an exact positive rational.
+/// A binary double cannot hold 92.3 exactly; its shortest decimal can, and
+/// that decimal is what the caller meant. Truncating to an integer did not.
+Result<PositiveRational> exact_decimal_rate(double value) {
+    if (!std::isfinite(value) || value <= 0.0) return std::unexpected(ErrorCode::InvalidBPM);
+    std::array<char, 400> text{};
+    const auto [end, error] =
+        std::to_chars(text.data(), text.data() + text.size(), value, std::chars_format::fixed);
+    if (error != std::errc{}) return std::unexpected(ErrorCode::InvalidBPM);
+
+    constexpr std::int64_t limit = std::numeric_limits<std::int64_t>::max() / 10;
+    std::int64_t numerator = 0;
+    std::int64_t denominator = 1;
+    bool fractional = false;
+    for (const char* cursor = text.data(); cursor != end; ++cursor) {
+        if (*cursor == '.') {
+            fractional = true;
+            continue;
         }
-    } else {
-        undo->undo_entries.push_back(std::move(entry));
-        undo->redo_entries.clear();
+        if (numerator >= limit || (fractional && denominator >= limit))
+            return std::unexpected(ErrorCode::ArithmeticOverflow);
+        numerator = numerator * 10 + (*cursor - '0');
+        if (fractional) denominator *= 10;
     }
+    return PositiveRational::from_ratio(numerator, denominator);
 }
 
 bool valid_workflow_region(const Score& score, const ScoreRegion& region) {
@@ -152,7 +166,9 @@ Result<Score> create_score(const ScoreSpec& spec) {
     // Tempo map: one entry at SCORE_START
     TempoEvent tempo;
     tempo.position = SCORE_START;
-    tempo.bpm = make_bpm(static_cast<std::int64_t>(spec.bpm));
+    const auto exact_bpm = exact_decimal_rate(spec.bpm);
+    if (!exact_bpm) return std::unexpected(ErrorCode::InvalidBPM);
+    tempo.bpm = *exact_bpm;
     tempo.beat_unit = BeatUnit::Quarter;
     tempo.transition_type = TempoTransitionType::Immediate;
     tempo.linear_duration = Beat::zero();
@@ -393,6 +409,76 @@ Result<MutationResult> set_section_harmony(Score& score,
 }
 
 // =============================================================================
+// standard_instrument_profile
+// =============================================================================
+
+StandardInstrumentProfile standard_instrument_profile(InstrumentType instrument) {
+    // Letter indices: C=0 D=1 E=2 F=3 G=4 A=5 B=6; accidentals in semitones.
+    constexpr auto p = [](std::uint8_t letter, std::int8_t accidental, std::int8_t octave) {
+        return SpelledPitch{letter, accidental, octave};
+    };
+    const auto listed = [](SpelledPitch low,
+                           SpelledPitch high,
+                           SpelledPitch comfortable_low,
+                           SpelledPitch comfortable_high,
+                           Interval transposition,
+                           Clef clef) {
+        return StandardInstrumentProfile{
+            PitchRange{low, high, comfortable_low, comfortable_high}, transposition, clef, true};
+    };
+
+    // Sounding ranges transcribed from Score IR Appendix A.
+    using enum InstrumentType;
+    switch (instrument) {
+    case Piccolo:
+        return listed(p(1, 0, 5), p(0, 0, 8), p(1, 0, 5), p(5, 0, 7), 12, Clef::Treble);
+    case Flute:
+        return listed(p(0, 0, 4), p(1, 0, 7), p(0, 0, 4), p(0, 0, 7), 0, Clef::Treble);
+    case Oboe:
+        return listed(p(6, -1, 3), p(5, 0, 6), p(0, 0, 4), p(4, 0, 6), 0, Clef::Treble);
+    case EnglishHorn:
+        return listed(p(2, 0, 3), p(0, 0, 6), p(6, 0, 3), p(5, 0, 5), -7, Clef::Treble);
+    case Clarinet:
+        return listed(p(1, 0, 3), p(6, -1, 6), p(2, 0, 3), p(4, 0, 6), -2, Clef::Treble);
+    case BassClarinet:
+        return listed(p(1, -1, 2), p(4, 0, 5), p(2, -1, 3), p(2, 0, 5), -14, Clef::Treble);
+    case Bassoon:
+        return listed(p(6, -1, 1), p(2, -1, 5), p(0, 0, 2), p(0, 0, 5), 0, Clef::Bass);
+    case Contrabassoon:
+        return listed(p(6, -1, 0), p(6, -1, 3), p(0, 0, 1), p(5, 0, 3), -12, Clef::Bass);
+    case FrenchHorn:
+        return listed(p(6, 0, 1), p(3, 0, 5), p(3, 0, 2), p(0, 0, 5), -7, Clef::Treble);
+    case Trumpet:
+        return listed(p(2, 0, 3), p(6, -1, 5), p(4, 0, 3), p(4, 0, 5), -2, Clef::Treble);
+    case Trombone:
+        return listed(p(2, 0, 2), p(6, -1, 4), p(5, 0, 2), p(4, 0, 4), 0, Clef::Bass);
+    case BassTrombone:
+        return listed(p(6, -1, 1), p(4, 0, 4), p(0, 0, 2), p(3, 0, 4), 0, Clef::Bass);
+    case Tuba:
+        return listed(p(1, 0, 1), p(3, 0, 4), p(3, 0, 1), p(1, 0, 4), 0, Clef::Bass);
+    case Timpani:
+        return listed(p(1, 0, 2), p(0, 0, 4), p(1, 0, 2), p(0, 0, 4), 0, Clef::Bass);
+    case Violin:
+        return listed(p(4, 0, 3), p(2, 0, 7), p(4, 0, 3), p(6, 0, 6), 0, Clef::Treble);
+    case Viola:
+        return listed(p(0, 0, 3), p(2, 0, 6), p(0, 0, 3), p(5, 0, 5), 0, Clef::Alto);
+    case Cello:
+        return listed(p(0, 0, 2), p(5, 0, 5), p(0, 0, 2), p(2, 0, 5), 0, Clef::Bass);
+    case DoubleBass:
+        return listed(p(2, 0, 1), p(4, 0, 4), p(2, 0, 2), p(1, 0, 4), -12, Clef::Bass);
+    case Harp:
+        return listed(p(0, -1, 1), p(4, 1, 7), p(0, 0, 1), p(4, 0, 7), 0, Clef::Treble);
+    case Piano:
+        return listed(p(5, 0, 0), p(0, 0, 8), p(5, 0, 0), p(0, 0, 8), 0, Clef::Treble);
+    default:
+        break;
+    }
+    // MIDI notes 0 and 127 are C-1 and G9.
+    const PitchRange unconstrained{p(0, 0, -1), p(4, 0, 9), p(0, 0, -1), p(4, 0, 9)};
+    return StandardInstrumentProfile{unconstrained, 0, Clef::Treble, false};
+}
+
+// =============================================================================
 // default_midi_channel
 // =============================================================================
 
@@ -599,7 +685,7 @@ Result<MutationResult> double_part(Score& score,
                                    const ScoreRegion& region,
                                    PartId source,
                                    PartId target,
-                                   std::int8_t interval,
+                                   DiatonicInterval interval,
                                    UndoStack* undo) {
     ScoreRegion source_region = region;
     source_region.parts = {source};

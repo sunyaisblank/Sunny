@@ -87,6 +87,31 @@ TEST_CASE("undo stack is empty initially", "[score-ir][undo]") {
     CHECK_FALSE(stack.can_redo());
 }
 
+TEST_CASE("undo history keeps only the newest capacity snapshots", "[score-ir][undo][regression]") {
+    // Five pitch changes C4 -> D4 -> E4 -> F4 -> G4 -> A4 with capacity 3 keep
+    // the snapshots taken before the last three: E4, F4 and G4. Three undos
+    // therefore return to E4 and a fourth has nothing left to restore.
+    auto score = make_valid_score(1);
+    UndoStack stack;
+    stack.capacity = 3;
+    auto& voice = score.parts[0].measures[0].voices[0];
+    NoteGroup group;
+    group.notes.push_back(Note{SpelledPitch{0, 0, 4}, VelocityValue{{}, 80}});
+    group.duration = Beat{1, 1};
+    voice.events[0].payload = group;
+    const EventId target = voice.events[0].id;
+
+    for (std::uint8_t letter = 1; letter <= 5; ++letter)
+        REQUIRE(modify_pitch(score, target, 0, SpelledPitch{letter, 0, 4}, &stack));
+    CHECK(stack.undo_entries.size() == 3);
+
+    for (int step = 0; step < 3; ++step)
+        REQUIRE(undo(score, stack));
+    CHECK(score.parts[0].measures[0].voices[0].events[0].as_note_group()->notes[0].pitch ==
+          SpelledPitch{2, 0, 4});
+    CHECK_FALSE(undo(score, stack).has_value());
+}
+
 TEST_CASE("undo on empty stack fails", "[score-ir][undo]") {
     auto score = make_valid_score(1);
     UndoStack stack;

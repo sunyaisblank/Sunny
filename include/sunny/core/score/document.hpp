@@ -400,6 +400,27 @@ struct PartDefinition {
     std::optional<std::string> custom_descriptor; ///< For electronic/custom types
 };
 
+/**
+ * @brief Conventional spelling of a semitone displacement as a diatonic interval
+ *
+ * Each semitone count maps to the perfect, major or minor interval of that
+ * size (octave = 7 letter steps); the tritone is spelled as an augmented
+ * fourth. Transposing instruments and semitone-only interfaces use this
+ * spelling so that letter names advance with the interval.
+ */
+[[nodiscard]] constexpr DiatonicInterval conventional_diatonic_interval(int semitones) noexcept {
+    constexpr std::array<int, 12> letter_steps{0, 1, 1, 2, 2, 3, 3, 4, 5, 5, 6, 6};
+    const int magnitude = semitones < 0 ? -semitones : semitones;
+    const int steps = 7 * (magnitude / 12) + letter_steps[static_cast<std::size_t>(magnitude % 12)];
+    return DiatonicInterval{semitones, semitones < 0 ? -steps : steps};
+}
+
+/// Interval from a Part's written pitch to its sounding (concert) pitch.
+[[nodiscard]] constexpr DiatonicInterval
+written_to_sounding_interval(const PartDefinition& definition) noexcept {
+    return conventional_diatonic_interval(definition.transposition);
+}
+
 // =============================================================================
 // Tuplet Context (SS-IR §4.9)
 // =============================================================================

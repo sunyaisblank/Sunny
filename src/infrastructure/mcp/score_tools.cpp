@@ -64,6 +64,17 @@ std::optional<ScoreTime> score_time_from_json(const json& j) {
         bar, Beat{detail::checked_integer<int>(j["beat_n"], "beat numerator"), denominator}};
 }
 
+/// Which end of a score's history a history tool moves.
+enum class HistoryDirection : std::uint8_t { Undo, Redo };
+
+/// Upper bound of instrument_type accepted at the MCP boundary. It exceeds the
+/// last enumerator (Custom) because existing clients and tests send values up
+/// to 80; unlisted values fall back to an unconstrained standard profile.
+constexpr int MAX_INSTRUMENT_TYPE = 80;
+
+/// MCP regions name whole bars with an inclusive end_bar, matching
+/// score_set_formal_plan: {start_bar 1, end_bar 1} is bar 1 alone. The core
+/// ScoreRegion is half-open, so it ends at the downbeat after end_bar.
 std::optional<ScoreRegion> region_from_json(const json& j) {
     if (!j.is_object() || !j.contains("start_bar") || !j.contains("end_bar") ||
         !j["start_bar"].is_number_integer() || !j["end_bar"].is_number_integer())
@@ -71,11 +82,13 @@ std::optional<ScoreRegion> region_from_json(const json& j) {
     const auto start_bar =
         detail::checked_integer<std::uint32_t>(j["start_bar"], "region start bar");
     const auto end_bar = detail::checked_integer<std::uint32_t>(j["end_bar"], "region end bar");
-    if (start_bar == 0 || end_bar == 0 || end_bar < start_bar) return std::nullopt;
+    if (start_bar == 0 || end_bar < start_bar ||
+        end_bar == std::numeric_limits<std::uint32_t>::max())
+        return std::nullopt;
 
     ScoreRegion r;
     r.start = {start_bar, Beat::zero()};
-    r.end = {end_bar, Beat::zero()};
+    r.end = {end_bar + 1, Beat::zero()};
     if (j.contains("parts")) {
         if (!j["parts"].is_array()) return std::nullopt;
         for (const auto& p : j["parts"])
@@ -297,6 +310,20 @@ json mutation_result_j(const MutationResult& mr) {
     return j;
 }
 
+/// Complete a PartDefinition that MCP creates for the caller: Appendix A range
+/// and transposition, the tabulated clef unless the caller chose one, and the
+/// first free MIDI channel.
+void apply_standard_part_defaults(PartDefinition& definition,
+                                  bool clef_supplied,
+                                  const std::vector<std::uint8_t>& channels_in_use) {
+    const auto profile = standard_instrument_profile(definition.instrument_type);
+    definition.range = profile.range;
+    definition.transposition = profile.transposition;
+    if (!clef_supplied) definition.clef = profile.clef;
+    definition.rendering.midi_channel =
+        default_midi_channel(definition.instrument_type, channels_in_use);
+}
+
 Result<ScoreTuning> parse_score_tuning(const json& value) {
     if (!value.is_object() || value.size() != 4 || !value.contains("name") ||
         !value["name"].is_string() || !value.contains("reference_midi_note") ||
@@ -332,10 +359,12 @@ void register_score_tools(McpServer& server,
 
     server.register_tool(
         "score_create",
-        "Create a new score from a specification",
+        "Create a new score from a specification; each part takes its range, transposition "
+        "and default clef from the Score IR standard instrument library and a distinct MIDI "
+        "channel",
         {{"title", "string (optional, default Untitled)"},
          {"total_bars", "integer (optional, default 16)"},
-         {"bpm", "number (optional, default 120)"},
+         {"bpm", "number (optional, default 120; stored as the exact decimal)"},
          {"key_root", "object {letter, accidental, octave} (optional, default C4)"},
          {"minor", "boolean (optional)"},
          {"key_accidentals", "integer (optional)"},
@@ -385,7 +414,8 @@ void register_score_tools(McpServer& server,
                     PartDefinition pd;
                     pd.name = pj["name"].get<std::string>();
                     pd.abbreviation = pj.value("abbreviation", "Pt.");
-                    auto it = checked_enum<InstrumentType>(pj["instrument_type"], 80);
+                    auto it =
+                        checked_enum<InstrumentType>(pj["instrument_type"], MAX_INSTRUMENT_TYPE);
                     if (!it) return error_response("invalid instrument_type");
                     pd.instrument_type = *it;
                     if (pj.contains("clef")) {
@@ -393,8 +423,7 @@ void register_score_tools(McpServer& server,
                         if (!cl) return error_response("invalid clef");
                         pd.clef = *cl;
                     }
-                    pd.rendering.midi_channel =
-                        default_midi_channel(pd.instrument_type, channels_in_use);
+                    apply_standard_part_defaults(pd, pj.contains("clef"), channels_in_use);
                     channels_in_use.push_back(pd.rendering.midi_channel);
                     spec.parts.push_back(std::move(pd));
                 }
@@ -468,7 +497,8 @@ void register_score_tools(McpServer& server,
         "score_set_formal_plan",
         "Replace the section map with a formal plan",
         {{"score_id", "integer"},
-         {"sections", "array of {label, start_bar, end_bar, function (integer, optional)}"}},
+         {"sections",
+          "array of {label, start_bar, end_bar (inclusive), function (integer, optional)}"}},
         [session](const json& params) -> json {
             json err;
             auto* score = lookup_score(session, params, err);
@@ -505,12 +535,13 @@ void register_score_tools(McpServer& server,
 
     server.register_tool(
         "score_add_part",
-        "Add a new part to the score",
+        "Add a new part to the score; range, transposition and default clef follow the Score "
+        "IR standard instrument library, and the part receives the first free MIDI channel",
         {{"score_id", "integer"},
          {"name", "string"},
          {"abbreviation", "string (optional)"},
-         {"instrument_type", "integer (optional)"},
-         {"clef", "integer (optional)"}},
+         {"instrument_type", "integer (optional, default 47 = piano)"},
+         {"clef", "integer (optional, default from the instrument)"}},
         [session](const json& params) -> json {
             json err;
             auto* score = lookup_score(session, params, err);
@@ -521,7 +552,8 @@ void register_score_tools(McpServer& server,
             pd.name = params.value("name", "Part");
             pd.abbreviation = params.value("abbreviation", pd.name);
             if (params.contains("instrument_type")) {
-                auto it = checked_enum<InstrumentType>(params["instrument_type"], 80);
+                auto it =
+                    checked_enum<InstrumentType>(params["instrument_type"], MAX_INSTRUMENT_TYPE);
                 if (!it) return error_response("invalid instrument_type");
                 pd.instrument_type = *it;
             } else {
@@ -535,7 +567,7 @@ void register_score_tools(McpServer& server,
             std::vector<std::uint8_t> channels_in_use;
             for (const auto& part : score->parts)
                 channels_in_use.push_back(part.definition.rendering.midi_channel);
-            pd.rendering.midi_channel = default_midi_channel(pd.instrument_type, channels_in_use);
+            apply_standard_part_defaults(pd, params.contains("clef"), channels_in_use);
 
             auto result = add_part(*score, std::move(pd), session->undo_for(sid));
             if (!result) return error_response("add_part failed");
@@ -550,7 +582,7 @@ void register_score_tools(McpServer& server,
         "score_set_section_harmony",
         "Write harmonic annotations (chord progression) into a region",
         {{"score_id", "integer"},
-         {"region", "object {start_bar, end_bar, parts (optional array of integer)}"},
+         {"region", "object {start_bar, end_bar (inclusive), parts (optional array of integer)}"},
          {"chords",
           "array of {position: {bar, beat_n, beat_d}, root: {letter, accidental, octave}, quality: "
           "string, bass: {letter, accidental, octave} (optional)}"}},
@@ -708,7 +740,7 @@ void register_score_tools(McpServer& server,
         "score_reorchestrate",
         "Copy note events from source to target part within a region",
         {{"score_id", "integer"},
-         {"region", "object {start_bar, end_bar, parts (optional)}"},
+         {"region", "object {start_bar, end_bar (inclusive), parts (optional)}"},
          {"source_part", "integer"},
          {"target_part", "integer"}},
         [session](const json& params) -> json {
@@ -735,12 +767,16 @@ void register_score_tools(McpServer& server,
 
     server.register_tool(
         "score_double_part",
-        "Double a part at a semitone interval into another part",
+        "Double a part into another part at an interval; each copy is spelled by advancing "
+        "the letter name by the diatonic step count",
         {{"score_id", "integer"},
-         {"region", "object {start_bar, end_bar, parts (optional)}"},
+         {"region", "object {start_bar, end_bar (inclusive), parts (optional)}"},
          {"source_part", "integer"},
          {"target_part", "integer"},
-         {"interval", "integer (semitones)"}},
+         {"interval", "integer (semitones)"},
+         {"diatonic",
+          "integer (optional letter steps, octave = 7; default is the perfect, major or minor "
+          "interval of that size, with the tritone as an augmented fourth)"}},
         [session](const json& params) -> json {
             json err;
             auto* score = lookup_score(session, params, err);
@@ -757,8 +793,12 @@ void register_score_tools(McpServer& server,
                 detail::checked_integer<std::uint64_t>(params["source_part"], "source part id")};
             PartId target{
                 detail::checked_integer<std::uint64_t>(params["target_part"], "target part id")};
-            auto interval =
-                detail::checked_integer_or<std::int8_t>(params, "interval", 0, "doubling interval");
+            const auto semitones =
+                detail::checked_integer_or<int>(params, "interval", 0, "doubling interval");
+            auto interval = conventional_diatonic_interval(semitones);
+            if (params.contains("diatonic"))
+                interval.diatonic =
+                    detail::checked_integer<int>(params["diatonic"], "doubling letter steps");
 
             auto result =
                 double_part(*score, *region, source, target, interval, session->undo_for(sid));
@@ -770,7 +810,7 @@ void register_score_tools(McpServer& server,
         "score_set_dynamics",
         "Set the dynamic level for all note events in a region",
         {{"score_id", "integer"},
-         {"region", "object {start_bar, end_bar, parts (optional)}"},
+         {"region", "object {start_bar, end_bar (inclusive), parts (optional)}"},
          {"level", "integer (DynamicLevel enum: 0=pppp..9=ffff, 10=fp, 11=sfz, 12=sfp, 13=rfz)"}},
         [session](const json& params) -> json {
             json err;
@@ -795,7 +835,7 @@ void register_score_tools(McpServer& server,
         "score_set_articulation",
         "Set the articulation for all notes in a region",
         {{"score_id", "integer"},
-         {"region", "object {start_bar, end_bar, parts (optional)}"},
+         {"region", "object {start_bar, end_bar (inclusive), parts (optional)}"},
          {"articulation", "integer (ArticulationType enum: 0=Staccato, 1=Staccatissimo,...)"}},
         [session](const json& params) -> json {
             json err;
@@ -1110,7 +1150,8 @@ void register_score_tools(McpServer& server,
         "Transpose a single event or an entire region by a diatonic interval",
         {{"score_id", "integer"},
          {"event_id", "integer (provide this OR region, not both)"},
-         {"region", "object {start_bar, end_bar, parts (optional)} (provide this OR event_id)"},
+         {"region",
+          "object {start_bar, end_bar (inclusive), parts (optional)} (provide this OR event_id)"},
          {"interval", "object {chromatic, diatonic}"}},
         [session](const json& params) -> json {
             json err;
@@ -1140,55 +1181,102 @@ void register_score_tools(McpServer& server,
         });
 
     // =========================================================================
+    // History Tools (SS-IR §11.7)
+    // =========================================================================
+
+    // Every mutating tool records its pre-mutation document in the score's
+    // bounded UndoStack; these tools make that history reachable.
+    const auto history_step = [session](const json& params, HistoryDirection direction) -> json {
+        const bool forward = direction == HistoryDirection::Redo;
+        json err;
+        auto* score = lookup_score(session, params, err);
+        if (!score) return err;
+        const auto sid = detail::checked_integer<std::uint64_t>(params["score_id"], "score id");
+        auto& stack = *session->undo_for(sid);
+        if (forward ? !stack.can_redo() : !stack.can_undo())
+            return error_response(forward ? "nothing to redo" : "nothing to undo");
+        const auto stepped = forward ? redo(*score, stack) : undo(*score, stack);
+        if (!stepped) {
+            if (stepped.error() == ErrorCode::ArithmeticOverflow)
+                return error_response("score version domain exhausted");
+            return error_response(forward ? "redo failed" : "undo failed");
+        }
+        return {{"ok", true},
+                {"version", score->version},
+                {"can_undo", stack.can_undo()},
+                {"can_redo", stack.can_redo()}};
+    };
+
+    server.register_tool(
+        "score_undo",
+        "Restore the document state before the most recent score mutation; history keeps the "
+        "newest 64 mutations per score",
+        {{"score_id", "integer"}},
+        [history_step](const json& params) -> json {
+            return history_step(params, HistoryDirection::Undo);
+        });
+
+    server.register_tool(
+        "score_redo",
+        "Reapply the most recently undone score mutation; any new mutation clears redo history",
+        {{"score_id", "integer"}},
+        [history_step](const json& params) -> json {
+            return history_step(params, HistoryDirection::Redo);
+        });
+
+    // =========================================================================
     // Analysis Tools (read-only)
     // =========================================================================
 
-    server.register_tool(
-        "score_analyze_harmony",
-        "Analyse harmonic content within a region of the score",
-        {{"score_id", "integer"}, {"region", "object {start_bar, end_bar, parts (optional)}"}},
-        [session](const json& params) -> json {
-            json err;
-            auto* score = lookup_score(session, params, err);
-            if (!score) return err;
+    server.register_tool("score_analyze_harmony",
+                         "Analyse harmonic content within a region of the score",
+                         {{"score_id", "integer"},
+                          {"region", "object {start_bar, end_bar (inclusive), parts (optional)}"}},
+                         [session](const json& params) -> json {
+                             json err;
+                             auto* score = lookup_score(session, params, err);
+                             if (!score) return err;
 
-            if (!params.contains("region")) return error_response("region is required");
-            auto region = region_from_json(params["region"]);
-            if (!region) return error_response("invalid region");
+                             if (!params.contains("region"))
+                                 return error_response("region is required");
+                             auto region = region_from_json(params["region"]);
+                             if (!region) return error_response("invalid region");
 
-            auto annotations = analyze_harmony(*score, *region);
-            json result = json::array();
-            for (const auto& a : annotations)
-                result.push_back(harmonic_annotation_j(a));
-            return {{"annotations", result}};
-        });
+                             auto annotations = analyze_harmony(*score, *region);
+                             json result = json::array();
+                             for (const auto& a : annotations)
+                                 result.push_back(harmonic_annotation_j(a));
+                             return {{"annotations", result}};
+                         });
 
-    server.register_tool(
-        "score_get_orchestration",
-        "Retrieve orchestration annotations (part-role pairs) for a region",
-        {{"score_id", "integer"}, {"region", "object {start_bar, end_bar, parts (optional)}"}},
-        [session](const json& params) -> json {
-            json err;
-            auto* score = lookup_score(session, params, err);
-            if (!score) return err;
+    server.register_tool("score_get_orchestration",
+                         "Retrieve orchestration annotations (part-role pairs) for a region",
+                         {{"score_id", "integer"},
+                          {"region", "object {start_bar, end_bar (inclusive), parts (optional)}"}},
+                         [session](const json& params) -> json {
+                             json err;
+                             auto* score = lookup_score(session, params, err);
+                             if (!score) return err;
 
-            if (!params.contains("region")) return error_response("region is required");
-            auto region = region_from_json(params["region"]);
-            if (!region) return error_response("invalid region");
+                             if (!params.contains("region"))
+                                 return error_response("region is required");
+                             auto region = region_from_json(params["region"]);
+                             if (!region) return error_response("invalid region");
 
-            auto orch = get_orchestration(*score, *region);
-            json result = json::array();
-            for (const auto& [pid, role] : orch)
-                result.push_back({{"part_id", pid.value}, {"role", static_cast<int>(role)}});
-            return {{"orchestration", result}};
-        });
+                             auto orch = get_orchestration(*score, *region);
+                             json result = json::array();
+                             for (const auto& [pid, role] : orch)
+                                 result.push_back(
+                                     {{"part_id", pid.value}, {"role", static_cast<int>(role)}});
+                             return {{"orchestration", result}};
+                         });
 
     server.register_tool(
         "score_get_reduction",
         "Produce a reduced view of the score (piano, short, skeleton)",
         {{"score_id", "integer"},
          {"view_type", "string (piano|short|skeleton; optional, default piano)"},
-         {"region", "object {start_bar, end_bar, parts (optional)} (optional)"}},
+         {"region", "object {start_bar, end_bar (inclusive), parts (optional)} (optional)"}},
         [session](const json& params) -> json {
             json err;
             auto* score = lookup_score(session, params, err);
@@ -1506,7 +1594,7 @@ void register_score_tools(McpServer& server,
                          "Find occurrences of a pitch-class motif pattern within a region",
                          {{"score_id", "integer"},
                           {"pattern", "array of integer (pitch classes 0-11)"},
-                          {"region", "object {start_bar, end_bar, parts (optional)}"}},
+                          {"region", "object {start_bar, end_bar (inclusive), parts (optional)}"}},
                          [session](const json& params) -> json {
                              json err;
                              auto* score = lookup_score(session, params, err);

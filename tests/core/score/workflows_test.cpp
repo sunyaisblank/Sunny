@@ -13,6 +13,7 @@
 #include <sunny/core/score/validation.hpp>
 #include <sunny/core/score/views.hpp>
 #include <sunny/core/score/workflows.hpp>
+#include <tuple>
 
 using namespace sunny::core;
 
@@ -54,6 +55,51 @@ TEST_CASE("create_score produces valid score", "[score-ir][workflow]") {
         if (d.severity == ValidationSeverity::Error) has_error = true;
     }
     CHECK_FALSE(has_error);
+}
+
+TEST_CASE("create_score stores a decimal tempo as its exact rational",
+          "[score-ir][workflow][tempo][regression]") {
+    // 92.5 = 185/2 and 60.25 = 241/4; the tempo map stores fractions, so the
+    // decimal a caller supplied must survive without truncation.
+    for (const auto& [bpm, numerator, denominator] :
+         {std::tuple{92.5, 185, 2}, std::tuple{60.25, 241, 4}, std::tuple{120.0, 120, 1}}) {
+        CAPTURE(bpm);
+        ScoreSpec spec;
+        spec.title = "Tempo";
+        spec.total_bars = 1;
+        spec.bpm = bpm;
+        spec.key_root = SpelledPitch{0, 0, 4};
+        PartDefinition part;
+        part.name = "P";
+        part.instrument_type = InstrumentType::Piano;
+        spec.parts.push_back(part);
+        auto score = create_score(spec);
+        REQUIRE(score.has_value());
+        REQUIRE(score->tempo_map.size() == 1);
+        CHECK(score->tempo_map[0].bpm == PositiveRational{numerator, denominator});
+    }
+}
+
+TEST_CASE("standard instrument profiles follow Score IR Appendix A",
+          "[score-ir][workflow][instrument][regression]") {
+    // Sounding ranges and written-to-sounding transpositions from Appendix A.
+    const auto piano = standard_instrument_profile(InstrumentType::Piano);
+    CHECK(piano.range.absolute_low == SpelledPitch{5, 0, 0});
+    CHECK(piano.range.absolute_high == SpelledPitch{0, 0, 8});
+    CHECK(piano.transposition == 0);
+
+    const auto horn = standard_instrument_profile(InstrumentType::FrenchHorn);
+    CHECK(horn.range.absolute_low == SpelledPitch{6, 0, 1});
+    CHECK(horn.range.absolute_high == SpelledPitch{3, 0, 5});
+    CHECK(horn.transposition == -7);
+
+    const auto bass = standard_instrument_profile(InstrumentType::DoubleBass);
+    CHECK(bass.range.absolute_low == SpelledPitch{2, 0, 1});
+    CHECK(bass.transposition == -12);
+    CHECK(bass.clef == Clef::Bass);
+
+    const auto viola = standard_instrument_profile(InstrumentType::Viola);
+    CHECK(viola.clef == Clef::Alto);
 }
 
 TEST_CASE("create_score with 3 parts creates 3 parts with correct bar count",

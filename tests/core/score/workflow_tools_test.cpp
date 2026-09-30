@@ -334,16 +334,15 @@ TEST_CASE("double_part transposes by interval", "[score-ir][workflow]") {
     REQUIRE(ins.has_value());
 
     ScoreRegion region = whole_score_region(score);
-    // 7 semitones = perfect fifth
-    auto result = double_part(score, region, part0, part1, 7);
+    auto result = double_part(score, region, part0, part1, PERFECT_FIFTH);
     REQUIRE(result.has_value());
 
-    // Part 1 should have a note at G4 (C4 + 7 semitones = MIDI 67 = G4)
+    // C4 up a perfect fifth (seven semitones, four letter steps) is G4.
     const auto* doubled = find_first_note_event(score.parts[1].measures[0].voices[0]);
     REQUIRE(doubled != nullptr);
     const auto* ng = doubled->as_note_group();
     REQUIRE(ng != nullptr);
-    CHECK(midi_value(ng->notes[0].pitch) == midi_value(G4));
+    CHECK(ng->notes[0].pitch == G4);
 }
 
 // =============================================================================

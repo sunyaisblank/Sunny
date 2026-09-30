@@ -69,10 +69,19 @@ struct UndoEntry {
  * Maintains undo and redo stacks of document snapshots. Each mutation
  * pushes its pre-mutation state. Undo saves the live document onto the
  * redo stack and restores the popped snapshot; redo mirrors this.
+ *
+ * Invariant: undo_entries.size() <= capacity. Every entry is a full Score
+ * copy, so recording beyond the capacity discards the oldest snapshot rather
+ * than growing without bound. Redo entries are created only by undo, so they
+ * never outnumber the capacity either.
  */
 struct UndoStack {
+    /// Default number of retained undo snapshots.
+    static constexpr std::size_t DEFAULT_CAPACITY = 64;
+
     std::vector<UndoEntry> undo_entries;
     std::vector<UndoEntry> redo_entries;
+    std::size_t capacity = DEFAULT_CAPACITY; ///< Zero disables history
 
     std::uint32_t group_depth = 0;
     bool group_has_snapshot = false;
@@ -80,6 +89,15 @@ struct UndoStack {
 
     [[nodiscard]] bool can_undo() const noexcept { return !undo_entries.empty(); }
     [[nodiscard]] bool can_redo() const noexcept { return !redo_entries.empty(); }
+
+    /**
+     * @brief Record the document state captured before one mutation
+     *
+     * Clears redo history. Inside a group only the group's first snapshot is
+     * kept, labelled with the group description, because it covers the whole
+     * group. Postcondition: the capacity invariant holds.
+     */
+    void record(Score before, std::string description);
 
     void begin_group(std::string description);
     void end_group() noexcept;
@@ -482,14 +500,17 @@ diminute_region(Score& score, const ScoreRegion& region, Beat factor, UndoStack*
 reorchestrate(Score& score, const ScoreRegion& region, PartId target, UndoStack* undo = nullptr);
 
 /**
- * @brief Copy notes from a region to a target part, transposing by semitone interval
+ * @brief Copy notes from a region to a target part, transposing by a diatonic interval
  *
- * Voice-scoped slur/glissando metadata is removed with a MUT1 warning.
+ * Each copy is spelled apply_interval(source, interval), so D4 up a perfect
+ * fifth is A4 rather than a D with seven sharps. A result outside the
+ * SpelledPitch domain rejects the mutation. Voice-scoped slur/glissando
+ * metadata is removed with a MUT1 warning.
  */
 [[nodiscard]] Result<MutationResult> double_at_interval(Score& score,
                                                         const ScoreRegion& region,
                                                         PartId target,
-                                                        std::int8_t interval,
+                                                        DiatonicInterval interval,
                                                         UndoStack* undo = nullptr);
 
 /**

@@ -155,6 +155,35 @@ struct HarmonyEntry {
 };
 
 // =============================================================================
+// Standard instrument library (Score IR Appendix A)
+// =============================================================================
+
+/**
+ * @brief Reference definition of an instrument from Score IR Appendix A
+ *
+ * `range` is in sounding pitch, because Score notes store concert pitch and
+ * range validation compares them directly. `transposition` is the
+ * written-to-sounding displacement in semitones.
+ */
+struct StandardInstrumentProfile {
+    PitchRange range;
+    Interval transposition = 0;
+    Clef clef = Clef::Treble;
+    bool listed = false; ///< False when Appendix A has no entry for the instrument
+};
+
+/**
+ * @brief Appendix A profile of an instrument
+ *
+ * Postcondition: an instrument listed in Appendix A receives its tabulated
+ * absolute and comfortable ranges, transposition and clef. An unlisted
+ * instrument receives the full MIDI note range (C-1..G9), no transposition and
+ * the treble clef, with `listed == false`; the range then constrains nothing
+ * rather than inventing a limit the specification does not state.
+ */
+[[nodiscard]] StandardInstrumentProfile standard_instrument_profile(InstrumentType instrument);
+
+// =============================================================================
 // Default rendering channels
 // =============================================================================
 
@@ -250,13 +279,16 @@ add_part(Score& score, PartDefinition definition, UndoStack* undo = nullptr);
                                                    UndoStack* undo = nullptr);
 
 /**
- * @brief Double a part at a semitone interval into another part
+ * @brief Double a part at a diatonic interval into another part
+ *
+ * Each doubled pitch is apply_interval(source, interval): the letter advances
+ * by interval.diatonic steps and the accidental absorbs the chromatic rest.
  *
  * @param score Target score (modified in place)
  * @param region Time region for the operation
  * @param source Source part
  * @param target Target part
- * @param interval Semitone transposition interval
+ * @param interval Diatonic transposition interval (octave = 7 steps)
  * @param undo Optional undo stack
  * @return MutationResult or error
  */
@@ -264,7 +296,7 @@ add_part(Score& score, PartDefinition definition, UndoStack* undo = nullptr);
                                                  const ScoreRegion& region,
                                                  PartId source,
                                                  PartId target,
-                                                 std::int8_t interval,
+                                                 DiatonicInterval interval,
                                                  UndoStack* undo = nullptr);
 
 /**
