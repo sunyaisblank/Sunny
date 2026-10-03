@@ -14,11 +14,16 @@ RUN apt-get update && \
 
 WORKDIR /build
 
-COPY CMakeLists.txt CMakePresets.json ./
+COPY CMakeLists.txt CMakePresets.json pyproject.toml ./
 COPY apps ./apps
 COPY cmake ./cmake
 COPY include ./include
 COPY src ./src
+# Configure-time inputs: the bridge contract generates the protocol header,
+# and the version gate compares the Python and Max package metadata.
+COPY remote_script/Sunny/bridge_contract.json ./remote_script/Sunny/bridge_contract.json
+COPY python/sunny/__init__.py ./python/sunny/__init__.py
+COPY max-package/CMakeLists.txt max-package/package-info.json ./max-package/
 
 # Lean server build: no tests, no Python bindings
 RUN cmake -B .bin -G Ninja \

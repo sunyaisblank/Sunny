@@ -33,11 +33,9 @@ docs/
 # Claude
 .claude/
 
-# Ableton Remote Script (not needed in container)
-remote_script/
-
-# Python facade and typing support (native server image only)
-python/
+# Typing support (native server image only). The Remote Script, Python
+# package metadata and Max package metadata stay: CMake reads the bridge
+# contract and every version authority at configure time.
 stubs/
 
 # Local build and analysis output
