@@ -3,7 +3,6 @@
  * @brief Fixed-capacity tick-to-sample-offset event scheduler
  */
 
-#include <cmath>
 #include <limits>
 #include <sunny/render/block_event_scheduler.hpp>
 #include <type_traits>
@@ -102,28 +101,14 @@ BlockEventScheduler::process_block(const SignalBlockContext& context,
     }
 
     std::size_t due = 0;
-    // Keep the integer epoch separate: adding fractions to a large absolute tick loses them.
-    while (due < event_count_ &&
-           (events_[due].scheduled.tick < plan->tick_after ||
-            (events_[due].scheduled.tick == plan->tick_after && plan->fractional_after > 0.0L)))
+    while (due < event_count_ && plan->contains(events_[due].scheduled.tick))
         ++due;
     if (due > output.size()) return std::unexpected(sunny::core::ErrorCode::RenderEventBufferFull);
 
     std::array<SampleOffsetEvent, BLOCK_EVENT_QUEUE_CAPACITY> planned{};
-    for (std::size_t index = 0; index < due; ++index) {
-        const long double relative_tick =
-            static_cast<long double>(events_[index].scheduled.tick - plan->tick_before) -
-            clock_.fractional_tick_;
-        std::size_t offset = 0;
-        if (relative_tick > 0.0L) {
-            const long double candidate = std::floor(relative_tick / plan->ticks_per_sample);
-            if (!std::isfinite(candidate) || candidate < 0.0L ||
-                candidate >= static_cast<long double>(*frames))
-                return std::unexpected(sunny::core::ErrorCode::ArithmeticOverflow);
-            offset = static_cast<std::size_t>(candidate);
-        }
-        planned[index] = SampleOffsetEvent{offset, events_[index].scheduled};
-    }
+    for (std::size_t index = 0; index < due; ++index)
+        planned[index] = SampleOffsetEvent{plan->sample_offset(events_[index].scheduled.tick),
+                                           events_[index].scheduled};
 
     for (std::size_t index = 0; index < due; ++index)
         output[index] = planned[index];

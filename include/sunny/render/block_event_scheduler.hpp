@@ -34,7 +34,10 @@ struct BlockEventAdvance {
  * Scheduled events are retained in tick/note-off/insertion order. A running block assigns every
  * event in its half-open exact local tick interval to the containing sample. Events at or behind
  * the retained start map to offset zero; an event exactly at the post-vector endpoint remains for
- * the next non-empty block. All operations on one instance require one exclusive owner.
+ * the next non-empty block. When tempo x PPQ and sample rate x 60 are integers the interval is
+ * computed in integer arithmetic, so an event on sample boundary k is assigned to sample k;
+ * otherwise placement is exact to within BLOCK_SAMPLE_SNAP_TOLERANCE. All operations on one
+ * instance require one exclusive owner.
  */
 class BlockEventScheduler {
   public:

@@ -7,6 +7,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <sunny/core/types/beat.hpp>
 #include <sunny/core/types/music_types.hpp>
@@ -18,6 +19,15 @@ class BlockEventScheduler;
 
 /// Pulses per quarter note used by the default clock.
 constexpr std::int64_t DEFAULT_PPQ = 480;
+
+/**
+ * Tolerance, in samples, of the inexact block arithmetic. When tempo x PPQ or sample rate x 60
+ * is not an integer the tick rate has no exact rational form with a small denominator, so tick
+ * positions are carried in floating point; a position within this distance below a sample
+ * boundary is snapped to the boundary (2^-20 samples is about 22 ps at 44.1 kHz). Integral rates
+ * never use it.
+ */
+inline constexpr long double BLOCK_SAMPLE_SNAP_TOLERANCE = 0x1p-20L;
 
 /// Transport/clock state.
 enum class TransportState { Stopped, Playing, Paused, Recording };
@@ -113,12 +123,37 @@ class BlockClock {
   private:
     friend class BlockEventScheduler;
 
+    /**
+     * Integral rate: tempo x PPQ ticks and sample rate x 60 samples per minute, both integers no
+     * larger than 2^40. The sub-tick start position is start_remainder / samples_per_minute ticks,
+     * with 0 <= start_remainder < samples_per_minute, so every boundary is exact.
+     */
+    struct ExactTickRate {
+        std::int64_t ticks_per_minute;
+        std::int64_t samples_per_minute;
+        std::int64_t start_remainder;
+    };
+
     struct PlannedBlockAdvance {
         std::int64_t tick_before;
         std::int64_t tick_after;
+        long double fractional_before;
         long double fractional_after;
         long double ticks_per_sample;
+        std::size_t sample_count;
+        std::optional<ExactTickRate> exact; ///< Absent for a non-integral rate or a stopped clock.
         bool running;
+
+        /// True when `tick` lies in the half-open interval this block spans.
+        [[nodiscard]] bool contains(std::int64_t tick) const noexcept {
+            return tick < tick_after || (tick == tick_after && fractional_after > 0.0L);
+        }
+
+        /**
+         * Zero-based offset of the sample containing `tick`, which `contains` admitted. A tick at
+         * or behind the block start maps to zero.
+         */
+        [[nodiscard]] std::size_t sample_offset(std::int64_t tick) const noexcept;
     };
 
     TransportState state_{TransportState::Stopped};
