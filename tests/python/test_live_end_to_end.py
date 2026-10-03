@@ -225,8 +225,22 @@ def test_score_compiles_to_exact_live_notes_with_a_tie_and_a_triplet(bridge):
     tied = client.call("score_set_tie", score_id=score_id, event_id=tie_source, tied=True)
     assert tied.get("ok") is True, tied
 
-    compiled = client.call("score_compile_to_ableton", score_id=score_id)
-    assert compiled.get("success") is True, compiled
+    # The guarded project tools are the one path that writes to Live.
+    profile_ids = [
+        client.call("create_timbre_profile", part_id=part_id, name=name)["profile_id"]
+        for part_id, name in ((chords, "Chords"), (melody, "Melody"))
+    ]
+    mix = client.call("create_mix_graph", part_ids=[chords, melody])
+    project = {
+        "score_id": score_id,
+        "timbre_profile_ids": profile_ids,
+        "mix_graph_id": mix["graph_id"],
+    }
+    plan = client.call("project_plan_to_ableton", **project)
+    assert plan.get("success") is True, plan
+    applied = client.call("project_apply_ableton_plan", plan_id=plan["plan_id"])
+    assert applied.get("success") is True, applied
+    assert applied["deployment"]["status"] == "completed"
 
     song = live.song
     assert song.tempo == 96.0
