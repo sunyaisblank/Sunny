@@ -282,6 +282,11 @@ def test_project_plan_applies_score_timbre_and_mix_with_a_completed_journal(brid
     existing = live.song.create_midi_track(-1)
     existing.name = "User Track"
     existing.insert_device("Operator")
+    # Mixer state the project must not touch once its Part track shifts the
+    # user's track to a new index.
+    existing.mixer_device.volume.display_value = -18.0
+    existing.mixer_device.panning.value = -0.5
+    existing.mute = True
 
     score = client.call(
         "score_create",
@@ -368,6 +373,9 @@ def test_project_plan_applies_score_timbre_and_mix_with_a_completed_journal(brid
         "Operator"
     ]
     assert user.clip_slots[0].has_clip is False
+    assert user.mixer_device.volume.display_value == -18.0
+    assert user.mixer_device.panning.value == -0.5
+    assert user.mute is True
 
 
 def test_progression_clip_and_session_state_reach_live(bridge):
