@@ -51,8 +51,7 @@ TEST_CASE("Vallotti C deviation is zero", "[tuning][temperament][core]") {
 
 namespace {
 
-constexpr int C = 0, Cs = 1, D = 2, Eb = 3, E = 4, F = 5, Fs = 6, G = 7, Gs = 8, A = 9, Bb = 10,
-              B = 11;
+constexpr int C = 0, Cs = 1, D = 2, Eb = 3, E = 4, F = 5, G = 7, Gs = 8, A = 9, Bb = 10, B = 11;
 
 double pure_fifth() {
     return 1200.0 * std::log2(3.0 / 2.0);
