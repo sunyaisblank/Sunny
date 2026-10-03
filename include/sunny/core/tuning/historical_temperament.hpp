@@ -104,45 +104,45 @@ inline constexpr TuningTable TUNING_PYTHAGOREAN =
 /// Quarter-comma meantone: eleven fifths narrowed by a quarter syntonic comma
 /// (about 696.58 cents) on the chain Eb..G#, so every major third within the
 /// chain is a pure 5/4; the wolf (about 737.64 cents) falls on G#-Eb.
-inline constexpr TuningTable TUNING_QUARTER_COMMA_MEANTONE =
-    table_from_fifth_chain(3, detail::uniform_fifths(PURE_FIFTH_CENTS - SYNTONIC_COMMA_CENTS / 4.0));
+inline constexpr TuningTable TUNING_QUARTER_COMMA_MEANTONE = table_from_fifth_chain(
+    3, detail::uniform_fifths(PURE_FIFTH_CENTS - SYNTONIC_COMMA_CENTS / 4.0));
 
 /// Werckmeister III (1691): C-G, G-D, D-A and B-F# narrowed by a quarter
 /// Pythagorean comma; the other eight fifths pure. Well-tempered: all keys
 /// usable, character varies. The chain starts on C.
-inline constexpr TuningTable TUNING_WERCKMEISTER_III = table_from_fifth_chain(
-    0,
-    {
-        PURE_FIFTH_CENTS - PYTHAGOREAN_COMMA_CENTS / 4.0, // C-G
-        PURE_FIFTH_CENTS - PYTHAGOREAN_COMMA_CENTS / 4.0, // G-D
-        PURE_FIFTH_CENTS - PYTHAGOREAN_COMMA_CENTS / 4.0, // D-A
-        PURE_FIFTH_CENTS,                                 // A-E
-        PURE_FIFTH_CENTS,                                 // E-B
-        PURE_FIFTH_CENTS - PYTHAGOREAN_COMMA_CENTS / 4.0, // B-F#
-        PURE_FIFTH_CENTS,                                 // F#-C#
-        PURE_FIFTH_CENTS,                                 // C#-G#
-        PURE_FIFTH_CENTS,                                 // G#-Eb
-        PURE_FIFTH_CENTS,                                 // Eb-Bb
-        PURE_FIFTH_CENTS,                                 // Bb-F (F-C closes the circle)
-    });
+inline constexpr TuningTable TUNING_WERCKMEISTER_III =
+    table_from_fifth_chain(0,
+                           {
+                               PURE_FIFTH_CENTS - PYTHAGOREAN_COMMA_CENTS / 4.0, // C-G
+                               PURE_FIFTH_CENTS - PYTHAGOREAN_COMMA_CENTS / 4.0, // G-D
+                               PURE_FIFTH_CENTS - PYTHAGOREAN_COMMA_CENTS / 4.0, // D-A
+                               PURE_FIFTH_CENTS,                                 // A-E
+                               PURE_FIFTH_CENTS,                                 // E-B
+                               PURE_FIFTH_CENTS - PYTHAGOREAN_COMMA_CENTS / 4.0, // B-F#
+                               PURE_FIFTH_CENTS,                                 // F#-C#
+                               PURE_FIFTH_CENTS,                                 // C#-G#
+                               PURE_FIFTH_CENTS,                                 // G#-Eb
+                               PURE_FIFTH_CENTS,                                 // Eb-Bb
+                               PURE_FIFTH_CENTS, // Bb-F (F-C closes the circle)
+                           });
 
 /// Vallotti (1754): F-C-G-D-A-E-B narrowed by a sixth of a Pythagorean comma
 /// (about 698.04 cents); the other six fifths pure. The chain starts on F.
-inline constexpr TuningTable TUNING_VALLOTTI = table_from_fifth_chain(
-    5,
-    {
-        PURE_FIFTH_CENTS - PYTHAGOREAN_COMMA_CENTS / 6.0, // F-C
-        PURE_FIFTH_CENTS - PYTHAGOREAN_COMMA_CENTS / 6.0, // C-G
-        PURE_FIFTH_CENTS - PYTHAGOREAN_COMMA_CENTS / 6.0, // G-D
-        PURE_FIFTH_CENTS - PYTHAGOREAN_COMMA_CENTS / 6.0, // D-A
-        PURE_FIFTH_CENTS - PYTHAGOREAN_COMMA_CENTS / 6.0, // A-E
-        PURE_FIFTH_CENTS - PYTHAGOREAN_COMMA_CENTS / 6.0, // E-B
-        PURE_FIFTH_CENTS,                                 // B-F#
-        PURE_FIFTH_CENTS,                                 // F#-C#
-        PURE_FIFTH_CENTS,                                 // C#-G#
-        PURE_FIFTH_CENTS,                                 // G#-Eb
-        PURE_FIFTH_CENTS,                                 // Eb-Bb (Bb-F closes the circle)
-    });
+inline constexpr TuningTable TUNING_VALLOTTI =
+    table_from_fifth_chain(5,
+                           {
+                               PURE_FIFTH_CENTS - PYTHAGOREAN_COMMA_CENTS / 6.0, // F-C
+                               PURE_FIFTH_CENTS - PYTHAGOREAN_COMMA_CENTS / 6.0, // C-G
+                               PURE_FIFTH_CENTS - PYTHAGOREAN_COMMA_CENTS / 6.0, // G-D
+                               PURE_FIFTH_CENTS - PYTHAGOREAN_COMMA_CENTS / 6.0, // D-A
+                               PURE_FIFTH_CENTS - PYTHAGOREAN_COMMA_CENTS / 6.0, // A-E
+                               PURE_FIFTH_CENTS - PYTHAGOREAN_COMMA_CENTS / 6.0, // E-B
+                               PURE_FIFTH_CENTS,                                 // B-F#
+                               PURE_FIFTH_CENTS,                                 // F#-C#
+                               PURE_FIFTH_CENTS,                                 // C#-G#
+                               PURE_FIFTH_CENTS,                                 // G#-Eb
+                               PURE_FIFTH_CENTS, // Eb-Bb (Bb-F closes the circle)
+                           });
 
 // =============================================================================
 // Lookup and frequency calculation

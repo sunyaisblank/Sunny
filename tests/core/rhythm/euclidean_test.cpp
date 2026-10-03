@@ -8,9 +8,9 @@
 
 #include <catch2/catch_test_macros.hpp>
 #include <string_view>
+#include <sunny/core/rhythm/euclidean.hpp>
 #include <utility>
 #include <vector>
-#include <sunny/core/rhythm/euclidean.hpp>
 
 using namespace sunny::core;
 

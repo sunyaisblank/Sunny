@@ -7,8 +7,8 @@
 
 #include <array>
 #include <catch2/catch_test_macros.hpp>
-#include <cmath>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
+#include <cmath>
 #include <sunny/core/tuning/historical_temperament.hpp>
 
 using namespace sunny::core;
@@ -84,8 +84,7 @@ std::array<double, 12> fifths_all(double size) {
 
 } // namespace
 
-TEST_CASE("Pythagorean: eleven pure fifths and the wolf on G#-Eb",
-          "[tuning][temperament][core]") {
+TEST_CASE("Pythagorean: eleven pure fifths and the wolf on G#-Eb", "[tuning][temperament][core]") {
     auto expected = fifths_all(pure_fifth());
     expected[Gs] = 8400.0 - 11.0 * pure_fifth(); // ≈ 678.49
     check_fifths(TUNING_PYTHAGOREAN, expected);
@@ -104,9 +103,9 @@ TEST_CASE("Quarter-comma meantone: eleven fifths of P - SC/4 and the wolf on G#-
     const double pure_third = 1200.0 * std::log2(5.0 / 4.0);
     for (int root : {Eb, Bb, F, C, G, D, A, E}) {
         INFO("major third above pitch class " << root);
-        const double third = 400.0 +
-                             TUNING_QUARTER_COMMA_MEANTONE[static_cast<std::size_t>((root + 4) % 12)] -
-                             TUNING_QUARTER_COMMA_MEANTONE[static_cast<std::size_t>(root)];
+        const double third =
+            400.0 + TUNING_QUARTER_COMMA_MEANTONE[static_cast<std::size_t>((root + 4) % 12)] -
+            TUNING_QUARTER_COMMA_MEANTONE[static_cast<std::size_t>(root)];
         CHECK_THAT(third, WithinAbs(pure_third, 0.01));
     }
 }
