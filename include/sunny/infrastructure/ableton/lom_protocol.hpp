@@ -53,8 +53,8 @@ enum class LomDeliveryState : std::uint8_t {
 };
 
 /// Current bridge request. The serializer adds the authoritative envelope version;
-/// the Live peer admits only the closed operation algebra documented in
-/// docs/ableton-max-conformance.md.
+/// the Live peer admits only the closed operation set defined in
+/// remote_script/Sunny/bridge_contract.json.
 struct LomRequest {
     LomRequestType type;
     LomPath path;
