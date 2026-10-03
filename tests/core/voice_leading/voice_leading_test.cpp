@@ -11,8 +11,12 @@
  * - Total motion is minimized
  */
 
+#include <algorithm>
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_vector.hpp>
+#include <cstdlib>
+#include <functional>
+#include <optional>
 #include <set>
 #include <sunny/core/pitch/pitch_class.hpp>
 #include <sunny/core/voice_leading/voice_leading.hpp>
@@ -53,8 +57,9 @@ TEST_CASE("voice_lead_nearest_tone basic", "[voiceleading][core]") {
         auto result = voice_lead_nearest_tone(source, target);
         REQUIRE(result.has_value());
 
-        // Total motion should be small (ideally 0 + 1 + 2 = 3)
-        REQUIRE(result->total_motion <= 6);
+        // C->C, E->F, G->A: 0 + 1 + 2
+        CHECK(result->total_motion == 3);
+        CHECK(result->voiced_notes == std::vector<MidiNote>{60, 65, 69});
     }
 }
 
@@ -84,33 +89,205 @@ TEST_CASE("lock_bass option", "[voiceleading][core]") {
     }
 }
 
+// The previous version of these sections asserted the flags only inside an
+// if-guard on the result, so they passed whatever the result was.
 TEST_CASE("Parallel motion detection", "[voiceleading][core]") {
-    SECTION("Detects parallel fifths") {
-        // Setup voices that would create parallel fifths
-        std::vector<MidiNote> source = {60, 67}; // C, G (P5 apart)
-        std::vector<PitchClass> target = {2, 9}; // D, A (also P5 apart)
+    SECTION("Detects parallel fifths when they are allowed") {
+        // C4-G4 to D-A: both voices up a tone (motion 4) is cheapest.
+        std::vector<MidiNote> source = {60, 67};
+        std::vector<PitchClass> target = {2, 9};
 
         auto result = voice_lead_nearest_tone(source, target, false, true, true);
         REQUIRE(result.has_value());
-
-        // If both voices move in same direction maintaining P5,
-        // has_parallel_fifths should be true
-        if (result->voiced_notes[1] - result->voiced_notes[0] == 7) {
-            REQUIRE(result->has_parallel_fifths == true);
-        }
+        CHECK(result->voiced_notes == std::vector<MidiNote>{62, 69});
+        CHECK(result->has_parallel_fifths);
     }
 
-    SECTION("Detects parallel octaves") {
+    SECTION("Avoids parallel fifths when they are forbidden") {
+        // The cheapest voicing without them is A3-D4 (motion 3 + 5); the
+        // greedy search placed the bass on D4 and then failed.
+        std::vector<MidiNote> source = {60, 67};
+        std::vector<PitchClass> target = {2, 9};
+
+        auto result = voice_lead_nearest_tone(source, target);
+        REQUIRE(result.has_value());
+        CHECK(result->voiced_notes == std::vector<MidiNote>{57, 62});
+        CHECK(result->total_motion == 8);
+        CHECK_FALSE(result->has_parallel_fifths);
+    }
+
+    SECTION("Detects parallel octaves when they are allowed") {
         std::vector<MidiNote> source = {60, 72}; // C4, C5 (P8 apart)
         std::vector<PitchClass> target = {2, 2}; // Both to D
 
         auto result = voice_lead_nearest_tone(source, target, false, true, true);
         REQUIRE(result.has_value());
-
-        if (result->voiced_notes[1] - result->voiced_notes[0] == 12) {
-            REQUIRE(result->has_parallel_octaves == true);
-        }
+        CHECK(result->voiced_notes == std::vector<MidiNote>{62, 74});
+        CHECK(result->has_parallel_octaves);
     }
+}
+
+TEST_CASE("voice_lead_nearest_tone minimises total motion, not per-voice motion",
+          "[voiceleading][core]") {
+    // Greedy assignment gave the bass D4 and pushed the upper voice to C5
+    // (motion 11); C4-D4 moves one semitone in total.
+    std::vector<MidiNote> source = {61, 62};
+    std::vector<PitchClass> target = {2, 0};
+    auto result = voice_lead_nearest_tone(source, target);
+    REQUIRE(result.has_value());
+    CHECK(result->voiced_notes == std::vector<MidiNote>{60, 62});
+    CHECK(result->total_motion == 1);
+}
+
+namespace {
+
+bool parallel_at(int s_low, int s_high, int v_low, int v_high, int interval_class) {
+    if (std::abs(s_high - s_low) % 12 != interval_class) return false;
+    if (std::abs(v_high - v_low) % 12 != interval_class) return false;
+    const int low_motion = v_low - s_low;
+    const int high_motion = v_high - s_high;
+    return (low_motion > 0 && high_motion > 0) || (low_motion < 0 && high_motion < 0);
+}
+
+// Exhaustive reference: every permutation of the targets and every octave of
+// each pitch class in [window_low, window_high], filtered by the stated
+// constraints. Over the whole MIDI range [0, 127] it is exact by definition.
+std::optional<int> brute_force_motion(const std::vector<int>& source,
+                                      std::vector<int> targets,
+                                      bool lock_bass,
+                                      bool allow_fifths,
+                                      bool allow_octaves,
+                                      int window_low,
+                                      int window_high) {
+    const std::size_t n = source.size();
+    std::vector<std::size_t> order(n);
+    for (std::size_t i = 0; i < n; ++i)
+        order[i] = i;
+    std::optional<int> best;
+    do {
+        if (lock_bass && order[0] != 0) continue;
+        std::vector<int> voicing(n);
+        std::function<void(std::size_t, int)> assign = [&](std::size_t voice, int cost) {
+            if (best && cost >= *best) return; // Motion only grows from here.
+            if (voice == n) {
+                for (std::size_t i = 0; i < n; ++i)
+                    for (std::size_t j = i + 1; j < n; ++j) {
+                        if (!allow_fifths &&
+                            parallel_at(source[i], source[j], voicing[i], voicing[j], 7))
+                            return;
+                        if (!allow_octaves &&
+                            parallel_at(source[i], source[j], voicing[i], voicing[j], 0))
+                            return;
+                    }
+                if (!best || cost < *best) best = cost;
+                return;
+            }
+            for (int pitch = targets[order[voice]]; pitch <= window_high; pitch += 12) {
+                if (pitch < window_low) continue;
+                if (voice > 0 && pitch <= voicing[voice - 1]) continue;
+                voicing[voice] = pitch;
+                assign(voice + 1, cost + std::abs(pitch - source[voice]));
+            }
+        };
+        assign(0, 0);
+    } while (std::next_permutation(order.begin(), order.end()));
+    return best;
+}
+
+void check_against_brute_force(const std::vector<int>& source,
+                               const std::vector<int>& targets,
+                               bool lock_bass,
+                               bool allow_fifths,
+                               bool allow_octaves) {
+    std::vector<MidiNote> midi;
+    for (int note : source)
+        midi.push_back(*MidiNote::from_int(note));
+    std::vector<PitchClass> pcs;
+    for (int pc : targets)
+        pcs.push_back(PitchClass::wrapped(pc));
+
+    // The window [24, 107] holds every voicing whose total motion is under
+    // 36 from sources in [60, 71] (each voice then lies in [25, 106]), so an
+    // optimum under 36 found there is global. Otherwise, including when the
+    // window holds no feasible voicing, the whole MIDI range is searched.
+    auto expected =
+        brute_force_motion(source, targets, lock_bass, allow_fifths, allow_octaves, 24, 107);
+    if (!expected || *expected >= 36)
+        expected =
+            brute_force_motion(source, targets, lock_bass, allow_fifths, allow_octaves, 0, 127);
+    const auto actual = voice_lead_nearest_tone(midi, pcs, lock_bass, allow_fifths, allow_octaves);
+
+    if (!expected) {
+        if (actual) FAIL_CHECK("voicing returned where none is feasible");
+        return;
+    }
+    if (!actual) {
+        FAIL_CHECK("no voicing although one of motion " << *expected << " is feasible");
+        return;
+    }
+    if (actual->total_motion != *expected) {
+        FAIL_CHECK("motion " << actual->total_motion << " != optimum " << *expected);
+        return;
+    }
+    // The returned voicing satisfies every constraint.
+    const auto& voiced = actual->voiced_notes;
+    std::multiset<int> used, wanted(targets.begin(), targets.end());
+    for (std::size_t i = 0; i < voiced.size(); ++i) {
+        used.insert(voiced[i] % 12);
+        if (i > 0 && voiced[i] <= voiced[i - 1]) FAIL_CHECK("voices out of order");
+    }
+    if (used != wanted) FAIL_CHECK("pitch classes differ from the target");
+    if (lock_bass && voiced[0] % 12 != targets[0]) FAIL_CHECK("bass does not take targets[0]");
+    if (!allow_fifths && actual->has_parallel_fifths) FAIL_CHECK("parallel fifths");
+    if (!allow_octaves && actual->has_parallel_octaves) FAIL_CHECK("parallel octaves");
+}
+
+} // namespace
+
+TEST_CASE("voice_lead_nearest_tone equals brute force for two voices within an octave",
+          "[voiceleading][core][exhaustive]") {
+    for (int low = 60; low < 72; ++low)
+        for (int high = 60; high < 72; ++high)
+            for (int t0 = 0; t0 < 12; ++t0)
+                for (int t1 = 0; t1 < 12; ++t1)
+                    for (int flags = 0; flags < 8; ++flags) {
+                        const bool lock = (flags & 1) != 0;
+                        const bool fifths = (flags & 2) != 0;
+                        const bool octaves = (flags & 4) != 0;
+                        INFO("source " << low << "," << high << " target " << t0 << "," << t1
+                                       << " flags " << flags);
+                        check_against_brute_force({low, high}, {t0, t1}, lock, fifths, octaves);
+                    }
+}
+
+TEST_CASE("voice_lead_nearest_tone equals brute force for three voices within an octave",
+          "[voiceleading][core][exhaustive]") {
+    // Every non-descending source within C4-B4 (unisons included) against
+    // every three-note target multiset (doublings included). The order of
+    // the targets matters only to lock_bass, so the unlocked case is run
+    // once and the locked case once for each distinct member as targets[0].
+    for (int a = 60; a < 72; ++a)
+        for (int b = a; b < 72; ++b)
+            for (int c = b; c < 72; ++c)
+                for (int x = 0; x < 12; ++x)
+                    for (int y = x; y < 12; ++y)
+                        for (int z = y; z < 12; ++z)
+                            for (int flags = 0; flags < 4; ++flags) {
+                                const bool fifths = (flags & 1) != 0;
+                                const bool octaves = (flags & 2) != 0;
+                                INFO("source " << a << "," << b << "," << c << " target " << x
+                                               << "," << y << "," << z << " flags " << flags);
+                                check_against_brute_force(
+                                    {a, b, c}, {x, y, z}, false, fifths, octaves);
+                                check_against_brute_force(
+                                    {a, b, c}, {x, y, z}, true, fifths, octaves);
+                                if (y != x)
+                                    check_against_brute_force(
+                                        {a, b, c}, {y, x, z}, true, fifths, octaves);
+                                if (z != y)
+                                    check_against_brute_force(
+                                        {a, b, c}, {z, x, y}, true, fifths, octaves);
+                            }
 }
 
 TEST_CASE("generate_close_voicing", "[voiceleading][core]") {

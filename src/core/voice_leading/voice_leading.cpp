@@ -8,7 +8,7 @@
 #include <climits>
 #include <cmath>
 #include <limits>
-#include <set>
+#include <optional>
 #include <sunny/core/pitch/midi_note.hpp>
 #include <sunny/core/voice_leading/voice_leading.hpp>
 
@@ -58,6 +58,221 @@ bool introduces_disallowed_parallel(std::span<const MidiNote> source,
     return false;
 }
 
+// Hungarian algorithm (Kuhn-Munkres) for minimum-weight assignment.
+// Input: n×n cost matrix. Output: assignment[i] = j.
+std::vector<int> hungarian_assign(const std::vector<std::vector<int>>& cost) {
+    int n = static_cast<int>(cost.size());
+    if (n == 0) return {};
+
+    std::vector<int> u(n + 1, 0), v(n + 1, 0);
+    std::vector<int> p(n + 1, 0);
+    std::vector<int> way(n + 1, 0);
+
+    for (int i = 1; i <= n; ++i) {
+        p[0] = i;
+        int j0 = 0;
+        std::vector<int> minv(n + 1, INT_MAX);
+        std::vector<bool> used(n + 1, false);
+
+        do {
+            used[j0] = true;
+            int i0 = p[j0];
+            int delta = INT_MAX;
+            int j1 = -1;
+
+            for (int j = 1; j <= n; ++j) {
+                if (!used[j]) {
+                    int cur = cost[i0 - 1][j - 1] - u[i0] - v[j];
+                    if (cur < minv[j]) {
+                        minv[j] = cur;
+                        way[j] = j0;
+                    }
+                    if (minv[j] < delta) {
+                        delta = minv[j];
+                        j1 = j;
+                    }
+                }
+            }
+
+            for (int j = 0; j <= n; ++j) {
+                if (used[j]) {
+                    u[p[j]] += delta;
+                    v[j] -= delta;
+                } else {
+                    minv[j] -= delta;
+                }
+            }
+            j0 = j1;
+        } while (p[j0] != 0);
+
+        do {
+            int j1 = way[j0];
+            p[j0] = p[j1];
+            j0 = j1;
+        } while (j0);
+    }
+
+    std::vector<int> assignment(n);
+    for (int j = 1; j <= n; ++j) {
+        if (p[j] > 0) {
+            assignment[p[j] - 1] = j - 1;
+        }
+    }
+    return assignment;
+}
+
+// Exact branch-and-bound search for voice_lead_nearest_tone.
+//
+// Voices are placed from the bass upwards. A partial voicing is extended
+// only by pitches above the voice below (strict order), of a target pitch
+// class not yet assigned, that form no disallowed parallel with any voice
+// already placed. The bound is the cost so far plus, for every unplaced
+// voice, its distance to the nearest pitch of any target class; that sum
+// never exceeds the true completion cost, so no pruned branch can hold a
+// better voicing. Candidates are tried in order of (motion, pitch, target
+// index), and only a strictly cheaper voicing replaces the incumbent, so the
+// result is deterministic. The worst case is exponential in the voice count.
+class NearestToneSearch {
+  public:
+    NearestToneSearch(std::span<const MidiNote> source,
+                      std::span<const PitchClass> targets,
+                      bool lock_bass,
+                      bool allow_parallel_fifths,
+                      bool allow_parallel_octaves)
+        : source_(source), targets_(targets), lock_bass_(lock_bass),
+          allow_parallel_fifths_(allow_parallel_fifths),
+          allow_parallel_octaves_(allow_parallel_octaves), placed_(source.size()),
+          used_(targets.size(), false), remaining_bound_(source.size() + 1, 0) {
+        for (std::size_t voice = source.size(); voice-- > 0;) {
+            int nearest = std::numeric_limits<int>::max();
+            for (auto pc : targets) {
+                const int up =
+                    ((static_cast<int>(pc) - static_cast<int>(source[voice])) % 12 + 12) % 12;
+                nearest = std::min(nearest, std::min(up, 12 - up));
+            }
+            remaining_bound_[voice] = remaining_bound_[voice + 1] + nearest;
+        }
+    }
+
+    [[nodiscard]] std::optional<std::vector<MidiNote>> run() {
+        place(0, 0);
+        if (best_cost_ == std::numeric_limits<int>::max()) return std::nullopt;
+        return best_;
+    }
+
+  private:
+    struct Candidate {
+        int motion;
+        int pitch;
+        std::size_t target;
+        auto operator<=>(const Candidate&) const = default;
+    };
+
+    std::span<const MidiNote> source_;
+    std::span<const PitchClass> targets_;
+    bool lock_bass_;
+    bool allow_parallel_fifths_;
+    bool allow_parallel_octaves_;
+    std::vector<MidiNote> placed_;
+    std::vector<bool> used_;
+    std::vector<int> remaining_bound_;
+    std::vector<MidiNote> best_;
+    int best_cost_ = std::numeric_limits<int>::max();
+
+    // Exceeds any total motion (at most 128 voices times 127 semitones) and
+    // leaves headroom for the Hungarian potentials.
+    static constexpr int UNREACHABLE = 1 << 20;
+
+    [[nodiscard]] bool forms_disallowed_parallel(std::size_t voice, MidiNote candidate) const {
+        std::span<const MidiNote> placed(placed_.data(), voice);
+        return introduces_disallowed_parallel(
+            source_, placed, voice, candidate, allow_parallel_fifths_, allow_parallel_octaves_);
+    }
+
+    // Lower bound on the motion of voices voice..n-1: a minimum-cost
+    // assignment of those voices to the unused targets, where a voice may
+    // take any pitch of the target class that leaves room below it for the
+    // voices already placed and above it for the voices still to come. Only
+    // the mutual order of the unplaced voices and the parallel rule are
+    // relaxed, so the bound never exceeds the true completion cost.
+    [[nodiscard]] int assignment_bound(std::size_t voice, int floor) const {
+        const std::size_t n = source_.size();
+        const std::size_t remaining = n - voice;
+        std::vector<std::size_t> free_targets;
+        for (std::size_t target = 0; target < targets_.size(); ++target)
+            if (!used_[target] && !(lock_bass_ && target == 0 && voice > 0))
+                free_targets.push_back(target);
+        if (free_targets.size() != remaining) return UNREACHABLE;
+
+        std::vector<std::vector<int>> cost(remaining, std::vector<int>(remaining, UNREACHABLE));
+        for (std::size_t row = 0; row < remaining; ++row) {
+            const std::size_t v = voice + row;
+            const int low = floor + static_cast<int>(row);
+            const int high = 127 - static_cast<int>(n - 1 - v);
+            const int origin = static_cast<int>(source_[v]);
+            for (std::size_t col = 0; col < remaining; ++col) {
+                const std::size_t target = free_targets[col];
+                if (lock_bass_ && (v == 0) != (target == 0)) continue;
+                for (int pitch = static_cast<int>(targets_[target]); pitch <= high; pitch += 12) {
+                    if (pitch >= low)
+                        cost[row][col] = std::min(cost[row][col], std::abs(pitch - origin));
+                }
+            }
+        }
+        const auto assignment = hungarian_assign(cost);
+        int bound = 0;
+        for (std::size_t row = 0; row < remaining; ++row) {
+            const int entry = cost[row][static_cast<std::size_t>(assignment[row])];
+            if (entry >= UNREACHABLE) return UNREACHABLE;
+            bound += entry;
+        }
+        return bound;
+    }
+
+    void place(std::size_t voice, int cost) {
+        if (voice == source_.size()) {
+            if (cost < best_cost_) {
+                best_cost_ = cost;
+                best_ = placed_;
+            }
+            return;
+        }
+
+        const int floor = voice == 0 ? 0 : static_cast<int>(placed_[voice - 1]) + 1;
+        const int bound = assignment_bound(voice, floor);
+        if (bound >= UNREACHABLE || cost + bound >= best_cost_) return;
+        const int origin = static_cast<int>(source_[voice]);
+        std::vector<Candidate> candidates;
+        for (std::size_t target = 0; target < targets_.size(); ++target) {
+            if (used_[target]) continue;
+            if (lock_bass_ && (voice == 0) != (target == 0)) continue;
+            // Equal pitch classes are interchangeable; try only the first unused one.
+            bool duplicate = false;
+            for (std::size_t earlier = 0; earlier < target && !duplicate; ++earlier)
+                duplicate = !used_[earlier] && targets_[earlier] == targets_[target] &&
+                            !(lock_bass_ && earlier == 0);
+            if (duplicate) continue;
+            for (int pitch = static_cast<int>(targets_[target]); pitch <= 127; pitch += 12) {
+                if (pitch < floor) continue;
+                candidates.push_back({std::abs(pitch - origin), pitch, target});
+            }
+        }
+        std::sort(candidates.begin(), candidates.end());
+
+        for (const auto& candidate : candidates) {
+            // Candidates are sorted by motion, so once the bound fails it
+            // fails for every later candidate.
+            if (cost + candidate.motion + remaining_bound_[voice + 1] >= best_cost_) break;
+            const auto pitch = MidiNote::from_int(candidate.pitch);
+            if (!pitch || forms_disallowed_parallel(voice, *pitch)) continue;
+            placed_[voice] = *pitch;
+            used_[candidate.target] = true;
+            place(voice + 1, cost + candidate.motion);
+            used_[candidate.target] = false;
+        }
+    }
+};
+
 } // namespace
 
 Result<VoiceLeadingResult> voice_lead_nearest_tone(std::span<const MidiNote> source_pitches,
@@ -77,111 +292,42 @@ Result<VoiceLeadingResult> voice_lead_nearest_tone(std::span<const MidiNote> sou
         return std::unexpected(ErrorCode::VoiceLeadingFailed);
     }
 
-    std::size_t num_voices = source_pitches.size();
-
-    std::vector<PitchClass> targets(target_pitch_classes.begin(), target_pitch_classes.end());
+    NearestToneSearch search(source_pitches,
+                             target_pitch_classes,
+                             lock_bass,
+                             allow_parallel_fifths,
+                             allow_parallel_octaves);
+    auto voiced = search.run();
+    if (!voiced) {
+        return std::unexpected(ErrorCode::VoiceLeadingFailed);
+    }
 
     VoiceLeadingResult result;
-    result.voiced_notes.reserve(num_voices);
+    result.voiced_notes = std::move(*voiced);
     result.total_motion = 0;
     result.has_parallel_fifths = false;
     result.has_parallel_octaves = false;
-
-    std::set<std::size_t> used_targets;
-
-    for (std::size_t i = 0; i < num_voices; ++i) {
-        MidiNote current = source_pitches[i];
-
-        if (lock_bass && i == 0) {
-            // Bass takes the root (first target PC)
-            MidiNote new_pitch = closest_pitch_class_midi(current, targets[0]);
-            result.voiced_notes.push_back(new_pitch);
-            result.total_motion +=
-                std::abs(static_cast<int>(new_pitch) - static_cast<int>(current));
-            used_targets.insert(0);
-            continue;
-        }
-
-        // Find the closest available target and octave that preserves voice
-        // order and the requested parallel-motion constraints.
-        MidiNote best_pitch = current;
-        int best_distance = std::numeric_limits<int>::max();
-        std::size_t best_target_idx = 0;
-        bool found_candidate = false;
-
-        for (std::size_t j = 0; j < targets.size(); ++j) {
-            // Skip used targets if we have enough
-            if (used_targets.count(j) && used_targets.size() < targets.size()) {
-                continue;
-            }
-
-            for (int midi = static_cast<int>(targets[j]); midi <= 127; midi += 12) {
-                auto candidate = MidiNote::from_int(midi);
-                if (!candidate) continue;
-                if (!result.voiced_notes.empty() && *candidate <= result.voiced_notes.back()) {
-                    continue;
-                }
-                if (introduces_disallowed_parallel(source_pitches,
-                                                   result.voiced_notes,
-                                                   i,
-                                                   *candidate,
-                                                   allow_parallel_fifths,
-                                                   allow_parallel_octaves)) {
-                    continue;
-                }
-
-                int distance = std::abs(midi - static_cast<int>(current));
-                if (distance < best_distance) {
-                    found_candidate = true;
-                    best_distance = distance;
-                    best_pitch = *candidate;
-                    best_target_idx = j;
-                }
-            }
-        }
-
-        if (!found_candidate) {
-            return std::unexpected(ErrorCode::VoiceLeadingFailed);
-        }
-
-        result.voiced_notes.push_back(best_pitch);
-        result.total_motion += best_distance;
-        used_targets.insert(best_target_idx);
+    for (std::size_t i = 0; i < source_pitches.size(); ++i) {
+        result.total_motion += std::abs(static_cast<int>(result.voiced_notes[i]) -
+                                        static_cast<int>(source_pitches[i]));
     }
 
-    // Fix voice crossings (ensure ascending order). The factory calls
-    // encode the old range guards: raising fails iff note + 12 > 127,
-    // lowering fails iff note - 12 < 0.
-    for (std::size_t i = 1; i < result.voiced_notes.size(); ++i) {
-        while (result.voiced_notes[i] <= result.voiced_notes[i - 1]) {
-            if (auto raised = MidiNote::from_int(result.voiced_notes[i] + 12)) {
-                result.voiced_notes[i] = *raised;
-            } else if (auto lowered = MidiNote::from_int(result.voiced_notes[i - 1] - 12)) {
-                result.voiced_notes[i - 1] = *lowered;
-            } else {
-                break; // Can't fix
+    // Report parallels that the flags permitted.
+    for (std::size_t i = 0; i < source_pitches.size(); ++i) {
+        for (std::size_t j = i + 1; j < source_pitches.size(); ++j) {
+            if (check_parallel(source_pitches[i],
+                               source_pitches[j],
+                               result.voiced_notes[i],
+                               result.voiced_notes[j],
+                               7)) {
+                result.has_parallel_fifths = true;
             }
-        }
-    }
-
-    // Check for parallel fifths and octaves
-    if (source_pitches.size() >= 2) {
-        for (std::size_t i = 0; i < source_pitches.size(); ++i) {
-            for (std::size_t j = i + 1; j < source_pitches.size(); ++j) {
-                if (check_parallel(source_pitches[i],
-                                   source_pitches[j],
-                                   result.voiced_notes[i],
-                                   result.voiced_notes[j],
-                                   7)) {
-                    result.has_parallel_fifths = true;
-                }
-                if (check_parallel(source_pitches[i],
-                                   source_pitches[j],
-                                   result.voiced_notes[i],
-                                   result.voiced_notes[j],
-                                   0)) {
-                    result.has_parallel_octaves = true;
-                }
+            if (check_parallel(source_pitches[i],
+                               source_pitches[j],
+                               result.voiced_notes[i],
+                               result.voiced_notes[j],
+                               0)) {
+                result.has_parallel_octaves = true;
             }
         }
     }
@@ -332,69 +478,6 @@ Result<std::vector<MidiNote>> generate_spread_voicing(std::span<const MidiNote> 
 
     // Already sorted since only the lowest note moved lower
     return result;
-}
-
-// Hungarian algorithm (Kuhn-Munkres) for minimum-weight assignment.
-// Input: n×n cost matrix. Output: assignment[i] = j.
-std::vector<int> hungarian_assign(const std::vector<std::vector<int>>& cost) {
-    int n = static_cast<int>(cost.size());
-    if (n == 0) return {};
-
-    std::vector<int> u(n + 1, 0), v(n + 1, 0);
-    std::vector<int> p(n + 1, 0);
-    std::vector<int> way(n + 1, 0);
-
-    for (int i = 1; i <= n; ++i) {
-        p[0] = i;
-        int j0 = 0;
-        std::vector<int> minv(n + 1, INT_MAX);
-        std::vector<bool> used(n + 1, false);
-
-        do {
-            used[j0] = true;
-            int i0 = p[j0];
-            int delta = INT_MAX;
-            int j1 = -1;
-
-            for (int j = 1; j <= n; ++j) {
-                if (!used[j]) {
-                    int cur = cost[i0 - 1][j - 1] - u[i0] - v[j];
-                    if (cur < minv[j]) {
-                        minv[j] = cur;
-                        way[j] = j0;
-                    }
-                    if (minv[j] < delta) {
-                        delta = minv[j];
-                        j1 = j;
-                    }
-                }
-            }
-
-            for (int j = 0; j <= n; ++j) {
-                if (used[j]) {
-                    u[p[j]] += delta;
-                    v[j] -= delta;
-                } else {
-                    minv[j] -= delta;
-                }
-            }
-            j0 = j1;
-        } while (p[j0] != 0);
-
-        do {
-            int j1 = way[j0];
-            p[j0] = p[j1];
-            j0 = j1;
-        } while (j0);
-    }
-
-    std::vector<int> assignment(n);
-    for (int j = 1; j <= n; ++j) {
-        if (p[j] > 0) {
-            assignment[p[j] - 1] = j - 1;
-        }
-    }
-    return assignment;
 }
 
 VoiceMotionType classify_voice_motion(MidiNote a1, MidiNote a2, MidiNote b1, MidiNote b2) {

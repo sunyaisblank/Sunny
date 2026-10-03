@@ -31,10 +31,16 @@ struct VoiceLeadingResult {
 };
 
 /**
- * @brief Compute optimal voice leading using nearest-tone algorithm
+ * @brief Compute the voice leading of least total motion under constraints
  *
- * For each voice, finds the closest pitch with the target pitch class,
- * minimizing total voice movement.
+ * A feasible voicing assigns each voice one target pitch class (a bijection
+ * between voices and target entries) in any octave within MIDI 0-127, keeps
+ * the voices in strictly ascending order from voice 0 (the bass), gives the
+ * bass targets[0] when lock_bass is set, and forms no parallel fifths or
+ * octaves (compound intervals included) between any two voices unless the
+ * corresponding flag allows them. Among feasible voicings the result
+ * minimises the sum of |result[i] - source[i]|; it is exact, found by
+ * branch-and-bound search whose worst case is exponential in the voice count.
  *
  * @pre source_pitches.size() == target_pitch_classes.size()
  * @param source_pitches Current voicing as MIDI notes
@@ -42,7 +48,8 @@ struct VoiceLeadingResult {
  * @param lock_bass If true, bass takes chord root
  * @param allow_parallel_fifths If true, don't avoid parallel P5
  * @param allow_parallel_octaves If true, don't avoid parallel P8
- * @return VoiceLeadingResult or error (VoiceLeadingFailed if sizes differ)
+ * @return VoiceLeadingResult or error (VoiceLeadingFailed if sizes differ, the
+ *         target is empty, or no feasible voicing exists)
  */
 [[nodiscard]] Result<VoiceLeadingResult>
 voice_lead_nearest_tone(std::span<const MidiNote> source_pitches,
