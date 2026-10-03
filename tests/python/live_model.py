@@ -681,7 +681,8 @@ class Groove:
 class Clip:
     """``Live.Clip.Clip`` in a Session clip slot of a MIDI track."""
 
-    def __init__(self, length: float) -> None:
+    def __init__(self, length: float, live_major_version: int = 12) -> None:
+        self._live_major_version = live_major_version
         self._name = ""
         self._notes: dict[int, MidiNote] = {}
         self._next_note_id = 1
@@ -766,6 +767,9 @@ class Clip:
 
     @live_property
     def is_take_lane_clip(self) -> bool:
+        # Take lanes, and with them this property, arrived with Live 12.
+        if self._live_major_version < 12:
+            raise AttributeError("is_take_lane_clip")
         return False
 
     @live_property
@@ -956,7 +960,7 @@ class ClipSlot:
             raise RuntimeError("Can only create MIDI clips in MIDI tracks")
         if not length > 0.0:
             raise RuntimeError("Clip length must be greater than 0")
-        self._clip = Clip(length)
+        self._clip = Clip(length, self._track._song._application.get_major_version())
 
     def delete_clip(self) -> None:
         if self._clip is None:

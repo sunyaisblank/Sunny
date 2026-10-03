@@ -1335,7 +1335,7 @@ def test_target_profile_rejects_scalar_category_coercion(live, monkeypatch):
     assert _call(handler, "song", "sunny_get_target_profile")["success"] is True
 
 
-def _snapshot_fixture(live):
+def _snapshot_fixture(live, instrument="Operator"):
     """A Set with one scored MIDI track, one return, two scenes and one cue."""
     song = live.song
     song.create_scene(-1)
@@ -1343,7 +1343,7 @@ def _snapshot_fixture(live):
     song.scenes[1].name = "Scene 2"
     song.scenes[1].enable_launch_overrides(128.0, 7, 8)
     song.create_return_track()
-    track, clip = _midi_track_with_clip(live, instrument="Operator")
+    track, clip = _midi_track_with_clip(live, instrument=instrument)
     track.name = "Part"
     clip.name = "Verse"
     clip.looping = False
@@ -1571,7 +1571,9 @@ def test_target_snapshot_is_single_call_structural_plan_evidence(live, sunny_nat
     rejected(clip, "is_audio_clip", True, "incoherent audio/MIDI identity")
     rejected(clip, "is_arrangement_clip", True, "Arrangement Clip")
     rejected(clip, "is_session_clip", 1, "invalid Live 11+ location identity")
-    rejected(clip, "is_take_lane_clip", True, "non-Session or Take Lane Clip")
+    rejected(clip, "is_session_clip", False, "non-Session Clip")
+    rejected(clip, "is_take_lane_clip", 0, "invalid Live 12+ take-lane identity")
+    rejected(clip, "is_take_lane_clip", True, "returned a Take Lane Clip")
     rejected(clip, "end_time", 4, "invalid Clip end_time")
     rejected(clip, "end_time", 3.0, "incoherent unlooped end_time")
     rejected(clip, "launch_mode", True, "invalid launch_mode")
@@ -1638,6 +1640,30 @@ def test_target_snapshot_pitch_context_is_version_coupled(monkeypatch):
     assert response["success"] is True, response
     assert response["value"]["song"]["scale"] is None
     assert response["value"]["song"]["tuning_system"] is None
+
+
+@pytest.mark.parametrize(
+    ("version", "take_lanes_available"), [((11, 3, 0), False), ((12, 0, 5), True)]
+)
+def test_target_snapshot_take_lane_state_is_coupled_to_live_12(
+    monkeypatch, sunny_native_module, version, take_lanes_available
+):
+    """A Live 11 Set has no take lanes; its snapshot reports none, and Live 12 still does."""
+    live = LiveSet(version).install(monkeypatch)
+    _snapshot_fixture(live, instrument=None)
+    response = _call(LomHandler(live.surface), "song", "sunny_get_target_snapshot")
+
+    assert response["success"] is True, response
+    part = response["value"]["song"]["tracks"][0]
+    assert part["arrangement_clip_count"] == 0
+    assert part["clips"][0]["is_session_clip"] is True
+    if take_lanes_available:
+        assert part["take_lane_count"] == 0
+        assert part["clips"][0]["is_take_lane_clip"] is False
+    else:
+        assert part["take_lane_count"] is None
+        assert part["clips"][0]["is_take_lane_clip"] is None
+    assert sunny_native_module.validate_ableton_target_snapshot_json(json.dumps(response["value"]))
 
 
 @pytest.mark.parametrize(

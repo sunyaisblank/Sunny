@@ -269,6 +269,7 @@ bool valid_mixer(const json& mixer, bool crossfade_assign_available) {
 bool valid_clip(const json& clip,
                 std::uint32_t slot_count,
                 bool live_11_content_state_available,
+                bool take_lane_state_available,
                 std::set<std::uint32_t>& slots) {
     if (!exact_fields(clip,
                       {"slot",
@@ -315,9 +316,7 @@ bool valid_clip(const json& clip,
         !clip.at("is_triggered").is_boolean() || !clip.at("will_record_on_start").is_boolean() ||
         (live_11_content_state_available
              ? (!clip.at("is_session_clip").is_boolean() ||
-                !clip.at("is_session_clip").get<bool>() ||
-                !clip.at("is_take_lane_clip").is_boolean() ||
-                clip.at("is_take_lane_clip").get<bool>() || !valid_u32(clip.at("launch_mode")) ||
+                !clip.at("is_session_clip").get<bool>() || !valid_u32(clip.at("launch_mode")) ||
                 clip.at("launch_mode").get<std::uint32_t>() > 3 ||
                 !valid_u32(clip.at("launch_quantization")) ||
                 clip.at("launch_quantization").get<std::uint32_t>() > 14 ||
@@ -325,9 +324,13 @@ bool valid_clip(const json& clip,
                 !valid_finite_number(clip.at("velocity_amount")) ||
                 clip.at("velocity_amount").get<double>() < 0.0 ||
                 clip.at("velocity_amount").get<double>() > 1.0)
-             : (!clip.at("is_session_clip").is_null() || !clip.at("is_take_lane_clip").is_null() ||
-                !clip.at("launch_mode").is_null() || !clip.at("launch_quantization").is_null() ||
-                !clip.at("legato").is_null() || !clip.at("velocity_amount").is_null())) ||
+             : (!clip.at("is_session_clip").is_null() || !clip.at("launch_mode").is_null() ||
+                !clip.at("launch_quantization").is_null() || !clip.at("legato").is_null() ||
+                !clip.at("velocity_amount").is_null())) ||
+        // Take lanes arrived with Live 12; earlier Sets have no take-lane identity.
+        (take_lane_state_available ? (!clip.at("is_take_lane_clip").is_boolean() ||
+                                      clip.at("is_take_lane_clip").get<bool>())
+                                   : !clip.at("is_take_lane_clip").is_null()) ||
         (live_11_content_state_available ? !clip.at("has_groove").is_boolean()
                                          : !clip.at("has_groove").is_null()))
         return false;
@@ -368,7 +371,9 @@ bool valid_clip_slot(const json& slot, std::uint32_t expected_index, bool& has_c
     return true;
 }
 
-bool valid_track(const json& track, bool live_11_content_state_available) {
+bool valid_track(const json& track,
+                 bool live_11_content_state_available,
+                 bool take_lane_state_available) {
     if (!exact_fields(track,
                       {"name",
                        "devices",
@@ -410,8 +415,8 @@ bool valid_track(const json& track, bool live_11_content_state_available) {
         !valid_mixer(track.at("mixer"), true) || !valid_u32(track.at("clip_slot_count")) ||
         (live_11_content_state_available ? !valid_u32(track.at("arrangement_clip_count"))
                                          : !track.at("arrangement_clip_count").is_null()) ||
-        (live_11_content_state_available ? !valid_u32(track.at("take_lane_count"))
-                                         : !track.at("take_lane_count").is_null()) ||
+        (take_lane_state_available ? !valid_u32(track.at("take_lane_count"))
+                                   : !track.at("take_lane_count").is_null()) ||
         !track.at("clip_slots").is_array() || !track.at("clips").is_array() ||
         !(track.at("group_track_index").is_null() || valid_u32(track.at("group_track_index"))) ||
         !valid_input_routing_state(track) || !valid_track_meter_state(track) ||
@@ -450,7 +455,12 @@ bool valid_track(const json& track, bool live_11_content_state_available) {
     }
     std::set<std::uint32_t> slots;
     for (const auto& clip : track.at("clips"))
-        if (!valid_clip(clip, slot_count, live_11_content_state_available, slots)) return false;
+        if (!valid_clip(clip,
+                        slot_count,
+                        live_11_content_state_available,
+                        take_lane_state_available,
+                        slots))
+            return false;
     return slots == occupied_slots;
 }
 
@@ -588,8 +598,9 @@ bool valid_song_state(const json& song, const AbletonTargetProfile& profile) {
         if (!valid_scene(scene)) return false;
     const auto return_count = song.at("return_tracks").size();
     const bool live_11_content_state_available = profile.live_version.at_least(11, 0);
+    const bool take_lane_state_available = profile.live_version.at_least(12, 0);
     for (const auto& track : song.at("tracks"))
-        if (!valid_track(track, live_11_content_state_available) ||
+        if (!valid_track(track, live_11_content_state_available, take_lane_state_available) ||
             track.at("clip_slot_count").get<std::uint32_t>() != scene_count ||
             track.at("mixer").at("sends").size() != return_count)
             return false;

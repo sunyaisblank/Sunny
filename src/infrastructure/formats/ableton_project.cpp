@@ -1094,6 +1094,9 @@ evaluate_postcondition_intent(AbletonProjectPostconditionEvidence result,
     result.observed = true;
     const auto& song = validated->song_state;
     const auto& tracks = song.at("tracks");
+    // Take lanes arrived with Live 12. An earlier Set has none, so their
+    // absence holds by construction and the snapshot carries no take-lane fields.
+    const bool take_lanes_exist = validated->target_profile.live_version.at_least(12, 0);
     if (result.song_state) {
         auto& evidence = *result.song_state;
         if (evidence.requested_is_counting_in || evidence.requested_arrangement_overdub ||
@@ -1408,8 +1411,9 @@ evaluate_postcondition_intent(AbletonProjectPostconditionEvidence result,
                 *evidence.observed_arrangement_clip_count ==
                     evidence.requested_arrangement_clip_count;
             evidence.take_lanes_absent_verified =
-                evidence.take_lane_topology_observed &&
-                *evidence.observed_take_lane_count == evidence.requested_take_lane_count;
+                evidence.take_lane_topology_observed
+                    ? *evidence.observed_take_lane_count == evidence.requested_take_lane_count
+                    : !take_lanes_exist;
             evidence.ungrouped_verified = !evidence.observed_group_track_index.has_value();
             evidence.crossfade_neutral_verified =
                 *evidence.observed_crossfade_assign == evidence.requested_crossfade_assign;
@@ -1701,9 +1705,10 @@ evaluate_postcondition_intent(AbletonProjectPostconditionEvidence result,
                     (!evidence.location_identity_available ||
                      (evidence.observed_is_session_clip &&
                       *evidence.observed_is_session_clip == evidence.requested_is_session_clip &&
-                      evidence.observed_is_take_lane_clip &&
-                      *evidence.observed_is_take_lane_clip ==
-                          evidence.requested_is_take_lane_clip));
+                      (evidence.observed_is_take_lane_clip
+                           ? *evidence.observed_is_take_lane_clip ==
+                                 evidence.requested_is_take_lane_clip
+                           : !take_lanes_exist)));
                 evidence.observed_length = observed->at("length").get<double>();
                 evidence.observed_signature_numerator =
                     observed->at("signature_numerator").get<int>();

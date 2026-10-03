@@ -1025,7 +1025,15 @@ TEST_CASE("target snapshot pitch, groove, and Arrangement/Take Lane topology ava
     encoded["target_profile"] = target_profile_to_json(profile);
     encoded["song"]["scale"] = nullptr;
     encoded["song"]["tuning_system"] = nullptr;
+    // Take lanes arrived with Live 12: a Live 11 Set reports neither topology nor identity.
+    CHECK(target_snapshot_from_json(encoded).error() == ErrorCode::ProtocolError);
+    encoded["song"]["tracks"][0]["take_lane_count"] = nullptr;
+    CHECK(target_snapshot_from_json(encoded).error() == ErrorCode::ProtocolError);
+    encoded["song"]["tracks"][0]["clips"][0]["is_take_lane_clip"] = nullptr;
     REQUIRE(target_snapshot_from_json(encoded).has_value());
+    encoded["song"]["tracks"][0]["take_lane_count"] = 0;
+    CHECK(target_snapshot_from_json(encoded).error() == ErrorCode::ProtocolError);
+    encoded["song"]["tracks"][0]["take_lane_count"] = nullptr;
 
     encoded["song"]["scale"] = {{"root_note", 0},
                                 {"name", "Major"},
@@ -1077,6 +1085,13 @@ TEST_CASE("target snapshot pitch, groove, and Arrangement/Take Lane topology ava
     encoded["target_profile"] = target_profile_to_json(profile);
     encoded["song"]["tuning_system"] = nullptr;
     REQUIRE(target_snapshot_from_json(encoded).has_value());
+    // Live 12 still captures take-lane topology and identity.
+    encoded["song"]["tracks"][0]["take_lane_count"] = nullptr;
+    CHECK(target_snapshot_from_json(encoded).error() == ErrorCode::ProtocolError);
+    encoded["song"]["tracks"][0]["take_lane_count"] = 0;
+    encoded["song"]["tracks"][0]["clips"][0]["is_take_lane_clip"] = nullptr;
+    CHECK(target_snapshot_from_json(encoded).error() == ErrorCode::ProtocolError);
+    encoded["song"]["tracks"][0]["clips"][0]["is_take_lane_clip"] = false;
 
     encoded["song"]["tuning_system"] = {{"name", "12-TET"}, {"pseudo_octave_in_cents", 1200.0}};
     CHECK(target_snapshot_from_json(encoded).error() == ErrorCode::ProtocolError);

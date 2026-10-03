@@ -1249,6 +1249,7 @@ class LomHandler:
         track: Any,
         tracks: list[Any] | tuple[Any, ...],
         live_11_content_state_available: bool,
+        take_lane_state_available: bool,
     ) -> dict[str, Any]:
         result = cls._track_like_snapshot(track, crossfade_assign_available=True)
         arrangement_clip_count = None
@@ -1258,6 +1259,8 @@ class LomHandler:
             if arrangement_clips is None:
                 raise RuntimeError("Track returned invalid arrangement_clips collection")
             arrangement_clip_count = len(arrangement_clips)
+        # Take lanes arrived with Live 12; a Live 11 Track has no take_lanes.
+        if take_lane_state_available:
             take_lanes = _lom_sequence(track.take_lanes)
             if take_lanes is None:
                 raise RuntimeError("Track returned invalid take_lanes collection")
@@ -1267,7 +1270,7 @@ class LomHandler:
             for slot_index, slot in enumerate(track.clip_slots)
         ]
         clips = []
-        for slot_state, slot in zip(clip_slots, track.clip_slots, strict=True):
+        for slot_state, slot in zip(clip_slots, track.clip_slots):
             if not slot_state["has_clip"]:
                 continue
             slot_index = slot_state["slot"]
@@ -1310,13 +1313,18 @@ class LomHandler:
             velocity_amount = None
             is_session_clip = None
             is_take_lane_clip = None
+            if take_lane_state_available:
+                is_take_lane_clip = clip.is_take_lane_clip
+                if not isinstance(is_take_lane_clip, bool):
+                    raise RuntimeError("Clip returned invalid Live 12+ take-lane identity")
+                if is_take_lane_clip:
+                    raise RuntimeError("ClipSlot returned a Take Lane Clip")
             if live_11_content_state_available:
                 is_session_clip = clip.is_session_clip
-                is_take_lane_clip = clip.is_take_lane_clip
-                if not isinstance(is_session_clip, bool) or not isinstance(is_take_lane_clip, bool):
+                if not isinstance(is_session_clip, bool):
                     raise RuntimeError("Clip returned invalid Live 11+ location identity")
-                if not is_session_clip or is_take_lane_clip:
-                    raise RuntimeError("ClipSlot returned a non-Session or Take Lane Clip")
+                if not is_session_clip:
+                    raise RuntimeError("ClipSlot returned a non-Session Clip")
                 has_groove = clip.has_groove
                 if not isinstance(has_groove, bool):
                     raise RuntimeError("Clip returned invalid has_groove state")
@@ -1629,7 +1637,9 @@ class LomHandler:
                 "scene_count": len(song.scenes),
                 "scenes": [self._scene_snapshot(scene) for scene in song.scenes],
                 "tracks": [
-                    self._track_snapshot(track, tracks, live_version >= (11, 0, 0))
+                    self._track_snapshot(
+                        track, tracks, live_version >= (11, 0, 0), live_version >= (12, 0, 0)
+                    )
                     for track in tracks
                 ],
                 "return_tracks": [

@@ -114,10 +114,11 @@ class _McpClient:
 
 
 @pytest.fixture
-def bridge(monkeypatch):
+def bridge(request, monkeypatch):
     """Yield ``(live, client)``: a modelled Live Set behind the real bridge and an MCP client."""
     binary = _sunny_mcp_binary()
-    live = LiveSet().install(monkeypatch)
+    # Tests may request another Live version with indirect parametrisation.
+    live = LiveSet(getattr(request, "param", (12, 3, 5))).install(monkeypatch)
     # Port 0 asks the OS for an ephemeral port; the surface's own parser
     # accepts only 1..65535, so the configuration is supplied directly.
     monkeypatch.setattr(surface_module, "_server_configuration", lambda: ("127.0.0.1", 0))
@@ -389,3 +390,64 @@ def test_progression_clip_and_session_state_reach_live(bridge):
     assert state["return_track_count"] == 1
     assert state["tempo"] == 120.0
     assert state["target_profile"]["live"]["version"]["string"] == "12.3.5"
+
+
+@pytest.mark.parametrize("bridge", [(11, 3, 0)], indirect=True)
+def test_project_plan_applies_against_live_11_without_take_lanes(bridge):
+    """A Live 11 Set has no take lanes; planning and applying a project still completes."""
+    live, client = bridge
+    existing = live.song.create_midi_track(-1)
+    existing.name = "User Track"
+    existing.clip_slots[0].create_clip(4.0)
+
+    score = client.call(
+        "score_create",
+        title="Eleven",
+        total_bars=1,
+        time_sig_num=4,
+        time_sig_den=4,
+        parts=[{"name": "Lead", "instrument_type": 0}],
+    )
+    part_id = score["part_ids"][0]
+    inserted = client.call(
+        "score_insert_note",
+        score_id=score["score_id"],
+        part_id=part_id,
+        bar=1,
+        offset=_whole(0, 1),
+        pitch=_pitch("C", 4),
+        duration=_whole(1, 4),
+        velocity=80,
+    )
+    assert inserted.get("ok") is True, inserted
+    profile = client.call("create_timbre_profile", part_id=part_id, name="Lead")
+    mix = client.call("create_mix_graph", part_ids=[part_id])
+    project = {
+        "score_id": score["score_id"],
+        "timbre_profile_ids": [profile["profile_id"]],
+        "mix_graph_id": mix["graph_id"],
+    }
+
+    plan = client.call("project_plan_to_ableton", **project)
+    assert plan.get("success") is True, plan
+    snapshot_tracks = plan["target_snapshot"]["song"]["tracks"]
+    assert snapshot_tracks[0]["take_lane_count"] is None
+    assert snapshot_tracks[0]["clips"][0]["is_take_lane_clip"] is None
+    assert snapshot_tracks[0]["clips"][0]["is_session_clip"] is True
+
+    applied = client.call("project_apply_ableton_plan", plan_id=plan["plan_id"])
+    assert applied.get("success") is True, applied
+    assert applied["deployment"]["status"] == "completed"
+    assert {entry["outcome"] for entry in applied["deployment"]["mutation_journal"]} == {
+        "acknowledged"
+    }
+    # Live 11 has no take lanes, so their absence and the clip's identity verify
+    # without take-lane evidence.
+    postconditions = applied["postconditions"]
+    assert postconditions["track_gates"][0]["take_lane_topology_observed"] is False
+    assert postconditions["track_gates"][0]["take_lanes_absent_verified"] is True
+    assert postconditions["clips"][0]["observed_is_take_lane_clip"] is None
+    assert postconditions["clips"][0]["clip_identity_verified"] is True
+    assert [track.name for track in live.song.tracks] == ["Lead", "User Track"]
+    lead = live.song.tracks[0]
+    assert _clip_notes(lead.clip_slots[0].clip) == [(60, 0.0, 1.0, 80.0, False, 64.0)]
