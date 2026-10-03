@@ -597,3 +597,35 @@ TEST_CASE("first species counterpoint below", "[species][core]") {
     auto result = check_first_species(cf, cp, CounterpointPosition::Below);
     REQUIRE(result.valid);
 }
+
+// Fux, Gradus ad Parnassum, second species: a dissonance on the weak beat
+// must be a passing note, approached and left by step in the same
+// direction. C5-D5-C5 over C4 is a neighbour-note figure and is rejected;
+// C5-D5-E5 over C4 then A4 passes and is accepted.
+TEST_CASE("Second species admits passing dissonances only", "[counterpoint][core]") {
+    SECTION("Neighbour-note dissonance is rejected") {
+        std::vector<MidiNote> cantus = {60, 60};
+        std::vector<MidiNote> counterpoint = {72, 74, 72, 72};
+        auto result = check_second_species(cantus, counterpoint);
+        CHECK_FALSE(result.valid);
+        REQUIRE(result.violations.size() == 1);
+        CHECK(result.violations[0].rule == "passing_tone");
+        CHECK(result.violations[0].measure == 0);
+        CHECK(result.violations[0].beat == 1);
+    }
+
+    SECTION("Passing dissonance is accepted") {
+        std::vector<MidiNote> cantus = {60, 69};
+        std::vector<MidiNote> counterpoint = {72, 74, 76, 76};
+        auto result = check_second_species(cantus, counterpoint);
+        CHECK(result.valid);
+        CHECK(result.violations.empty());
+    }
+
+    SECTION("A dissonance on the final weak beat cannot be left by step") {
+        std::vector<MidiNote> cantus = {60, 69};
+        std::vector<MidiNote> counterpoint = {72, 74, 76, 75}; // tritone, then nothing
+        auto result = check_second_species(cantus, counterpoint);
+        CHECK_FALSE(result.valid);
+    }
+}

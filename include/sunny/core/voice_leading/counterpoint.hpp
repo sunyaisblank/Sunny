@@ -134,7 +134,8 @@ check_first_species(std::span<const MidiNote> cantus,
  * @brief Validate second species counterpoint
  *
  * Two counterpoint notes per cantus firmus note.
- * Strong beats must be consonant; weak beats may pass through dissonance by step.
+ * Strong beats must be consonant; a dissonant weak beat must be a passing
+ * note, approached and left by step in the same direction (Fux).
  *
  * @param cantus Cantus firmus (one note per measure)
  * @param counterpoint Counterpoint (two notes per measure, interleaved: [m0_beat1, m0_beat2,

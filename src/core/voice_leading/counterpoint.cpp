@@ -201,33 +201,44 @@ SpeciesCheckResult check_second_species(std::span<const MidiNote> cantus,
         }
     }
 
-    // Weak beats: if dissonant, must be approached and left by step (passing tone)
+    // Weak beats: a dissonance must be a passing note (Fux), approached and
+    // left by step in the same direction. A neighbour note (step and return)
+    // is not admitted in second species, and a dissonance on the last weak
+    // beat has no continuation to pass into.
     for (std::size_t i = 0; i < n; ++i) {
         MidiNote cp_weak = counterpoint[i * 2 + 1];
         int iv = abs_interval(lower(cantus[i], cp_weak), upper(cantus[i], cp_weak));
-        if (!is_consonant(iv)) {
-            // Must be a passing tone: stepwise approach from strong beat
-            MidiNote cp_strong = counterpoint[i * 2];
-            int approach = melodic_interval(cp_strong, cp_weak);
-            if (!is_step(approach)) {
-                add_violation(v,
-                              static_cast<int>(i),
-                              1,
-                              "passing_tone",
-                              "Dissonant weak beat must be approached by step");
-            }
-            // Must continue by step in the same direction
-            if (i + 1 < n) {
-                MidiNote cp_next = counterpoint[(i + 1) * 2];
-                int continuation = melodic_interval(cp_weak, cp_next);
-                if (!is_step(continuation)) {
-                    add_violation(v,
-                                  static_cast<int>(i),
-                                  1,
-                                  "passing_tone",
-                                  "Dissonant weak beat must continue by step");
-                }
-            }
+        if (is_consonant(iv)) continue;
+
+        const int approach = melodic_interval(counterpoint[i * 2], cp_weak);
+        if (!is_step(approach)) {
+            add_violation(v,
+                          static_cast<int>(i),
+                          1,
+                          "passing_tone",
+                          "Dissonant weak beat must be approached by step");
+        }
+        if (i + 1 >= n) {
+            add_violation(v,
+                          static_cast<int>(i),
+                          1,
+                          "passing_tone",
+                          "Dissonant weak beat must continue by step to a following note");
+            continue;
+        }
+        const int continuation = melodic_interval(cp_weak, counterpoint[(i + 1) * 2]);
+        if (!is_step(continuation)) {
+            add_violation(v,
+                          static_cast<int>(i),
+                          1,
+                          "passing_tone",
+                          "Dissonant weak beat must continue by step");
+        } else if (is_step(approach) && (approach > 0) != (continuation > 0)) {
+            add_violation(v,
+                          static_cast<int>(i),
+                          1,
+                          "passing_tone",
+                          "Dissonant weak beat must continue in the direction of its approach");
         }
     }
 
