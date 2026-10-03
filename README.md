@@ -97,6 +97,27 @@ Without `SUNNY_ABLETON_HOST` the server runs offline: theory, document and notat
 and tools that change Live decline with an explicit error. `SUNNY_TCP_PORT` defaults to 9001.
 Under WSL2 with Live on the Windows host, use the Windows host's IP address.
 
+The server also runs from a Docker image, which needs nothing else installed on the host. MCP
+still travels over standard input and output, so the client starts the container itself:
+
+```bash
+docker build -t sunny-mcp .
+```
+
+```json
+{
+  "mcpServers": {
+    "sunny": {
+      "command": "docker",
+      "args": ["run", "-i", "--rm", "-e", "SUNNY_ABLETON_HOST=192.168.1.20", "sunny-mcp"]
+    }
+  }
+}
+```
+
+Replace the address with the machine running Live. The container's only network use is the
+outbound connection to the Remote Script.
+
 ## Connecting Ableton Live
 
 Copy the Remote Script into the `Remote Scripts` folder of your Live User Library and select it
@@ -115,6 +136,33 @@ Note writing needs Live 11 or later. Inserting native devices for Timbre and Mix
 Each deployment result reports what Live could not represent (for example third-party plug-ins
 or modulation the Live API does not expose) instead of silently dropping it. The Remote Script
 runs inside Live's own Python, which is 3.7 in Live 11, so it avoids newer syntax.
+
+## Live testing
+
+Development and CI need no Ableton. A real Live Set is checked last, from any machine that can
+reach the one running Live:
+
+1. On the Live machine, install the Remote Script as above and let it listen beyond loopback by
+   setting `SUNNY_BIND_HOST=0.0.0.0` in the environment Live starts with (a user environment
+   variable on Windows, `launchctl setenv` on macOS), then restart Live. Allow TCP 9001 through
+   the firewall from the testing machine only.
+2. Open an empty or scratch Set: the check adds two tracks.
+3. On the testing machine, run the check through the local build or the Docker image:
+
+   ```bash
+   export SUNNY_LIVE_HOST=192.168.1.20
+   export SUNNY_MCP_COMMAND="docker run -i --rm -e SUNNY_ABLETON_HOST -e SUNNY_TCP_PORT sunny-mcp"
+   pytest tests/python/test_live_host.py -s
+   ```
+
+The check deploys a small two-part project, verifies it by reading Live back, and prints what it
+observed. The same scenario runs against the offline Live model in every CI build.
+
+When something goes wrong inside Live, `get_ableton_remote_log` returns the Remote Script's own
+records: every request with its outcome, every refusal and every error, numbered so a client can
+poll for newer records with `after_sequence`. The log is held in memory inside Live (the last
+1,000 records) and needs no access to Live's own log file. `sunny-mcp` writes its own diagnostics
+to standard error, which `docker logs` or the MCP client's log shows.
 
 ## Python
 
@@ -151,8 +199,8 @@ Max externals on macOS and Windows.
 ## Limitations
 
 - Sunny has not yet been run against a real Live Set end to end. Behaviour that Ableton's
-  documentation does not settle is listed in GitHub issue #22 and will be checked in a final live
-  test from a separate machine running Live.
+  documentation does not settle is listed in GitHub issue #22 and is settled by the live check
+  above.
 - Known defects and their status are tracked as GitHub issues labelled `remediation`.
 - Documents live in the server's memory for the life of the process. Score, Mix and Corpus
   documents can be exported with `score_get_json`, `get_mix_json` and `get_corpus_json`; Timbre

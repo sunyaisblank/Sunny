@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import os
 import queue
+import shlex
 import subprocess
 import threading
 from fractions import Fraction
@@ -21,6 +22,7 @@ from typing import Any
 
 import pytest
 from live_model import LiveSet, RoutingTypeCategory
+from live_scenario import run_live_smoke
 from Sunny import surface as surface_module
 from Sunny.surface import SunnyControlSurface
 
@@ -63,10 +65,19 @@ class _LiveMainThread:
 class _McpClient:
     """A line-delimited JSON-RPC client for one ``sunny-mcp`` process."""
 
-    def __init__(self, binary: Path, port: int) -> None:
-        environment = dict(os.environ, SUNNY_ABLETON_HOST="127.0.0.1", SUNNY_TCP_PORT=str(port))
+    def __init__(
+        self,
+        binary: Path | None,
+        port: int,
+        host: str = "127.0.0.1",
+        command: list[str] | None = None,
+    ) -> None:
+        # ``command`` replaces the binary, e.g. ``docker run -i --rm -e
+        # SUNNY_ABLETON_HOST -e SUNNY_TCP_PORT sunny-mcp``; the host and port
+        # still travel in the environment.
+        environment = dict(os.environ, SUNNY_ABLETON_HOST=host, SUNNY_TCP_PORT=str(port))
         self._process = subprocess.Popen(
-            [str(binary)],
+            command or [str(binary)],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
@@ -115,8 +126,13 @@ class _McpClient:
 
 @pytest.fixture
 def bridge(request, monkeypatch):
-    """Yield ``(live, client)``: a modelled Live Set behind the real bridge and an MCP client."""
-    binary = _sunny_mcp_binary()
+    """Yield ``(live, client)``: a modelled Live Set behind the real bridge and an MCP client.
+
+    SUNNY_MCP_COMMAND runs the server another way, such as through the Docker
+    image with host networking, so the same tests cover the container.
+    """
+    command = os.environ.get("SUNNY_MCP_COMMAND")
+    binary = None if command else _sunny_mcp_binary()
     # Tests may request another Live version with indirect parametrisation.
     live = LiveSet(getattr(request, "param", (12, 3, 5))).install(monkeypatch)
     # Port 0 asks the OS for an ephemeral port; the surface's own parser
@@ -131,7 +147,11 @@ def bridge(request, monkeypatch):
             if surface._server.is_running:
                 break
             threading.Event().wait(0.01)
-        client = _McpClient(binary, surface._server.bound_port)
+        client = _McpClient(
+            binary,
+            surface._server.bound_port,
+            command=shlex.split(command) if command else None,
+        )
         yield live, client
     finally:
         if client is not None:
@@ -473,3 +493,53 @@ def test_project_plan_applies_against_live_11_without_take_lanes(bridge):
     assert [track.name for track in live.song.tracks] == ["Lead", "User Track"]
     lead = live.song.tracks[0]
     assert _clip_notes(lead.clip_slots[0].clip) == [(60, 0.0, 1.0, 80.0, False, 64.0)]
+
+
+def test_remote_log_reports_what_happened_inside_live(bridge):
+    """A client on another machine can read the Remote Script's own records over MCP."""
+    live, client = bridge
+    live.song.create_midi_track(-1)
+    clip = {
+        "track_index": 0,
+        "slot_index": 0,
+        "root": "C",
+        "scale": "major",
+        "numerals": ["I", "V"],
+        "octave": 4,
+        "duration_beats": 2.0,
+    }
+    assert client.call("create_progression_clip", **clip).get("success") is True
+    # Live refuses create_clip on an occupied slot; the refusal happens inside Live.
+    refused = client.call("create_progression_clip", **clip)
+    assert refused.get("success") is False, refused
+    assert refused["outcome"] == "not_applied"
+
+    log = client.call("get_ableton_remote_log")
+    assert log.get("success") is True, log
+    assert log["truncated"] is False
+    messages = [entry["message"] for entry in log["entries"]]
+    assert any("create_clip: ok" in message for message in messages), messages
+    refusals = [
+        entry
+        for entry in log["entries"]
+        if entry["level"] == "WARNING" and "create_clip" in entry["message"]
+    ]
+    assert len(refusals) == 1, messages
+    sequences = [entry["sequence"] for entry in log["entries"]]
+    assert sequences == sorted(sequences) and log["next_sequence"] == sequences[-1]
+
+    # Polling from the last sequence seen returns only what happened since.
+    assert client.call("get_ableton_session_state").get("success") is True
+    newer = client.call("get_ableton_remote_log", after_sequence=log["next_sequence"])
+    assert newer["entries"], newer
+    assert all(entry["sequence"] > log["next_sequence"] for entry in newer["entries"])
+    assert not any("create_clip" in entry["message"] for entry in newer["entries"])
+
+
+def test_the_live_smoke_scenario_passes_against_the_offline_model(bridge):
+    """The scenario used for the final live check is itself exercised offline."""
+    live, client = bridge
+    live.song.create_midi_track(-1).name = "User Track"
+    observed = run_live_smoke(client)
+    assert observed["tracks_after"] == 3
+    assert [track.name for track in live.song.tracks][-1] == "User Track"
