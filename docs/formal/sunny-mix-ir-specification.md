@@ -201,6 +201,10 @@ constraint; relative mutation is transactional and rejects missing references or
 | `pre_fader` | `bool` | If true, send level is independent of fader; if false, send follows fader |
 | `enabled` | `bool` | Send active/inactive |
 
+A send level is finite and no greater than the model's +12 dB level ceiling (rule X11). Live's own
+send control tops out at 0 dB; that narrower limit belongs to the Ableton target, and the compiler
+refuses an unrepresentable enabled send rather than clamping it (§10.1).
+
 ### 2.4 ChannelIntent
 
 **Definition 2.4.1**. Semantic annotation describing the mixing intent for this channel.
@@ -634,7 +638,9 @@ Standard orchestral seating arrangements as spatial position templates:
 
 **European seating** (traditional, with second violins on the right):
 
-Differs primarily in that Violin II is placed at +0.2 to +0.6 (right side) and cellos move to the left, creating antiphonal string effects.
+Differs only in that Violin II is placed at +0.2 to +0.6 (right side) and the cellos move to the left, mirroring their American seat at −0.7 to −0.5, creating antiphonal string effects. All other sections keep their American positions.
+
+Because Violin I and Violin II share an instrument type, a channel's section cannot be derived from its Part; `apply_seating_template` therefore takes an explicit list of `{channel_id, section}` assignments. Each named channel receives the midpoint of its section's pan and depth ranges (European cellos at −0.6, Violin II at +0.4); its other spatial fields and every unnamed channel are unchanged. An unknown section, unknown channel, or repeated channel rejects the whole request without mutation.
 
 These are starting-point templates; the agent adjusts positions based on the specific production context.
 
@@ -693,6 +699,11 @@ Each stage is optional; the chain is configured by the agent based on genre and 
 | `Film` | −24 | −2.0 | Film/TV dialogue normalisation |
 | `Vinyl` | −12 to −9 | −0.5 | Vinyl mastering (higher loudness, limited by medium) |
 | `Custom { lufs: f32, peak: f32 }` | configurable | configurable | User-defined |
+
+Every value is relative to digital full scale (ITU-R BS.1770, EBU R128), so a positive target is
+unreachable. A LoudnessTarget therefore requires finite `integrated_lufs <= 0`, finite
+`true_peak_dbfs <= 0`, and, when present, a finite non-negative `loudness_range_lu` (rule X13).
+`set_loudness_target` rejects a target outside this domain without mutation.
 
 ### 7.4 DitheringConfig
 
@@ -786,11 +797,18 @@ compare_to_reference(reference_id) → ReferenceComparison
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `spectral_deviation` | `Vec<(f32, f32)>` | (frequency, dB difference) — where the mix deviates from the reference spectrum |
-| `loudness_difference` | `f32` | LUFS difference |
-| `dynamic_range_difference` | `f32` | LRA/DR difference |
-| `width_difference` | `f32` | Stereo width difference |
+| `spectral_deviation` | `Option<Vec<(f32, f32)>>` | (frequency, dB difference) — where the mix deviates from the reference spectrum |
+| `loudness_difference` | `Option<f32>` | LUFS difference |
+| `dynamic_range_difference` | `Option<f32>` | LRA/DR difference |
+| `width_difference` | `Option<f32>` | Stereo width difference |
 | `recommendations` | `Vec<MixRecommendation>` | Suggested adjustments |
+
+Each difference is mix minus reference, and the mix side is only what has been configured: Sunny
+performs no audio analysis. `loudness_difference` is present only when the master bus has a
+loudness target, and `dynamic_range_difference` only when that target also carries a loudness
+range. `spectral_deviation` and `width_difference` require a measured mix and are always absent.
+An absent value is reported as null with a reason in the tool's `unavailable` list, because zero
+would assert that mix and reference agree.
 
 **MixRecommendation**:
 
@@ -824,7 +842,14 @@ compare_to_reference(reference_id) → ReferenceComparison
 
 ### 9.2 MixAutomationTarget
 
-Targets are addressed by their structural path in the MixGraph:
+Targets are addressed by their structural path in the MixGraph. A bracketed number names an
+identity, except inside an effect chain: after `channels` it is the channel's Part ID, after
+`group_buses` a GroupBus ID, and after `sends`, `aux_buses`, or its alias `aux_sends` an AuxBus ID;
+after `effects` it is the effect's position in that chain. The segment after `parameters` is a
+scalar effect-parameter path accepted by the effect's variant (§3.8). Channels additionally admit
+`input_trim`; channels and groups admit `spatial.<axis>` for pan, depth, elevation, or width; aux
+buses admit `return_level` and `return_spatial.<axis>`. A path must be written in its canonical
+spelling and resolve in the current graph (rule X12).
 
 Examples:
 - `channels[part_id].fader.level_db` — channel fader level
@@ -893,7 +918,15 @@ nor reads that target fact.
    exact static solutions and measurement-dependent residual states in the result. Every derived
    channel, return, send, and device path must fit the bridge's canonical non-negative signed-index
    domain; reject an unrepresentable range before mutation. Summary counters are 64-bit and do not
-   inherit this addressing limit.
+   inherit this addressing limit. Every level the compiler would write must also fit Live's own
+   controls: a channel, master, or return fader (resolved value or explicit fallback) at most
+   +6 dB, and an enabled channel send at most 0 dB. The Mix IR admits levels up to +12 dB, so a
+   graph that is valid can still be unrepresentable in Live; any such level refuses the complete
+   compilation with `TargetValueUnrepresentable` (4112) before the Mix compiler's first target
+   query or mutation, rather than clamping the request. Because project planning runs the complete
+   compilation against a recording transport, the project path reports this refusal while planning,
+   before any Live mutation. Group faders and group sends are not materialised and are not
+   checked.
 
 2. **Track structure**: Use the channel tracks created by the Score compiler. If AuxBuses are
    requested, inspect the current return count and fail before mutation when it is unavailable;
@@ -905,8 +938,7 @@ nor reads that target fact.
 
 3. **Channel processing**: In aggregate project compilation, resolve each ChannelStrip's `part_id`
    through the Score-derived Part-to-track map, independently of ChannelStrip collection order,
-   then insert enabled effects in IR order. The legacy standalone compiler accepts an explicit
-   `base_track` and therefore uses channel collection order by contract. Device insertion requires
+   then insert enabled effects in IR order. Device insertion requires
    Live 12.3+. Whenever at least one enabled effect is materialisable, inspect the track's current
    device count before insertion. If the count is `n`, the first inserted effect is appended and
    verified as `devices[n]`, the next as `devices[n+1]`, and so on; an unavailable count is a
@@ -1024,7 +1056,7 @@ successful-call counters remain distinct from verified target state.
 - Missing or malformed property evidence from a real transport is a protocol failure. A recording
   transport emits the same deterministic property plan with null observations and no verification
   claim.
-- Snapshot schema 34 records finite internal bounds, exact Boolean quantisation/enablement, the
+- The current snapshot schema records finite internal bounds, exact Boolean quantisation/enablement, the
   conditional finite in-range continuous default or exact opaque quantized-label vector, active
   state, and automation state for every selected mixer parameter. Final scalar evidence
   requires the requested value, the operation's documented domain class, enabled true,
@@ -1077,7 +1109,9 @@ caller-supplied.
 | X8 | Error | An effect target mapping has an unresolved path, invalid domain/curve, empty target, or same-effect target alias |
 | X9 | Error | Relative faders contain a missing reference, dependency cycle, non-finite value, invalid loudness target, or derived value above +12 dB |
 | X10 | Error | Channel/group assignments or child/parent group routing do not exactly mirror the corresponding member list, including dangling or duplicate members |
-| X11 | Error | A Channel/Group send level is non-finite or the same source contains more than one send record for an AuxBus |
+| X11 | Error | A Channel/Group send level is non-finite or above +12 dB, or the same source contains more than one send record for an AuxBus |
+| X12 | Error | An automation lane has an unresolvable target (§9.2), an undefined interpolation mode, no breakpoint, a non-finite value, a time before bar 1 beat 0, or breakpoint times that are not strictly increasing (§15.3(9)) |
+| X13 | Error | The master loudness target has integrated loudness above 0 LUFS, true peak above 0 dBTP, or a non-finite or negative loudness range (§7.3) |
 
 X7 uses a deliberately target-independent, tractable source envelope. Device-specific intervals
 remain mapping facts:
@@ -1133,7 +1167,7 @@ remain mapping facts:
 | `assign_group_to_group` | Transactionally route one GroupBus into another with one exact mirror edge, rejecting cycles/depth violations |
 | `route_group_to_master` | Transactionally remove every parent mirror edge and route the GroupBus directly to Master |
 | `set_channel_send` | Set a channel's send level to an aux bus |
-| `apply_seating_template` | Apply an orchestral seating preset to spatial positions |
+| `apply_seating_template` | Seat each channel named in a `sections` list of `{channel_id, section}` by an orchestral preset (§6.4) |
 | `set_output_format` | Set stereo, surround, or immersive output |
 
 **Processing tools**:
@@ -1172,11 +1206,10 @@ remain mapping facts:
 | `set_channel_intent` | Set the mixing intent for a channel |
 | `set_group_intent` | Set the mixing intent for a group |
 
-**Compilation**:
+**Validation and serialisation**:
 
 | Tool | Description |
 |------|-------------|
-| `compile_mix` | Compile supported mixer operations and report completeness |
 | `validate_mix` | Run all validation rules |
 | `get_mix_json` | Serialise the current Mix IR graph |
 
@@ -1184,7 +1217,7 @@ remain mapping facts:
 
 1. `create_mix_graph` — initialise from Score IR parts.
 2. `create_group_bus` — create Woodwinds, Brass, Percussion, Strings groups.
-3. `apply_seating_template("American")` — set initial spatial positions.
+3. `apply_seating_template("American", sections=[{channel_id, section}, ...])` — set initial spatial positions.
 4. `create_aux_bus("Concert Hall")` — shared reverb for orchestral space.
 5. For each channel: `set_channel_send` to the concert hall reverb, level based on depth position.
 6. For each channel: `set_channel_intent` describing role and frequency allocation.
@@ -1197,7 +1230,7 @@ remain mapping facts:
 13. `compare_to_reference` — identify spectral and dynamic deviations.
 14. Iterate: adjust EQ, levels, reverb sends based on comparison.
 15. `validate_mix` — check for clipping, phase issues, intent consistency.
-16. `compile_mix` — push to Ableton.
+16. `project_compile_to_ableton` — push to Ableton.
 
 ### 12.3 Agent Workflow: Mixing an Electronic Track
 
@@ -1213,7 +1246,7 @@ remain mapping facts:
 10. `set_loudness_target(StreamingLoud, -14 LUFS)`.
 11. `create_reference_profile` with caller-supplied measurements from a reference track.
 12. Iterate toward reference.
-13. `compile_mix`.
+13. `project_compile_to_ableton`.
 
 ---
 
@@ -1226,7 +1259,7 @@ snake_case fields, Beat values as `{"n": ..., "d": ...}`, enumerations as intege
 the current schema). Version 2 added `delay` and `reverb`; version 3 requires every encoded effect
 to carry a `parameter_map` object. The reader migrates version 1 and 2 effects to an empty map,
 without inventing target facts. Unknown effect discriminators or malformed mappings are format
-errors, and full X0–X8 validation runs after parsing. No binary Mix IR codec is implemented or
+errors, and the MixGraph-internal rules (X0 and X2–X13) run after parsing. No binary Mix IR codec is implemented or
 advertised.
 
 ### 13.2 Invariant Re-Validation on Load
@@ -1279,9 +1312,9 @@ The deployed MCP server exposes the following registration groups:
 | Registration group | Tool count | Examples |
 |--------------------|-----------:|----------|
 | Core and Ableton | 10 | `analyze_harmony`, `create_progression_clip`, `get_ableton_session_state` |
-| Score IR | 29 | `score_create`, `score_insert_chord_symbol`, `score_compile_to_ableton` |
-| Timbre IR | 23 | `set_sound_source`, `map_timbre_parameter`, `compile_timbre` |
-| Mix IR | 28 | `set_channel_relative_level`, `resolve_mix_fader_levels`, `compile_mix` |
+| Score IR | 31 | `score_create`, `score_insert_chord_symbol`, `score_compile_to_musicxml` |
+| Timbre IR | 22 | `set_sound_source`, `map_timbre_parameter`, `validate_timbre` |
+| Mix IR | 27 | `set_channel_relative_level`, `resolve_mix_fader_levels`, `validate_mix` |
 | Corpus IR | 22 | `ingest_midi`, `remove_ingested_work`, `query_style_profile` |
 | Project | 4 | `project_validate`, `project_plan_to_ableton`, `project_apply_ableton_plan`, `project_compile_to_ableton` |
 
@@ -1297,7 +1330,7 @@ Total: 116 tools. `tools/list` is the runtime authority.
 2. The signal flow graph is a DAG (no cycles).
 3. Every channel reaches the master bus.
 4. Group bus nesting does not exceed a configurable maximum depth (default: 4).
-5. Aux send levels are finite (no +∞ dB sends).
+5. Aux send levels are finite and no greater than +12 dB.
 6. The relative-fader dependency graph is referentially closed and acyclic; only
    measurement-dependent loudness targets may remain unresolved.
 7. Channel/group assignments and parent/child group membership lists are exact bidirectional

@@ -115,19 +115,25 @@ A,D,R\in[0,\infty)\text{ seconds},\qquad S\in[0,1].
 
 States are `Idle`, `Attack`, `Decay`, `Sustain`, and `Release`. `trigger()` captures the current
 level \(y_a\) and enters Attack. `release()` from any active state captures the current level
-\(y_r\) and enters Release. At sample rate \(F_s>0\), positive-duration stages use the linear
-increments
+\(y_r\) and enters Release. Attack runs from \(y_a\) to 1, Decay from 1 to \(S\), and Release
+from \(y_r\) to 0. At sample rate \(F_s>0\), a stage of duration \(d\) spans \(L=dF_s\) samples;
+when \(L\) lies within one part in \(10^9\) of an integer (`ENVELOPE_STAGE_SNAP_TOLERANCE`) it is
+taken to be that integer, which absorbs the binary representation error of decimal durations such
+as 0.01 s. Position is computed from the sample index rather than by accumulating increments: the
+\(k\)-th sample emitted in the stage (\(k\ge 1\)) lies
 
 \[
-\Delta_A=\frac{1-y_a}{AF_s},\quad
-\Delta_D=\frac{1-S}{DF_s},\quad
-\Delta_R=\frac{y_r}{RF_s}.
+\frac{k}{L}
 \]
 
-Thus release reaches zero after its configured duration regardless of whether release began during
-Attack, Decay, or Sustain. A zero-duration stage is an immediate state transition and does not add
-a hidden sample. Output is clamped by stage completion to `[0,1]`. `reset()` enters Idle and clears
-the exposed and captured values.
+of the way from the stage's start level to its end level, and the stage ends on the first sample
+with \(k\ge L\), which emits the end level exactly. A 0.01 s attack at 48 kHz therefore emits
+\(1/480, 2/480, \ldots, 1\) over exactly 480 samples, and release reaches zero after its configured
+duration regardless of whether release began during Attack, Decay, or Sustain. A zero-duration
+stage emits its end level for one sample, so a zero attack emits the 1.0 peak before Decay begins.
+If \(L\) changes within a stage, through a new sample rate or duration, the fraction already
+completed is kept and the remainder runs at the new length. `reset()` enters Idle and clears the
+exposed and captured values.
 
 ### 3.3 Sample and hold
 
@@ -398,11 +404,18 @@ r_{n+1}=a_n-\Delta_n.
 \]
 
 BlockClock advances by integer \(\Delta_n\) and returns the committed integer endpoints
-`{tick_before, tick_after}`. The implementation evaluates the boundary conversion in `long double`
-and retains `r`; it therefore removes the systematic loss caused by truncating every small block
-independently. In the real-number model, cumulative quantisation is less than one tick.
-Finite-precision rounding remains an audio-boundary approximation and is not described as
-rational-exact time. Before integer conversion the accumulated delta must be strictly below
+`{tick_before, tick_after}`. Retaining `r` removes the systematic loss caused by truncating every
+small block independently; cumulative quantisation is less than one tick. When \(bq\) and
+\(60F_s\) are both positive integers no greater than \(2^{40}\), the recurrence is evaluated
+exactly in integer arithmetic: the sub-tick position is carried as an integer remainder over
+\(60F_s\), and block endpoints and event sample offsets follow by integer division, so an event on
+an exact sample boundary \(k\) is assigned to sample \(k\). The remainder is stored as a
+`long double` fraction from which the bound \(2^{40}\) lets it be recovered exactly by rounding;
+after a rate change it becomes the nearest multiple of \(1/(60F_s)\) ticks. Products that would
+overflow return `ArithmeticOverflow`. Otherwise the conversion is evaluated in `long double`, and a
+position or endpoint within `BLOCK_SAMPLE_SNAP_TOLERANCE` \(=2^{-20}\) samples of a boundary is
+snapped to that boundary; this path is an audio-boundary approximation and is not described as
+rational-exact time. Before integer conversion its accumulated delta must be strictly below
 the exactly representable exclusive bound `2^63`; comparing with a floating conversion of
 `INT64_MAX` is insufficient when that value rounds upward. Endpoint addition is checked separately.
 
@@ -420,7 +433,7 @@ notes,
 P_{n,i}=\frac{x_n+is}{q}.
 \]
 
-The output is projected to `double`; the recurrence and endpoint plan use `long double`. The first
+The output is projected to `double`; the endpoint plan is the one above. The first
 sample therefore names the position before sample zero elapses, and the last sample is not the
 post-vector endpoint. After all samples are written, the clock commits exactly the same
 \((t_{n+1},r_{n+1})\) as the endpoint-only call above. A paused or stopped clock emits the constant
@@ -503,9 +516,12 @@ Thus quantisation is toward the start of the containing sample and is early by l
 in the real-number model. An event exactly at \(x+Ns\) is not part of this vector and remains queued
 for offset zero of the next non-empty running vector. The boundary comparison uses BlockClock's integer endpoint and fractional remainder separately:
 `k < tick_after`, or `k == tick_after` with a positive fractional remainder. Offset calculation
-subtracts integer ticks before floating conversion, then subtracts the start remainder. This
-preserves sub-tick intervals when the absolute tick coordinate is large. The recurrence remains
-deterministic under §2's numeric assumption but is not rational-exact time.
+subtracts integer ticks first, which preserves sub-tick intervals when the absolute tick coordinate
+is large. On §5.3's integral-rate path it then computes \(o(k)\) exactly by integer division, so an
+event on an exact sample boundary is assigned to that sample. On the floating path it subtracts the
+start remainder in `long double` and snaps a position within `BLOCK_SAMPLE_SNAP_TOLERANCE` of a
+sample boundary to that boundary; that path remains deterministic under §2's numeric assumption but
+is not rational-exact time.
 
 Before writing anything, processing validates the signed vector against SignalBlockContext,
 preflights the complete clock plan, counts every due event, and requires the caller span to hold the

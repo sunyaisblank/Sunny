@@ -745,6 +745,8 @@ Timbral automation is the mechanism by which an agent can, for example, graduall
 
 All numeric parameters are interpolated; discrete parameters (waveform type, filter type) switch at the midpoint unless explicitly sequenced.
 
+`morph_presets` admits a morph only when both preset IDs exist in the session's preset library and the interval starts at or after bar 1 beat 0 and ends after it starts; a rejected morph leaves the profile unchanged.
+
 ---
 
 ## 8. Presets
@@ -776,7 +778,7 @@ A preset library is a collection of TimbrePresets, searchable by:
 
 ### 9.1 Compilation to Ableton
 
-The *TimbreCompiler* maps each TimbreProfile to the supported portion of an Ableton instrument device chain. Its MCP result distinguishes acknowledged transport success from completeness and includes warnings for requested operations outside the public LOM surface.
+The *TimbreCompiler* maps each TimbreProfile to the supported portion of an Ableton instrument device chain. Its result, which reaches MCP callers through the project tools (`sunny-project-model.md`), distinguishes acknowledged transport success from completeness and includes warnings for requested operations outside the public LOM surface.
 
 The production transport first obtains the externally observed target profile described in the
 bridge contract (`remote_script/Sunny/bridge_contract.json`). The result carries that profile so support decisions are tied to
@@ -811,7 +813,12 @@ the resolved track, the compiler:
 3. Inserts enabled native effects in IR order. Each real insertion must prove an exact append,
    requested display class, audio-effect type, non-Rack shape, activity, and continued Track audio-output
    classification. A non-default wet balance is set by exact `DeviceParameter` name through the
-   Sunny bridge adapter unless an explicit mapping owns that IR path.
+   Sunny bridge adapter unless an explicit mapping owns that IR path. Only Saturator, Delay,
+   Reverb, Chorus-Ensemble, Phaser-Flanger, and Compressor expose a native `Dry/Wet` parameter; EQ
+   Eight has none, and an Audio Effect Rack exposes only its macros. An unmapped wet balance below
+   1.0 on a device without `Dry/Wet` becomes a warning and the device is planned fully wet. An
+   explicit mapping of `Dry/Wet` onto such a device would fail part-way through apply, so the
+   compiler refuses it with `TargetValueUnrepresentable` (4112) before the first target mutation.
 4. Resolves every explicit rendering-map path to its current numeric IR value, performs the declared source/curve/target conversion, writes the named DeviceParameter, and retains immediate readback evidence.
 5. Returns paired `devices_requested`/`devices_created`/`devices_verified` and
    `effects_requested`/`effects_inserted`/`effects_verified` counts, per-parameter evidence, and a warning list without
@@ -851,6 +858,9 @@ the resolved track, the compiler:
   instrument already occupies the MIDI track.
 - A mapping contains no duplicated current value: its map key is a typed Timbre path, and the compiler obtains the current value with `get_parameter`. Invalid paths, domains, curves, current values, or non-materialisable device indices fail before the first Live mutation.
 - The current bridge protocol matches `parameter_name` against exact public `name`/`original_name`, rejects disabled or non-changeable parameters, validates declared internal ranges against Live's `min`/`max` before the parameter write, and returns requested/observed value, resolved identity, actual bounds, quantisation, the conditional `default_value`/`value_items` domain, `is_enabled`, `state`, and `automation_state` evidence. Non-quantized evidence requires only a finite in-range floating default and null labels; quantized evidence requires a null default and an exact, possibly empty string vector. Labels remain opaque: their localization stability, uniqueness, value correspondence, and enum meaning are not inferred. Each result retains its requested range and explicit `not_applied`, `recorded_only`, or `set` action. State 1 is writable but inactive; any inactive or automated mapping remains incomplete even when scalar readback is equal. A quantized target also warns because one matching scalar and retained labels do not establish the continuous mapping semantics of a Timbre float leaf. Missing, extended, conditionally incoherent, or malformed evidence from a real transport is a protocol error. Recording transports cannot claim verification.
+- Public LOM cannot author synthesis modulation routings, macro mappings, or preset interpolation.
+  The compiler emits one warning for each unapplied modulation routing, each macro (with its
+  mapping count), and each preset morph, rather than dropping them silently.
 - Public LOM exposes parameter value mutation and automation clearing, but not automation-envelope authoring. TimbreAutomation remains in the IR and produces an incomplete result. The result reports the cardinality of `parameter_automation` as `automation_lanes_requested` and zero as `automation_lanes_written`; these are 64-bit evidence counters, not target addresses.
 - Max for Live devices are not native devices for `Track.insert_device`. A future Max target must
   have a separately installed `.amxd` deployment path and cannot be bootstrapped by this compiler.
@@ -949,8 +959,8 @@ These validations require audio rendering and analysis:
 | `create_timbre_profile` | Create a new TimbreProfile for a Score IR Part |
 | `set_sound_source` | Set or change the sound source type and parameters |
 | `add_effect` | Add an effect to the insert chain |
-| `remove_effect` | Remove an effect from the chain |
-| `reorder_effects` | Apply an exact effect-ID permutation; invalid length, duplicate IDs, or missing IDs leave the complete profile unchanged |
+| `remove_effect` | Remove an effect from the chain; modulation and macro targets, automation lanes, and rendering-map paths and device indices that address later effects shift with them. Removal of an effect that is still referenced, or one that would make a valid profile invalid, is refused and leaves the profile unchanged |
+| `reorder_effects` | Apply an exact effect-ID permutation; every modulation/macro target, automation lane, and rendering-map reference follows its effect. Invalid length, duplicate IDs, or missing IDs leave the complete profile unchanged |
 | `set_parameter` | Set any parameter by path |
 | `get_parameter` | Read a numeric parameter by path |
 | `create_modulation_lfo` | Add a validated owned LFO source and return its index |
@@ -962,12 +972,11 @@ These validations require audio rendering and analysis:
 | `add_automation` | Add timbral automation |
 | `set_semantic_descriptors` | Set or update semantic descriptors |
 | `search_presets` | Search the preset library by descriptors, tags, or text |
-| `load_preset` | Apply a preset to a TimbreProfile |
+| `load_preset` | Apply a preset to a TimbreProfile atomically |
 | `save_preset` | Save current state as a preset |
-| `morph_presets` | Set up a preset morph over a score time range |
+| `morph_presets` | Set up a preset morph over a score time range between two existing presets (§7.2) |
 | `analyze_timbre` | Derive semantic descriptors heuristically from current parameters |
 | `map_timbre_parameter` | Declare and preflight an IR-to-Ableton DeviceParameter mapping |
-| `compile_timbre` | Compile supported native devices and report completeness |
 | `validate_timbre` | Run validation |
 
 ---
@@ -981,7 +990,7 @@ These validations require audio rendering and analysis:
 3. Validation reports parameters outside their declared ranges.
 4. All parameter-path consumers use the canonical exact resolver; successful resolution consumes the whole path to a present continuous `f32` leaf in the active structure.
 5. Mutation and load boundaries reject invalid automation lanes. ScoreTime values are structurally validated; checking them against a particular Score duration requires caller context.
-6. Presets may be partial snapshots; loading changes only the parameter paths present in the preset.
+6. Presets may be partial snapshots; loading changes only the parameter paths present in the preset. Loading is atomic: if any path fails to resolve or validate, every value already written is restored and the profile is left unchanged.
 7. All rendering mappings resolve and convert before the first target mutation; invalid mapping state produces no command stream.
 8. The TimbreCompiler produces one deterministic supported command stream per TimbreProfile, retains requested/observed mapping evidence, and reports every unrepresentable requested feature.
 

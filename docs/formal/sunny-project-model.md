@@ -93,8 +93,8 @@ aggregate Ableton compilation defines
 - the unique ChannelStrip bound to `p_i` configures mixer state on track `φ(p_i)`.
 
 Reordering `T` or `M.channels` cannot alter target selection. This property is tested
-adversarially. The standalone Mix compiler's `base_track` overload is a lower-level compatibility
-surface whose explicit contract remains position-based; it is not the aggregate project compiler.
+adversarially. The Project tools are the only MCP path that writes Score, Timbre, or Mix state to
+Live; no per-document compile tool or position-based track overload remains.
 
 ## 4. Validation function
 
@@ -146,9 +146,10 @@ JSON must equal the next \(m_i\); divergence is declined locally. Every attempte
 a journal entry classified as `recorded_only`, `acknowledged`, `declined_before_send`, or
 `indeterminate`. The transport separately proves `not_sent`, `sent_without_valid_response`, or
 `response_received`; a local size/connectivity/plan decline is therefore not falsely classified as
-a possible Live mutation. Once any request bytes may have been sent, failure is indeterminate
-rather than “rejected” because a setter/call may have mutated Live before readback,
-acknowledgement, peer failure, or a socket timeout. A post-attempt observation is requested even
+a possible Live mutation. A frame that never completed is `not_sent`: the peer dispatches only
+complete frames, and the transport abandons the connection. Once a complete request frame may have
+been sent, failure is indeterminate rather than “rejected” because a setter/call may have mutated
+Live before readback, acknowledgement, peer failure, or a socket timeout. A post-attempt observation is requested even
 after compilation failure when the connection remains usable.
 
 The successful compilation result retains the explicit Part-to-track map, local compiler results,
@@ -164,8 +165,8 @@ The Score sub-result includes its complete MIDI compilation report; any dropped 
 residual participates in aggregate MCP `complete` rather than disappearing behind otherwise valid
 Timbre/Mix results.
 
-Every typed deployment observation which is also exposed by a standalone Score, Timbre, or Mix MCP
-tool has one Infrastructure JSON projection. This includes Score tuning, notes, Clip-envelope
+Every typed deployment observation in the Score, Timbre, and Mix sub-results is encoded by one
+shared Infrastructure JSON projection (`mcp/evidence_encoding`). This includes Score tuning, notes, Clip-envelope
 clears, CuePoints, scalar properties, Timbre parameters, inserted devices, Mix Return/Main Track
 intent, Mix parameters, and Mix parameter coverage. Therefore aggregation changes containment but
 not the field inventory or interpretation of the observation. This is an internal schema invariant;
@@ -211,7 +212,7 @@ The aggregate model assumes only the target operations admitted by the bridge co
   are validated before Live object traversal, so the bridge cannot be used as an unmodelled
   reflection tunnel; native path parsing is lossless and both native transports reject
   noncanonical ASCII spellings as `not_sent`;
-- plan preconditions use current-protocol snapshot schema 34 over documented Song tempo/signature,
+- plan preconditions use the current-protocol snapshot schema over documented Song tempo/signature,
   exact Boolean Song transport-running, count-in, Arrangement Record, Session Overdub, Automation
   Arm, and both documented Arrangement-overdub properties, exact Boolean Link enablement, Link
   start/stop sync, Tempo Follower, tempo-nudge, Back to Arrangement, and Re-Enable Automation
@@ -323,13 +324,15 @@ The aggregate model assumes only the target operations admitted by the bridge co
   remain explicit false residuals. It likewise exposes no MIDI Clip bank/sub-bank/program state,
   so `midi_bank_program_state_observed` and `program_change_suppression_verified` remain false:
   final Device/parameter equality does not prove that launch-time MIDI cannot select another
-  preset. Snapshot schema 34 also retains exact Boolean `is_playing`, `is_recording`,
+  preset. The current snapshot schema also retains exact Boolean `is_playing`, `is_recording`,
   `is_overdubbing`, `is_triggered`, and `will_record_on_start` state for every occupied Clip.
   Generated-Clip evidence requires all five false and exports independent
   `recording_quiescence_verified` and `playback_idle_verified` verdicts. These are sequential
   point observations, not a stop mutation, atomic tuple, future-stability proof, or playback trace.
-  The same Clip record requires exact audio false/MIDI true/Arrangement false identity, and on
-  Live 11+ exact Session true/Take-Lane false identity. For the required unlooped state, public
+  The same Clip record requires exact audio false/MIDI true/Arrangement false identity, on
+  Live 11+ exact Session true identity, and on Live 12+ exact Take-Lane false identity. Take lanes
+  arrived with Live 12, so below it the take-lane identity is null and its false value holds by
+  construction. For the required unlooped state, public
   `end_time` must independently equal the requested End Marker through
   `playback_end_verified`; neither derived equality is a playback trace.
   The containing Track independently retains the complete ordered ClipSlot vector, including empty
@@ -349,8 +352,9 @@ The aggregate model assumes only the target operations admitted by the bridge co
   requires zero. Earlier modeled profiles retain null and cannot verify the absence proposition.
   This count is complete for the requested empty set but does not identify arbitrary nonempty
   Arrangement content, make the sequential reads atomic, or establish playback or sound.
-  The same Live-11+ branch retains the separate `take_lanes` cardinality and requires zero for a
-  generated Track. Take Lane Audition Mode can replace the normally audible main lane, but no public
+  On Live 12+, the Track also retains the separate `take_lanes` cardinality and requires zero for a
+  generated Track; below Live 12 the count is null and take-lane absence holds by construction.
+  Take Lane Audition Mode can replace the normally audible main lane, but no public
   LOM audition-state property exists; eliminating the lane topology is therefore the complete
   tractable proposition, not evidence that an unobserved switch is off.
   Each generated Clip also retains the requested all-envelope clear, its immediate
@@ -359,7 +363,7 @@ The aggregate model assumes only the target operations admitted by the bridge co
   expression, external control, or audible output. Per-note MPE is independently unobservable in
   the current public Clip note dictionaries, so `mpe_note_expression_state_observed` and
   `mpe_note_expression_neutrality_verified` remain false even when the ordinary note subset and
-  Clip-envelope absence verify. Because snapshot schema 34
+  Clip-envelope absence verify. Because the current snapshot schema
   omits note collections, each inserted batch is then re-queried with the closed nine-field
   `get_all_notes_extended` shape. Final note verification requires both the exact insertion-returned
   ID set and the compiler-retained property multiset; unsupported batches remain unverified;
@@ -384,7 +388,7 @@ The aggregate model assumes only the target operations admitted by the bridge co
   section must resolve to exactly one
   final CuePoint within the bridge's `1e-7` beat identity window with the requested name;
 - final-value intent for every Score/Mix mixer parameter path is collapsed in actual phase order
-  and compared with snapshot schema 34. Equality verifies only when the observed quantised/
+  and compared with the current snapshot schema. Equality verifies only when the observed quantised/
   continuous class matches the operation, `is_enabled` is true, and DeviceParameter `state` and
   `automation_state` are both zero. Internal-value requests must also lie in the observed finite
   bounds; display-value requests retain but do not compare against those internal bounds. The
@@ -456,14 +460,14 @@ same preflight guarantee.
 | Generated Part Track output/gate state | Post-snapshot name, audio/MIDI-output role, exact own mute/solo, ordinary and Push arm states false, Main-crossfader assignment 1, Stereo Pan mode 0, in-range quantised enabled/active/unautomated Track Activator lowering, unfrozen and observed ungrouped state, and absence of derived solo-mute when Mix expects the channel enabled | Named Live build and retained postcondition evidence; disarming does not observe Monitor In, and Group processing, routing, and current public-LOM monitoring state remain outside the selected gate |
 | Generated Aux Return Track output/gate state | AuxBus-ID/index binding, post-snapshot name, exact own mute/solo false, absence of derived solo-mute, crossfade assignment 1, Stereo Pan mode 0, Track Activator 1.0, and correct-domain enabled/active/unautomated equality for activator, return level, and pan | Named Live build and retained postcondition evidence; non-pan spatial fields, output routing, later changes, signal, and sound remain outside the claim |
 | Main Track neutral output stage | In-range quantised enabled/active/unautomated Track Activator 1.0; Stereo Pan mode 0; in-range unquantised enabled/active/unautomated pan 0.0 | Named Live build and retained postcondition evidence; output routing, cue/crossfader behavior, later changes, signal, and sound remain outside the claim |
-| Generated Session Clip structural state | Post-snapshot exact audio/MIDI and Arrangement identity, Live-11+ Session/Take-Lane identity, name, unlooped marker interval/derived length and `end_time`, meter, loop flag, activator state, version-coupled absence of an associated groove, and Boolean absence of Clip envelopes | Named Live build and retained postcondition evidence; dormant loop brace and rendered timing/velocity remain outside the claim |
+| Generated Session Clip structural state | Post-snapshot exact audio/MIDI and Arrangement identity, Live-11+ Session identity, Live-12+ Take-Lane identity, name, unlooped marker interval/derived length and `end_time`, meter, loop flag, activator state, version-coupled absence of an associated groove, and Boolean absence of Clip envelopes | Named Live build and retained postcondition evidence; dormant loop brace and rendered timing/velocity remain outside the claim |
 | Generated Session Clip note membership | Sequential post-deployment complete-note query; exact insertion-returned ID set and requested eight-field property multiset | Named Live build and retained postcondition evidence; MPE, tuning, playback, and sound remain separate |
 | Global Song/Scene and projected Cue state | Post-snapshot tempo/meter, Scene-0 name and disabled launch overrides, quiescent public Link/Tempo Follower/nudge controls, no Session-over-Arrangement playback divergence, no advertised automation override, disabled Arrangement Loop/metronome, plus unique time/name evidence for every requested top-level CuePoint | Named Live build and retained postcondition evidence; incoming MIDI-sync enablement, tempo automation content/persistence, dormant loop bounds, later changes, and nested section hierarchy remain residuals |
-| Final channel/return/master mixer scalar state | Snapshot-schema-34 selected internal/display value, finite internal bounds, quantisation, enabled, active, and unautomated state for every final volume, pan, activator, and enabled-send intent, with exact panning mode retained | Named Live build and retained postcondition evidence; generated Part, Aux Return, and Main Tracks require final Stereo Pan mode, while routing/destination and audible signal remain separate |
+| Final channel/return/master mixer scalar state | Current-snapshot-schema selected internal/display value, finite internal bounds, quantisation, enabled, active, and unautomated state for every final volume, pan, activator, and enabled-send intent, with exact panning mode retained | Named Live build and retained postcondition evidence; generated Part, Aux Return, and Main Tracks require final Stereo Pan mode, while routing/destination and audible signal remain separate |
 | Planned native-device final chain state | Post-snapshot exact chain size and per-index display identity, public type, activity, false Rack-chain capability, and bounded sample/millisecond latency report for every insertion deployment | Named Live build and retained postcondition evidence; Rack support requires an explicit recursive source/target contract, and the report does not prove compensation, total path latency, routing, or sound |
 | Complete rendered timing | Not derivable by summing Device reports; public Song/Track LOM omits compensation/monitoring mode and Track Delay, while routing, buffers/drivers, external hardware, and acoustic propagation remain open | Explicit named-build playback/render experiment with a defined reference event and complete path conditions |
 | Mapped native-device parameter durability | Sequential current-protocol exact-name query after structural Device verification; identity/value/enabled/active/unautomated equality, plus internal range equality where applicable | Named Live build and retained postcondition evidence; observation is non-atomic and does not prove modulation, signal, or sound |
-| Global pitch context | Snapshot-schema-34 current-scale tuple plus every documented TuningSystem property, with the four dictionaries retained exactly but opaquely, version-gated and stale-plan compared | Dictionary semantics and Score mapping, mutation, Track bypass, device/MPE support, and audible pitch remain unverified |
+| Global pitch context | Current-snapshot-schema current-scale tuple plus every documented TuningSystem property, with the four dictionaries retained exactly but opaquely, version-gated and stale-plan compared | Dictionary semantics and Score mapping, mutation, Track bypass, device/MPE support, and audible pitch remain unverified |
 | Mix output destination edges | X10 validates intent; explicit Part/Aux-to-Master bindings admit ordered type/channel set/readback with mapping provenance; unbound and Group edges remain residuals | Named-Live dictionary membership and exact set/readback evidence; signal and sound remain separate |
 | Resulting audible timbre/mix equivalence | Not established by scalar readback | Rendered audio plus listening/measurement criteria |
 | Stale project/selected target structure | Guarded by canonical state and exact snapshots | Named Live build for host behaviour |

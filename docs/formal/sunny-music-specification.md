@@ -877,9 +877,9 @@ When the chords have unequal cardinality, voice leading is a partial function or
 
 **Definition 7.2.1** [C]. A voice leading is *parsimonious* if the total voice-leading distance is minimised over all possible bijections σ. This is an instance of the assignment problem, solvable in O(*k*³) by the Hungarian algorithm or, for small *k* (typical in music: *k* ≤ 8), by exhaustive search.
 
-**Definition 7.2.2** [C]. The *nearest-tone algorithm* (greedy approximation): Assign each voice in *A* to its nearest unassigned pitch in *B*. This is O(*k*²) and produces optimal or near-optimal results for typical chord sizes.
+**Definition 7.2.2** [C]. The *nearest-tone search*: among voicings that assign each voice in *A* a distinct pitch class of *B* in any octave within MIDI 0–127, keep the voices in strictly ascending order from the bass, optionally give the bass the first target pitch class, and form no disallowed parallel fifths or octaves (compound intervals included), choose one of least total voice-leading distance. The search is exact. It places voices from the bass upwards and prunes by branch-and-bound, using a Hungarian minimum-cost assignment over the unplaced voices as the lower bound; its worst case is exponential in *k*.
 
-**Status**: Implemented. `voice_leading/voice_leading`: nearest-tone greedy algorithm (`voice_lead_nearest_tone`) and O(k³) Hungarian algorithm (`voice_lead_optimal`).
+**Status**: Implemented. `voice_leading/voice_leading`: exact nearest-tone search (`voice_lead_nearest_tone`), capped at `MAX_VOICE_LEADING_VOICES` = 12 voices (a larger input returns `VoiceLeadingFailed`), and the unconstrained O(k³) Hungarian assignment (`voice_lead_optimal`).
 
 ### 7.3 Motion Classification
 
@@ -946,7 +946,7 @@ Constraints:
 - No voice crossing.
 - Approach the final note by step (leading tone from below, or step from above).
 
-**Second species** (two notes against one): Two counterpoint notes per cantus firmus note. The first note (strong beat) follows first-species consonance rules. The second note (weak beat) may be a passing tone (consonant or dissonant by step).
+**Second species** (two notes against one): Two counterpoint notes per cantus firmus note. The first note (strong beat) follows first-species consonance rules. The second note (weak beat) may be consonant; if dissonant, it must be a passing tone, approached and left by step in the same direction. A neighbour tone is not admitted, and a dissonance on the final weak beat is rejected because it has no following note to pass into.
 
 **Third species** (four notes against one): Four counterpoint notes per cantus firmus note. Consonance required on the strong beat; passing tones and neighbour tones permitted on weak beats.
 

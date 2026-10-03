@@ -328,12 +328,16 @@ The decomposition is organised by analytical domain. Each domain addresses a dif
 | `tessitura_low`, `tessitura_high` | `i8, i8` | Compact MIDI-note tessitura bounds |
 | `interval_distribution` | `Map<Interval, u32>` | Frequency of each melodic interval |
 | `contour_inventory` | `Vec<ContourSegment>` | Catalogued melodic contour shapes |
-| `scale_degree_distribution` | `Map<u8, u32>` | Frequency of each scale degree (1–7, chromatic) |
+| `scale_degree_distribution` | `Map<u8, u32>` | Frequency of each scale degree 1–7 of the opening key; bucket 0 counts chromatic (non-diatonic) notes, so the histogram sums to the note count |
 | `leap_resolution_rate` | `f32` | Proportion of leaps (> M2) followed by stepwise motion |
 | `conjunct_proportion` | `f32` | Proportion of stepwise intervals |
 | `longest_ascending_run` | `u8` | Longest consecutive ascending stepwise motion |
 | `longest_descending_run` | `u8` | Longest consecutive descending stepwise motion |
 | `chromaticism_rate` | `f32` | Proportion of non-diatonic pitches |
+
+A same-pitch tie chain within one voice is one sounding note. Its continuations extend the attacked
+note's duration but add no melody note, interval, or onset; a rest breaks every pending tie. The
+same folding governs the rhythmic record's onsets, durations, and syncopation index (§2.5).
 
 #### 2.4.2 ContourSegment
 
@@ -1032,7 +1036,7 @@ The query matches the situation description against the formal, harmonic, textur
 
 | Tool | Description |
 |------|-------------|
-| `validate_corpus` | Validate corpus integrity and return diagnostics |
+| `validate_corpus` | Validate the corpus and return diagnostics, with `valid` (no Error diagnostic) and `loadable` (no load-blocking structural Error) |
 | `get_corpus_json` | Serialise the complete in-memory corpus |
 
 ### 6.2 Complete Ingestion Workflow
@@ -1100,9 +1104,12 @@ integer and enum encodings, rejects unknown `PatternData` tags, and was field-co
 historical model. Version 4 adds the required `duration_quantisation_residual`, requires every
 confidence dimension to be finite and in `[0,1]`, and requires both residuals to be finite and
 non-negative. Versions 1–3 migrate the historically unobserved duration residual to zero; this is
-a migration default, not evidence that old ingestion preserved durations. Full-corpus versions 3
-and 4 run C14, C15, C16, and all other Error-severity validation rules. Version-2 migration loads
-retain their historical pre-freshness validation contract and therefore skip C15. Writers emit v4
+a migration default, not evidence that old ingestion preserved durations. Full-corpus loads of
+versions 2–4 run validation, but only the structural Error rules (C2, C14, C15, and C16) block
+loading; ingestion and analysis quality findings (C1 and C3–C13) describe the evidence rather than
+the document's integrity, so a state produced by Sunny's own tools always reloads, and they remain
+diagnostics for `validate_corpus`. Version-2 migration loads retain their historical pre-freshness
+validation contract and therefore skip C15. Writers emit v4
 only. A supported-schema document round-trips every value represented by that schema; only v4 is
 field-complete with respect to the current Corpus IR.
 
@@ -1128,7 +1135,7 @@ When ownership, analysis, period membership, or work existence changes through a
 
 | Rule | Severity | Description |
 |------|----------|-------------|
-| C6 | Error | Harmonic analysis coverage is less than 80% of the work |
+| C6 | Error | Harmonic analysis coverage, the proportion of the work's bars that carry at least one recognised chord, is less than 80%; a work with no recognised chord has zero coverage |
 | C7 | Warning | Formal segmentation produced sections shorter than 4 bars (possible over-segmentation) |
 | C8 | Warning | No thematic units identified (work may be too short or too complex for automated extraction) |
 | C9 | Info | Orchestration analysis not possible (single-instrument work) |
@@ -1184,9 +1191,9 @@ The full MCP tool set across the IR specifications and aggregate project model:
 | Registration group | Tools | Examples |
 |--------------------|------:|----------|
 | Core and Ableton | 10 | `analyze_harmony`, `voice_lead`, `get_ableton_session_state` |
-| Score IR | 29 | `score_create`, `score_insert_chord_symbol`, `score_compile_to_ableton` |
-| Timbre IR | 23 | `set_sound_source`, `map_timbre_parameter`, `compile_timbre` |
-| Mix IR | 28 | `set_channel_relative_level`, `resolve_mix_fader_levels`, `compile_mix` |
+| Score IR | 31 | `score_create`, `score_insert_chord_symbol`, `score_compile_to_musicxml` |
+| Timbre IR | 22 | `set_sound_source`, `map_timbre_parameter`, `validate_timbre` |
+| Mix IR | 27 | `set_channel_relative_level`, `resolve_mix_fader_levels`, `validate_mix` |
 | Corpus IR | 22 | `ingest_midi`, `remove_ingested_work`, `query_how_would_x_handle` |
 | Project | 4 | `project_validate`, `project_plan_to_ableton`, `project_apply_ableton_plan`, `project_compile_to_ableton` |
 
