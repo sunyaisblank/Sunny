@@ -1190,14 +1190,14 @@ The full MCP tool set across the IR specifications and aggregate project model:
 
 | Registration group | Tools | Examples |
 |--------------------|------:|----------|
-| Core and Ableton | 10 | `analyze_harmony`, `voice_lead`, `get_ableton_session_state` |
+| Core and Ableton | 11 | `analyze_harmony`, `voice_lead`, `get_ableton_session_state`, `get_ableton_remote_log` |
 | Score IR | 31 | `score_create`, `score_insert_chord_symbol`, `score_compile_to_musicxml` |
 | Timbre IR | 22 | `set_sound_source`, `map_timbre_parameter`, `validate_timbre` |
 | Mix IR | 27 | `set_channel_relative_level`, `resolve_mix_fader_levels`, `validate_mix` |
 | Corpus IR | 22 | `ingest_midi`, `remove_ingested_work`, `query_how_would_x_handle` |
 | Project | 4 | `project_validate`, `project_plan_to_ableton`, `project_apply_ableton_plan`, `project_compile_to_ableton` |
 
-Total: 116 MCP tools. `tools/list` is the runtime authority.
+Total: 117 MCP tools. `tools/list` is the runtime authority.
 
 ---
 

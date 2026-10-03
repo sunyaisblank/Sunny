@@ -59,6 +59,7 @@ _SONG_CALLS = frozenset(
         "sunny_get_scene_count",
         "sunny_get_track_count",
         "sunny_get_return_track_count",
+        "sunny_get_remote_log",
         "sunny_set_cue",
         "create_scene",
         "create_midi_track",
@@ -386,6 +387,8 @@ def _valid_request_arguments(req_type: str, kind: str, name: str, args: list[Any
             return not args
         if name in ("create_scene", "create_midi_track"):
             return len(args) == 1 and _protocol_index(args[0], allow_append=True)
+        if name == "sunny_get_remote_log":
+            return len(args) == 1 and type(args[0]) is int and args[0] >= 0
         if name == "sunny_set_cue":
             return (
                 len(args) == 2
@@ -551,8 +554,22 @@ def _request_allowed(req_type: str, path: str, name: str, args: list[Any]) -> bo
 class LomHandler:
     """Translates LomRequest JSON to Ableton LOM API calls."""
 
-    def __init__(self, surface):
+    def __init__(self, surface, remote_log=None):
         self._surface = surface
+        self._remote_log = remote_log
+
+    @staticmethod
+    def is_remote_log_request(request: object) -> bool:
+        """Whether a request only reads the Remote Script's own log.
+
+        Such a request touches no Live object, so the surface may answer it
+        on the server thread even while Live's main thread is busy.
+        """
+        return (
+            isinstance(request, dict)
+            and request.get("type") == "call"
+            and request.get("name") == "sunny_get_remote_log"
+        )
 
     def handle(self, request: dict) -> dict:
         """Dispatch a single request and return a response dict."""
@@ -585,6 +602,11 @@ class LomHandler:
                     "success": False,
                     "error": f"Operation is outside Sunny bridge protocol v{BRIDGE_PROTOCOL_VERSION}",
                 }
+
+            if req_type == "call" and name == "sunny_get_remote_log":
+                if self._remote_log is None:
+                    return {"success": False, "error": "Remote log is not enabled"}
+                return {"success": True, "value": self._remote_log.entries_after(args[0])}
 
             if req_type == "call" and name == "sunny_get_target_profile":
                 return {"success": True, "value": self._serialise(self._target_profile())}

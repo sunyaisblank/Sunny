@@ -1311,14 +1311,14 @@ The deployed MCP server exposes the following registration groups:
 
 | Registration group | Tool count | Examples |
 |--------------------|-----------:|----------|
-| Core and Ableton | 10 | `analyze_harmony`, `create_progression_clip`, `get_ableton_session_state` |
+| Core and Ableton | 11 | `analyze_harmony`, `create_progression_clip`, `get_ableton_session_state`, `get_ableton_remote_log` |
 | Score IR | 31 | `score_create`, `score_insert_chord_symbol`, `score_compile_to_musicxml` |
 | Timbre IR | 22 | `set_sound_source`, `map_timbre_parameter`, `validate_timbre` |
 | Mix IR | 27 | `set_channel_relative_level`, `resolve_mix_fader_levels`, `validate_mix` |
 | Corpus IR | 22 | `ingest_midi`, `remove_ingested_work`, `query_style_profile` |
 | Project | 4 | `project_validate`, `project_plan_to_ableton`, `project_apply_ableton_plan`, `project_compile_to_ableton` |
 
-Total: 116 tools. `tools/list` is the runtime authority.
+Total: 117 tools. `tools/list` is the runtime authority.
 
 ---
 

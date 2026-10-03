@@ -362,6 +362,7 @@ sunny::core::Result<void> LomProtocol::validate_request(const LomRequest& reques
                         "sunny_get_scene_count",
                         "sunny_get_track_count",
                         "sunny_get_return_track_count",
+                        "sunny_get_remote_log",
                         "sunny_set_cue",
                         "create_scene",
                         "create_midi_track",
@@ -526,6 +527,9 @@ sunny::core::Result<void> LomProtocol::validate_request(const LomRequest& reques
             valid = args.empty();
         else if (name == "create_scene" || name == "create_midi_track")
             valid = args.size() == 1 && protocol_index(args[0], true);
+        else if (name == "sunny_get_remote_log")
+            valid = args.size() == 1 && args[0].is_number_integer() && !args[0].is_number_float() &&
+                    args[0].get<std::int64_t>() >= 0;
         else if (name == "sunny_set_cue")
             valid = args.size() == 2 && finite_number(args[0]) && args[0].get<double>() >= 0.0 &&
                     args[1].is_string();

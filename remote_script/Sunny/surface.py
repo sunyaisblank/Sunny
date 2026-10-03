@@ -43,6 +43,7 @@ except ImportError as framework_error:
         ) from framework_error
 
 
+from .diagnostics import RemoteLog
 from .handler import LomHandler
 from .server import TcpServer
 
@@ -81,7 +82,13 @@ class SunnyControlSurface(ControlSurface):
     def __init__(self, c_instance):
         super().__init__(c_instance)
         self._initialise_request_lifecycle()
-        self._handler = LomHandler(self)
+        # Every "sunny.*" record from this script is retained for clients that
+        # cannot see Live's Log.txt (sunny_get_remote_log).
+        self._remote_log = RemoteLog()
+        sunny_logger = logging.getLogger("sunny")
+        sunny_logger.setLevel(logging.INFO)
+        sunny_logger.addHandler(self._remote_log)
+        self._handler = LomHandler(self, self._remote_log)
         host, port = _server_configuration()
         self._server = TcpServer(
             host=host,
@@ -116,6 +123,29 @@ class SunnyControlSurface(ControlSurface):
         a timeout while a mutating LOM call remained in flight would make a
         retry unsafe and could invalidate the deployment journal.
         """
+        if LomHandler.is_remote_log_request(request):
+            # Reads only the script's own log: no Live object, no main thread.
+            return self._handler.handle(request)
+        response = self._run_on_main_thread(request)
+        self._log_outcome(request, response)
+        return response
+
+    @staticmethod
+    def _log_outcome(request: dict, response: dict) -> None:
+        """Record one line per request so remote clients can follow activity."""
+        if isinstance(request, dict):
+            operation = "{} {} {}".format(
+                request.get("type"), request.get("path"), request.get("name")
+            )
+        else:
+            operation = "malformed request"
+        if response.get("success"):
+            logger.info("%s: ok", operation)
+        else:
+            logger.warning("%s: %s", operation, response.get("error"))
+
+    def _run_on_main_thread(self, request: dict) -> dict:
+        """Queue one request for Live's main thread and wait for its outcome."""
         completed = threading.Event()
         outcome: dict[str, dict] = {}
         state = {"phase": "queued"}
@@ -179,4 +209,7 @@ class SunnyControlSurface(ControlSurface):
                 cancel("Sunny Remote Script disconnected; queued request cancelled")
         if self._server:
             self._server.shutdown()
+        remote_log = getattr(self, "_remote_log", None)
+        if remote_log is not None:
+            logging.getLogger("sunny").removeHandler(remote_log)
         super().disconnect()

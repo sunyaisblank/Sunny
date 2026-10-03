@@ -63,7 +63,7 @@ std::string frame(const std::string& payload) {
 }
 
 std::string response_with_value(const std::string& value_json) {
-    return R"({"bridge_protocol_version":44,"success":true,"value":)" + value_json + "}";
+    return R"({"bridge_protocol_version":45,"success":true,"value":)" + value_json + "}";
 }
 
 /// Loopback peer that runs one scripted session per accepted connection, in
@@ -251,7 +251,7 @@ TEST_CASE("transports decline noncanonical paths without recording or sending",
     CHECK_FALSE(network.success);
     CHECK(network.delivery == LomDeliveryState::NotSent);
     REQUIRE(network.error.has_value());
-    CHECK(*network.error == "request outside Sunny bridge protocol v44");
+    CHECK(*network.error == "request outside Sunny bridge protocol v45");
 }
 
 TEST_CASE("transports decline requests outside the peer algebra before recording",

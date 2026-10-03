@@ -19,7 +19,7 @@ def test_native_module_metadata_and_enum_namespaces_are_exact(sunny_native_modul
 
     sn = sunny_native_module
     assert sn.__version__ == sunny.__version__
-    assert sn.ABLETON_BRIDGE_PROTOCOL_VERSION == 44
+    assert sn.ABLETON_BRIDGE_PROTOCOL_VERSION == 45
     assert sn.ABLETON_TARGET_SNAPSHOT_SCHEMA_VERSION == 35
     assert not hasattr(sn, "Ok")
     assert not hasattr(sn, "Sine")

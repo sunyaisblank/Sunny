@@ -6,6 +6,7 @@
  * Maps MCP tool calls to Orchestrator and Core functions.
  */
 
+#include <limits>
 #include <sunny/core/detail/serialization_integer.hpp>
 #include <sunny/core/harmony/harmonic_function.hpp>
 #include <sunny/core/harmony/negative_harmony.hpp>
@@ -405,6 +406,42 @@ void register_sunny_tools(McpServer& server,
                 state["errors"] = std::move(errors);
             }
             return state;
+        });
+
+    // =========================================================================
+    // get_ableton_remote_log
+    // =========================================================================
+    // The Remote Script's own records (requests, refusals, exceptions) live on
+    // the Ableton machine; this reads them over the bridge so a client on any
+    // machine can see what happened inside Live.
+    server.register_tool(
+        "get_ableton_remote_log",
+        "Read recent records from the Sunny Remote Script inside Ableton Live: every request "
+        "with its outcome, refusals and errors. Pass after_sequence (the next_sequence of a "
+        "previous call) to receive only newer records; truncated means older unseen records "
+        "were discarded.",
+        {{"type", "object"},
+         {"properties",
+          {{"after_sequence",
+            {{"type", "integer"},
+             {"minimum", 0},
+             {"maximum", std::numeric_limits<std::int32_t>::max()},
+             {"description", "integer (optional, default 0 for every retained record)"}}}}}},
+        [&dispatcher](const json& params) -> json {
+            if (!dispatcher.online()) return offline_decline(dispatcher);
+            const auto after = params.value("after_sequence", std::int64_t{0});
+            auto response = dispatcher.request(LomProtocol::call_method(
+                LomPaths::song(), "sunny_get_remote_log", {static_cast<int>(after)}));
+            if (!response.success || !response.value)
+                return {{"success", false},
+                        {"error", response.error.value_or("Remote log unavailable")}};
+            auto log = lom_value_json(*response.value);
+            if (!log.is_object() || !log.contains("entries") || !log["entries"].is_array() ||
+                !log.contains("next_sequence") || !log["next_sequence"].is_number_integer() ||
+                !log.contains("truncated") || !log["truncated"].is_boolean())
+                return {{"success", false}, {"error", "Malformed remote log response"}};
+            log["success"] = true;
+            return log;
         });
 
     // =========================================================================
