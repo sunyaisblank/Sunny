@@ -211,28 +211,12 @@ inline constexpr float ABLETON_SEND_CEILING_DB = 0.0f;
 ableton_unrepresentable_mix_levels(const sunny::core::MixGraph& graph);
 
 /**
- * @brief Compile a MixGraph to Ableton mixer via LOM transport
- *
- * @param graph       Validated MixGraph
- * @param base_track  First track index; channel i targets base_track + i
- * @param transport   LOM transport (CommandBuffer for testing)
- * @return Compilation result or error
- */
-[[nodiscard]] sunny::core::Result<MixCompilationResult>
-compile_mix_to_ableton(const sunny::core::MixGraph& graph, int base_track, LomTransport& transport);
-
-[[nodiscard]] sunny::core::Result<MixCompilationResult>
-compile_mix_to_ableton(const sunny::core::MixGraph& graph,
-                       int base_track,
-                       LomTransport& transport,
-                       const AbletonOutputRoutingBindings& routing_bindings);
-
-/**
  * @brief Compile channels to explicit PartId-bound Ableton tracks
  *
- * This is the project-safe form: MixGraph channel order has no effect on
- * target selection. Every channel PartId must have one non-negative mapping,
- * and two parts may not target the same Live track.
+ * MixGraph channel order has no effect on target selection. Every channel
+ * PartId must have one non-negative mapping, and two parts may not target the
+ * same Live track. Live deployment reaches this through the guarded project
+ * path, which binds part_tracks from a captured target snapshot.
  */
 [[nodiscard]] sunny::core::Result<MixCompilationResult>
 compile_mix_to_ableton(const sunny::core::MixGraph& graph,

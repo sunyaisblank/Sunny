@@ -17,7 +17,6 @@
 #include <sunny/core/detail/serialization_integer.hpp>
 #include <sunny/core/timbre/serialization.hpp>
 #include <sunny/core/timbre/workflows.hpp>
-#include <sunny/infrastructure/formats/ableton_timbre.hpp>
 #include <sunny/infrastructure/mcp/timbre_tools.hpp>
 
 namespace sunny::infrastructure {
@@ -246,9 +245,7 @@ json semantic_to_json(const SemanticTimbreDescriptor& d) {
 
 } // anonymous namespace
 
-void register_timbre_tools(McpServer& server,
-                           LomTransport* transport,
-                           std::shared_ptr<TimbreSession> session) {
+void register_timbre_tools(McpServer& server, std::shared_ptr<TimbreSession> session) {
     if (!session) session = std::make_shared<TimbreSession>();
 
     // =========================================================================
@@ -1144,73 +1141,6 @@ void register_timbre_tools(McpServer& server,
                 }
             }
             return {{"valid", valid}, {"diagnostics", arr}};
-        });
-
-    server.register_tool(
-        "compile_timbre",
-        "Compile a Timbre IR profile into supported native Ableton devices",
-        {{"type", "object"},
-         {"properties",
-          {{"profile_id", {{"type", "integer"}, {"description", "TimbreProfile ID"}}},
-           {"track_index", {{"type", "integer"}, {"description", "Ableton track index"}}}}},
-         {"required", json::array({"profile_id", "track_index"})}},
-        [session, transport](const json& params) -> json {
-            auto profile_id =
-                detail::checked_integer<std::uint64_t>(params.at("profile_id"), "profile id");
-            auto* profile = session->find(profile_id);
-            if (!profile) return profile_not_found(profile_id);
-
-            const auto track_index =
-                detail::checked_integer<int>(params.at("track_index"), "track index");
-            if (track_index < 0) return error_response("track_index must be non-negative");
-            auto validation = validate(*profile);
-            json validation_json = json::array();
-            bool valid = true;
-            for (const auto& diagnostic : validation) {
-                validation_json.push_back(mcp_detail::encode_diagnostic(diagnostic));
-                if (diagnostic.severity == ValidationSeverity::Error) valid = false;
-            }
-            if (!valid) {
-                return {{"success", false},
-                        {"connected", transport != nullptr && transport->is_connected()},
-                        {"error", "Timbre profile is not valid for compilation"},
-                        {"diagnostics", validation_json}};
-            }
-            if (transport == nullptr || !transport->ensure_connected()) {
-                return {{"success", false},
-                        {"connected", false},
-                        {"error", "Ableton transport unavailable"}};
-            }
-
-            auto result = formats::compile_timbre_to_ableton(*profile, track_index, *transport);
-            if (!result) {
-                return {{"success", false},
-                        {"connected", transport->is_connected()},
-                        {"error_code", static_cast<int>(result.error())},
-                        {"error", "Ableton timbre compilation failed"}};
-            }
-
-            return {
-                {"success", true},
-                {"connected", true},
-                {"complete", result->warnings.empty()},
-                {"devices_requested", result->devices_requested},
-                {"devices_created", result->devices_created},
-                {"devices_verified", result->devices_verified},
-                {"device_deployments",
-                 mcp_detail::encode_device_deployments(result->device_deployments)},
-                {"effects_requested", result->effects_requested},
-                {"effects_inserted", result->effects_inserted},
-                {"effects_verified", result->effects_verified},
-                {"parameters_mapped", result->parameters_mapped},
-                {"parameters_verified", result->parameters_verified},
-                {"parameter_deployments",
-                 mcp_detail::encode_timbre_parameter_deployments(result->parameter_deployments)},
-                {"automation_lanes_requested", result->automation_lanes_requested},
-                {"automation_lanes_written", result->automation_lanes_written},
-                {"target_profile", target_profile_to_json(result->target_profile)},
-                {"diagnostics", validation_json},
-                {"warnings", result->warnings}};
         });
 }
 

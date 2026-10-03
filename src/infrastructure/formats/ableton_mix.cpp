@@ -572,15 +572,13 @@ Result<std::vector<std::string>> ableton_unrepresentable_mix_levels(const MixGra
 }
 
 Result<MixCompilationResult>
-compile_mix_to_ableton_impl(const MixGraph& graph,
-                            int base_track,
-                            const AbletonPartTrackMap* part_tracks,
-                            LomTransport& transport,
-                            const AbletonOutputRoutingBindings& routing_bindings) {
+compile_mix_to_ableton(const MixGraph& graph,
+                       const AbletonPartTrackMap& part_tracks,
+                       LomTransport& transport,
+                       const AbletonOutputRoutingBindings& routing_bindings) {
     MixCompilationResult result;
     bool unverified_recording = false;
 
-    if (base_track < 0) return std::unexpected(ErrorCode::MixInvalidParameter);
     if (!is_mix_valid(graph)) return std::unexpected(ErrorCode::InvariantViolation);
     // Refuse levels Live cannot represent before any query or mutation, so a
     // plan never fails part-way through applying.
@@ -593,10 +591,6 @@ compile_mix_to_ableton_impl(const MixGraph& graph,
     result.channels_requested = static_cast<std::uint64_t>(graph.channels.size());
     auto output_routes = record_output_route_intent(graph, routing_bindings, result);
     if (!output_routes) return std::unexpected(output_routes.error());
-    if (part_tracks == nullptr && !graph.channels.empty() &&
-        graph.channels.size() - 1 >
-            static_cast<std::size_t>(std::numeric_limits<int>::max() - base_track))
-        return std::unexpected(ErrorCode::TargetAddressUnrepresentable);
     auto fader_resolution = resolve_relative_levels(graph);
     if (!fader_resolution) return std::unexpected(fader_resolution.error());
     result.fader_level_resolution = std::move(*fader_resolution);
@@ -608,19 +602,15 @@ compile_mix_to_ableton_impl(const MixGraph& graph,
         result.warnings.push_back(fader_target_name(entry) + " relative fader intent" + reason +
                                   "; the explicit fallback level was applied");
     }
-    if (part_tracks != nullptr) {
-        std::set<int> target_tracks;
-        for (const auto& entry : *part_tracks) {
-            const int target_track = entry.second;
-            if (target_track < 0 || !target_tracks.insert(target_track).second)
-                return std::unexpected(ErrorCode::MixInvalidParameter);
-        }
-        for (const auto& channel : graph.channels) {
-            const auto target = part_tracks->find(channel.part_id);
-            if (target == part_tracks->end())
-                return std::unexpected(ErrorCode::MixInvalidParameter);
-        }
+    std::set<int> target_tracks;
+    for (const auto& entry : part_tracks) {
+        const int target_track = entry.second;
+        if (target_track < 0 || !target_tracks.insert(target_track).second)
+            return std::unexpected(ErrorCode::MixInvalidParameter);
     }
+    for (const auto& channel : graph.channels)
+        if (!part_tracks.contains(channel.part_id))
+            return std::unexpected(ErrorCode::MixInvalidParameter);
     auto target_profile = transport.target_profile();
     if (!target_profile) return std::unexpected(target_profile.error());
     if (!*target_profile) return std::unexpected(ErrorCode::ProtocolError);
@@ -648,9 +638,9 @@ compile_mix_to_ableton_impl(const MixGraph& graph,
         record_parameter_coverage(graph.master_bus.insert_chain, can_insert_native_devices, result);
     if (!coverage) return std::unexpected(coverage.error());
 
-    // Track index allocation:
-    // base_track .. base_track + channels.size() - 1: channel tracks created
-    // by the Score compiler. Return tracks are created here.
+    // Track index allocation: channel tracks were created by the Score
+    // compiler and are addressed through part_tracks. Return tracks are
+    // created here.
     int first_return_track = 0;
     if (!graph.aux_buses.empty()) {
         auto return_track_count = transport.return_track_count();
@@ -799,8 +789,7 @@ compile_mix_to_ableton_impl(const MixGraph& graph,
     // Step 3: Configure channel strips
     for (std::size_t i = 0; i < graph.channels.size(); ++i) {
         const auto& ch = graph.channels[i];
-        const int track_idx =
-            part_tracks != nullptr ? part_tracks->at(ch.part_id) : base_track + static_cast<int>(i);
+        const int track_idx = part_tracks.at(ch.part_id);
         auto track_path = LomPaths::track(track_idx);
 
         auto route = std::ranges::find_if(result.output_route_deployments, [&](const auto& item) {
@@ -991,31 +980,10 @@ compile_mix_to_ableton_impl(const MixGraph& graph,
     return result;
 }
 
-Result<MixCompilationResult>
-compile_mix_to_ableton(const MixGraph& graph, int base_track, LomTransport& transport) {
-    return compile_mix_to_ableton_impl(graph, base_track, nullptr, transport, {});
-}
-
-Result<MixCompilationResult>
-compile_mix_to_ableton(const MixGraph& graph,
-                       int base_track,
-                       LomTransport& transport,
-                       const AbletonOutputRoutingBindings& routing_bindings) {
-    return compile_mix_to_ableton_impl(graph, base_track, nullptr, transport, routing_bindings);
-}
-
 Result<MixCompilationResult> compile_mix_to_ableton(const MixGraph& graph,
                                                     const AbletonPartTrackMap& part_tracks,
                                                     LomTransport& transport) {
-    return compile_mix_to_ableton_impl(graph, 0, &part_tracks, transport, {});
-}
-
-Result<MixCompilationResult>
-compile_mix_to_ableton(const MixGraph& graph,
-                       const AbletonPartTrackMap& part_tracks,
-                       LomTransport& transport,
-                       const AbletonOutputRoutingBindings& routing_bindings) {
-    return compile_mix_to_ableton_impl(graph, 0, &part_tracks, transport, routing_bindings);
+    return compile_mix_to_ableton(graph, part_tracks, transport, {});
 }
 
 } // namespace sunny::infrastructure::formats

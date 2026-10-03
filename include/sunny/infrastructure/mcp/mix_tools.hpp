@@ -32,9 +32,6 @@
  *
  * Validation / Serialisation:
  * - validate_mix, get_mix_json
- *
- * Compilation:
- * - compile_mix
  */
 
 #pragma once
@@ -45,8 +42,6 @@
 
 namespace sunny::infrastructure {
 
-class LomTransport;
-
 /**
  * @brief Register Mix IR tools with an MCP server
  *
@@ -54,8 +49,6 @@ class LomTransport;
  * the lifetime of the server. Graph IDs reference graphs
  * across tool calls.
  */
-void register_mix_tools(McpServer& server,
-                        LomTransport* transport = nullptr,
-                        std::shared_ptr<MixSession> session = {});
+void register_mix_tools(McpServer& server, std::shared_ptr<MixSession> session = {});
 
 } // namespace sunny::infrastructure

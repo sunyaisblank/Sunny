@@ -348,9 +348,7 @@ Result<ScoreTuning> parse_score_tuning(const json& value) {
 
 } // anonymous namespace
 
-void register_score_tools(McpServer& server,
-                          LomTransport* transport,
-                          std::shared_ptr<ScoreSession> session) {
+void register_score_tools(McpServer& server, std::shared_ptr<ScoreSession> session) {
     if (!session) session = std::make_shared<ScoreSession>();
 
     // =========================================================================
@@ -1487,87 +1485,6 @@ void register_score_tools(McpServer& server,
                                  {"ly", result->ly},
                                  {"report", mcp_detail::encode_compilation_report(result->report)}};
                          });
-
-    server.register_tool(
-        "score_compile_to_ableton",
-        "Compile the Score IR into supported Ableton Live operations",
-        {{"score_id", "integer"}, {"ppq", "integer (optional, default 480)"}},
-        [session, transport](const json& params) -> json {
-            json err;
-            auto* score = lookup_score(session, params, err);
-            if (!score) return err;
-
-            const auto ppq = detail::checked_integer_or<int>(params, "ppq", 480, "MIDI PPQ");
-            if (ppq <= 0 || ppq > std::numeric_limits<std::uint16_t>::max())
-                return error_response("ppq must be between 1 and 65535");
-            if (transport == nullptr || !transport->ensure_connected()) {
-                return {{"success", false},
-                        {"connected", false},
-                        {"error", "Ableton transport unavailable"}};
-            }
-
-            auto result = formats::compile_to_ableton(*score, *transport, ppq);
-            if (!result) {
-                return {{"success", false},
-                        {"connected", transport->is_connected()},
-                        {"error_code", static_cast<int>(result.error())},
-                        {"error", "Ableton score compilation failed"}};
-            }
-
-            return {
-                {"success", true},
-                {"connected", true},
-                {"complete",
-                 result->warnings.empty() && !result->midi_report.has_residuals() &&
-                     result->tuning_definitions_written == result->tuning_definitions_requested},
-                {"scenes_created", result->scenes_created},
-                {"tracks_created", result->tracks_created},
-                {"clips_created", result->clips_created},
-                {"clip_envelope_clears_requested", result->clip_envelope_clears_requested},
-                {"clip_envelope_clears_executed", result->clip_envelope_clears_executed},
-                {"clip_envelope_clears_verified", result->clip_envelope_clears_verified},
-                {"clip_envelope_deployments",
-                 mcp_detail::encode_clip_envelope_deployments(result->clip_envelope_deployments)},
-                {"notes_requested", result->notes_requested},
-                {"notes_written", result->notes_written},
-                {"note_batches_requested", result->note_batches_requested},
-                {"note_batches_executed", result->note_batches_executed},
-                {"note_ids_returned", result->note_ids_returned},
-                {"note_batches_verified", result->note_batches_verified},
-                {"notes_verified", result->notes_verified},
-                {"note_deployments", mcp_detail::encode_note_deployments(result->note_deployments)},
-                {"articulation_control_events_requested",
-                 result->articulation_control_events_requested},
-                {"articulation_control_events_written",
-                 result->articulation_control_events_written},
-                {"tempo_events_requested", result->tempo_events_requested},
-                {"tempo_events_written", result->tempo_events_written},
-                {"time_signature_events_requested", result->time_signature_events_requested},
-                {"time_signature_events_written", result->time_signature_events_written},
-                {"time_signature_groupings_requested", result->time_signature_groupings_requested},
-                {"time_signature_groupings_written", result->time_signature_groupings_written},
-                {"key_signature_events_requested", result->key_signature_events_requested},
-                {"key_signature_events_written", result->key_signature_events_written},
-                {"tuning_definitions_requested", result->tuning_definitions_requested},
-                {"tuning_definitions_written", result->tuning_definitions_written},
-                {"requested_tuning", mcp_detail::encode_score_tuning(result->requested_tuning)},
-                {"section_nodes_total", result->section_nodes_total},
-                {"section_nodes_projected", result->section_nodes_projected},
-                {"section_nodes_unprojected", result->section_nodes_unprojected},
-                {"markers_requested", result->markers_requested},
-                {"markers_created", result->markers_created},
-                {"markers_updated", result->markers_updated},
-                {"markers_verified", result->markers_verified},
-                {"marker_deployments",
-                 mcp_detail::encode_cue_deployments(result->marker_deployments)},
-                {"property_writes", result->property_writes},
-                {"property_writes_verified", result->property_writes_verified},
-                {"property_deployments",
-                 mcp_detail::encode_property_deployments(result->property_deployments)},
-                {"target_profile", target_profile_to_json(result->target_profile)},
-                {"report", mcp_detail::encode_compilation_report(result->midi_report)},
-                {"warnings", result->warnings}};
-        });
 
     // =========================================================================
     // Query Tools

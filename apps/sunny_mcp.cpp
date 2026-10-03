@@ -96,10 +96,10 @@ int run_server() {
     BridgeDispatcher dispatcher = transport ? BridgeDispatcher(*transport) : BridgeDispatcher();
 
     register_sunny_tools(server, orchestrator, dispatcher);
-    register_timbre_tools(server, transport.get(), session.timbre);
-    register_mix_tools(server, transport.get(), session.mix);
+    register_timbre_tools(server, session.timbre);
+    register_mix_tools(server, session.mix);
     register_corpus_tools(server, session.corpus);
-    register_score_tools(server, transport.get(), session.score);
+    register_score_tools(server, session.score);
     register_project_tools(server, session, transport.get());
 
     server.run();

@@ -33,7 +33,7 @@
  *
  * Compilation:
  * - score_compile_to_midi, score_compile_to_musicxml,
- *   score_compile_to_lilypond, score_compile_to_ableton
+ *   score_compile_to_lilypond
  *
  * Query:
  * - score_query_harmony_at, score_find_motif
@@ -47,8 +47,6 @@
 
 namespace sunny::infrastructure {
 
-class LomTransport;
-
 /**
  * @brief Register Score IR tools with an MCP server
  *
@@ -56,8 +54,6 @@ class LomTransport;
  * the lifetime of the server. Score IDs reference entities
  * across tool calls.
  */
-void register_score_tools(McpServer& server,
-                          LomTransport* transport = nullptr,
-                          std::shared_ptr<ScoreSession> session = {});
+void register_score_tools(McpServer& server, std::shared_ptr<ScoreSession> session = {});
 
 } // namespace sunny::infrastructure

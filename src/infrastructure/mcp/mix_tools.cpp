@@ -18,7 +18,6 @@
 #include <sunny/core/detail/serialization_integer.hpp>
 #include <sunny/core/mix/serialization.hpp>
 #include <sunny/core/mix/workflows.hpp>
-#include <sunny/infrastructure/formats/ableton_mix.hpp>
 #include <sunny/infrastructure/mcp/mix_tools.hpp>
 
 namespace sunny::infrastructure {
@@ -375,9 +374,7 @@ std::optional<MixEffect> build_effect(const json& params, std::uint64_t effect_i
 
 } // anonymous namespace
 
-void register_mix_tools(McpServer& server,
-                        LomTransport* transport,
-                        std::shared_ptr<MixSession> session) {
+void register_mix_tools(McpServer& server, std::shared_ptr<MixSession> session) {
     if (!session) session = std::make_shared<MixSession>();
 
     // =========================================================================
@@ -1523,123 +1520,6 @@ void register_mix_tools(McpServer& server,
             auto* g = session->find(graph_id);
             if (!g) return graph_not_found(graph_id);
             return {{"mix_ir", mix_to_json(*g)}};
-        });
-
-    server.register_tool(
-        "compile_mix",
-        "Compile a Mix IR graph into supported Ableton mixer operations",
-        {{"type", "object"},
-         {"properties",
-          {{"graph_id", {{"type", "integer"}, {"description", "Mix graph ID"}}},
-           {"base_track",
-            {{"type", "integer"}, {"description", "First Ableton channel track index"}}},
-           {"output_routing_bindings", mcp_detail::output_routing_bindings_schema()}}},
-         {"required", json::array({"graph_id", "base_track"})}},
-        [session, transport](const json& params) -> json {
-            auto graph_id =
-                detail::checked_integer<std::uint64_t>(params.at("graph_id"), "mix graph id");
-            auto* graph = session->find(graph_id);
-            if (!graph) return graph_not_found(graph_id);
-
-            const auto base_track =
-                detail::checked_integer<int>(params.at("base_track"), "base track index");
-            if (base_track < 0) return error_response("base_track must be non-negative");
-            auto validation = validate(*graph);
-            json validation_json = json::array();
-            bool valid = true;
-            for (const auto& diagnostic : validation) {
-                validation_json.push_back(mcp_detail::encode_diagnostic(diagnostic));
-                if (diagnostic.severity == ValidationSeverity::Error) valid = false;
-            }
-            if (!valid) {
-                return {{"success", false},
-                        {"connected", transport != nullptr && transport->is_connected()},
-                        {"error", "Mix graph is not valid for compilation"},
-                        {"diagnostics", validation_json}};
-            }
-            if (transport == nullptr || !transport->ensure_connected()) {
-                return {{"success", false},
-                        {"connected", false},
-                        {"error", "Ableton transport unavailable"}};
-            }
-
-            formats::AbletonOutputRoutingBindings routing_bindings;
-            std::string routing_error;
-            if (!mcp_detail::parse_output_routing_bindings(params, routing_bindings, routing_error))
-                return error_response(routing_error);
-
-            auto result =
-                formats::compile_mix_to_ableton(*graph, base_track, *transport, routing_bindings);
-            if (!result) {
-                if (result.error() == ErrorCode::TargetValueUnrepresentable) {
-                    // Name each level Live cannot hold so the caller can fix it.
-                    auto levels = formats::ableton_unrepresentable_mix_levels(*graph);
-                    if (levels && !levels->empty())
-                        return {{"success", false},
-                                {"connected", transport->is_connected()},
-                                {"error_code", static_cast<int>(result.error())},
-                                {"error", "Mix levels exceed what Live can represent"},
-                                {"unrepresentable", *levels}};
-                }
-                return {{"success", false},
-                        {"connected", transport->is_connected()},
-                        {"error_code", static_cast<int>(result.error())},
-                        {"error", "Ableton mix compilation failed"}};
-            }
-
-            return {{"success", true},
-                    {"connected", true},
-                    {"complete", result->warnings.empty()},
-                    {"group_tracks_requested", result->group_tracks_requested},
-                    {"group_tracks_created", result->group_tracks_created},
-                    {"return_tracks_requested", result->return_tracks_requested},
-                    {"return_tracks_created", result->return_tracks_created},
-                    {"return_track_deployments",
-                     mcp_detail::encode_return_track_deployments(result->return_track_deployments)},
-                    {"master_track_deployment",
-                     mcp_detail::encode_master_track_deployment(result->master_track_deployment)},
-                    {"effects_requested", result->effects_requested},
-                    {"effects_inserted", result->effects_inserted},
-                    {"effects_verified", result->effects_verified},
-                    {"device_deployments",
-                     mcp_detail::encode_device_deployments(result->device_deployments)},
-                    {"sends_requested", result->sends_requested},
-                    {"sends_configured", result->sends_configured},
-                    {"send_levels_requested", result->send_levels_requested},
-                    {"send_levels_configured", result->send_levels_configured},
-                    {"send_modes_requested", result->send_modes_requested},
-                    {"send_modes_configured", result->send_modes_configured},
-                    {"output_routes_requested", result->output_routes_requested},
-                    {"output_routes_written", result->output_routes_written},
-                    {"output_routes_verified", result->output_routes_verified},
-                    {"output_routing_bindings",
-                     mcp_detail::encode_output_routing_bindings(routing_bindings)},
-                    {"output_route_deployments",
-                     mcp_detail::encode_output_route_deployments(result->output_route_deployments)},
-                    {"output_route_residuals", result->output_route_residuals},
-                    {"automation_lanes_requested", result->automation_lanes_requested},
-                    {"automation_lanes_written", result->automation_lanes_written},
-                    {"channels_requested", result->channels_requested},
-                    {"channels_configured", result->channels_configured},
-                    {"property_writes", result->property_writes},
-                    {"property_writes_verified", result->property_writes_verified},
-                    {"property_deployments",
-                     mcp_detail::encode_property_deployments(result->property_deployments)},
-                    {"parameter_sources_total", result->parameter_sources_total},
-                    {"parameter_sources_explicitly_mapped",
-                     result->parameter_sources_explicitly_mapped},
-                    {"parameter_sources_unmapped", result->parameter_sources_unmapped},
-                    {"parameters_mapped", result->parameters_mapped},
-                    {"parameters_verified", result->parameters_verified},
-                    {"fader_level_resolution",
-                     fader_level_resolution_j(result->fader_level_resolution)},
-                    {"parameter_deployments",
-                     mcp_detail::encode_mix_parameter_deployments(result->parameter_deployments)},
-                    {"parameter_coverage",
-                     mcp_detail::encode_mix_parameter_coverage(result->parameter_coverage)},
-                    {"target_profile", target_profile_to_json(result->target_profile)},
-                    {"diagnostics", validation_json},
-                    {"warnings", result->warnings}};
         });
 }
 

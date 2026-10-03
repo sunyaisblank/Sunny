@@ -23,6 +23,15 @@ using namespace sunny::core;
 
 namespace {
 
+// Bind each channel's Part to consecutive Live tracks in channel order: the
+// layout the Score compiler creates for a fresh project.
+AbletonPartTrackMap consecutive_part_tracks(const MixGraph& graph) {
+    AbletonPartTrackMap part_tracks;
+    for (std::size_t index = 0; index < graph.channels.size(); ++index)
+        part_tracks.emplace(graph.channels[index].part_id, static_cast<int>(index));
+    return part_tracks;
+}
+
 class MixReadbackTransport final : public LomTransport {
   public:
     LomResponse send(const LomRequest& request) override {
@@ -275,7 +284,7 @@ TEST_CASE("minimal graph configures channels", "[ableton][mix]") {
     auto graph = make_test_graph();
     CommandBuffer buf;
 
-    auto r = compile_mix_to_ableton(graph, 0, buf);
+    auto r = compile_mix_to_ableton(graph, consecutive_part_tracks(graph), buf);
     REQUIRE(r.has_value());
     CHECK(r->channels_requested == 2);
     CHECK(r->channels_configured == 2);
@@ -294,7 +303,8 @@ TEST_CASE("explicit output bindings emit two ordered mutations per materialisabl
     bindings.part_tracks.emplace(PartId{2}, master_route_binding());
     CommandBuffer transport;
 
-    auto result = compile_mix_to_ableton(graph, 0, transport, bindings);
+    auto result =
+        compile_mix_to_ableton(graph, consecutive_part_tracks(graph), transport, bindings);
     REQUIRE(result.has_value());
     CHECK(result->output_routes_requested == 2);
     CHECK(result->output_routes_written == 2);
@@ -327,7 +337,8 @@ TEST_CASE("live output routing requires exact advertised membership and final re
     bindings.part_tracks.emplace(PartId{2}, master_route_binding());
     MixReadbackTransport transport;
 
-    auto result = compile_mix_to_ableton(graph, 0, transport, bindings);
+    auto result =
+        compile_mix_to_ableton(graph, consecutive_part_tracks(graph), transport, bindings);
     REQUIRE(result.has_value());
     CHECK(result->output_routes_requested == 2);
     CHECK(result->output_routes_written == 2);
@@ -356,27 +367,29 @@ TEST_CASE("output routing rejects malformed evidence, absent membership, and inv
 
     MixReadbackTransport malformed;
     malformed.malformed_route_evidence = true;
-    auto result = compile_mix_to_ableton(graph, 0, malformed, bindings);
+    auto result =
+        compile_mix_to_ableton(graph, consecutive_part_tracks(graph), malformed, bindings);
     REQUIRE_FALSE(result.has_value());
     CHECK(result.error() == ErrorCode::ProtocolError);
 
     MixReadbackTransport unavailable;
     unavailable.route_channel_unavailable = true;
-    result = compile_mix_to_ableton(graph, 0, unavailable, bindings);
+    result = compile_mix_to_ableton(graph, consecutive_part_tracks(graph), unavailable, bindings);
     REQUIRE_FALSE(result.has_value());
     CHECK(result.error() == ErrorCode::ProtocolError);
 
     auto unknown = bindings;
     unknown.part_tracks.emplace(PartId{999}, master_route_binding());
     CommandBuffer recorder;
-    result = compile_mix_to_ableton(graph, 0, recorder, unknown);
+    result = compile_mix_to_ableton(graph, consecutive_part_tracks(graph), recorder, unknown);
     REQUIRE_FALSE(result.has_value());
     CHECK(result.error() == ErrorCode::MixInvalidParameter);
     CHECK(recorder.entries().empty());
 
     auto missing_provenance = bindings;
     missing_provenance.part_tracks.at(PartId{1}).mapping_provenance.clear();
-    result = compile_mix_to_ableton(graph, 0, recorder, missing_provenance);
+    result =
+        compile_mix_to_ableton(graph, consecutive_part_tracks(graph), recorder, missing_provenance);
     REQUIRE_FALSE(result.has_value());
     CHECK(result.error() == ErrorCode::MixInvalidParameter);
     CHECK(recorder.entries().empty());
@@ -386,7 +399,7 @@ TEST_CASE("output routing rejects malformed evidence, absent membership, and inv
     group.member_channels = {graph.channels[0].id};
     graph.group_buses.push_back(group);
     graph.channels[0].group_assignment = group.id;
-    result = compile_mix_to_ableton(graph, 0, recorder, bindings);
+    result = compile_mix_to_ableton(graph, consecutive_part_tracks(graph), recorder, bindings);
     REQUIRE_FALSE(result.has_value());
     CHECK(result.error() == ErrorCode::MixInvalidParameter);
     CHECK(recorder.entries().empty());
@@ -402,7 +415,8 @@ TEST_CASE("routing stage failure is journalled as a possible partial target muta
     underlying.fail_route_channel = true;
     JournaledLomTransport journalled{underlying};
 
-    auto result = compile_mix_to_ableton(graph, 0, journalled, bindings);
+    auto result =
+        compile_mix_to_ableton(graph, consecutive_part_tracks(graph), journalled, bindings);
     REQUIRE_FALSE(result.has_value());
     CHECK(result.error() == ErrorCode::SendFailed);
     REQUIRE(journalled.journal().size() == 2);
@@ -418,7 +432,7 @@ TEST_CASE("live mixer property writes require and expose readback evidence",
     auto graph = make_test_graph();
     MixReadbackTransport transport;
 
-    auto result = compile_mix_to_ableton(graph, 0, transport);
+    auto result = compile_mix_to_ableton(graph, consecutive_part_tracks(graph), transport);
     REQUIRE(result.has_value());
     CHECK(result->property_writes == 14);
     CHECK(result->property_writes_verified == 14);
@@ -436,7 +450,7 @@ TEST_CASE("live mixer property writes reject empty acknowledgements",
     MixReadbackTransport transport;
     transport.omit_property_evidence = true;
 
-    auto result = compile_mix_to_ableton(graph, 0, transport);
+    auto result = compile_mix_to_ableton(graph, consecutive_part_tracks(graph), transport);
     REQUIRE_FALSE(result.has_value());
     CHECK(result.error() == ErrorCode::ProtocolError);
 }
@@ -458,25 +472,13 @@ TEST_CASE("explicit Part map rejects missing and aliased track targets", "[ablet
     CHECK(transport.entries().empty());
 }
 
-TEST_CASE("standalone Mix track ranges must fit the signed LOM index domain",
-          "[ableton][mix][target-address]") {
-    const auto graph = make_test_graph();
-    CommandBuffer transport;
-
-    const auto result = compile_mix_to_ableton(graph, std::numeric_limits<int>::max(), transport);
-
-    REQUIRE_FALSE(result.has_value());
-    CHECK(result.error() == ErrorCode::TargetAddressUnrepresentable);
-    CHECK(transport.entries().empty());
-}
-
 TEST_CASE("invalid aux references fail validation before Ableton mutation",
           "[ableton][mix][target-address]") {
     auto graph = make_test_graph();
     graph.channels.front().sends.push_back(AuxSendLevel{AuxBusId{999}, -12.0f, false, true});
     CommandBuffer transport;
 
-    const auto result = compile_mix_to_ableton(graph, 0, transport);
+    const auto result = compile_mix_to_ableton(graph, consecutive_part_tracks(graph), transport);
 
     REQUIRE_FALSE(result.has_value());
     CHECK(result.error() == ErrorCode::InvariantViolation);
@@ -487,7 +489,7 @@ TEST_CASE("channel volume is set from fader", "[ableton][mix]") {
     auto graph = make_test_graph();
     CommandBuffer buf;
 
-    auto r = compile_mix_to_ableton(graph, 0, buf);
+    auto r = compile_mix_to_ableton(graph, consecutive_part_tracks(graph), buf);
     REQUIRE(r.has_value());
 
     auto sets = buf.find_by_type(LomRequestType::SetProperty);
@@ -514,7 +516,7 @@ TEST_CASE("Mix compiler applies statically resolved relative fader levels",
         1.0f};
     CommandBuffer transport;
 
-    const auto result = compile_mix_to_ableton(graph, 0, transport);
+    const auto result = compile_mix_to_ableton(graph, consecutive_part_tracks(graph), transport);
     REQUIRE(result.has_value());
     CHECK(result->fader_level_resolution.complete());
     CHECK(result->fader_level_resolution.relative_levels_total == 2);
@@ -549,7 +551,7 @@ TEST_CASE("Mix compiler preserves loudness-relative faders as explicit measured 
         LevelReference{LevelReferenceType::Channel, -14.0f, graph.channels[0].id, {}, {}}, -2.0f};
     CommandBuffer transport;
 
-    const auto result = compile_mix_to_ableton(graph, 0, transport);
+    const auto result = compile_mix_to_ableton(graph, consecutive_part_tracks(graph), transport);
     REQUIRE(result.has_value());
     CHECK_FALSE(result->fader_level_resolution.complete());
     CHECK(result->fader_level_resolution.relative_levels_unresolved == 2);
@@ -583,7 +585,7 @@ TEST_CASE("Mix compiler rejects cyclic relative faders before target mutation",
         LevelReference{LevelReferenceType::Channel, -14.0f, graph.channels[0].id, {}, {}}, 0.0f};
     CommandBuffer transport;
 
-    const auto result = compile_mix_to_ableton(graph, 0, transport);
+    const auto result = compile_mix_to_ableton(graph, consecutive_part_tracks(graph), transport);
     REQUIRE_FALSE(result.has_value());
     CHECK(result.error() == ErrorCode::InvariantViolation);
     CHECK(transport.entries().empty());
@@ -593,7 +595,7 @@ TEST_CASE("channel pan is set from spatial", "[ableton][mix]") {
     auto graph = make_test_graph();
     CommandBuffer buf;
 
-    auto r = compile_mix_to_ableton(graph, 0, buf);
+    auto r = compile_mix_to_ableton(graph, consecutive_part_tracks(graph), buf);
     REQUIRE(r.has_value());
 
     auto sets = buf.find_by_type(LomRequestType::SetProperty);
@@ -614,7 +616,7 @@ TEST_CASE("unsupported group tracks are reported without fictional calls", "[abl
     auto graph = make_full_graph();
     CommandBuffer buf;
 
-    auto r = compile_mix_to_ableton(graph, 0, buf);
+    auto r = compile_mix_to_ableton(graph, consecutive_part_tracks(graph), buf);
     REQUIRE(r.has_value());
     CHECK(r->group_tracks_requested == 1);
     CHECK(r->group_tracks_created == 0);
@@ -651,7 +653,7 @@ TEST_CASE("enabled GroupBus sends remain requested but unconfigured", "[ableton]
     graph.group_buses.push_back(group);
     CommandBuffer buffer;
 
-    const auto result = compile_mix_to_ableton(graph, 0, buffer);
+    const auto result = compile_mix_to_ableton(graph, consecutive_part_tracks(graph), buffer);
 
     REQUIRE(result.has_value());
     CHECK(result->sends_requested == 1);
@@ -670,7 +672,7 @@ TEST_CASE("return tracks created for aux buses", "[ableton][mix]") {
     auto graph = make_full_graph();
     CommandBuffer buf;
 
-    auto r = compile_mix_to_ableton(graph, 0, buf);
+    auto r = compile_mix_to_ableton(graph, consecutive_part_tracks(graph), buf);
     REQUIRE(r.has_value());
     CHECK(r->return_tracks_requested == 1);
     CHECK(r->return_tracks_created == 1);
@@ -689,7 +691,7 @@ TEST_CASE("generated aux returns receive an explicit audible Stereo Pan gate",
     graph.aux_buses[0].return_spatial.pan = 0.25f;
     CommandBuffer buffer;
 
-    const auto result = compile_mix_to_ableton(graph, 0, buffer);
+    const auto result = compile_mix_to_ableton(graph, consecutive_part_tracks(graph), buffer);
 
     REQUIRE(result.has_value());
     REQUIRE(result->return_track_deployments.size() == 1);
@@ -726,7 +728,7 @@ TEST_CASE("MasterBus receives an explicit enabled centered Stereo Pan projection
     auto graph = make_test_graph();
     CommandBuffer buffer;
 
-    const auto result = compile_mix_to_ableton(graph, 0, buffer);
+    const auto result = compile_mix_to_ableton(graph, consecutive_part_tracks(graph), buffer);
 
     REQUIRE(result.has_value());
     REQUIRE(result->master_track_deployment.has_value());
@@ -753,7 +755,7 @@ TEST_CASE("aux buses decline unknown return-track state before mutation",
     MixReadbackTransport transport;
     transport.existing_return_track_count = std::nullopt;
 
-    const auto result = compile_mix_to_ableton(graph, 0, transport);
+    const auto result = compile_mix_to_ableton(graph, consecutive_part_tracks(graph), transport);
 
     REQUIRE_FALSE(result.has_value());
     CHECK(result.error() == ErrorCode::ProtocolError);
@@ -767,7 +769,7 @@ TEST_CASE("graphs without aux buses do not require return-track state",
     MixReadbackTransport transport;
     transport.existing_return_track_count = std::nullopt;
 
-    const auto result = compile_mix_to_ableton(graph, 0, transport);
+    const auto result = compile_mix_to_ableton(graph, consecutive_part_tracks(graph), transport);
 
     REQUIRE(result.has_value());
     CHECK(transport.return_track_count_reads == 0);
@@ -782,7 +784,7 @@ TEST_CASE("effects inserted on channels, groups, master", "[ableton][mix]") {
     auto graph = make_full_graph();
     CommandBuffer buf;
 
-    auto r = compile_mix_to_ableton(graph, 0, buf);
+    auto r = compile_mix_to_ableton(graph, consecutive_part_tracks(graph), buf);
     REQUIRE(r.has_value());
     // 1 channel EQ + 1 master compressor. Group processing cannot be
     // materialised because public LOM cannot create group tracks.
@@ -796,7 +798,7 @@ TEST_CASE("EQ maps to EQ Eight device", "[ableton][mix]") {
     auto graph = make_full_graph();
     CommandBuffer buf;
 
-    REQUIRE(compile_mix_to_ableton(graph, 0, buf).has_value());
+    REQUIRE(compile_mix_to_ableton(graph, consecutive_part_tracks(graph), buf).has_value());
 
     auto calls = buf.find_by_type(LomRequestType::CallMethod);
     bool found_eq = false;
@@ -813,7 +815,7 @@ TEST_CASE("Compressor maps to Compressor device", "[ableton][mix]") {
     auto graph = make_full_graph();
     CommandBuffer buf;
 
-    REQUIRE(compile_mix_to_ableton(graph, 0, buf).has_value());
+    REQUIRE(compile_mix_to_ableton(graph, consecutive_part_tracks(graph), buf).has_value());
 
     auto calls = buf.find_by_type(LomRequestType::CallMethod);
     bool found_comp = false;
@@ -832,7 +834,7 @@ TEST_CASE("spatial effects map to native Delay and Reverb devices", "[ableton][m
     graph.channels[0].insert_chain.effects.push_back({MixEffectId{11}, MixReverb{}, true});
     CommandBuffer buf;
 
-    REQUIRE(compile_mix_to_ableton(graph, 0, buf).has_value());
+    REQUIRE(compile_mix_to_ableton(graph, consecutive_part_tracks(graph), buf).has_value());
 
     auto calls = buf.find_by_type(LomRequestType::CallMethod);
     bool found_delay = false;
@@ -861,7 +863,7 @@ TEST_CASE("mapped Mix parameters target the exact newly inserted device",
     const auto track_path = LomPaths::track(0);
     transport.set_device_count(track_path, 2);
 
-    const auto result = compile_mix_to_ableton(graph, 0, transport);
+    const auto result = compile_mix_to_ableton(graph, consecutive_part_tracks(graph), transport);
     REQUIRE(result.has_value());
     CHECK(result->parameters_mapped == 1);
     CHECK(result->parameters_verified == 0);
@@ -903,7 +905,7 @@ TEST_CASE("live Mix parameter deployment requires identity range and readback ev
     MixReadbackTransport transport;
     transport.existing_device_count = 3;
 
-    auto result = compile_mix_to_ableton(graph, 0, transport);
+    auto result = compile_mix_to_ableton(graph, consecutive_part_tracks(graph), transport);
     REQUIRE(result.has_value());
     CHECK(result->effects_inserted == 1);
     CHECK(result->effects_verified == 1);
@@ -935,7 +937,7 @@ TEST_CASE("live Mix parameter deployment requires identity range and readback ev
     CHECK(result->parameter_deployments[0].automation_state == 0);
 
     transport.omit_parameter_evidence = true;
-    result = compile_mix_to_ableton(graph, 0, transport);
+    result = compile_mix_to_ableton(graph, consecutive_part_tracks(graph), transport);
     REQUIRE_FALSE(result.has_value());
     CHECK(result.error() == ErrorCode::ProtocolError);
 }
@@ -951,7 +953,7 @@ TEST_CASE("live Mix effects retain wrong type activity and malformed insertion e
     MixReadbackTransport transport;
 
     transport.device_type = 1;
-    auto result = compile_mix_to_ableton(graph, 0, transport);
+    auto result = compile_mix_to_ableton(graph, consecutive_part_tracks(graph), transport);
     REQUIRE(result.has_value());
     CHECK(result->effects_verified == 0);
     CHECK(result->parameters_mapped == 0);
@@ -967,7 +969,7 @@ TEST_CASE("live Mix effects retain wrong type activity and malformed insertion e
 
     transport.device_type = 2;
     transport.device_active = false;
-    result = compile_mix_to_ableton(graph, 0, transport);
+    result = compile_mix_to_ableton(graph, consecutive_part_tracks(graph), transport);
     REQUIRE(result.has_value());
     CHECK(result->effects_verified == 0);
     CHECK(std::any_of(result->warnings.begin(), result->warnings.end(), [](const auto& warning) {
@@ -976,7 +978,7 @@ TEST_CASE("live Mix effects retain wrong type activity and malformed insertion e
 
     transport.device_active = true;
     transport.device_can_have_chains = true;
-    result = compile_mix_to_ableton(graph, 0, transport);
+    result = compile_mix_to_ableton(graph, consecutive_part_tracks(graph), transport);
     REQUIRE(result.has_value());
     CHECK(result->effects_verified == 0);
     CHECK(result->parameters_mapped == 0);
@@ -989,7 +991,7 @@ TEST_CASE("live Mix effects retain wrong type activity and malformed insertion e
 
     transport.device_can_have_chains = false;
     transport.malformed_device_evidence = true;
-    result = compile_mix_to_ableton(graph, 0, transport);
+    result = compile_mix_to_ableton(graph, consecutive_part_tracks(graph), transport);
     REQUIRE_FALSE(result.has_value());
     CHECK(result.error() == ErrorCode::ProtocolError);
 }
@@ -1006,7 +1008,7 @@ TEST_CASE("Mix readback exposes inactive and automated DeviceParameter state",
     transport.parameter_state = 1;
     transport.automation_state = 2;
 
-    const auto result = compile_mix_to_ableton(graph, 0, transport);
+    const auto result = compile_mix_to_ableton(graph, consecutive_part_tracks(graph), transport);
 
     REQUIRE(result.has_value());
     CHECK(result->parameters_verified == 1);
@@ -1030,7 +1032,7 @@ TEST_CASE("Mix parameter divergence is retained as evidence and warning",
     MixReadbackTransport transport;
     transport.parameter_observed_offset = 0.1;
 
-    const auto result = compile_mix_to_ableton(graph, 0, transport);
+    const auto result = compile_mix_to_ableton(graph, consecutive_part_tracks(graph), transport);
     REQUIRE(result.has_value());
     CHECK(result->parameters_mapped == 1);
     CHECK(result->parameters_verified == 0);
@@ -1056,7 +1058,7 @@ TEST_CASE("Mix compiler reports exact scalar and non-parameter residual coverage
         std::map<std::string, MixDeviceParameter>{{"mix", mix_mapping}});
     CommandBuffer transport;
 
-    const auto result = compile_mix_to_ableton(graph, 0, transport);
+    const auto result = compile_mix_to_ableton(graph, consecutive_part_tracks(graph), transport);
     REQUIRE(result.has_value());
     CHECK(result->parameter_sources_total == 10);
     CHECK(result->parameter_sources_explicitly_mapped == 1);
@@ -1072,7 +1074,7 @@ TEST_CASE("pre-12.3 target configures Mix state but skips native effects",
     CommandBuffer buf;
     buf.set_target_profile(modeled_target_profile({11, 3, 42, "11.3.42"}));
 
-    auto result = compile_mix_to_ableton(graph, 0, buf);
+    auto result = compile_mix_to_ableton(graph, consecutive_part_tracks(graph), buf);
     REQUIRE(result.has_value());
     CHECK(result->channels_requested == graph.channels.size());
     CHECK(result->channels_configured == graph.channels.size());
@@ -1092,7 +1094,7 @@ TEST_CASE("Mix compilation declines an absent target profile before mutation",
     CommandBuffer transport;
     transport.set_target_profile(std::nullopt);
 
-    const auto result = compile_mix_to_ableton(graph, 0, transport);
+    const auto result = compile_mix_to_ableton(graph, consecutive_part_tracks(graph), transport);
 
     REQUIRE_FALSE(result.has_value());
     CHECK(result.error() == ErrorCode::ProtocolError);
@@ -1101,7 +1103,8 @@ TEST_CASE("Mix compilation declines an absent target profile before mutation",
     auto contradictory = modeled_target_profile({12, 2, 0, "12.2.0"});
     contradictory.native_device_insertion = CapabilityState::Available;
     transport.set_target_profile(std::move(contradictory));
-    const auto contradicted = compile_mix_to_ableton(graph, 0, transport);
+    const auto contradicted =
+        compile_mix_to_ableton(graph, consecutive_part_tracks(graph), transport);
     REQUIRE_FALSE(contradicted.has_value());
     CHECK(contradicted.error() == ErrorCode::ProtocolError);
     CHECK(transport.entries().empty());
@@ -1115,7 +1118,7 @@ TEST_CASE("send levels configured", "[ableton][mix]") {
     auto graph = make_full_graph();
     CommandBuffer buf;
 
-    auto r = compile_mix_to_ableton(graph, 0, buf);
+    auto r = compile_mix_to_ableton(graph, consecutive_part_tracks(graph), buf);
     REQUIRE(r.has_value());
     CHECK(r->sends_requested == 2);
     CHECK(r->sends_configured == 0);
@@ -1134,7 +1137,7 @@ TEST_CASE("pre-fader send level does not masquerade as configured send mode",
     graph.channels[0].sends[0].pre_fader = true;
     CommandBuffer buffer;
 
-    const auto result = compile_mix_to_ableton(graph, 0, buffer);
+    const auto result = compile_mix_to_ableton(graph, consecutive_part_tracks(graph), buffer);
 
     REQUIRE(result.has_value());
     CHECK(result->send_levels_configured == 2);
@@ -1151,7 +1154,7 @@ TEST_CASE("new aux buses are offset by existing Ableton return tracks",
     CommandBuffer buf;
     buf.set_return_track_count(2);
 
-    auto result = compile_mix_to_ableton(graph, 0, buf);
+    auto result = compile_mix_to_ableton(graph, consecutive_part_tracks(graph), buf);
     REQUIRE(result.has_value());
 
     bool named_new_return = false;
@@ -1171,7 +1174,7 @@ TEST_CASE("the largest signed return index is representable without increment ov
     CommandBuffer transport;
     transport.set_return_track_count(static_cast<std::uint32_t>(std::numeric_limits<int>::max()));
 
-    const auto result = compile_mix_to_ableton(graph, 0, transport);
+    const auto result = compile_mix_to_ableton(graph, consecutive_part_tracks(graph), transport);
 
     REQUIRE(result.has_value());
     CHECK(result->return_tracks_created == 1);
@@ -1192,7 +1195,7 @@ TEST_CASE("return ranges exceeding the signed LOM index domain fail before mutat
     CommandBuffer transport;
     transport.set_return_track_count(static_cast<std::uint32_t>(std::numeric_limits<int>::max()));
 
-    const auto result = compile_mix_to_ableton(graph, 0, transport);
+    const auto result = compile_mix_to_ableton(graph, consecutive_part_tracks(graph), transport);
 
     REQUIRE_FALSE(result.has_value());
     CHECK(result.error() == ErrorCode::TargetAddressUnrepresentable);
@@ -1207,7 +1210,7 @@ TEST_CASE("master fader set", "[ableton][mix]") {
     auto graph = make_test_graph();
     CommandBuffer buf;
 
-    auto r = compile_mix_to_ableton(graph, 0, buf);
+    auto r = compile_mix_to_ableton(graph, consecutive_part_tracks(graph), buf);
     REQUIRE(r.has_value());
 
     auto sets = buf.find_by_type(LomRequestType::SetProperty);
@@ -1235,7 +1238,7 @@ TEST_CASE("unsupported Ableton mix automation is reported", "[ableton][mix]") {
     graph.automation.push_back(ma);
 
     CommandBuffer buf;
-    auto r = compile_mix_to_ableton(graph, 0, buf);
+    auto r = compile_mix_to_ableton(graph, consecutive_part_tracks(graph), buf);
     REQUIRE(r.has_value());
     CHECK(r->automation_lanes_requested == 2);
     CHECK(r->automation_lanes_written == 0);
@@ -1254,7 +1257,7 @@ TEST_CASE("unsupported Mix target settings are reported instead of silently drop
     graph.master_bus.dithering = DitheringConfig{};
 
     CommandBuffer buf;
-    auto r = compile_mix_to_ableton(graph, 0, buf);
+    auto r = compile_mix_to_ableton(graph, consecutive_part_tracks(graph), buf);
     REQUIRE(r.has_value());
     CHECK(r->warnings.size() == 6);
     CHECK(r->warnings[0].find("Non-stereo") != std::string::npos);
@@ -1277,7 +1280,7 @@ TEST_CASE("channel mute and solo states are applied exactly", "[ableton][mix]") 
     graph.channels[1].solo = true;
     CommandBuffer buf;
 
-    auto r = compile_mix_to_ableton(graph, 0, buf);
+    auto r = compile_mix_to_ableton(graph, consecutive_part_tracks(graph), buf);
     REQUIRE(r.has_value());
 
     auto sets = buf.find_by_type(LomRequestType::SetProperty);
@@ -1307,7 +1310,7 @@ TEST_CASE("levels beyond Live's mixer ranges are refused before any mutation",
         auto graph = make_test_graph();
         graph.channels[0].fader.level_db = 9.0f;
         CommandBuffer buf;
-        const auto r = compile_mix_to_ableton(graph, 0, buf);
+        const auto r = compile_mix_to_ableton(graph, consecutive_part_tracks(graph), buf);
         REQUIRE_FALSE(r.has_value());
         CHECK(r.error() == ErrorCode::TargetValueUnrepresentable);
         CHECK(buf.size() == 0);
@@ -1320,21 +1323,21 @@ TEST_CASE("levels beyond Live's mixer ranges are refused before any mutation",
         auto graph = make_test_graph();
         graph.master_bus.fader.level_db = 7.0f;
         CommandBuffer buf;
-        CHECK_FALSE(compile_mix_to_ableton(graph, 0, buf).has_value());
+        CHECK_FALSE(compile_mix_to_ableton(graph, consecutive_part_tracks(graph), buf).has_value());
         CHECK(buf.size() == 0);
     }
     SECTION("return level above +6 dB") {
         auto graph = make_full_graph();
         graph.aux_buses[0].return_level = 8.0f;
         CommandBuffer buf;
-        CHECK_FALSE(compile_mix_to_ableton(graph, 0, buf).has_value());
+        CHECK_FALSE(compile_mix_to_ableton(graph, consecutive_part_tracks(graph), buf).has_value());
         CHECK(buf.size() == 0);
     }
     SECTION("enabled send above 0 dB") {
         auto graph = make_full_graph();
         graph.channels[1].sends[0].level_db = 3.0f;
         CommandBuffer buf;
-        CHECK_FALSE(compile_mix_to_ableton(graph, 0, buf).has_value());
+        CHECK_FALSE(compile_mix_to_ableton(graph, consecutive_part_tracks(graph), buf).has_value());
         CHECK(buf.size() == 0);
     }
     SECTION("the boundaries themselves compile") {
@@ -1344,7 +1347,7 @@ TEST_CASE("levels beyond Live's mixer ranges are refused before any mutation",
         // A group fader is never written, so Live's range does not apply to it.
         graph.group_buses[0].fader.level_db = 10.0f;
         CommandBuffer buf;
-        CHECK(compile_mix_to_ableton(graph, 0, buf).has_value());
+        CHECK(compile_mix_to_ableton(graph, consecutive_part_tracks(graph), buf).has_value());
         const auto levels = ableton_unrepresentable_mix_levels(graph);
         REQUIRE(levels.has_value());
         CHECK(levels->empty());

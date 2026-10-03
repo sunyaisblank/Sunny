@@ -21,11 +21,6 @@ compile_to_lilypond(const sunny::core::Score& score) {
     return sunny::infrastructure::formats::compile_score_to_lilypond(score);
 }
 
-sunny::core::Result<sunny::infrastructure::formats::AbletonCompilationResult>
-compile_to_ableton(const sunny::core::Score& score, LomTransport& transport) {
-    return sunny::infrastructure::formats::compile_to_ableton(score, transport);
-}
-
 Result<IngestedWorkId> ingest_midi(CorpusDatabase& corpus,
                                    std::span<const std::uint8_t> data,
                                    IngestedWorkId id,

@@ -22,7 +22,6 @@
  * - search_presets, load_preset, save_preset
  * - morph_presets
  * - validate_timbre
- * - compile_timbre
  */
 
 #pragma once
@@ -33,8 +32,6 @@
 
 namespace sunny::infrastructure {
 
-class LomTransport;
-
 /**
  * @brief Register Timbre IR tools with an MCP server
  *
@@ -42,8 +39,6 @@ class LomTransport;
  * the lifetime of the server. Profile IDs are used to reference
  * profiles across tool calls.
  */
-void register_timbre_tools(McpServer& server,
-                           LomTransport* transport = nullptr,
-                           std::shared_ptr<TimbreSession> session = {});
+void register_timbre_tools(McpServer& server, std::shared_ptr<TimbreSession> session = {});
 
 } // namespace sunny::infrastructure

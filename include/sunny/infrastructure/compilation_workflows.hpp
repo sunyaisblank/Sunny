@@ -4,16 +4,15 @@
  *
  *
  * Bridges Score IR workflow tools to Infrastructure compilation targets
- * (MusicXML, LilyPond, Ableton). These cannot live in sunny::core
- * because they depend on transport and format adapters owned by
- * sunny::infrastructure.
+ * (MusicXML, LilyPond) and corpus ingestion. These cannot live in
+ * sunny::core because they depend on format adapters owned by
+ * sunny::infrastructure. Live deployment goes through the guarded
+ * project path in formats/ableton_project.hpp.
  */
 
 #pragma once
 
-#include <sunny/infrastructure/ableton/transport.hpp>
 #include <sunny/infrastructure/corpus/ingestion.hpp>
-#include <sunny/infrastructure/formats/ableton_score.hpp>
 #include <sunny/infrastructure/formats/score_to_lilypond.hpp>
 #include <sunny/infrastructure/formats/score_to_musicxml.hpp>
 
@@ -24,9 +23,6 @@ compile_to_musicxml(const sunny::core::Score& score);
 
 [[nodiscard]] sunny::core::Result<sunny::infrastructure::formats::LilyPondCompilationResult>
 compile_to_lilypond(const sunny::core::Score& score);
-
-[[nodiscard]] sunny::core::Result<sunny::infrastructure::formats::AbletonCompilationResult>
-compile_to_ableton(const sunny::core::Score& score, LomTransport& transport);
 
 // =============================================================================
 // Corpus Ingestion Wrappers

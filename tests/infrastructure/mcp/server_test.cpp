@@ -63,7 +63,7 @@ TEST_CASE("Score MCP ties a note only to an adjacent same-pitch continuation",
           "[mcp][score][tie]") {
     McpServer server;
     auto session = std::make_shared<ScoreSession>();
-    register_score_tools(server, nullptr, session);
+    register_score_tools(server, session);
     const auto created = call_tool(server,
                                    "score_create",
                                    {{"total_bars", 2},
@@ -120,7 +120,7 @@ TEST_CASE("Score MCP handle and serialized root identity remain identical",
           "[mcp][score][identity][serialization]") {
     McpServer server;
     auto session = std::make_shared<ScoreSession>();
-    register_score_tools(server, nullptr, session);
+    register_score_tools(server, session);
     const json create_params = {{"title", "Identity"},
                                 {"total_bars", 1},
                                 {"parts", {{{"name", "Piano"}, {"instrument_type", 0}}}}};
@@ -149,7 +149,7 @@ TEST_CASE("Score MCP identity exhaustion never wraps or overwrites",
     McpServer server;
     auto session = std::make_shared<ScoreSession>();
     session->next_score_id = std::numeric_limits<std::uint64_t>::max();
-    register_score_tools(server, nullptr, session);
+    register_score_tools(server, session);
     const json create_params = {{"title", "Last identity"},
                                 {"total_bars", 1},
                                 {"parts", {{{"name", "Piano"}, {"instrument_type", 0}}}}};
@@ -728,16 +728,16 @@ TEST_CASE("all public tools advertise object-shaped JSON Schemas", "[mcp][tools]
     McpServer server;
     McpSession session;
     register_sunny_tools(server, orchestrator, dispatcher);
-    register_score_tools(server, &transport, session.score);
-    register_timbre_tools(server, &transport, session.timbre);
-    register_mix_tools(server, &transport, session.mix);
+    register_score_tools(server, session.score);
+    register_timbre_tools(server, session.timbre);
+    register_mix_tools(server, session.mix);
     register_corpus_tools(server, session.corpus);
     register_project_tools(server, session, &transport);
 
     auto response =
         server.process_request({{"jsonrpc", "2.0"}, {"method", "tools/list"}, {"id", 30}});
     const auto& tools = response["result"]["tools"];
-    REQUIRE(tools.size() == 119);
+    REQUIRE(tools.size() == 116);
     for (const auto& tool : tools) {
         CAPTURE(tool["name"]);
         const auto& schema = tool["inputSchema"];
@@ -1403,18 +1403,88 @@ TEST_CASE("session-state tool exposes live perception", "[mcp][integration][brid
     CHECK(state["target_profile"]["adapter"]["contract"] == "version_coupled_private");
 }
 
-TEST_CASE("Score IR deploys to Ableton through its public MCP tool",
-          "[mcp][integration][score][ableton]") {
-    CommandBuffer transport;
-    McpServer server;
-    register_score_tools(server, &transport);
+namespace {
 
-    auto created = call_tool(server,
-                             "score_create",
-                             {{"title", "MCP Score"},
-                              {"total_bars", 1},
-                              {"parts", {{{"name", "Piano"}, {"instrument_type", 0}}}}},
-                             50);
+// The guarded project tools are the one path that writes to Live, so the
+// per-document deployment evidence is asserted on their output. Every
+// document store is shared with the project tools.
+struct ProjectServer {
+    CommandBuffer transport;
+    McpSession session;
+    McpServer server;
+
+    ProjectServer() {
+        register_score_tools(server, session.score);
+        register_timbre_tools(server, session.timbre);
+        register_mix_tools(server, session.mix);
+        register_project_tools(server, session, &transport);
+    }
+
+    // A one-bar Score with one keyboard Part per name.
+    json create_score(const std::vector<std::string>& part_names, int id) {
+        json parts = json::array();
+        for (const auto& name : part_names)
+            parts.push_back({{"name", name}, {"instrument_type", 0}});
+        auto score =
+            call_tool(server,
+                      "score_create",
+                      {{"title", "MCP Project"}, {"total_bars", 1}, {"parts", std::move(parts)}},
+                      id);
+        REQUIRE(score["part_ids"].size() == part_names.size());
+        return score;
+    }
+
+    // A default Timbre profile per Part, in Part order.
+    json default_profiles(const json& score, int id) {
+        json profile_ids = json::array();
+        for (const auto& part_id : score["part_ids"])
+            profile_ids.push_back(call_tool(server,
+                                            "create_timbre_profile",
+                                            {{"part_id", part_id}, {"name", "Part"}},
+                                            id++)["profile_id"]);
+        return profile_ids;
+    }
+
+    json default_mix(const json& score, int id) {
+        return call_tool(
+            server, "create_mix_graph", {{"part_ids", score["part_ids"]}}, id)["graph_id"];
+    }
+
+    static json project(const json& score, const json& profile_ids, const json& graph_id) {
+        return {{"score_id", score["score_id"]},
+                {"timbre_profile_ids", profile_ids},
+                {"mix_graph_id", graph_id}};
+    }
+
+    json compile(const json& project, int id) {
+        auto compiled = call_tool(server, "project_compile_to_ableton", project, id);
+        INFO(compiled.dump());
+        REQUIRE(compiled["success"] == true);
+        return compiled;
+    }
+
+    bool wrote_to(const std::string& path, const std::string& property) const {
+        return std::ranges::any_of(transport.entries(), [&](const CommandBuffer::Entry& entry) {
+            return entry.request.path.to_string() == path &&
+                   entry.request.property_or_method == property;
+        });
+    }
+};
+
+bool any_text_contains(const json& texts, const std::string& needle) {
+    return std::ranges::any_of(texts, [&](const json& text) {
+        return text.get<std::string>().find(needle) != std::string::npos;
+    });
+}
+
+} // namespace
+
+TEST_CASE("Score IR deploys to Ableton through the guarded project tools",
+          "[mcp][integration][score][ableton]") {
+    ProjectServer fixture;
+    auto& server = fixture.server;
+
+    const auto created = fixture.create_score({"Piano"}, 50);
     REQUIRE_FALSE(call_tool(server,
                             "score_set_formal_plan",
                             {{"score_id", created["score_id"]},
@@ -1440,76 +1510,81 @@ TEST_CASE("Score IR deploys to Ableton through its public MCP tool",
             "score_modify_note",
             {{"score_id", created["score_id"]}, {"event_id", event_id}, {"release_velocity", 91}},
             5022)["ok"] == true);
-    auto compiled = call_tool(
-        server, "score_compile_to_ableton", {{"score_id", created["score_id"]}, {"ppq", 480}}, 51);
+    auto project = ProjectServer::project(
+        created, fixture.default_profiles(created, 5023), fixture.default_mix(created, 5024));
+    project["ppq"] = 480;
+    const auto compiled = fixture.compile(project, 51);
+    const auto& score = compiled["score"];
 
-    CHECK(compiled["success"] == true);
     CHECK(compiled["complete"] == false);
-    CHECK(compiled["tracks_created"] == 1);
-    CHECK(compiled["clips_created"] == 1);
-    CHECK(compiled["notes_requested"] == 1);
-    CHECK(compiled["notes_written"] == 1);
-    CHECK(compiled["note_batches_requested"] == 1);
-    CHECK(compiled["note_batches_executed"] == 0);
-    CHECK(compiled["note_ids_returned"] == 0);
-    CHECK(compiled["note_batches_verified"] == 0);
-    CHECK(compiled["notes_verified"] == 0);
-    REQUIRE(compiled["note_deployments"].size() == 1);
-    CHECK(compiled["note_deployments"][0]["notes_requested"] == 1);
-    REQUIRE(compiled["note_deployments"][0]["requested_notes"].size() == 1);
-    CHECK(compiled["note_deployments"][0]["requested_notes"][0] ==
-          json{{"pitch", 60},
-               {"start_time", 0.0},
-               {"duration", 1.0},
-               {"velocity", 80.0},
-               {"mute", false},
-               {"probability", 1.0},
-               {"velocity_deviation", 0.0},
-               {"release_velocity", 91.0}});
-    CHECK(compiled["note_deployments"][0]["action"] == "recorded_only");
-    CHECK(compiled["tempo_events_requested"] == 1);
-    CHECK(compiled["time_signature_events_requested"] == 1);
-    CHECK(compiled["time_signature_events_written"] == 1);
-    CHECK(compiled["time_signature_groupings_requested"] == 0);
-    CHECK(compiled["time_signature_groupings_written"] == 0);
-    CHECK(compiled["report"]["time_signature_events_requested"] == 1);
-    CHECK(compiled["report"]["time_signature_events_written"] == 1);
-    CHECK(compiled["report"]["time_signature_groupings_requested"] == 0);
-    CHECK(compiled["report"]["time_signature_groupings_written"] == 0);
-    CHECK(compiled["report"]["has_drops"] == false);
-    CHECK(compiled["report"]["has_residuals"] == false);
-    CHECK(compiled["key_signature_events_requested"] == 1);
-    CHECK(compiled["key_signature_events_written"] == 0);
-    CHECK(compiled["section_nodes_total"] == 1);
-    CHECK(compiled["section_nodes_projected"] == 1);
-    CHECK(compiled["section_nodes_unprojected"] == 0);
-    CHECK(compiled["markers_requested"] == 1);
-    CHECK(compiled["markers_created"] == 0);
-    CHECK(compiled["markers_updated"] == 0);
-    CHECK(compiled["markers_verified"] == 0);
-    REQUIRE(compiled["marker_deployments"].size() == 1);
-    CHECK(compiled["marker_deployments"][0]["requested_name"] == "A");
-    CHECK(compiled["marker_deployments"][0]["observed_time"].is_null());
-    CHECK(compiled["marker_deployments"][0]["observed_name"].is_null());
-    CHECK(compiled["marker_deployments"][0]["action"] == "recorded_only");
-    CHECK(compiled["marker_deployments"][0]["verified"] == false);
-    CHECK(compiled["property_writes"] == 23);
-    CHECK(compiled["property_writes_verified"] == 0);
-    REQUIRE(compiled["property_deployments"].size() == 23);
-    CHECK(compiled["property_deployments"][0]["property"] == "tempo");
-    CHECK(compiled["property_deployments"][0]["observed"].is_null());
-    CHECK(compiled["property_deployments"][0]["verified"] == false);
-    CHECK(compiled["clip_envelope_clears_requested"] == 1);
-    CHECK(compiled["clip_envelope_clears_executed"] == 0);
-    CHECK(compiled["clip_envelope_clears_verified"] == 0);
-    REQUIRE(compiled["clip_envelope_deployments"].size() == 1);
-    CHECK(compiled["clip_envelope_deployments"][0]["action"] == "recorded_only");
-    CHECK(compiled["clip_envelope_deployments"][0]["observed_has_envelopes"].is_null());
+    CHECK(score["tracks_created"] == 1);
+    CHECK(score["clips_created"] == 1);
+    CHECK(score["notes_requested"] == 1);
+    CHECK(score["notes_written"] == 1);
+    CHECK(score["note_batches_requested"] == 1);
+    CHECK(score["note_batches_executed"] == 0);
+    CHECK(score["note_ids_returned"] == 0);
+    CHECK(score["note_batches_verified"] == 0);
+    CHECK(score["notes_verified"] == 0);
+    REQUIRE(score["note_deployments"].size() == 1);
+    CHECK(score["note_deployments"][0]["notes_requested"] == 1);
+    REQUIRE(score["note_deployments"][0]["requested_notes"].size() == 1);
+    // The release velocity edited after insertion is the one deployed.
+    CHECK(score["note_deployments"][0]["requested_notes"][0] == json{{"pitch", 60},
+                                                                     {"start_time", 0.0},
+                                                                     {"duration", 1.0},
+                                                                     {"velocity", 80.0},
+                                                                     {"mute", false},
+                                                                     {"probability", 1.0},
+                                                                     {"velocity_deviation", 0.0},
+                                                                     {"release_velocity", 91.0}});
+    CHECK(score["note_deployments"][0]["action"] == "recorded_only");
+    CHECK(score["tempo_events_requested"] == 1);
+    CHECK(score["time_signature_events_requested"] == 1);
+    CHECK(score["time_signature_events_written"] == 1);
+    CHECK(score["time_signature_groupings_requested"] == 0);
+    CHECK(score["time_signature_groupings_written"] == 0);
+    CHECK(score["report"]["time_signature_events_requested"] == 1);
+    CHECK(score["report"]["time_signature_events_written"] == 1);
+    CHECK(score["report"]["time_signature_groupings_requested"] == 0);
+    CHECK(score["report"]["time_signature_groupings_written"] == 0);
+    CHECK(score["report"]["has_drops"] == false);
+    CHECK(score["report"]["has_residuals"] == false);
+    CHECK(score["key_signature_events_requested"] == 1);
+    CHECK(score["key_signature_events_written"] == 0);
+    CHECK(score["section_nodes_total"] == 1);
+    CHECK(score["section_nodes_projected"] == 1);
+    CHECK(score["section_nodes_unprojected"] == 0);
+    CHECK(score["markers_requested"] == 1);
+    CHECK(score["markers_created"] == 0);
+    CHECK(score["markers_updated"] == 0);
+    CHECK(score["markers_verified"] == 0);
+    REQUIRE(score["marker_deployments"].size() == 1);
+    CHECK(score["marker_deployments"][0]["requested_name"] == "A");
+    CHECK(score["marker_deployments"][0]["observed_time"].is_null());
+    CHECK(score["marker_deployments"][0]["observed_name"].is_null());
+    CHECK(score["marker_deployments"][0]["action"] == "recorded_only");
+    CHECK(score["marker_deployments"][0]["verified"] == false);
+    CHECK(score["property_writes"] == 23);
+    CHECK(score["property_writes_verified"] == 0);
+    REQUIRE(score["property_deployments"].size() == 23);
+    CHECK(score["property_deployments"][0]["property"] == "tempo");
+    CHECK(score["property_deployments"][0]["observed"].is_null());
+    CHECK(score["property_deployments"][0]["verified"] == false);
+    CHECK(score["clip_envelope_clears_requested"] == 1);
+    CHECK(score["clip_envelope_clears_executed"] == 0);
+    CHECK(score["clip_envelope_clears_verified"] == 0);
+    REQUIRE(score["clip_envelope_deployments"].size() == 1);
+    CHECK(score["clip_envelope_deployments"][0]["action"] == "recorded_only");
+    CHECK(score["clip_envelope_deployments"][0]["observed_has_envelopes"].is_null());
     CHECK(compiled["target_profile"]["live"]["version"]["major"] == 12);
     CHECK(compiled["target_profile"]["capabilities"]["clip_add_new_notes"] == "available");
-    REQUIRE_FALSE(transport.entries().empty());
-    CHECK(transport.entries()[0].request.property_or_method == "tempo");
-    CHECK(transport.entries()[1].request.property_or_method == "signature_numerator");
+    // The Score phase opens the deployment with the Song tempo and meter.
+    const auto& mutations = compiled["plan"]["planned_mutations"];
+    REQUIRE(mutations.size() >= 2);
+    CHECK(mutations[0]["request"]["name"] == "tempo");
+    CHECK(mutations[1]["request"]["name"] == "signature_numerator");
+    CHECK(compiled["deployment"]["mutation_journal"].size() == mutations.size());
 }
 
 TEST_CASE("Score MCP authors typed harmony and exports structured MusicXML",
@@ -1562,118 +1637,106 @@ TEST_CASE("Score MCP authors typed harmony and exports structured MusicXML",
     CHECK(unchanged["parts"][0]["measures"][0]["voices"][0]["events"].size() == 2);
 }
 
-TEST_CASE("Score Ableton MCP completeness includes MIDI mode-loss evidence",
+TEST_CASE("Project completeness includes Score MIDI mode-loss evidence",
           "[mcp][integration][score][ableton][key]") {
-    CommandBuffer transport;
-    McpServer server;
-    auto session = std::make_shared<ScoreSession>();
-    register_score_tools(server, &transport, session);
-
-    const auto created = call_tool(server,
-                                   "score_create",
-                                   {{"title", "Modal MCP Score"},
-                                    {"total_bars", 1},
-                                    {"parts", {{{"name", "Piano"}, {"instrument_type", 0}}}}},
-                                   511);
-    auto* score = session->find(created["score_id"].get<std::uint64_t>());
+    ProjectServer fixture;
+    const auto created = fixture.create_score({"Piano"}, 511);
+    auto* score = fixture.session.score->find(created["score_id"].get<std::uint64_t>());
     REQUIRE(score != nullptr);
     const auto dorian = sunny::core::find_scale("dorian");
     REQUIRE(dorian.has_value());
     score->key_map[0].key =
         sunny::core::KeySignature{sunny::core::SpelledPitch{1, 0, 4}, *dorian, 0};
 
-    const auto compiled =
-        call_tool(server, "score_compile_to_ableton", {{"score_id", created["score_id"]}}, 512);
-    CHECK(compiled["success"] == true);
+    const auto compiled = fixture.compile(
+        ProjectServer::project(
+            created, fixture.default_profiles(created, 5111), fixture.default_mix(created, 5112)),
+        512);
     CHECK(compiled["complete"] == false);
-    REQUIRE_FALSE(compiled["warnings"].empty());
-    CHECK(compiled["warnings"][0].get<std::string>().find("key signature intent") !=
-          std::string::npos);
-    REQUIRE(compiled["report"]["diagnostics"].size() == 1);
-    CHECK(compiled["report"]["has_drops"] == false);
-    CHECK(compiled["report"]["has_residuals"] == true);
-    CHECK(compiled["report"]["diagnostics"][0]["message"].get<std::string>().find("dorian") !=
+    CHECK(any_text_contains(compiled["score"]["warnings"], "key signature intent"));
+    CHECK(any_text_contains(compiled["warnings"], "key signature intent"));
+    const auto& report = compiled["score"]["report"];
+    REQUIRE(report["diagnostics"].size() == 1);
+    CHECK(report["has_drops"] == false);
+    CHECK(report["has_residuals"] == true);
+    CHECK(report["diagnostics"][0]["message"].get<std::string>().find("dorian") !=
           std::string::npos);
 }
 
-TEST_CASE("Score Ableton MCP completeness includes unrepresentable SMF key metadata",
+TEST_CASE("Project completeness includes unrepresentable SMF key metadata",
           "[mcp][integration][score][ableton][key]") {
-    CommandBuffer transport;
-    McpServer server;
-    auto session = std::make_shared<ScoreSession>();
-    register_score_tools(server, &transport, session);
-
-    const auto created = call_tool(server,
-                                   "score_create",
-                                   {{"title", "Wide Key MCP Score"},
-                                    {"total_bars", 1},
-                                    {"parts", {{{"name", "Piano"}, {"instrument_type", 0}}}}},
-                                   513);
-    auto* score = session->find(created["score_id"].get<std::uint64_t>());
+    ProjectServer fixture;
+    const auto created = fixture.create_score({"Piano"}, 513);
+    auto* score = fixture.session.score->find(created["score_id"].get<std::uint64_t>());
     REQUIRE(score != nullptr);
     const auto major = sunny::core::find_scale("major");
     REQUIRE(major.has_value());
     score->key_map[0].key =
         sunny::core::KeySignature{sunny::core::SpelledPitch{0, 2, 4}, *major, 14};
 
-    const auto compiled =
-        call_tool(server, "score_compile_to_ableton", {{"score_id", created["score_id"]}}, 514);
-    CHECK(compiled["success"] == true);
+    const auto compiled = fixture.compile(
+        ProjectServer::project(
+            created, fixture.default_profiles(created, 5131), fixture.default_mix(created, 5132)),
+        514);
     CHECK(compiled["complete"] == false);
-    CHECK(compiled["report"]["dropped_key_sig_events"] == 1);
-    CHECK(compiled["report"]["has_drops"] == true);
-    CHECK(compiled["report"]["has_residuals"] == true);
-    REQUIRE(compiled["report"]["diagnostics"].size() == 1);
-    CHECK(compiled["report"]["diagnostics"][0]["message"].get<std::string>().find("14 fifths") !=
+    const auto& report = compiled["score"]["report"];
+    CHECK(report["dropped_key_sig_events"] == 1);
+    CHECK(report["has_drops"] == true);
+    CHECK(report["has_residuals"] == true);
+    REQUIRE(report["diagnostics"].size() == 1);
+    CHECK(report["diagnostics"][0]["message"].get<std::string>().find("14 fifths") !=
           std::string::npos);
 }
 
-TEST_CASE("Timbre IR deploys to Ableton through its public MCP tool",
+TEST_CASE("Timbre IR deploys to Ableton through the guarded project tools",
           "[mcp][integration][timbre][ableton]") {
-    CommandBuffer transport;
-    McpServer server;
-    register_timbre_tools(server, &transport);
+    ProjectServer fixture;
+    const auto score = fixture.create_score({"Piano"}, 52);
+    const auto compiled = fixture.compile(
+        ProjectServer::project(
+            score, fixture.default_profiles(score, 521), fixture.default_mix(score, 522)),
+        53);
+    REQUIRE(compiled["timbre"].size() == 1);
+    const auto& timbre = compiled["timbre"][0];
 
-    auto created =
-        call_tool(server, "create_timbre_profile", {{"part_id", 1}, {"name", "Piano"}}, 52);
-    auto compiled = call_tool(
-        server, "compile_timbre", {{"profile_id", created["profile_id"]}, {"track_index", 0}}, 53);
-
-    CHECK(compiled["success"] == true);
     CHECK(compiled["complete"] == false);
-    CHECK(compiled["devices_requested"] == 1);
-    CHECK(compiled["devices_created"] == 1);
-    CHECK(compiled["devices_verified"] == 0);
-    REQUIRE(compiled["device_deployments"].size() == 1);
-    CHECK(compiled["device_deployments"][0].size() == 23);
-    CHECK(compiled["device_deployments"][0]["requested_name"] == "Analog");
-    CHECK(compiled["device_deployments"][0]["observed_type"].is_null());
-    CHECK(compiled["device_deployments"][0]["observed_latency_in_samples"].is_null());
-    CHECK(compiled["device_deployments"][0]["observed_latency_in_ms"].is_null());
-    CHECK(compiled["device_deployments"][0]["reported_latency_observed"] == false);
-    CHECK(compiled["device_deployments"][0]["render_path_latency_fully_observed"] == false);
-    CHECK(compiled["device_deployments"][0]["observed_track_has_audio_output"].is_null());
-    CHECK(compiled["device_deployments"][0]["output_verified"] == false);
-    CHECK(compiled["device_deployments"][0]["verified"] == false);
-    CHECK(compiled["effects_requested"] == 0);
-    CHECK(compiled["effects_inserted"] == 0);
-    CHECK(compiled["effects_verified"] == 0);
+    CHECK(timbre["part_id"] == score["part_ids"][0]);
+    CHECK(timbre["devices_requested"] == 1);
+    CHECK(timbre["devices_created"] == 1);
+    CHECK(timbre["devices_verified"] == 0);
+    REQUIRE(timbre["device_deployments"].size() == 1);
+    CHECK(timbre["device_deployments"][0].size() == 23);
+    CHECK(timbre["device_deployments"][0]["requested_name"] == "Analog");
+    CHECK(timbre["device_deployments"][0]["observed_type"].is_null());
+    CHECK(timbre["device_deployments"][0]["observed_latency_in_samples"].is_null());
+    CHECK(timbre["device_deployments"][0]["observed_latency_in_ms"].is_null());
+    CHECK(timbre["device_deployments"][0]["reported_latency_observed"] == false);
+    CHECK(timbre["device_deployments"][0]["render_path_latency_fully_observed"] == false);
+    CHECK(timbre["device_deployments"][0]["observed_track_has_audio_output"].is_null());
+    CHECK(timbre["device_deployments"][0]["output_verified"] == false);
+    CHECK(timbre["device_deployments"][0]["verified"] == false);
+    CHECK(timbre["effects_requested"] == 0);
+    CHECK(timbre["effects_inserted"] == 0);
+    CHECK(timbre["effects_verified"] == 0);
     CHECK(compiled["target_profile"]["capabilities"]["track_insert_device_native"] == "available");
-    REQUIRE(compiled["warnings"].size() == 1);
-    CHECK(compiled["warnings"][0].get<std::string>().find("source-specific parameter values") !=
+    REQUIRE(timbre["warnings"].size() == 1);
+    CHECK(timbre["warnings"][0].get<std::string>().find("source-specific parameter values") !=
           std::string::npos);
-    REQUIRE(transport.entries().size() == 1);
-    CHECK(transport.entries()[0].request.property_or_method == "insert_device");
+    CHECK(std::ranges::count_if(fixture.transport.entries(), [](const auto& entry) {
+              return entry.request.property_or_method == "insert_device";
+          }) == 1);
 }
 
-TEST_CASE("Timbre MCP declares parameter domains and exposes deployment evidence",
+TEST_CASE("Timbre MCP declares parameter domains and the project exposes deployment evidence",
           "[mcp][integration][timbre][mapping]") {
-    CommandBuffer transport;
-    McpServer server;
-    register_timbre_tools(server, &transport);
+    ProjectServer fixture;
+    auto& server = fixture.server;
+    const auto score = fixture.create_score({"Mapped"}, 529);
 
-    const auto created =
-        call_tool(server, "create_timbre_profile", {{"part_id", 1}, {"name", "Mapped"}}, 530);
+    const auto created = call_tool(server,
+                                   "create_timbre_profile",
+                                   {{"part_id", score["part_ids"][0]}, {"name", "Mapped"}},
+                                   530);
     const auto invalid = call_tool(server,
                                    "map_timbre_parameter",
                                    {{"profile_id", created["profile_id"]},
@@ -1702,152 +1765,105 @@ TEST_CASE("Timbre MCP declares parameter domains and exposes deployment evidence
     REQUIRE(mapped["success"] == true);
     CHECK(mapped["source_value"] == 1000.0);
 
-    const auto compiled = call_tool(
-        server, "compile_timbre", {{"profile_id", created["profile_id"]}, {"track_index", 0}}, 533);
-    REQUIRE(compiled["success"] == true);
-    CHECK(compiled["parameters_mapped"] == 1);
-    CHECK(compiled["parameters_verified"] == 0);
-    REQUIRE(compiled["parameter_deployments"].size() == 1);
-    CHECK(compiled["parameter_deployments"][0].size() == 21);
-    CHECK(compiled["parameter_deployments"][0]["ir_path"] == "source.filter.cutoff");
-    CHECK(compiled["parameter_deployments"][0]["range_min"] == 0.0);
-    CHECK(compiled["parameter_deployments"][0]["range_max"] == 1.0);
-    CHECK(compiled["parameter_deployments"][0]["matched_name"].is_null());
-    CHECK(compiled["parameter_deployments"][0]["original_name"].is_null());
-    CHECK(compiled["parameter_deployments"][0]["observed_value"].is_null());
-    CHECK(compiled["parameter_deployments"][0]["observed_minimum"].is_null());
-    CHECK(compiled["parameter_deployments"][0]["observed_maximum"].is_null());
-    CHECK(compiled["parameter_deployments"][0]["is_quantized"].is_null());
-    CHECK(compiled["parameter_deployments"][0]["default_value"].is_null());
-    CHECK(compiled["parameter_deployments"][0]["value_items"].is_null());
-    CHECK(compiled["parameter_deployments"][0]["is_enabled"].is_null());
-    CHECK(compiled["parameter_deployments"][0]["action"] == "recorded_only");
-    CHECK(compiled["parameter_deployments"][0]["parameter_state"].is_null());
-    CHECK(compiled["parameter_deployments"][0]["automation_state"].is_null());
-    CHECK(compiled["parameter_deployments"][0]["verified"] == false);
-}
-
-TEST_CASE("Mix IR deploys to Ableton through its public MCP tool",
-          "[mcp][integration][mix][ableton]") {
-    CommandBuffer transport;
-    McpServer server;
-    register_mix_tools(server, &transport);
-
-    auto created = call_tool(server, "create_mix_graph", {{"part_ids", {1}}}, 54);
-    auto compiled = call_tool(
-        server, "compile_mix", {{"graph_id", created["graph_id"]}, {"base_track", 0}}, 55);
-
-    CHECK(compiled["success"] == true);
-    CHECK(compiled["complete"] == false);
-    CHECK(compiled["group_tracks_requested"] == 0);
-    CHECK(compiled["group_tracks_created"] == 0);
-    CHECK(compiled["return_tracks_requested"] == 0);
-    CHECK(compiled["return_tracks_created"] == 0);
-    CHECK(compiled["return_track_deployments"].empty());
-    REQUIRE(compiled["master_track_deployment"].is_object());
-    CHECK(compiled["master_track_deployment"].size() == 3);
-    CHECK(compiled["master_track_deployment"]["requested_track_activator"] == 1.0);
-    CHECK(compiled["master_track_deployment"]["requested_panning_mode"] == 0);
-    CHECK(compiled["master_track_deployment"]["requested_pan"] == 0.0);
-    CHECK(compiled["effects_requested"] == 0);
-    CHECK(compiled["effects_inserted"] == 0);
-    CHECK(compiled["effects_verified"] == 0);
-    CHECK(compiled["device_deployments"].empty());
-    CHECK(compiled["sends_requested"] == 0);
-    CHECK(compiled["sends_configured"] == 0);
-    CHECK(compiled["send_levels_requested"] == 0);
-    CHECK(compiled["send_levels_configured"] == 0);
-    CHECK(compiled["send_modes_requested"] == 0);
-    CHECK(compiled["send_modes_configured"] == 0);
-    CHECK(compiled["output_routes_requested"] == 1);
-    CHECK(compiled["output_routes_written"] == 0);
-    CHECK(compiled["output_routes_verified"] == 0);
-    CHECK(compiled["output_routing_bindings"] ==
-          json{{"part_tracks", json::array()}, {"aux_returns", json::array()}});
-    REQUIRE(compiled["output_route_deployments"].size() == 1);
-    CHECK(compiled["output_route_deployments"][0]["binding"].is_null());
-    CHECK(compiled["output_route_deployments"][0]["action"] == "not_applied");
-    REQUIRE(compiled["output_route_residuals"].size() == 1);
-    CHECK(compiled["channels_requested"] == 1);
-    CHECK(compiled["channels_configured"] == 1);
-    CHECK(compiled["property_writes"] == 9);
-    CHECK(compiled["property_writes_verified"] == 0);
-    REQUIRE(compiled["property_deployments"].size() == 9);
-    CHECK(compiled["property_deployments"][0]["observed"].is_null());
-    CHECK(compiled["target_profile"]["capabilities"]["max_for_live"] == "unknown");
-    REQUIRE(transport.entries().size() == 9);
-    CHECK(transport.entries()[0].request.path.to_string() == "song/tracks/0/mixer_device/volume");
-    CHECK(transport.entries()[1].request.path.to_string() == "song/tracks/0/mixer_device/panning");
-    CHECK(transport.entries()[2].request.property_or_method == "mute");
-    CHECK(std::get<bool>(transport.entries()[2].request.args[0]) == false);
-    CHECK(transport.entries()[3].request.property_or_method == "solo");
-    CHECK(std::get<bool>(transport.entries()[3].request.args[0]) == false);
-    CHECK(transport.entries()[4].request.path.to_string() ==
-          "song/tracks/0/mixer_device/track_activator");
-    CHECK(transport.entries()[5].request.path.to_string() ==
-          "song/master_track/mixer_device/track_activator");
-    CHECK(transport.entries()[6].request.path.to_string() == "song/master_track/mixer_device");
-    CHECK(transport.entries()[6].request.property_or_method == "panning_mode");
-    CHECK(transport.entries()[7].request.path.to_string() ==
-          "song/master_track/mixer_device/panning");
-    CHECK(transport.entries()[8].request.path.to_string() ==
-          "song/master_track/mixer_device/volume");
-}
-
-TEST_CASE("Mix MCP admits exact route dictionaries with retained semantic provenance",
-          "[mcp][integration][mix][routing]") {
-    CommandBuffer transport;
-    McpServer server;
-    register_mix_tools(server, &transport);
-    const auto created = call_tool(server, "create_mix_graph", {{"part_ids", {1}}}, 5500);
-    const json binding = {{"part_tracks",
-                           {{{"part_id", 1},
-                             {"type", {{"display_name", "Master"}, {"identifier", "master"}}},
-                             {"channel", {{"display_name", "1/2"}, {"identifier", "stereo_1_2"}}},
-                             {"mapping_provenance", "named Live/operator fixture"}}}},
-                          {"aux_returns", json::array()}};
-    const auto compiled = call_tool(server,
-                                    "compile_mix",
-                                    {{"graph_id", created["graph_id"]},
-                                     {"base_track", 0},
-                                     {"output_routing_bindings", binding}},
-                                    5501);
-    REQUIRE(compiled["success"] == true);
-    CHECK(compiled["output_routes_requested"] == 1);
-    CHECK(compiled["output_routes_written"] == 1);
-    CHECK(compiled["output_routes_verified"] == 0);
-    CHECK(compiled["output_routing_bindings"] == binding);
-    REQUIRE(compiled["output_route_deployments"].size() == 1);
-    const auto& deployment = compiled["output_route_deployments"][0];
-    CHECK(deployment["part_id"] == 1);
-    CHECK(deployment["binding"]["mapping_provenance"] == "named Live/operator fixture");
+    const auto compiled = fixture.compile(
+        ProjectServer::project(
+            score, json::array({created["profile_id"]}), fixture.default_mix(score, 5321)),
+        533);
+    const auto& timbre = compiled["timbre"][0];
+    CHECK(timbre["parameters_mapped"] == 1);
+    CHECK(timbre["parameters_verified"] == 0);
+    REQUIRE(timbre["parameter_deployments"].size() == 1);
+    const auto& deployment = timbre["parameter_deployments"][0];
+    CHECK(deployment.size() == 21);
+    CHECK(deployment["ir_path"] == "source.filter.cutoff");
+    CHECK(deployment["range_min"] == 0.0);
+    CHECK(deployment["range_max"] == 1.0);
+    CHECK(deployment["matched_name"].is_null());
+    CHECK(deployment["original_name"].is_null());
+    CHECK(deployment["observed_value"].is_null());
+    CHECK(deployment["observed_minimum"].is_null());
+    CHECK(deployment["observed_maximum"].is_null());
+    CHECK(deployment["is_quantized"].is_null());
+    CHECK(deployment["default_value"].is_null());
+    CHECK(deployment["value_items"].is_null());
+    CHECK(deployment["is_enabled"].is_null());
     CHECK(deployment["action"] == "recorded_only");
+    CHECK(deployment["parameter_state"].is_null());
+    CHECK(deployment["automation_state"].is_null());
     CHECK(deployment["verified"] == false);
-    REQUIRE(transport.entries().size() == 11);
-    CHECK(transport.entries()[0].request.property_or_method == "sunny_set_output_routing_type");
-    CHECK(transport.entries()[1].request.property_or_method == "sunny_set_output_routing_channel");
-
-    const json duplicate = {
-        {"part_tracks", json::array({binding["part_tracks"][0], binding["part_tracks"][0]})},
-        {"aux_returns", json::array()}};
-    const auto rejected = call_tool(server,
-                                    "compile_mix",
-                                    {{"graph_id", created["graph_id"]},
-                                     {"base_track", 0},
-                                     {"output_routing_bindings", duplicate}},
-                                    5502);
-    CHECK_FALSE(rejected.contains("success"));
-    CHECK(rejected["error"].get<std::string>().find("unique uint64 part_id") != std::string::npos);
-    CHECK(transport.entries().size() == 11);
 }
 
-TEST_CASE("Mix MCP mapping is transactional and exposes deployment coverage",
-          "[mcp][integration][mix][device-parameter]") {
-    CommandBuffer transport;
-    McpServer server;
-    register_mix_tools(server, &transport);
+TEST_CASE("Mix IR deploys to Ableton through the guarded project tools",
+          "[mcp][integration][mix][ableton]") {
+    ProjectServer fixture;
+    const auto score = fixture.create_score({"Piano"}, 54);
+    const auto compiled = fixture.compile(
+        ProjectServer::project(
+            score, fixture.default_profiles(score, 541), fixture.default_mix(score, 542)),
+        55);
+    const auto& mix = compiled["mix"];
 
-    const auto graph = call_tool(server, "create_mix_graph", {{"part_ids", {1}}}, 550);
+    CHECK(compiled["complete"] == false);
+    CHECK(mix["group_tracks_requested"] == 0);
+    CHECK(mix["group_tracks_created"] == 0);
+    CHECK(mix["return_tracks_requested"] == 0);
+    CHECK(mix["return_tracks_created"] == 0);
+    CHECK(mix["return_track_deployments"].empty());
+    REQUIRE(mix["master_track_deployment"].is_object());
+    CHECK(mix["master_track_deployment"].size() == 3);
+    CHECK(mix["master_track_deployment"]["requested_track_activator"] == 1.0);
+    CHECK(mix["master_track_deployment"]["requested_panning_mode"] == 0);
+    CHECK(mix["master_track_deployment"]["requested_pan"] == 0.0);
+    CHECK(mix["effects_requested"] == 0);
+    CHECK(mix["effects_inserted"] == 0);
+    CHECK(mix["effects_verified"] == 0);
+    CHECK(mix["device_deployments"].empty());
+    CHECK(mix["sends_requested"] == 0);
+    CHECK(mix["sends_configured"] == 0);
+    CHECK(mix["send_levels_requested"] == 0);
+    CHECK(mix["send_levels_configured"] == 0);
+    CHECK(mix["send_modes_requested"] == 0);
+    CHECK(mix["send_modes_configured"] == 0);
+    CHECK(mix["output_routes_requested"] == 1);
+    CHECK(mix["output_routes_written"] == 0);
+    CHECK(mix["output_routes_verified"] == 0);
+    CHECK(mix["output_routing_bindings"] ==
+          json{{"part_tracks", json::array()}, {"aux_returns", json::array()}});
+    REQUIRE(mix["output_route_deployments"].size() == 1);
+    CHECK(mix["output_route_deployments"][0]["binding"].is_null());
+    CHECK(mix["output_route_deployments"][0]["action"] == "not_applied");
+    REQUIRE(mix["output_route_residuals"].size() == 1);
+    CHECK(mix["channels_requested"] == 1);
+    CHECK(mix["channels_configured"] == 1);
+    CHECK(mix["property_writes"] == 9);
+    CHECK(mix["property_writes_verified"] == 0);
+    REQUIRE(mix["property_deployments"].size() == 9);
+    CHECK(mix["property_deployments"][0]["observed"].is_null());
+    CHECK(compiled["target_profile"]["capabilities"]["max_for_live"] == "unknown");
+    // The channel strip is written on the Part's own track, which the project
+    // binds by PartId rather than by channel position.
+    REQUIRE(compiled["part_tracks"].size() == 1);
+    CHECK(compiled["part_tracks"][0]["part_id"] == score["part_ids"][0]);
+    REQUIRE(compiled["part_tracks"][0]["track_index"] == 0);
+    CHECK(fixture.wrote_to("song/tracks/0/mixer_device/volume", "display_value"));
+    CHECK(fixture.wrote_to("song/tracks/0/mixer_device/panning", "value"));
+    CHECK(fixture.wrote_to("song/tracks/0", "mute"));
+    CHECK(fixture.wrote_to("song/tracks/0", "solo"));
+    CHECK(fixture.wrote_to("song/tracks/0/mixer_device/track_activator", "value"));
+    CHECK(fixture.wrote_to("song/master_track/mixer_device/track_activator", "value"));
+    CHECK(fixture.wrote_to("song/master_track/mixer_device", "panning_mode"));
+    CHECK(fixture.wrote_to("song/master_track/mixer_device/panning", "value"));
+    CHECK(fixture.wrote_to("song/master_track/mixer_device/volume", "display_value"));
+}
+
+TEST_CASE("Mix MCP mapping is transactional and the project exposes deployment coverage",
+          "[mcp][integration][mix][device-parameter]") {
+    ProjectServer fixture;
+    auto& server = fixture.server;
+    const auto score = fixture.create_score({"Piano"}, 549);
+
+    const auto graph =
+        call_tool(server, "create_mix_graph", {{"part_ids", score["part_ids"]}}, 550);
     const auto effect = call_tool(server,
                                   "add_channel_effect",
                                   {{"graph_id", graph["graph_id"]},
@@ -1877,43 +1893,48 @@ TEST_CASE("Mix MCP mapping is transactional and exposes deployment coverage",
 
     stored = call_tool(server, "get_mix_json", {{"graph_id", graph["graph_id"]}}, 555);
     CHECK(stored["mix_ir"]["channels"][0]["insert_chain"][0]["parameter_map"].size() == 1);
-    const auto compiled =
-        call_tool(server, "compile_mix", {{"graph_id", graph["graph_id"]}, {"base_track", 0}}, 556);
-    REQUIRE(compiled["success"] == true);
-    CHECK(compiled["parameter_sources_total"] == 10);
-    CHECK(compiled["parameter_sources_explicitly_mapped"] == 1);
-    CHECK(compiled["parameter_sources_unmapped"] == 9);
-    CHECK(compiled["parameters_mapped"] == 1);
-    CHECK(compiled["parameters_verified"] == 0);
-    REQUIRE(compiled["parameter_deployments"].size() == 1);
-    CHECK(compiled["parameter_deployments"][0].size() == 22);
-    CHECK(compiled["parameter_deployments"][0]["device_path"] == "song/tracks/0/devices/0");
-    CHECK(compiled["parameter_deployments"][0]["range_min"] == 0.0);
-    CHECK(compiled["parameter_deployments"][0]["range_max"] == 1.0);
-    CHECK(compiled["parameter_deployments"][0]["matched_name"].is_null());
-    CHECK(compiled["parameter_deployments"][0]["original_name"].is_null());
-    CHECK(compiled["parameter_deployments"][0]["observed_value"].is_null());
-    CHECK(compiled["parameter_deployments"][0]["observed_minimum"].is_null());
-    CHECK(compiled["parameter_deployments"][0]["observed_maximum"].is_null());
-    CHECK(compiled["parameter_deployments"][0]["is_quantized"].is_null());
-    CHECK(compiled["parameter_deployments"][0]["default_value"].is_null());
-    CHECK(compiled["parameter_deployments"][0]["value_items"].is_null());
-    CHECK(compiled["parameter_deployments"][0]["is_enabled"].is_null());
-    CHECK(compiled["parameter_deployments"][0]["action"] == "recorded_only");
-    CHECK(compiled["parameter_deployments"][0]["parameter_state"].is_null());
-    CHECK(compiled["parameter_deployments"][0]["automation_state"].is_null());
-    REQUIRE(compiled["parameter_coverage"].size() == 1);
-    CHECK(compiled["parameter_coverage"][0].size() == 6);
-    CHECK(compiled["parameter_coverage"][0]["missing_paths"].size() == 9);
+    const auto compiled = fixture.compile(
+        ProjectServer::project(score, fixture.default_profiles(score, 5551), graph["graph_id"]),
+        556);
+    const auto& mix = compiled["mix"];
+    CHECK(mix["parameter_sources_total"] == 10);
+    CHECK(mix["parameter_sources_explicitly_mapped"] == 1);
+    CHECK(mix["parameter_sources_unmapped"] == 9);
+    CHECK(mix["parameters_mapped"] == 1);
+    CHECK(mix["parameters_verified"] == 0);
+    REQUIRE(mix["parameter_deployments"].size() == 1);
+    const auto& deployment = mix["parameter_deployments"][0];
+    CHECK(deployment.size() == 22);
+    // The Timbre instrument occupies device 0 on the Part's track, so the
+    // channel compressor follows it.
+    CHECK(deployment["device_path"] == "song/tracks/0/devices/1");
+    CHECK(deployment["range_min"] == 0.0);
+    CHECK(deployment["range_max"] == 1.0);
+    CHECK(deployment["matched_name"].is_null());
+    CHECK(deployment["original_name"].is_null());
+    CHECK(deployment["observed_value"].is_null());
+    CHECK(deployment["observed_minimum"].is_null());
+    CHECK(deployment["observed_maximum"].is_null());
+    CHECK(deployment["is_quantized"].is_null());
+    CHECK(deployment["default_value"].is_null());
+    CHECK(deployment["value_items"].is_null());
+    CHECK(deployment["is_enabled"].is_null());
+    CHECK(deployment["action"] == "recorded_only");
+    CHECK(deployment["parameter_state"].is_null());
+    CHECK(deployment["automation_state"].is_null());
+    REQUIRE(mix["parameter_coverage"].size() == 1);
+    CHECK(mix["parameter_coverage"][0].size() == 6);
+    CHECK(mix["parameter_coverage"][0]["missing_paths"].size() == 9);
 }
 
 TEST_CASE("Mix MCP authors and resolves relative faders transactionally",
           "[mcp][integration][mix][relative-level]") {
-    CommandBuffer transport;
-    McpServer server;
-    register_mix_tools(server, &transport);
+    ProjectServer fixture;
+    auto& server = fixture.server;
+    const auto score = fixture.create_score({"One", "Two"}, 556);
 
-    const auto graph = call_tool(server, "create_mix_graph", {{"part_ids", {1, 2}}}, 557);
+    const auto graph =
+        call_tool(server, "create_mix_graph", {{"part_ids", score["part_ids"]}}, 557);
     REQUIRE(call_tool(server,
                       "set_channel_level",
                       {{"graph_id", graph["graph_id"]}, {"channel_id", 2}, {"level_db", -6.0}},
@@ -1951,11 +1972,11 @@ TEST_CASE("Mix MCP authors and resolves relative faders transactionally",
         call_tool(server, "resolve_mix_fader_levels", {{"graph_id", graph["graph_id"]}}, 562);
     CHECK(after["fader_level_resolution"]["relative_levels_total"] == 1);
 
-    const auto compiled =
-        call_tool(server, "compile_mix", {{"graph_id", graph["graph_id"]}, {"base_track", 0}}, 563);
-    REQUIRE(compiled["success"] == true);
-    CHECK(compiled["fader_level_resolution"]["relative_levels_resolved"] == 1);
-    CHECK(compiled["fader_level_resolution"]["levels"][0]["resolved_level_db"] == -9.0);
+    const auto compiled = fixture.compile(
+        ProjectServer::project(score, fixture.default_profiles(score, 5621), graph["graph_id"]),
+        563);
+    CHECK(compiled["mix"]["fader_level_resolution"]["relative_levels_resolved"] == 1);
+    CHECK(compiled["mix"]["fader_level_resolution"]["levels"][0]["resolved_level_db"] == -9.0);
 
     const auto measured = call_tool(server,
                                     "set_channel_relative_level",
@@ -1977,9 +1998,9 @@ TEST_CASE("Project MCP validates and deploys shared IR stores by PartId",
     CommandBuffer transport;
     McpServer server;
     McpSession session;
-    register_score_tools(server, &transport, session.score);
-    register_timbre_tools(server, &transport, session.timbre);
-    register_mix_tools(server, &transport, session.mix);
+    register_score_tools(server, session.score);
+    register_timbre_tools(server, session.timbre);
+    register_mix_tools(server, session.mix);
     register_project_tools(server, session, &transport);
 
     const auto score = call_tool(
@@ -2160,28 +2181,6 @@ TEST_CASE("Project MCP validates and deploys shared IR stores by PartId",
     CHECK(compiled["mix"]["parameter_sources_total"] == 0);
     CHECK(compiled["mix"]["parameters_mapped"] == 0);
     CHECK(compiled["mix"]["parameter_coverage"].empty());
-    CommandBuffer standalone_transport;
-    McpServer standalone_server;
-    register_timbre_tools(standalone_server, &standalone_transport, session.timbre);
-    register_mix_tools(standalone_server, &standalone_transport, session.mix);
-    const auto standalone_timbre =
-        call_tool(standalone_server,
-                  "compile_timbre",
-                  {{"profile_id", first["profile_id"]}, {"track_index", 0}},
-                  5661);
-    REQUIRE(standalone_timbre["success"] == true);
-    CHECK(standalone_timbre["device_deployments"] == compiled["timbre"][0]["device_deployments"]);
-    CHECK(standalone_timbre["parameter_deployments"] ==
-          compiled["timbre"][0]["parameter_deployments"]);
-    const auto standalone_mix = call_tool(
-        standalone_server, "compile_mix", {{"graph_id", mix["graph_id"]}, {"base_track", 0}}, 5662);
-    REQUIRE(standalone_mix["success"] == true);
-    CHECK(standalone_mix["return_track_deployments"] ==
-          compiled["mix"]["return_track_deployments"]);
-    CHECK(standalone_mix["master_track_deployment"] == compiled["mix"]["master_track_deployment"]);
-    CHECK(standalone_mix["device_deployments"] == compiled["mix"]["device_deployments"]);
-    CHECK(standalone_mix["parameter_deployments"] == compiled["mix"]["parameter_deployments"]);
-    CHECK(standalone_mix["parameter_coverage"] == compiled["mix"]["parameter_coverage"]);
     CHECK(compiled["mix"]["fader_level_resolution"]["complete"] == true);
     CHECK(compiled["postconditions"]["observed"] == false);
     CHECK(compiled["postconditions"]["song_states_requested"] == 1);
@@ -2590,9 +2589,9 @@ TEST_CASE("Project MCP plan/apply is read-only until one guarded one-shot applic
     CommandBuffer transport;
     McpServer server;
     McpSession session;
-    register_score_tools(server, &transport, session.score);
-    register_timbre_tools(server, &transport, session.timbre);
-    register_mix_tools(server, &transport, session.mix);
+    register_score_tools(server, session.score);
+    register_timbre_tools(server, session.timbre);
+    register_mix_tools(server, session.mix);
     register_project_tools(server, session, &transport);
 
     const auto score = call_tool(server,
@@ -2651,9 +2650,9 @@ TEST_CASE("Project MCP immediate compilation honors and validates explicit outpu
     CommandBuffer transport;
     McpServer server;
     McpSession session;
-    register_score_tools(server, &transport, session.score);
-    register_timbre_tools(server, &transport, session.timbre);
-    register_mix_tools(server, &transport, session.mix);
+    register_score_tools(server, session.score);
+    register_timbre_tools(server, session.timbre);
+    register_mix_tools(server, session.mix);
     register_project_tools(server, session, &transport);
 
     const auto score =
@@ -2761,8 +2760,8 @@ TEST_CASE("Project MCP rejects invalid correspondence before Live mutation",
     CommandBuffer transport;
     McpServer server;
     McpSession session;
-    register_score_tools(server, &transport, session.score);
-    register_mix_tools(server, &transport, session.mix);
+    register_score_tools(server, session.score);
+    register_mix_tools(server, session.mix);
     register_project_tools(server, session, &transport);
 
     const auto score =
@@ -2784,15 +2783,16 @@ TEST_CASE("Project MCP rejects invalid correspondence before Live mutation",
     CHECK(transport.entries().empty());
 }
 
-TEST_CASE("Ableton MCP results distinguish requested and written automation",
+TEST_CASE("Project results distinguish requested and written automation",
           "[mcp][integration][ableton][automation]") {
-    CommandBuffer transport;
-    McpServer server;
-    register_timbre_tools(server, &transport);
-    register_mix_tools(server, &transport);
+    ProjectServer fixture;
+    auto& server = fixture.server;
+    const auto score = fixture.create_score({"Automated"}, 599);
 
-    const auto profile =
-        call_tool(server, "create_timbre_profile", {{"part_id", 1}, {"name", "Automated"}}, 600);
+    const auto profile = call_tool(server,
+                                   "create_timbre_profile",
+                                   {{"part_id", score["part_ids"][0]}, {"name", "Automated"}},
+                                   600);
     REQUIRE(call_tool(server,
                       "add_automation",
                       {{"profile_id", profile["profile_id"]},
@@ -2800,15 +2800,8 @@ TEST_CASE("Ableton MCP results distinguish requested and written automation",
                        {"breakpoints",
                         {{{"bar", 1}, {"value", 2000.0}}, {{"bar", 2}, {"value", 8000.0}}}}},
                       601)["success"] == true);
-    const auto timbre = call_tool(
-        server, "compile_timbre", {{"profile_id", profile["profile_id"]}, {"track_index", 0}}, 602);
-    REQUIRE(timbre["success"] == true);
-    CHECK(timbre["automation_lanes_requested"] == 1);
-    CHECK(timbre["automation_lanes_written"] == 0);
-    CHECK_FALSE(timbre.contains("automation_lanes"));
-    CHECK(timbre["complete"] == false);
-
-    const auto graph = call_tool(server, "create_mix_graph", {{"part_ids", {1}}}, 603);
+    const auto graph =
+        call_tool(server, "create_mix_graph", {{"part_ids", score["part_ids"]}}, 603);
     REQUIRE(call_tool(
                 server,
                 "add_mix_automation",
@@ -2816,13 +2809,19 @@ TEST_CASE("Ableton MCP results distinguish requested and written automation",
                  {"target", "channels[1].fader.level_db"},
                  {"breakpoints", {{{"bar", 1}, {"value", -12.0}}, {{"bar", 2}, {"value", -6.0}}}}},
                 604)["success"] == true);
-    const auto mix =
-        call_tool(server, "compile_mix", {{"graph_id", graph["graph_id"]}, {"base_track", 0}}, 605);
-    REQUIRE(mix["success"] == true);
+
+    const auto compiled = fixture.compile(
+        ProjectServer::project(score, json::array({profile["profile_id"]}), graph["graph_id"]),
+        605);
+    CHECK(compiled["complete"] == false);
+    const auto& timbre = compiled["timbre"][0];
+    CHECK(timbre["automation_lanes_requested"] == 1);
+    CHECK(timbre["automation_lanes_written"] == 0);
+    CHECK_FALSE(timbre.contains("automation_lanes"));
+    const auto& mix = compiled["mix"];
     CHECK(mix["automation_lanes_requested"] == 1);
     CHECK(mix["automation_lanes_written"] == 0);
     CHECK_FALSE(mix.contains("automation_lanes"));
-    CHECK(mix["complete"] == false);
 }
 
 TEST_CASE("Timbre MCP authors every owned modulation source and complete routing payload",
@@ -2893,10 +2892,10 @@ TEST_CASE("Timbre MCP authors every owned modulation source and complete routing
 TEST_CASE("IR deployment tools remain discoverable and decline while offline",
           "[mcp][integration][offline]") {
     McpServer server;
-    register_score_tools(server);
-    register_timbre_tools(server);
-    register_mix_tools(server);
     McpSession session;
+    register_score_tools(server, session.score);
+    register_timbre_tools(server, session.timbre);
+    register_mix_tools(server, session.mix);
     register_project_tools(server, session, nullptr);
 
     auto tools_response =
@@ -2904,26 +2903,40 @@ TEST_CASE("IR deployment tools remain discoverable and decline while offline",
     std::set<std::string> names;
     for (const auto& tool : tools_response["result"]["tools"])
         names.insert(tool["name"].get<std::string>());
-    CHECK(names.contains("score_compile_to_ableton"));
+    // The guarded project tools are the only path that writes to Live.
+    CHECK_FALSE(names.contains("score_compile_to_ableton"));
+    CHECK_FALSE(names.contains("compile_timbre"));
+    CHECK_FALSE(names.contains("compile_mix"));
     CHECK(names.contains("score_set_tuning"));
-    CHECK(names.contains("compile_timbre"));
-    CHECK(names.contains("compile_mix"));
     CHECK(names.contains("map_mix_effect_parameter"));
     CHECK(names.contains("set_channel_relative_level"));
     CHECK(names.contains("resolve_mix_fader_levels"));
+    CHECK(names.contains("project_validate"));
     CHECK(names.contains("project_plan_to_ableton"));
     CHECK(names.contains("project_apply_ableton_plan"));
+    CHECK(names.contains("project_compile_to_ableton"));
 
-    auto created =
+    const auto created =
         call_tool(server,
                   "score_create",
                   {{"total_bars", 1}, {"parts", {{{"name", "Piano"}, {"instrument_type", 0}}}}},
                   57);
-    auto declined =
-        call_tool(server, "score_compile_to_ableton", {{"score_id", created["score_id"]}}, 58);
-    CHECK(declined["success"] == false);
-    CHECK(declined["connected"] == false);
-    CHECK(declined["error"] == "Ableton transport unavailable");
+    const auto profile = call_tool(server,
+                                   "create_timbre_profile",
+                                   {{"part_id", created["part_ids"][0]}, {"name", "Piano"}},
+                                   571);
+    const auto graph =
+        call_tool(server, "create_mix_graph", {{"part_ids", created["part_ids"]}}, 572);
+    const json project = {{"score_id", created["score_id"]},
+                          {"timbre_profile_ids", json::array({profile["profile_id"]})},
+                          {"mix_graph_id", graph["graph_id"]}};
+    for (const auto* tool : {"project_plan_to_ableton", "project_compile_to_ableton"}) {
+        const auto declined = call_tool(server, tool, project, 58);
+        INFO(tool << ": " << declined.dump());
+        CHECK(declined["success"] == false);
+        CHECK(declined["connected"] == false);
+        CHECK(declined["error"] == "Ableton transport unavailable");
+    }
 }
 
 TEST_CASE("MCP discriminators decline unknown IR variants", "[mcp][validation]") {
@@ -3089,7 +3102,7 @@ TEST_CASE("Score MCP authors articulation mappings and exposes compiled control 
           "[mcp][score][articulation-mapping]") {
     McpServer server;
     McpSession session;
-    register_score_tools(server, nullptr, session.score);
+    register_score_tools(server, session.score);
 
     const auto created =
         call_tool(server,
@@ -3152,7 +3165,7 @@ TEST_CASE("Score MCP distinguishes structural and MIDI compilation policy",
           "[mcp][score][validation]") {
     McpServer server;
     McpSession session;
-    register_score_tools(server, nullptr, session.score);
+    register_score_tools(server, session.score);
     const auto created =
         call_tool(server,
                   "score_create",
@@ -3179,9 +3192,9 @@ TEST_CASE("Every MCP validation surface preserves the complete diagnostic contra
           "[mcp][validation][contract]") {
     McpServer server;
     McpSession session;
-    register_score_tools(server, nullptr, session.score);
-    register_timbre_tools(server, nullptr, session.timbre);
-    register_mix_tools(server, nullptr, session.mix);
+    register_score_tools(server, session.score);
+    register_timbre_tools(server, session.timbre);
+    register_mix_tools(server, session.mix);
     register_corpus_tools(server, session.corpus);
 
     const auto score =

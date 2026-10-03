@@ -16,6 +16,8 @@
 #include <string>
 #include <sunny/infrastructure/ableton/transport.hpp>
 #include <sunny/infrastructure/mcp/mix_tools.hpp>
+#include <sunny/infrastructure/mcp/project_tools.hpp>
+#include <sunny/infrastructure/mcp/score_tools.hpp>
 #include <sunny/infrastructure/mcp/server.hpp>
 #include <sunny/infrastructure/mcp/session.hpp>
 #include <sunny/infrastructure/mcp/timbre_tools.hpp>
@@ -240,69 +242,103 @@ TEST_CASE("loudness targets and sends are bounded to their physical domains",
 // Ableton plan-time refusal (#7)
 // =============================================================================
 
-TEST_CASE("compile_mix refuses a fader above Live's +6 dB ceiling before any mutation",
-          "[mcp][mix][ableton][regression]") {
+namespace {
+
+// The guarded project tools are the one path that writes to Live, so these
+// regressions deploy a one-Part project whose stores are shared.
+struct ProjectFixture {
     CommandBuffer transport;
+    McpSession session;
     McpServer server;
-    register_mix_tools(server, &transport);
-    const auto graph = call_tool(server, "create_mix_graph", {{"part_ids", {1}}}, 60);
-    REQUIRE(
-        succeeded(call_tool(server,
-                            "set_channel_level",
-                            {{"graph_id", graph["graph_id"]}, {"channel_id", 1}, {"level_db", 9.0}},
-                            61)));
-    const auto compiled =
-        call_tool(server, "compile_mix", {{"graph_id", graph["graph_id"]}, {"base_track", 0}}, 62);
+    json part_id;
+    json score_id;
+
+    ProjectFixture() {
+        register_score_tools(server, session.score);
+        register_timbre_tools(server, session.timbre);
+        register_mix_tools(server, session.mix);
+        register_project_tools(server, session, &transport);
+        const auto score =
+            call_tool(server,
+                      "score_create",
+                      {{"total_bars", 1}, {"parts", {{{"name", "Lead"}, {"instrument_type", 0}}}}},
+                      1000);
+        REQUIRE(score["part_ids"].size() == 1);
+        part_id = score["part_ids"][0];
+        score_id = score["score_id"];
+    }
+
+    json create_profile(int id) {
+        return call_tool(server,
+                         "create_timbre_profile",
+                         {{"part_id", part_id}, {"name", "Lead"}},
+                         id)["profile_id"];
+    }
+
+    json create_graph(int id) {
+        return call_tool(server, "create_mix_graph", {{"part_ids", {part_id}}}, id)["graph_id"];
+    }
+
+    json compile(const json& profile_id, const json& graph_id, int id) {
+        return call_tool(server,
+                         "project_compile_to_ableton",
+                         {{"score_id", score_id},
+                          {"timbre_profile_ids", json::array({profile_id})},
+                          {"mix_graph_id", graph_id}},
+                         id);
+    }
+};
+
+} // namespace
+
+TEST_CASE("project compilation refuses a fader above Live's +6 dB ceiling before any mutation",
+          "[mcp][mix][ableton][regression]") {
+    ProjectFixture fixture;
+    const auto graph = fixture.create_graph(60);
+    REQUIRE(succeeded(call_tool(fixture.server,
+                                "set_channel_level",
+                                {{"graph_id", graph}, {"channel_id", 1}, {"level_db", 9.0}},
+                                61)));
+    const auto compiled = fixture.compile(fixture.create_profile(611), graph, 62);
     INFO(compiled.dump());
     CHECK(compiled.contains("error"));
     CHECK(compiled["error_code"] == 4112); // TargetValueUnrepresentable
-    CHECK(transport.size() == 0);
+    CHECK(fixture.transport.size() == 0);
 }
 
-TEST_CASE("compile_mix refuses a send above Live's 0 dB ceiling before any mutation",
+TEST_CASE("project compilation refuses a send above Live's 0 dB ceiling before any mutation",
           "[mcp][mix][ableton][regression]") {
-    CommandBuffer transport;
-    McpServer server;
-    register_mix_tools(server, &transport);
-    const auto graph = call_tool(server, "create_mix_graph", {{"part_ids", {1}}}, 70);
-    const auto aux = call_tool(
-        server, "create_aux_bus", {{"graph_id", graph["graph_id"]}, {"name", "Reverb"}}, 71);
-    REQUIRE(succeeded(call_tool(server,
-                                "set_channel_send",
-                                {{"graph_id", graph["graph_id"]},
-                                 {"channel_id", 1},
-                                 {"aux_id", aux["aux_bus_id"]},
-                                 {"level_db", 3.0}},
-                                72)));
-    const auto compiled =
-        call_tool(server, "compile_mix", {{"graph_id", graph["graph_id"]}, {"base_track", 0}}, 73);
+    ProjectFixture fixture;
+    const auto graph = fixture.create_graph(70);
+    const auto aux =
+        call_tool(fixture.server, "create_aux_bus", {{"graph_id", graph}, {"name", "Reverb"}}, 71);
+    REQUIRE(succeeded(call_tool(
+        fixture.server,
+        "set_channel_send",
+        {{"graph_id", graph}, {"channel_id", 1}, {"aux_id", aux["aux_bus_id"]}, {"level_db", 3.0}},
+        72)));
+    const auto compiled = fixture.compile(fixture.create_profile(721), graph, 73);
     INFO(compiled.dump());
     CHECK(compiled.contains("error"));
     CHECK(compiled["error_code"] == 4112);
-    CHECK(transport.size() == 0);
+    CHECK(fixture.transport.size() == 0);
 }
 
-TEST_CASE("compile_timbre never plans a Dry/Wet write on EQ Eight",
+TEST_CASE("project compilation never plans a Dry/Wet write on EQ Eight",
           "[mcp][timbre][ableton][regression]") {
-    CommandBuffer transport;
-    McpServer server;
-    register_timbre_tools(server, &transport);
-    const auto profile =
-        call_tool(server, "create_timbre_profile", {{"part_id", 1}, {"name", "EQ"}}, 80);
-    REQUIRE(succeeded(
-        call_tool(server,
-                  "add_effect",
-                  {{"profile_id", profile["profile_id"]}, {"effect_type", "eq"}, {"mix", 0.5}},
-                  81)));
-    REQUIRE(call_tool(
-                server, "validate_timbre", {{"profile_id", profile["profile_id"]}}, 82)["valid"] ==
+    ProjectFixture fixture;
+    const auto profile = fixture.create_profile(80);
+    REQUIRE(succeeded(call_tool(fixture.server,
+                                "add_effect",
+                                {{"profile_id", profile}, {"effect_type", "eq"}, {"mix", 0.5}},
+                                81)));
+    REQUIRE(call_tool(fixture.server, "validate_timbre", {{"profile_id", profile}}, 82)["valid"] ==
             true);
-    const auto compiled = call_tool(
-        server, "compile_timbre", {{"profile_id", profile["profile_id"]}, {"track_index", 0}}, 83);
+    const auto compiled = fixture.compile(profile, fixture.create_graph(821), 83);
     INFO(compiled.dump());
     REQUIRE(succeeded(compiled));
-    CHECK_FALSE(any_command_mentions(transport, "Dry/Wet"));
-    CHECK(any_warning_contains(compiled, "EQ Eight"));
+    CHECK_FALSE(any_command_mentions(fixture.transport, "Dry/Wet"));
+    CHECK(any_warning_contains(compiled["timbre"][0], "EQ Eight"));
     CHECK(compiled["complete"] == false);
 }
 
@@ -316,7 +352,7 @@ struct TimbreFixture {
     std::uint64_t profile_id = 0;
 
     TimbreFixture() {
-        register_timbre_tools(server, nullptr, session);
+        register_timbre_tools(server, session);
         profile_id =
             call_tool(
                 server, "create_timbre_profile", {{"part_id", 1}, {"name", "T"}}, 1)["profile_id"]
@@ -437,40 +473,35 @@ TEST_CASE("a failed load_preset leaves the profile unchanged",
     CHECK(fixture.parameter("source.amplifier.velocity_sensitivity", 126) == Catch::Approx(0.1f));
 }
 
-TEST_CASE("compile_timbre warns for each modulation routing and preset morph it drops",
+TEST_CASE("project compilation warns for each modulation routing and preset morph it drops",
           "[mcp][timbre][ableton][regression]") {
-    CommandBuffer transport;
-    auto session = std::make_shared<TimbreSession>();
-    McpServer server;
-    register_timbre_tools(server, &transport, session);
-    const auto profile =
-        call_tool(server, "create_timbre_profile", {{"part_id", 1}, {"name", "Mod"}}, 130);
-    REQUIRE(succeeded(
-        call_tool(server, "create_modulation_lfo", {{"profile_id", profile["profile_id"]}}, 131)));
+    ProjectFixture fixture;
+    auto& server = fixture.server;
+    const auto profile = fixture.create_profile(130);
+    REQUIRE(succeeded(call_tool(server, "create_modulation_lfo", {{"profile_id", profile}}, 131)));
     REQUIRE(succeeded(call_tool(server,
                                 "add_modulation",
-                                {{"profile_id", profile["profile_id"]},
+                                {{"profile_id", profile},
                                  {"source_type", 0},
                                  {"source_index", 0},
                                  {"target", "source.filter.cutoff"},
                                  {"depth", 0.5}},
                                 132)));
-    const auto preset = call_tool(
-        server, "save_preset", {{"profile_id", profile["profile_id"]}, {"name", "P"}}, 133);
+    const auto preset =
+        call_tool(server, "save_preset", {{"profile_id", profile}, {"name", "P"}}, 133);
     REQUIRE(succeeded(call_tool(server,
                                 "morph_presets",
-                                {{"profile_id", profile["profile_id"]},
+                                {{"profile_id", profile},
                                  {"from_preset_id", preset["preset_id"]},
                                  {"to_preset_id", preset["preset_id"]},
                                  {"start_bar", 1},
                                  {"end_bar", 2}},
                                 134)));
-    const auto compiled = call_tool(
-        server, "compile_timbre", {{"profile_id", profile["profile_id"]}, {"track_index", 0}}, 135);
+    const auto compiled = fixture.compile(profile, fixture.create_graph(1341), 135);
     INFO(compiled.dump());
     REQUIRE(succeeded(compiled));
-    CHECK(any_warning_contains(compiled, "source.filter.cutoff"));
-    CHECK(any_warning_contains(compiled, "morph"));
+    CHECK(any_warning_contains(compiled["timbre"][0], "source.filter.cutoff"));
+    CHECK(any_warning_contains(compiled["timbre"][0], "morph"));
     CHECK(compiled["complete"] == false);
 }
 

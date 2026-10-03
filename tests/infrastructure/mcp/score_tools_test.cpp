@@ -38,7 +38,7 @@ struct ScoreFixture {
     McpServer server;
     std::shared_ptr<ScoreSession> session = std::make_shared<ScoreSession>();
 
-    ScoreFixture() { register_score_tools(server, nullptr, session); }
+    ScoreFixture() { register_score_tools(server, session); }
 
     json call(const std::string& name, const json& arguments) {
         return call_tool(server, name, arguments);
