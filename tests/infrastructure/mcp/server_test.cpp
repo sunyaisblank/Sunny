@@ -435,6 +435,34 @@ std::vector<json> run_stdio_session(McpServer& server, const std::vector<std::st
 
 } // namespace
 
+TEST_CASE("compact schemas mark a field optional only by its own top-level qualifier",
+          "[mcp][protocol][schema]") {
+    // "optional" or "default" inside braces describes a nested member, not the
+    // field: region and melody below are required although they mention
+    // optional members, while the trailing qualifiers make limit and parts
+    // optional.
+    class SchemaServer : public McpServer {
+      public:
+        SchemaServer() {
+            register_tool(
+                "shape",
+                "schema inference",
+                json{{"region", "object {start_bar, end_bar (inclusive), parts (optional)}"},
+                     {"melody", "array of {pitch, dynamic (integer, optional, default mf)}"},
+                     {"limit", "integer (optional, default 4)"},
+                     {"parts", "array of {name, clef (integer, optional)} (optional)"}},
+                [](const json& params) -> json { return params; });
+        }
+    } server;
+    const auto listed = server.process_request(
+        {{"jsonrpc", "2.0"}, {"id", 1}, {"method", "tools/list"}, {"params", json::object()}});
+    const auto& required = listed["result"]["tools"][0]["inputSchema"]["required"];
+    CHECK(std::ranges::find(required, json("region")) != required.end());
+    CHECK(std::ranges::find(required, json("melody")) != required.end());
+    CHECK(std::ranges::find(required, json("limit")) == required.end());
+    CHECK(std::ranges::find(required, json("parts")) == required.end());
+}
+
 TEST_CASE("stdio loop answers each non-object message with -32600 and keeps serving",
           "[mcp][protocol][stdio]") {
     TestMcpServer server;

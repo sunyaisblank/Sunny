@@ -61,6 +61,22 @@ nlohmann::json compact_property_schema(const nlohmann::json& value) {
     return property;
 }
 
+/// The text of a compact description with every balanced {...} group removed.
+std::string outside_braces(const std::string& description) {
+    std::string own;
+    int depth = 0;
+    for (const char character : description) {
+        if (character == '{') {
+            ++depth;
+        } else if (character == '}') {
+            if (depth > 0) --depth;
+        } else if (depth == 0) {
+            own.push_back(character);
+        }
+    }
+    return own;
+}
+
 nlohmann::json normalise_input_schema(const nlohmann::json& schema) {
     if (schema.is_object() && schema.contains("type")) {
         auto normalised = schema;
@@ -80,12 +96,13 @@ nlohmann::json normalise_input_schema(const nlohmann::json& schema) {
     if (schema.is_object()) {
         for (const auto& [name, compact] : schema.items()) {
             properties[name] = compact_property_schema(compact);
-            const bool optional =
-                compact.is_string() &&
-                (compact.get_ref<const std::string&>().find("optional") != std::string::npos ||
-                 compact.get_ref<const std::string&>().find("default") != std::string::npos ||
-                 compact.get_ref<const std::string&>().find("provide this OR") !=
-                     std::string::npos);
+            // Only the field's own qualifiers count: "optional" inside {...}
+            // describes a nested member of an object or array element.
+            const std::string own =
+                compact.is_string() ? outside_braces(compact.get_ref<const std::string&>()) : "";
+            const bool optional = own.find("optional") != std::string::npos ||
+                                  own.find("default") != std::string::npos ||
+                                  own.find("provide this OR") != std::string::npos;
             if (!optional) required.push_back(name);
         }
     }
