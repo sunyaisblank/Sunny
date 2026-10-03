@@ -634,3 +634,96 @@ TEST_CASE("Envelope release duration is measured from release level", "[modulati
     REQUIRE(envelope.state() == EnvelopeState::Idle);
     REQUIRE(envelope.value() == 0.0);
 }
+
+namespace {
+
+// Process until the envelope leaves `stage`, returning the number of samples
+// emitted in that stage, the last of which is included. Gives up after limit.
+std::size_t samples_in_stage(Envelope& envelope,
+                             EnvelopeState stage,
+                             double sample_rate,
+                             std::vector<double>& values,
+                             std::size_t limit = 1'000'000) {
+    values.clear();
+    while (envelope.state() == stage && values.size() < limit)
+        values.push_back(*envelope.process(sample_rate));
+    return values.size();
+}
+
+} // namespace
+
+TEST_CASE("Envelope stages last exactly their duration in samples", "[modulation][render]") {
+    // Duration times sample rate, rounded up: 0.01 s is 480 samples at
+    // 48 kHz and 441 at 44.1 kHz; 0.02 s at 22.05 kHz is 441; 0.01 s at
+    // 22.05 kHz is 220.5, so the stage ends on sample 221.
+    struct Case {
+        double sample_rate;
+        double seconds;
+        std::size_t samples;
+    };
+    for (const auto& c : {Case{48000.0, 0.01, 480},
+                          Case{44100.0, 0.01, 441},
+                          Case{22050.0, 0.02, 441},
+                          Case{22050.0, 0.01, 221},
+                          Case{96000.0, 0.3, 28800}}) {
+        INFO("rate " << c.sample_rate << " seconds " << c.seconds);
+        Envelope envelope;
+        REQUIRE(envelope.set_attack(c.seconds));
+        REQUIRE(envelope.set_decay(c.seconds));
+        REQUIRE(envelope.set_sustain(0.25));
+        REQUIRE(envelope.set_release(c.seconds));
+        std::vector<double> values;
+
+        envelope.trigger();
+        REQUIRE(samples_in_stage(envelope, EnvelopeState::Attack, c.sample_rate, values) ==
+                c.samples);
+        CHECK(values.back() == 1.0);
+        CHECK(values[values.size() - 2] < 1.0);
+        // Sample k of the attack lies k / (seconds * rate) of the way up.
+        const double length = c.seconds * c.sample_rate;
+        CHECK_THAT(values[0], WithinAbs(1.0 / length, 1e-12));
+        CHECK_THAT(values[values.size() / 2],
+                   WithinAbs(static_cast<double>(values.size() / 2 + 1) / length, 1e-12));
+
+        REQUIRE(envelope.state() == EnvelopeState::Decay);
+        REQUIRE(samples_in_stage(envelope, EnvelopeState::Decay, c.sample_rate, values) ==
+                c.samples);
+        CHECK(values.back() == 0.25);
+        CHECK(values[values.size() - 2] > 0.25);
+        CHECK(envelope.state() == EnvelopeState::Sustain);
+
+        envelope.release();
+        REQUIRE(samples_in_stage(envelope, EnvelopeState::Release, c.sample_rate, values) ==
+                c.samples);
+        CHECK(values.back() == 0.0);
+        CHECK(values[values.size() - 2] > 0.0);
+        CHECK(envelope.state() == EnvelopeState::Idle);
+    }
+}
+
+TEST_CASE("Envelope with zero attack emits the peak", "[modulation][render]") {
+    Envelope envelope;
+    REQUIRE(envelope.set_attack(0.0));
+    REQUIRE(envelope.set_decay(0.01));
+    REQUIRE(envelope.set_sustain(0.5));
+    envelope.trigger();
+    CHECK(*envelope.process(48000.0) == 1.0);
+    CHECK(envelope.state() == EnvelopeState::Decay);
+    // The decay then starts from the peak: 0.5 over 480 samples.
+    CHECK_THAT(*envelope.process(48000.0), WithinAbs(1.0 - 0.5 / 480.0, 1e-12));
+}
+
+TEST_CASE("Envelope retrigger restarts the attack from the current level", "[modulation][render]") {
+    Envelope envelope;
+    REQUIRE(envelope.set_attack(0.01));
+    envelope.trigger();
+    std::vector<double> values;
+    for (int index = 0; index < 120; ++index)
+        values.push_back(*envelope.process(48000.0));
+    CHECK_THAT(values.back(), WithinAbs(0.25, 1e-12));
+    envelope.trigger();
+    std::size_t samples = samples_in_stage(envelope, EnvelopeState::Attack, 48000.0, values);
+    CHECK(samples == 480);
+    CHECK_THAT(values[0], WithinAbs(0.25 + 0.75 / 480.0, 1e-12));
+    CHECK(values.back() == 1.0);
+}

@@ -138,10 +138,26 @@ class Lfo {
 enum class EnvelopeState { Idle, Attack, Decay, Sustain, Release };
 
 /**
+ * Relative tolerance of an envelope stage length. A stage of d seconds at sample rate r lasts
+ * d x r samples; when that product lies within one part in 10^9 of an integer it is taken to be
+ * the integer, absorbing the binary representation error of decimal durations such as 0.01 s.
+ */
+inline constexpr double ENVELOPE_STAGE_SNAP_TOLERANCE = 1e-9;
+
+/**
  * @brief ADSR Envelope Generator
  *
  * Standard Attack-Decay-Sustain-Release envelope.
  * Output range: [0.0, 1.0]
+ *
+ * Each timed stage of d seconds at sample rate r spans L = d x r samples. The k-th sample emitted
+ * in the stage (k >= 1) lies k / L of the way from the stage's start level to its end level, and
+ * the stage ends on the first sample with k >= L, which emits the end level exactly: a 0.01 s
+ * attack at 48 kHz emits 1/480, 2/480, ..., 1.0 over exactly 480 samples. A zero-length stage
+ * therefore emits its end level for one sample, so a zero attack emits the peak. Position is
+ * computed from the sample count, not by accumulating increments. If L changes within a stage
+ * (a new sample rate or duration), the fraction already completed is kept and the remainder runs
+ * at the new length.
  */
 class Envelope {
   public:
@@ -219,7 +235,13 @@ class Envelope {
     double current_value_{0.0};
     double attack_start_value_{0.0};
     double release_start_value_{0.0};
+    std::uint64_t stage_samples_{0}; ///< Samples emitted in the stage at stage_length_.
+    double stage_length_{0.0};       ///< Stage length in samples when stage_samples_ began.
+    double stage_completed_{0.0};    ///< Fraction completed before stage_length_ took effect.
 
+    void enter_stage(EnvelopeState state) noexcept;
+    /// Advance one sample in the current stage and return its position in [0, 1].
+    [[nodiscard]] double advance_stage(double seconds, double sample_rate) noexcept;
     [[nodiscard]] double process_unchecked(double sample_rate) noexcept;
 };
 

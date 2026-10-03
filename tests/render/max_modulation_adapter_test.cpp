@@ -141,10 +141,13 @@ TEST_CASE("Max adapter rejects malformed callbacks before draining queued contro
     CHECK(envelope.status().controls_applied == 0);
     CHECK(envelope.status().controls_pending == 4);
 
+    // A zero attack emits the peak for one sample; the zero decay then lands on the sustain.
     REQUIRE(envelope.process(1, 0, nullptr, 1, envelope_outputs));
-    CHECK(envelope_sample == 0.4);
+    CHECK(envelope_sample == 1.0);
     CHECK(envelope.status().controls_applied == 4);
     CHECK(envelope.status().controls_pending == 0);
+    REQUIRE(envelope.process(1, 0, nullptr, 1, envelope_outputs));
+    CHECK(envelope_sample == 0.4);
 }
 
 TEST_CASE("Max control transfer is bounded and reports overflow without mutation",
@@ -265,6 +268,9 @@ TEST_CASE("Max ADSR adapter preserves ordered block-edge gate semantics",
 
     double sample = -1.0;
     double* outputs[1]{&sample};
+    // A zero attack emits the peak for one sample; the zero decay then lands on the sustain.
+    REQUIRE(adapter.process(1, 0, nullptr, 1, outputs));
+    CHECK(sample == 1.0);
     REQUIRE(adapter.process(1, 0, nullptr, 1, outputs));
     CHECK(sample == 0.25);
 

@@ -5,6 +5,7 @@
  */
 
 #include <algorithm>
+#include <cmath>
 #include <numbers>
 #include <sunny/render/modulation.hpp>
 
@@ -213,20 +214,27 @@ sunny::core::VoidResult Envelope::set_release(double seconds) {
     return {};
 }
 
+void Envelope::enter_stage(EnvelopeState state) noexcept {
+    state_ = state;
+    stage_samples_ = 0;
+    stage_length_ = 0.0;
+    stage_completed_ = 0.0;
+}
+
 void Envelope::trigger() {
     attack_start_value_ = current_value_;
-    state_ = EnvelopeState::Attack;
+    enter_stage(EnvelopeState::Attack);
 }
 
 void Envelope::release() {
     if (state_ != EnvelopeState::Idle) {
         release_start_value_ = current_value_;
-        state_ = EnvelopeState::Release;
+        enter_stage(EnvelopeState::Release);
     }
 }
 
 void Envelope::reset() {
-    state_ = EnvelopeState::Idle;
+    enter_stage(EnvelopeState::Idle);
     current_value_ = 0.0;
     attack_start_value_ = 0.0;
     release_start_value_ = 0.0;
@@ -293,67 +301,78 @@ sunny::core::VoidResult Envelope::process_block(const SignalBlockContext& contex
     return process_block(context, std::span<double>{outputs[0], *frames});
 }
 
+namespace {
+
+// Snap a stage length in samples to the nearest integer within ENVELOPE_STAGE_SNAP_TOLERANCE.
+[[nodiscard]] double snap_stage_length(double samples) noexcept {
+    const double nearest = std::round(samples);
+    return std::fabs(samples - nearest) <=
+                   ENVELOPE_STAGE_SNAP_TOLERANCE * std::max(1.0, std::fabs(nearest))
+               ? nearest
+               : samples;
+}
+
+} // namespace
+
+double Envelope::advance_stage(double seconds, double sample_rate) noexcept {
+    const double length = snap_stage_length(seconds * sample_rate);
+    if (stage_samples_ == 0) {
+        stage_length_ = length;
+    } else if (length != stage_length_) {
+        // Keep the completed fraction; the rest of the stage runs at the new length.
+        stage_completed_ += static_cast<double>(stage_samples_) / stage_length_;
+        stage_samples_ = 0;
+        stage_length_ = length;
+    }
+    ++stage_samples_;
+    const double remaining = snap_stage_length((1.0 - stage_completed_) * length);
+    if (static_cast<double>(stage_samples_) >= remaining) return 1.0;
+    return stage_completed_ + static_cast<double>(stage_samples_) / length;
+}
+
 double Envelope::process_unchecked(double sample_rate) noexcept {
+    switch (state_) {
+    case EnvelopeState::Idle:
+        current_value_ = 0.0;
+        break;
 
-    const double sample_time = 1.0 / sample_rate;
-
-    // Zero-time stages are state transitions, not extra samples. Four passes
-    // are sufficient to cross Attack -> Decay -> Sustain and Release -> Idle.
-    for (int transition = 0; transition < 4; ++transition) {
-        switch (state_) {
-        case EnvelopeState::Idle:
-            current_value_ = 0.0;
-            return current_value_;
-
-        case EnvelopeState::Attack: {
-            if (attack_ == 0.0) {
-                current_value_ = 1.0;
-                state_ = EnvelopeState::Decay;
-                continue;
-            }
-            const double increment = (1.0 - attack_start_value_) * sample_time / attack_;
-            current_value_ += increment;
-            if (current_value_ >= 1.0) {
-                current_value_ = 1.0;
-                state_ = EnvelopeState::Decay;
-            }
-            return current_value_;
+    case EnvelopeState::Attack: {
+        const double position = advance_stage(attack_, sample_rate);
+        if (position >= 1.0) {
+            current_value_ = 1.0;
+            enter_stage(EnvelopeState::Decay);
+        } else {
+            current_value_ = attack_start_value_ + (1.0 - attack_start_value_) * position;
         }
-
-        case EnvelopeState::Decay: {
-            if (decay_ == 0.0) {
-                current_value_ = sustain_;
-                state_ = EnvelopeState::Sustain;
-                continue;
-            }
-            current_value_ -= (1.0 - sustain_) * sample_time / decay_;
-            if (current_value_ <= sustain_) {
-                current_value_ = sustain_;
-                state_ = EnvelopeState::Sustain;
-            }
-            return current_value_;
-        }
-
-        case EnvelopeState::Sustain:
-            current_value_ = sustain_;
-            return current_value_;
-
-        case EnvelopeState::Release: {
-            if (release_ == 0.0) {
-                current_value_ = 0.0;
-                state_ = EnvelopeState::Idle;
-                continue;
-            }
-            current_value_ -= release_start_value_ * sample_time / release_;
-            if (current_value_ <= 0.0) {
-                current_value_ = 0.0;
-                state_ = EnvelopeState::Idle;
-            }
-            return current_value_;
-        }
-        }
+        break;
     }
 
+    case EnvelopeState::Decay: {
+        const double position = advance_stage(decay_, sample_rate);
+        if (position >= 1.0) {
+            current_value_ = sustain_;
+            enter_stage(EnvelopeState::Sustain);
+        } else {
+            current_value_ = 1.0 - (1.0 - sustain_) * position;
+        }
+        break;
+    }
+
+    case EnvelopeState::Sustain:
+        current_value_ = sustain_;
+        break;
+
+    case EnvelopeState::Release: {
+        const double position = advance_stage(release_, sample_rate);
+        if (position >= 1.0) {
+            current_value_ = 0.0;
+            enter_stage(EnvelopeState::Idle);
+        } else {
+            current_value_ = release_start_value_ * (1.0 - position);
+        }
+        break;
+    }
+    }
     return current_value_;
 }
 
