@@ -35,10 +35,17 @@ AI client ──MCP (stdio)──▶ sunny-mcp ──TCP 9001──▶ Sunny Rem
                              └── theory engine and documents (no Live needed)
 ```
 
-A project deployment to Live is guarded. `project_plan_to_ableton` records a snapshot of the
-Live Set and the exact list of changes without touching Live. `project_apply_ableton_plan`
-applies that plan once, refuses if the Set has changed in the meantime, and returns a journal of
-every change it attempted, including after a partial failure.
+Documents reach Live only as a project: a Score, one Timbre profile for each of its parts, and a
+Mix graph. `project_plan_to_ableton` records a snapshot of the Live Set and the exact list of
+changes without touching Live. `project_apply_ableton_plan` applies that plan once, refuses if
+the Set has changed in the meantime, and returns a journal of every change it attempted,
+including after a partial failure. `project_compile_to_ableton` does both in one call. Values
+Live cannot represent, such as a fader above +6 dB, are refused before anything is sent.
+
+A few quick tools (`create_progression_clip`, `apply_euclidean_rhythm`, `apply_arpeggio`) write a
+single clip into an empty clip slot without a project. They record only changes Live
+acknowledged, report a lost response as indeterminate rather than as a failure, and can be undone
+with `undo_ableton_operation`.
 
 A separate `max-package/` builds five Max externals (`sunny.lfo~`, `sunny.adsr~`, `sunny.hold~`,
 `sunny.clock~`, `sunny.events`) from the same render code. See `max-package/readme.md`.
@@ -105,8 +112,9 @@ firewall: the port accepts commands that change your Live Set.
 
 Note writing needs Live 11 or later. Inserting native devices for Timbre and Mix uses
 `Track.insert_device`, which needs Live 12.3 or later and supports Live's built-in devices only.
-Each compile result reports what Live could not represent (for example third-party plug-ins or
-features the Live API does not expose) instead of silently dropping it.
+Each deployment result reports what Live could not represent (for example third-party plug-ins
+or modulation the Live API does not expose) instead of silently dropping it. The Remote Script
+runs inside Live's own Python, which is 3.7 in Live 11, so it avoids newer syntax.
 
 ## Python
 
@@ -130,8 +138,15 @@ The package raises an error if its native module is missing rather than approxim
 
 Development does not require Ableton. The C++ and Python suites exercise the engine, the
 documents, the notation and MIDI writers, the MCP server and the TCP bridge. Live itself is
-represented in tests by fakes of its Python API, judged against Ableton's documented behaviour.
-CI builds and tests on Linux and macOS and builds the Max externals on macOS and Windows.
+represented by one offline model of its Python API (`tests/python/live_model.py`), built from
+Ableton's own Remote Script sources and the Live Object Model documentation. End-to-end tests run
+the real `sunny-mcp` over MCP, through TCP and the real Remote Script, into that model, and check
+the resulting Set: notes in beats, tracks, devices, mixer values, routing and the change journal,
+for both Live 11 and Live 12.
+
+Expected values in tests come from the relevant standard or a hand derivation, never from the
+code under test. CI builds and tests on Linux and macOS, runs the end-to-end tests, and builds the
+Max externals on macOS and Windows.
 
 ## Limitations
 
