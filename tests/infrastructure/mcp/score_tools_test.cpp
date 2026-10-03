@@ -330,6 +330,60 @@ TEST_CASE("MCP doubling spells source plus a diatonic interval",
     CHECK(octave[1] == StoredNote{1, 6, 1, 4, std::nullopt}); // B-sharp 4
 }
 
+TEST_CASE("MCP doubling copies tuplet passages into silent target parts",
+          "[mcp][score][transposition][regression]") {
+    // C4 D4 E4 as triplet eighths over beat 1, then a quarter F4. Doubled up a
+    // perfect fifth into an empty part they become G4 A4 B4 and C5, and the
+    // copy keeps its 3:2 grouping, so MusicXML shows three eighths under a
+    // time modification exactly as the source does.
+    ScoreFixture fixture;
+    const auto created =
+        fixture.call("score_create",
+                     {{"total_bars", 1},
+                      {"parts",
+                       json::array({{{"name", "Src"}, {"instrument_type", 47}},
+                                    {{"name", "Copy"}, {"instrument_type", 47}}})}});
+    const auto score_id = created["score_id"];
+    const auto source = created["part_ids"][0];
+    auto melody = json::array();
+    const char* letters[] = {"C", "D", "E"};
+    for (int unit = 0; unit < 3; ++unit)
+        melody.push_back({{"position", {{"bar", 1}, {"beat_n", unit}, {"beat_d", 12}}},
+                          {"pitch", pitch(letters[unit], 0, 4)},
+                          {"duration", fraction(1, 12)}});
+    melody.push_back({{"position", {{"bar", 1}, {"beat_n", 1}, {"beat_d", 4}}},
+                      {"pitch", pitch("F", 0, 4)},
+                      {"duration", fraction(1, 4)}});
+    REQUIRE(fixture
+                .call("score_write_melody",
+                      {{"score_id", score_id}, {"part_id", source}, {"melody", melody}})
+                .contains("ok"));
+
+    const auto doubled = fixture.call("score_double_part",
+                                      {{"score_id", score_id},
+                                       {"region", {{"start_bar", 1}, {"end_bar", 1}}},
+                                       {"source_part", source},
+                                       {"target_part", created["part_ids"][1]},
+                                       {"interval", 7}});
+    REQUIRE(doubled.contains("ok"));
+
+    const auto document = fixture.call("score_get_json", {{"score_id", score_id}});
+    const auto copy = stored_notes(document, 1);
+    REQUIRE(copy.size() == 4);
+    CHECK(copy[0] == StoredNote{1, 4, 0, 4, std::nullopt}); // G4
+    CHECK(copy[1] == StoredNote{1, 5, 0, 4, std::nullopt}); // A4
+    CHECK(copy[2] == StoredNote{1, 6, 0, 4, std::nullopt}); // B4
+    CHECK(copy[3] == StoredNote{1, 0, 0, 5, std::nullopt}); // C5
+
+    const auto xml = fixture.call("score_compile_to_musicxml", {{"score_id", score_id}});
+    const auto text = xml.dump();
+    std::size_t modifications = 0;
+    for (auto at = text.find("<time-modification>"); at != std::string::npos;
+         at = text.find("<time-modification>", at + 1))
+        ++modifications;
+    CHECK(modifications == 6); // three per part
+}
+
 TEST_CASE("MCP undo restores the prior document and redo reapplies it",
           "[mcp][score][undo][regression]") {
     ScoreFixture fixture;

@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <map>
 #include <memory>
 #include <set>
 #include <sunny/core/score/mutations.hpp>
@@ -18,6 +19,7 @@
 #include <sunny/core/score/tuplets.hpp>
 #include <sunny/core/score/validation.hpp>
 #include <sunny/core/voice_leading/voice_leading.hpp>
+#include <tuple>
 
 namespace sunny::core {
 
@@ -310,6 +312,71 @@ Result<void> materialise_tuplet_span(std::vector<Event>& events,
         if (!id) return std::unexpected(id.error());
         kept.push_back(Event{
             *id, span_start + duration * Beat{unit, 1}, RestEvent{duration, *visible, context}});
+    }
+    std::stable_sort(kept.begin(), kept.end(), [](const Event& lhs, const Event& rhs) {
+        return lhs.offset < rhs.offset;
+    });
+    events = std::move(kept);
+    return {};
+}
+
+/**
+ * Lay a copied tuplet's member layout over plain silence in a target voice.
+ *
+ * Doubling copies notes that belong to a tuplet; insert_group_replacing_rests
+ * places a note only over rests of the same tuplet, so the target first needs
+ * the source tuplet's units as rests under a fresh context. The span covered by
+ * the layout must be untupleted rests; anything else is a target that cannot
+ * receive the copy and the caller refuses the whole doubling.
+ */
+Result<void> lay_tuplet_rests(std::vector<Event>& events,
+                              const std::vector<std::pair<Beat, Beat>>& layout,
+                              const TupletContext& context,
+                              detail::FreshIdAllocator<EventId>& event_ids) {
+    if (layout.empty()) return std::unexpected(ErrorCode::InvalidMutation);
+    Beat span_start = layout.front().first;
+    Beat span_end = layout.front().first + layout.front().second;
+    for (const auto& [offset, duration] : layout) {
+        span_start = std::min(span_start, offset);
+        span_end = std::max(span_end, offset + duration);
+    }
+
+    std::vector<Event> kept;
+    std::optional<bool> visible;
+    for (const auto& event : events) {
+        const Beat event_end = event.offset + event.duration();
+        const bool overlaps =
+            event.duration() > Beat::zero() && event.offset < span_end && span_start < event_end;
+        if (!overlaps) {
+            kept.push_back(event);
+            continue;
+        }
+        const auto* rest = event.as_rest();
+        if (!rest || rest->tuplet_context) return std::unexpected(ErrorCode::InvalidMutation);
+        if (!visible) visible = rest->visible;
+        if (event.offset < span_start) {
+            Event prefix = event;
+            prefix.payload = RestEvent{span_start - event.offset, rest->visible, std::nullopt};
+            kept.push_back(std::move(prefix));
+        }
+        if (span_end < event_end) {
+            Event suffix = event;
+            if (event.offset < span_start) {
+                auto id = event_ids.allocate();
+                if (!id) return std::unexpected(id.error());
+                suffix.id = *id;
+            }
+            suffix.offset = span_end;
+            suffix.payload = RestEvent{event_end - span_end, rest->visible, std::nullopt};
+            kept.push_back(std::move(suffix));
+        }
+    }
+    if (!visible) return std::unexpected(ErrorCode::InvalidMutation);
+
+    for (const auto& [offset, duration] : layout) {
+        auto id = event_ids.allocate();
+        if (!id) return std::unexpected(id.error());
+        kept.push_back(Event{*id, offset, RestEvent{duration, *visible, context}});
     }
     std::stable_sort(kept.begin(), kept.end(), [](const Event& lhs, const Event& rhs) {
         return lhs.offset < rhs.offset;
@@ -2953,11 +3020,34 @@ Result<MutationResult> double_at_interval(Score& score,
     auto event_ids = detail::event_id_allocator(score);
     std::optional<ErrorCode> allocation_error;
 
+    // Each source tuplet, keyed by bar, voice and tuplet id, with the offsets
+    // and durations of all its members (rests included) in the source voice.
+    using TupletKey = std::tuple<std::uint32_t, std::uint8_t, std::uint64_t>;
+    std::map<TupletKey, std::vector<std::pair<Beat, Beat>>> source_tuplets;
+
     for_each_event_in_region(
         score, region, [&](Part&, Measure& measure, Voice& voice, Event& event) {
             if (allocation_error) return;
             auto* ng = std::get_if<NoteGroup>(&event.payload);
             if (!ng) return;
+            if (ng->tuplet_context) {
+                // Nested tuplets would need their parent copied as well; refuse
+                // rather than flatten the rhythm.
+                if (ng->tuplet_context->nested_in) {
+                    allocation_error = ErrorCode::InvalidMutation;
+                    return;
+                }
+                const TupletKey key{
+                    measure.bar_number, voice.voice_index, ng->tuplet_context->id.value};
+                if (!source_tuplets.contains(key)) {
+                    auto& layout = source_tuplets[key];
+                    for (const auto& member : voice.events) {
+                        const auto* context = event_tuplet_context(member);
+                        if (context && context->id == ng->tuplet_context->id)
+                            layout.emplace_back(member.offset, member.duration());
+                    }
+                }
+            }
 
             // Clone and transpose each note: the letter advances by the
             // diatonic step count and the accidental carries the remainder.
@@ -2986,6 +3076,15 @@ Result<MutationResult> double_at_interval(Score& score,
     Part* candidate_target = find_part(candidate, target);
     if (!candidate_target) return std::unexpected(ErrorCode::InvalidMutation);
 
+    detail::FreshIdAllocator<TupletId> tuplet_ids;
+    for (const auto& part : candidate.parts)
+        for (const auto& measure : part.measures)
+            for (const auto& voice : measure.voices)
+                for (const auto& event : voice.events)
+                    if (const auto* context = event_tuplet_context(event))
+                        tuplet_ids.include(context->id);
+    std::map<TupletKey, TupletContext> copied_tuplets;
+
     for (auto& rec : records) {
         if (rec.bar_number < 1 || rec.bar_number > candidate_target->measures.size())
             return std::unexpected(ErrorCode::InvalidMutation);
@@ -3003,6 +3102,26 @@ Result<MutationResult> double_at_interval(Score& score,
             target_voice = &measure.voices[0];
         }
         if (!target_voice) return std::unexpected(ErrorCode::InvalidMutation);
+
+        // A tuplet member lands in a copy of its source tuplet: the first
+        // member lays that tuplet's units as rests under a fresh context, and
+        // every member then replaces its own unit.
+        auto& group = std::get<NoteGroup>(rec.event.payload);
+        if (group.tuplet_context) {
+            const TupletKey key{rec.bar_number, rec.voice_index, group.tuplet_context->id.value};
+            auto copied = copied_tuplets.find(key);
+            if (copied == copied_tuplets.end()) {
+                auto tuplet_id = tuplet_ids.allocate();
+                if (!tuplet_id) return std::unexpected(tuplet_id.error());
+                TupletContext fresh = *group.tuplet_context;
+                fresh.id = *tuplet_id;
+                auto laid = lay_tuplet_rests(
+                    target_voice->events, source_tuplets.at(key), fresh, event_ids);
+                if (!laid) return std::unexpected(laid.error());
+                copied = copied_tuplets.emplace(key, fresh).first;
+            }
+            group.tuplet_context = copied->second;
+        }
 
         const Beat measure_duration =
             query_time_signature_at(candidate, rec.bar_number).measure_duration();
