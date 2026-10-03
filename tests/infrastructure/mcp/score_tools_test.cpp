@@ -270,6 +270,20 @@ TEST_CASE("MCP region end_bar is inclusive", "[mcp][score][region][regression]")
     }
 }
 
+TEST_CASE("MCP score_create requires at least one part and says so",
+          "[mcp][score][schema][regression]") {
+    // Score IR rule S0: a score has at least one Part. The schema must publish
+    // parts as required, and an empty list must be refused by name rather than
+    // as an anonymous mutation error.
+    ScoreFixture fixture;
+    const auto missing = fixture.call("score_create", json::object());
+    REQUIRE(missing.contains("error"));
+    CHECK(missing["error"].get<std::string>().find("parts") != std::string::npos);
+    const auto empty = fixture.call("score_create", {{"parts", json::array()}});
+    REQUIRE(empty.contains("error"));
+    CHECK(empty["error"].get<std::string>().find("at least one part") != std::string::npos);
+}
+
 TEST_CASE("MCP fractional tempo is stored exactly", "[mcp][score][tempo][regression]") {
     // 92.5 quarter notes per minute: 60 000 000 / 92.5 = 648 648.65 us,
     // rounded to the SMF tempo word 648 649.

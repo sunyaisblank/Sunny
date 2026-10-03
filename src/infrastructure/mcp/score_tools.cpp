@@ -374,8 +374,8 @@ void register_score_tools(McpServer& server,
           "object {name, reference_midi_note, reference_frequency_hz, "
           "cents_from_reference[128]} (optional, exact fields)"},
          {"parts",
-          "array of {name, abbreviation, instrument_type (integer), clef (integer, optional)} "
-          "(optional)"}},
+          "array of {name, abbreviation, instrument_type (integer), clef (integer, optional)}; "
+          "at least one part"}},
         [session](const json& params) -> json {
             ScoreSpec spec;
             spec.title = params.value("title", "Untitled");
@@ -404,7 +404,10 @@ void register_score_tools(McpServer& server,
                 spec.tuning = std::move(*tuning);
             }
 
-            if (params.contains("parts") && params["parts"].is_array()) {
+            // Score IR rule S0: a score has at least one Part.
+            if (!params.contains("parts") || !params["parts"].is_array() || params["parts"].empty())
+                return error_response("score_create requires at least one part in parts");
+            {
                 std::vector<std::uint8_t> channels_in_use;
                 for (const auto& pj : params["parts"]) {
                     if (!pj.is_object() || !pj.contains("name") || !pj["name"].is_string() ||
