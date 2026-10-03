@@ -284,7 +284,7 @@ Result<VoiceLeadingResult> voice_lead_nearest_tone(std::span<const MidiNote> sou
         return VoiceLeadingResult{{}, 0, false, false};
     }
 
-    if (target_pitch_classes.empty()) {
+    if (target_pitch_classes.empty() || source_pitches.size() > MAX_VOICE_LEADING_VOICES) {
         return std::unexpected(ErrorCode::VoiceLeadingFailed);
     }
 

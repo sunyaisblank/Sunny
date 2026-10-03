@@ -865,3 +865,24 @@ TEST_CASE("stationary voices with fifths not detected as parallel", "[voiceleadi
     // Under - → + mutation: motion = 120 > 0, falsely parallel
     REQUIRE(has_parallel_motion(60, 67, 60, 67, 7) == false);
 }
+
+TEST_CASE("voice_lead_nearest_tone bounds the voice count it searches",
+          "[voice-leading][contract]") {
+    // The exact search is exponential in the voice count (about 10 ms for 12
+    // chromatic voices and 7 s for 24), and the MCP server serves one request
+    // at a time, so the precondition caps it at MAX_VOICE_LEADING_VOICES.
+    std::vector<MidiNote> source;
+    std::vector<PitchClass> target;
+    for (int voice = 0; voice < static_cast<int>(MAX_VOICE_LEADING_VOICES); ++voice) {
+        source.push_back(*MidiNote::from_int(48 + voice));
+        target.push_back(PitchClass::wrapped(voice % 2 == 0 ? 0 : 6));
+    }
+    const auto at_limit = voice_lead_nearest_tone(source, target);
+    CHECK(at_limit.has_value());
+
+    source.push_back(*MidiNote::from_int(48 + static_cast<int>(MAX_VOICE_LEADING_VOICES)));
+    target.push_back(PitchClass::wrapped(0));
+    const auto over_limit = voice_lead_nearest_tone(source, target);
+    REQUIRE_FALSE(over_limit.has_value());
+    CHECK(over_limit.error() == ErrorCode::VoiceLeadingFailed);
+}

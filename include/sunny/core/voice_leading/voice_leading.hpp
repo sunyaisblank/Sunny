@@ -20,6 +20,11 @@
 
 namespace sunny::core {
 
+/// Largest voice count voice_lead_nearest_tone searches. Its exact search is
+/// exponential in the voice count (about 10 ms for 12 chromatic voices, 7 s for
+/// 24), and twelve voices covers every texture the engine voices.
+inline constexpr std::size_t MAX_VOICE_LEADING_VOICES = 12;
+
 /**
  * @brief Result of voice leading computation
  */
@@ -43,13 +48,15 @@ struct VoiceLeadingResult {
  * branch-and-bound search whose worst case is exponential in the voice count.
  *
  * @pre source_pitches.size() == target_pitch_classes.size()
+ * @pre source_pitches.size() <= MAX_VOICE_LEADING_VOICES
  * @param source_pitches Current voicing as MIDI notes
  * @param target_pitch_classes Target chord as pitch classes
  * @param lock_bass If true, bass takes chord root
  * @param allow_parallel_fifths If true, don't avoid parallel P5
  * @param allow_parallel_octaves If true, don't avoid parallel P8
  * @return VoiceLeadingResult or error (VoiceLeadingFailed if sizes differ, the
- *         target is empty, or no feasible voicing exists)
+ *         target is empty, the voice count exceeds MAX_VOICE_LEADING_VOICES,
+ *         or no feasible voicing exists)
  */
 [[nodiscard]] Result<VoiceLeadingResult>
 voice_lead_nearest_tone(std::span<const MidiNote> source_pitches,
