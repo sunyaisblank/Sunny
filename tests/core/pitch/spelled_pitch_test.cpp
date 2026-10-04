@@ -378,3 +378,27 @@ TEST_CASE("from_spn parses double-digit octave", "[pitch][spelled]") {
     CHECK(r->letter == 0); // C
     CHECK(r->accidental == 0);
 }
+
+TEST_CASE("SPN octave text is checked before narrowing", "[pitch][spelled][theory-domain]") {
+    for (std::string_view text : {"C4294967300",
+                                  "C-4294967300",
+                                  "C2147483648",
+                                  "C-2147483649",
+                                  "C128",
+                                  "C-129",
+                                  "C999999999999999999999999999999",
+                                  "C4x",
+                                  "C+4",
+                                  "C-"}) {
+        INFO(text);
+        auto parsed = from_spn(text);
+        REQUIRE_FALSE(parsed.has_value());
+        REQUIRE(parsed.error() == ErrorCode::InvalidSpelledPitch);
+    }
+    for (int octave : {-128, -127, -1, 0, 126, 127}) {
+        auto parsed = from_spn("C" + std::to_string(octave));
+        REQUIRE(parsed.has_value());
+        REQUIRE(static_cast<int>(parsed->octave) == octave);
+    }
+    REQUIRE(from_spn("C000000000000000000000000000004")->octave == 4);
+}

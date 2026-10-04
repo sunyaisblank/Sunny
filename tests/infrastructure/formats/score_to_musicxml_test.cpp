@@ -1227,6 +1227,57 @@ TEST_CASE("nested tuplets preserve cumulative sound ratio and numbered brackets"
     CHECK(compiled->xml.find("<tuplet type=\"stop\" number=\"2\"") != std::string::npos);
 }
 
+TEST_CASE("Mixed triplet durations retain their independent glyph and counting unit",
+          "[musicxml][format][tuplet][regression]") {
+    auto score = make_test_score(1);
+    auto& events = score.parts[0].measures[0].voices[0].events;
+    events.clear();
+    const TupletContext context{TupletId{3}, 3, 2, Beat{1, 8}, std::nullopt};
+    NoteGroup note;
+    note.notes.push_back(Note{SpelledPitch{0, 0, 4}, VelocityValue{{}, 80}});
+    note.duration = Beat{1, 6};
+    note.tuplet_context = context;
+    events.push_back(Event{EventId{8094001}, Beat::zero(), note});
+    note.duration = Beat{1, 12};
+    events.push_back(Event{EventId{8094002}, Beat{1, 6}, note});
+    events.push_back(Event{EventId{8094003}, Beat{1, 4}, RestEvent{Beat{3, 4}, true}});
+    const auto compiled = compile_score_to_musicxml(score);
+    REQUIRE(compiled);
+    const auto first_note = compiled->xml.find("<note>");
+    const auto first_end = compiled->xml.find("</note>", first_note);
+    REQUIRE(first_end != std::string::npos);
+    const auto first = compiled->xml.substr(first_note, first_end - first_note);
+    CHECK(first.find("<type>quarter</type>") != std::string::npos);
+    CHECK(first.find("<actual-notes>3</actual-notes>") != std::string::npos);
+    CHECK(first.find("<normal-notes>2</normal-notes>") != std::string::npos);
+    CHECK(first.find("<normal-type>eighth</normal-type>") != std::string::npos);
+}
+
+TEST_CASE("MusicXML tuplet residuals cannot invent the nominal unit as a note glyph",
+          "[musicxml][format][tuplet][regression]") {
+    auto score = make_test_score(1);
+    auto& events = score.parts[0].measures[0].voices[0].events;
+    events.clear();
+    const TupletContext context{TupletId{3}, 3, 2, Beat{1, 8}, std::nullopt};
+    NoteGroup note;
+    note.notes.push_back(Note{SpelledPitch{0, 0, 4}, VelocityValue{{}, 80}});
+    note.duration = Beat{1, 3072};
+    note.tuplet_context = context;
+    events.push_back(Event{EventId{8095001}, Beat::zero(), note});
+    events.push_back(
+        Event{EventId{8095002}, Beat{1, 3072}, RestEvent{Beat{767, 3072}, false, context}});
+    events.push_back(Event{EventId{8095003}, Beat{1, 4}, RestEvent{Beat{3, 4}, true}});
+    const auto compiled = compile_score_to_musicxml(score);
+    REQUIRE(compiled);
+    const auto first_note = compiled->xml.find("<note>");
+    const auto first_end = compiled->xml.find("</note>", first_note);
+    REQUIRE(first_end != std::string::npos);
+    const auto first = compiled->xml.substr(first_note, first_end - first_note);
+    CHECK(first.find("<type>") == std::string::npos);
+    CHECK(first.find("<normal-type>eighth</normal-type>") != std::string::npos);
+    CHECK(compiled->report.has_residuals());
+}
+
 TEST_CASE("a Rest can be a first-class tuplet member", "[musicxml][format][tuplet]") {
     auto score = make_test_score(1);
     auto& events = score.parts[0].measures[0].voices[0].events;

@@ -223,8 +223,9 @@ std::string exact_duration(Beat duration) {
     return result;
 }
 
-/// LilyPond's shortest documented duration is the 128th note.
-constexpr int LILYPOND_MIN_EXPONENT = -7;
+/// LilyPond 2.24 documents durations down to the 1024th note:
+/// https://lilypond.org/doc/v2.24/Documentation/notation/writing-rhythms#durations
+constexpr int LILYPOND_MIN_EXPONENT = -10;
 
 /// LilyPond token of one written glyph: \breve, 1, 2, 4 ... with dots.
 std::string ly_written_value(WrittenNoteValue value) {
@@ -254,14 +255,6 @@ void emit_spacer(std::ostringstream& out, Beat duration) {
 // =============================================================================
 // Tuplet duration helper
 // =============================================================================
-
-/// Compute the normal-space duration for a note inside a tuplet.
-/// A tuplet m:n over normal_type means m notes fit in the space of n.
-/// Each note's notated duration in normal space is: normal_type * n / m.
-/// LilyPond \tuplet m/n {... } expects the notes written at normal_type.
-std::string tuplet_note_duration(const TupletContext& tc) {
-    return exact_duration(tc.normal_type);
-}
 
 // =============================================================================
 // Resolve key/time at a given bar from the global maps
@@ -764,15 +757,15 @@ void emit_note_group(std::ostringstream& out,
                      std::optional<PartId> part_id,
                      BeamBoundary beam_boundary) {
     if (!ng.notes.empty() && ng.notes.front().grace) {
-        const std::string dur_str = ng.tuplet_context ? tuplet_note_duration(*ng.tuplet_context)
-                                                      : exact_duration(ng.duration);
+        const auto written_duration = checked_mul(ng.duration, context_ratio).value();
+        const std::string dur_str = exact_duration(written_duration);
         out << (*ng.notes.front().grace == GraceType::Acciaccatura ? "\\acciaccatura { "
                                                                    : "\\appoggiatura { ")
             << note_group_piece_text(ng, dur_str, {}, report, position, part_id, beam_boundary)
             << " } ";
         // Sunny's grace duration is an explicit structural allocation. LilyPond grace
         // expressions consume no main-voice time, so an invisible allocation follows.
-        emit_spacer(out, ng.duration);
+        emit_spacer(out, written_duration);
         return;
     }
 
@@ -784,8 +777,7 @@ void emit_note_group(std::ostringstream& out,
                             "exact duration multiplier",
                             position,
                             part_id);
-        const std::string dur_str = ng.tuplet_context ? tuplet_note_duration(*ng.tuplet_context)
-                                                      : exact_duration(ng.duration);
+        const std::string dur_str = exact_duration(checked_mul(ng.duration, context_ratio).value());
         out << note_group_piece_text(ng, dur_str, {}, report, position, part_id, beam_boundary);
         return;
     }
@@ -828,7 +820,7 @@ void emit_rest(std::ostringstream& out,
                CompilationReport& report,
                ScoreTime position,
                std::optional<PartId> part_id) {
-    const Beat written_duration = tuplet_context ? tuplet_context->normal_type : rest.duration;
+    const Beat written_duration = checked_mul(rest.duration, context_ratio).value();
     if (!rest.visible) {
         // A spacer prints nothing, so an exact multiplier is its written form.
         out << "s" << exact_duration(written_duration);
@@ -1172,8 +1164,8 @@ void emit_voice_events(std::ostringstream& out,
     // Written-to-sounding ratio of every enclosing tuplet of one event.
     const auto context_ratio = [&](const Event& event) {
         const auto chain = tuplet_context_chain(event_tuplet_context(event), contexts);
-        if (!chain) return Beat::one();
-        return cumulative_tuplet_written_ratio(*chain).value_or(Beat::one());
+        // The complete graph and products passed checked preflight before emission.
+        return cumulative_tuplet_written_ratio(chain.value()).value();
     };
 
     const auto transition_tuplets = [&](const TupletContext* leaf) {
@@ -1340,6 +1332,8 @@ Result<LilyPondCompilationResult> compile_score_to_lilypond(const Score& score) 
     if (!is_compilable(score)) {
         return std::unexpected(ErrorCode::InvariantViolation);
     }
+    if (auto valid = validate_tuplet_written_durations(score); !valid)
+        return std::unexpected(valid.error());
 
     CompilationReport report;
     report.tuning_definitions_requested = 1;
@@ -1443,12 +1437,6 @@ Result<LilyPondCompilationResult> compile_score_to_lilypond(const Score& score) 
         out << "  opus = \"" << ly_escape(*score.metadata.opus) << "\"\n";
     }
     out << "}\n\n";
-
-    // -------------------------------------------------------------------------
-    // Preamble — multi-measure rest compression
-    // -------------------------------------------------------------------------
-
-    out << "\\compressMMRests ##t\n\n";
 
     // -------------------------------------------------------------------------
     // Part definitions — each Part becomes a Staff
@@ -1600,6 +1588,9 @@ Result<LilyPondCompilationResult> compile_score_to_lilypond(const Score& score) 
     // -------------------------------------------------------------------------
 
     out << "\\score {\n";
+    // In LilyPond 2.24 this function takes music, not a Boolean. Apply it to
+    // the assembled staff group (Notation Reference, full-measure rests).
+    out << "  \\compressMMRests\n";
     out << "  \\new StaffGroup <<\n";
     for (const auto& var : staff_var_names) {
         out << "    \\" << var << "\n";

@@ -420,6 +420,8 @@ bool TcpTransport::connect() {
 
     set_state(ConnectionState::Connecting);
     socket_->reset();
+    bridge_identity_verified_ = false;
+    bridge_identity_error_.reset();
 
     const auto fail = [this](ConnectFailure failure) {
         last_connect_failure_ = failure;
@@ -516,6 +518,8 @@ bool TcpTransport::connect() {
 
 void TcpTransport::disconnect() {
     socket_->reset();
+    bridge_identity_verified_ = false;
+    bridge_identity_error_.reset();
     if (state_ != ConnectionState::Disconnected) {
         set_state(ConnectionState::Disconnected);
     }
@@ -523,6 +527,8 @@ void TcpTransport::disconnect() {
 
 void TcpTransport::abandon_connection() {
     socket_->reset();
+    bridge_identity_verified_ = false;
+    bridge_identity_error_.reset();
     set_state(ConnectionState::Error);
 }
 
@@ -577,7 +583,43 @@ TcpTransport::Receipt TcpTransport::recv_all(void* data, std::size_t n, Deadline
     return Receipt::Complete;
 }
 
-LomResponse TcpTransport::send_and_receive(const std::string& json_payload) {
+bool TcpTransport::verify_bridge_identity() {
+    if (bridge_identity_verified_) return true;
+    if (bridge_identity_error_) return false;
+    const auto response = send_and_receive(LomProtocol::serialize_request(LomProtocol::call_method(
+                                               LomPaths::song(), "sunny_get_target_profile", {})),
+                                           false);
+    const auto fail = [this](std::string reason) {
+        bridge_identity_error_ = std::move(reason) +
+                                 "; install the Sunny Remote Script folder exported from the "
+                                 "same server image, then reload the control surface";
+        return false;
+    };
+    if (!response.success || !response.value)
+        return fail("Bridge identity handshake failed: " +
+                    response.error.value_or("missing target profile response"));
+    const auto* value = std::get_if<nlohmann::json>(&*response.value);
+    if (!value || !value->is_object() || !value->contains("adapter") ||
+        !value->at("adapter").is_object() || !value->at("adapter").contains("source_sha256"))
+        return fail("Bridge identity is missing adapter.source_sha256 (expected " +
+                    std::string(SUNNY_BRIDGE_SOURCE_SHA256) + ")");
+    const auto& identity = value->at("adapter").at("source_sha256");
+    if (!identity.is_string()) return fail("Bridge adapter.source_sha256 must be a SHA256 string");
+    const auto& digest = identity.get_ref<const std::string&>();
+    if (digest.size() != 64 || !std::all_of(digest.begin(), digest.end(), [](char c) {
+            return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+        }))
+        return fail("Bridge adapter.source_sha256 must contain 64 lowercase hexadecimal digits");
+    if (digest != SUNNY_BRIDGE_SOURCE_SHA256)
+        return fail("Bridge source identity mismatch: expected " +
+                    std::string(SUNNY_BRIDGE_SOURCE_SHA256) + ", observed " + digest);
+    if (!target_profile_from_json(*value))
+        return fail("Bridge target profile has an incompatible protocol or adapter contract");
+    bridge_identity_verified_ = true;
+    return true;
+}
+
+LomResponse TcpTransport::send_and_receive(const std::string& json_payload, bool require_identity) {
     if (json_payload.size() > SUNNY_BRIDGE_MAX_WIRE_PAYLOAD) {
         return LomResponse{
             false, std::nullopt, std::string{"request too large"}, LomDeliveryState::NotSent};
@@ -589,6 +631,11 @@ LomResponse TcpTransport::send_and_receive(const std::string& json_payload) {
             reason += describe(*last_connect_failure_);
         }
         return LomResponse{false, std::nullopt, std::move(reason), LomDeliveryState::NotSent};
+    }
+    if (require_identity && !verify_bridge_identity()) {
+        // Only the read-only handshake was sent. The caller's ordinary request
+        // has not left this process, even if the handshake reply was lost.
+        return LomResponse{false, std::nullopt, *bridge_identity_error_, LomDeliveryState::NotSent};
     }
 
     // The response deadline starts with the send, so it bounds the whole
@@ -665,7 +712,11 @@ LomResponse TcpTransport::send(const LomRequest& request) {
         return LomResponse{
             false, std::nullopt, std::string{"not connected"}, LomDeliveryState::NotSent};
     }
-    return send_and_receive(LomProtocol::serialize_request(request));
+    const bool diagnostic = request.type == LomRequestType::CallMethod &&
+                            request.path.to_string() == "song" &&
+                            (request.property_or_method == "sunny_get_target_profile" ||
+                             request.property_or_method == "sunny_get_remote_log");
+    return send_and_receive(LomProtocol::serialize_request(request), !diagnostic);
 }
 
 LomResponse TcpTransport::send_notes(const LomPath& clip_path,

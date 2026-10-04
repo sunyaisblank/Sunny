@@ -780,7 +780,20 @@ This allows the system to distinguish, for example, early Beethoven (op. 1–20,
 
 ### 3.14 Signature Patterns
 
-**Definition 3.14.1**. A *SignaturePattern* is a distinctive musical fingerprint — a pattern so characteristic of this composer that its presence is a strong stylistic signal. These are extracted by comparing the composer's patterns against the corpus average and identifying statistically significant deviations.
+**Definition 3.14.1**. A detected *SignaturePattern* is an observed harmonic bigram whose
+proportion is greater in this composer's analysed works than in analysed works owned by other
+composers. Unassigned works and the target composer are excluded from the baseline. Each work
+is counted once. Only length-two progression inventories are currently admitted; longer sparse
+patterns do not supply a complete opportunity denominator.
+
+For counts `x/n` and `y/m`, let `p=(x+y)/(n+m)`. The descriptive contrast is
+`z=(x/n-y/m)/sqrt(p*(1-p)*(1/n+1/m))`. Detection retains positive contrasts at least 1.5 when
+both populations have observations and the variance is positive. Identical rates produce no
+signature. Missing target or comparison observations produce explicit unavailability. The
+selection threshold is a heuristic: overlapping harmonic windows are not independent trials,
+and this statistic supplies neither a calibrated significance level nor a prediction of style.
+The MCP result exposes the observation denominators and contributing work identities; each
+pattern retains its target occurrences and a description of both counts.
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -788,7 +801,7 @@ This allows the system to distinguish, for example, early Beethoven (op. 1–20,
 | `description` | `String` | Human-readable description |
 | `domain` | `PatternDomain` | Closed analytical domain enum |
 | `pattern_data` | `PatternData` | The pattern itself |
-| `distinctiveness` | `f32` | How much more frequent this pattern is for this composer than for others (ratio or z-score) |
+| `distinctiveness` | `f32` | Descriptive pooled-proportion z for newly detected harmonic bigrams; historical supplied values retain their original provenance |
 | `examples` | `Vec<(Id<IngestedWork>, ScoreTime)>` | Specific instances |
 
 **PatternData** is the current four-alternative C++ sum type. `PatternDomain` supplies the musical
@@ -810,21 +823,31 @@ For a composer or period, let W be its unique member works whose `analysis_compl
 A rebuild starts from a neutral `StyleProfile`, sets `sample_size` to `n`, the number of works in
 W, and sets `confidence = min(0.95, 1 - 1/(0.2n + 1))` when W is non-empty. It then applies the closed
 rules below. A normalised count distribution divides each merged count by the merged total. A
-per-work mean divides by `n`, so an analysed work's explicit zero contributes as zero. An
-evidence-only mean excludes records that cannot denote an observation (empty melodic sentinels,
-empty tempo curves, unmatched or constant correlation curves, or absent orchestration).
+per-work mean divides by the number of eligible observations for that individual field. The
+runtime dependency catalogue maps each profile field to the analysis fields its producer consumes.
+An unavailable source domain, an unavailable source field (including descendants of a named
+unavailable parent), or an undefined required sample contributes neither a value nor a denominator.
+Cross-domain fields use their actual sources: formal climax placement consumes dynamic evidence,
+and density/dynamic correlation consumes both curves. Legacy supplied values remain unqualified
+and retain their supplied meaning. An eligible explicit zero contributes as zero. Empty melodic
+sentinels, empty tempo curves, unmatched or constant correlation curves, and absent orchestration
+cannot denote their respective observations. Conditional melodic limits apply per lane: one-note
+lanes remain eligible for range and chromaticism, but do not contribute to conjunctness when the
+analysis marks fewer-than-two-attack conjunctness unavailable. A partial-bar-proportion limitation
+currently excludes that work's proportional fields conservatively, since the stored formal record
+has no offsets identifying only its partial sections.
 
 | Domain | Deterministic aggregate from `WorkAnalysis` |
 |--------|------------------------------------------------|
 | Harmonic | Merge chord counts; normalise them and progression occurrence counts; rank progressions by descending occurrence then lexical sequence; union and lexically order their contexts. Average modulation count, harmonic-rhythm mean/variance, chromatic-event count divided by each work's chord count, and named chromatic/cadence event counts per work. Normalise modulation techniques, tonal-plan relationship entries, and cadence codes. Count tonal-plan key labels. `deceptive_cadence_frequency` is DC events per work. |
 | Melodic | Exclude an empty voice sentinel using `note_count` plus the legacy explicit-evidence fields. Merge and normalise interval, contour, and scale-degree counts; rank intervals by descending count then signed interval. Average voice conjunctness, chromaticism, and `range_high-range_low`. `sequence_frequency` is sequential thematic occurrences divided by all thematic occurrences. |
 | Rhythmic | Merge and normalise duration counts; rank duration labels by descending count then lexical label; merge metre counts; compute base-2 Shannon entropy over duration frequencies. Average syncopation, metrical complexity, and rubato per work. Tempo is the population mean and population standard deviation of every tempo-profile sample. Motif consistency is motifs with more than one occurrence divided by all catalogued motifs. |
-| Formal | Count form codes and average total bars. For each section label, average the supplied proportional observations. Average recapitulation/exposition ratios only for works containing both positive values, and development only where positive. A slow introduction requires the earliest section to be labelled introduction and have a lower positive tempo than the next section; a coda must be the final section. Transition `character` values are ranked by descending work-record count then lexical value. Climax position is an evidence-only mean. Golden adherence per observed climax is `clamp(1 - abs(position - 0.618)/0.618, 0, 1)`. |
+| Formal | Count form codes and average total bars. For each section label, average the supplied proportional observations. Average recapitulation/exposition ratios only for works containing a positive exposition and a named recapitulation, and development only where a development observation is named; supplied zero recapitulation/development remains a measured zero. A slow introduction requires the earliest section to be labelled introduction and have a lower positive tempo than the next section; a coda must be the final section. Transition `character` values are ranked by descending work-record count then lexical value. Climax position is an evidence-only mean. Golden adherence per observed climax is `clamp(1 - abs(position - 0.618)/0.618, 0, 1)`. |
 | Voice leading | Average parallel-fifth, parallel-octave, and crossing counts per work; average common-tone retention and independence. The preferred motion is the greatest aggregate proportion in deterministic order contrary, oblique, similar, parallel and stays empty if all are zero. Leading-tone and seventh resolution rates are weighted by each `ResolutionPattern.frequency`. Spacing counts at or below 12 semitones are close; above 12 are open; at least 60% selects close/open, otherwise mixed. |
-| Textural | Average work density and register span; take the global minimum/maximum density sample; sum each texture proportion and divide by `n`. For each work, inner-join density and dynamic curves by exact `ScoreTime`, compute Pearson correlation only with at least two samples and non-zero variance, then average the defined correlations. |
+| Textural | Average work density and register span; take the global minimum/maximum density sample; sum each texture proportion and divide by the number of works eligible for that field. For each work, inner-join density and dynamic curves by exact `ScoreTime`, compute Pearson correlation only with at least two samples and non-zero variance, then average the defined correlations. |
 | Dynamic | Select the softest/loudest non-empty labelled extremes, merge dynamic-level counts, and average change/subito counts per work. For each non-empty shape, map its maximum intensity to the nearest declared ordinary dynamic. A range at or below `1e-5` is stationary; an interior maximum/minimum at least 25% of the range beyond both endpoints is arch/inverted arch; at least two non-zero direction changes is oscillating; otherwise endpoint displacement of at least ±25% is ascending/descending, with the residual complex. Modal values are retained with stable enum/key tie-breaking. No shape leaves the neutral `Stationary` default. |
 | Orchestration | Include only present orchestration records. Average instrument-use and melody-carrier maps over those records. Canonicalise a combination's instrument set lexically, merge exact combination and doubling keys by summed frequency, and order them by key. Build-up techniques contain `register expansion` when declared and `instrument accretion` when a crescendo has more than one ordered entry. |
-| Motivic | Average thematic economy and density per work. Merge and normalise transformation-event codes. Fragmentation and sequence frequencies divide their corresponding event counts by all transformation events. |
+| Motivic | Average thematic economy and density per work. Merge and normalise transformation-event codes. Fragmentation and sequence frequencies divide their corresponding event counts by transformation events from works eligible for the respective classification. |
 
 The following style fields currently have no source evidence carrier and therefore remain neutral
 after every deterministic rebuild: `tonal_ambiguity_index`, `average_phrase_length`,
@@ -843,23 +866,35 @@ into an automatic-analysis claim.
 
 The current `analyze_score` boundary is exact:
 
-| Domain | Automatically produced from Score | Represented but only caller/annotation supplied in the current analyser |
+| Domain | Automatically produced from Score | Explicitly unavailable in automatic analysis |
 |---|---|---|
-| Harmonic | Chord vocabulary; bigram progressions and cadences when Score harmonic annotations exist; harmonic-rhythm mean/variance and per-bar curve; tonal plan | Modulations, chromatic techniques, tonicisation counts, section harmonic rates |
-| Melodic | Per-Part zero/non-zero note count, range, intervals, scale degrees, conjunctness, chromaticism, and primary Part by note count | Tessitura, contours, leap resolution, ascending/descending runs, thematic material |
-| Rhythmic | Durations, global metres, onset density, syncopation proxy, tempo samples, metrical-complexity proxy, rest proportion, section note density | Rhythmic motifs and rubato degree |
-| Formal | Top-level Score sections, their lengths/key labels/front-map tempo, proportions, limited binary/ternary/rondo label classification, and tonal plan | Section character/subsections, thematic assignments, symmetry analysis, richer form classification |
-| Voice leading | Adjacent-Part, first-note-per-bar motion proportions, parallel fifth/octave counts, crossing count, spacing counts | Voice independence, common-tone retention, tendency-tone resolution patterns |
-| Textural | Per-bar active-Part density, average span, section density, and monophonic/homophonic/polyphonic proportions | Spacing profile |
-| Dynamic | Explicit marking distribution/range, hairpins, marking changes, composite-accent count, evidence-only carried per-bar shape/climax, and section ranges | Nothing additional in the current record |
-| Orchestration | Multi-Part instrument use and highest-note melody carrier | Instrument combinations, doublings, crescendo patterns, density/orchestration correlation |
-| Motivic | Neutral empty record only | Thematic units, transformation inventory, developmental techniques, density, economy |
+| Harmonic | Exact sounding boundaries and active key/mode; supplied annotations or finite chord/Roman-numeral/cadence recognition; chord vocabulary, bigrams, cadence codes, harmonic rhythm, tonal plan | Modulation inventory, named chromatic techniques, tonicisation frequency, section rates, cadence approach and structural status |
+| Melodic | Every `(PartId, voice_index)` lane selects its highest newly attacked MIDI note at each exact onset after individual tie folding; directed intervals include the full ±127 domain; range, 10th/90th note-order-statistic tessitura, active-key degrees/chromaticism, primary lane by selected attack count | Contours, leap resolution, ascending/descending runs; range/tessitura/chromaticism for empty lanes and conjunctness with fewer than two attacks |
+| Rhythmic | Individual folded note durations and attacks retain chord/unison multiplicity; explicit-rest proportion counts voice allocations once; grouped-meter sustain syncopation; global/local metre inventory; instantaneous effective quarter-BPM at tempo events; section attacks per touched global bar | Rhythmic motifs, rubato |
+| Formal | Core finite label-pattern classifier, including ABACA rondo; supplied sections with bar-index lengths/proportions, exact section-start key/mode and effective quarter-BPM including ramps/metric modulation, declared tonal plan | Thematic assignment, symmetry, section character/subsections; form classification without sections, lengths/proportions for partial-bar sections |
+| Voice leading | Exact sounding-boundary slices select the highest sounding MIDI note per lane; all simultaneous lane pairs; moving consecutive-pair motion, equal nonzero displacement for parallel perfect intervals, strict order reversal for crossings, compound spacing, previous-slice unique-pitch retention | Independence and tendency-tone resolutions; all motion-dependent fields when no consecutive moving pair exists |
+| Textural | Global-bar Part presence and note-register inventories, their means and section density | Mono-/homo-/polyphonic classification and spacing profile |
+| Dynamic | Explicit written note marks and hairpins; typed intensity ordering; traversal-order changes per bar, latest visited mark carried by bar, first maximum as climax | Section dynamic ranges; mark-dependent fields when only hairpins are supplied |
+| Orchestration | Multi-Part instrument-name bar presence (union across same-name Parts) and highest visited MIDI pitch as a bar melody-carrier heuristic | Combinations, doublings, orchestral crescendos, density/orchestration correlation; the whole domain for single-Part scores |
+| Motivic | Exhaustive contiguous 3–8 selected-note windows per lane, matched by exact directed intervals and rational duration ratios; greedy nonoverlap within a lane and independent occurrences across lanes; repetition, exact transposition and uniform duration scaling; exact Part/voice/start/end/key context and union-of-covered-attacks density | Thematic economy, developmental techniques, fragmentation and sequential-repetition classifications/frequencies (including the copied melodic sequence frequency); the whole domain when no eligible window exists |
 
-These are algorithm identities, not musicological equivalence claims. In particular, the rhythmic
-syncopation value is an off-quarter-grid onset ratio, form recognition is label-pattern matching,
-texture density counts active Parts, and voice leading samples first notes in consecutive bars of
-adjacent Parts. Replacing any proxy with a richer analyser changes the evidence function and must
-receive tests, documentation, and schema/version review if persisted meaning changes.
+All nine automatic evidence entries are `Heuristic`: exact symbolic arithmetic does not establish
+that the musical selection or interpretation is exhaustive. Zero candidate matches with eligible
+windows is a measured finite absence; zero eligible windows is unavailable. Matching uses rational
+durations, while persisted float rhythmic cells retain original whole-note durations as summaries.
+
+Syncopation is the share of nongrace attacks whose folded allocation sustains strictly beyond a
+later stronger boundary. Strength is 3 at the bar downbeat, 2 at a later grouped beat start, 1 at an
+interior denominator-unit pulse, and 0 elsewhere. Ending exactly at a boundary does not count;
+ties across bars do, and local grouping is evaluated within the global bar frame. Form classification
+uses supplied labels. Texture counts bar inventories and cannot establish sounding simultaneity.
+Voice leading examines all simultaneous structural lanes at exact event boundaries, using their
+highest sounding pitch. These are declared finite evidence functions, not musicological equivalence
+claims. Uncomputed fields remain explicitly unavailable even when another field in the same domain
+has observations. All-rest or grace-only works have no eligible syncopation denominator; a
+nongrace downbeat attack supplies a valid measured zero. Voice-leading spacing, moving pairs,
+and previous unique-pitch retention have independent observations: stationary reattacked notes
+can supply retention without pitch motion, and one lane can supply retention without pair spacing.
 
 ---
 
@@ -937,7 +972,9 @@ These queries are designed for use during active composition, when the agent nee
 
 ### 5.2 The HowWouldXHandle Query
 
-**Definition 5.2.1**. The *HowWouldXHandle* query is the highest-level query in the Corpus IR. It accepts a natural-language description of a compositional situation and returns the most relevant insights from the composer's profile and corpus.
+**Definition 5.2.1**. The currently supported *HowWouldXHandle* query retrieves annotated
+sections by lexical criteria and aggregates observations from those passages. It does not
+predict a composer's decisions from arbitrary natural-language situations.
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -953,7 +990,19 @@ These queries are designed for use during active composition, when the agent nee
 - "Handling the retransition back to the tonic before the recapitulation"
 - "Writing a coda that references the opening material"
 
-The query matches the situation description against the formal, harmonic, textural, and motivic analysis records to find relevant passages in the corpus. It returns:
+Every significant case-insensitive alphanumeric query token must occur in the section label or
+character annotation. Articles, the prepositions `in`, `of`, `at`, and the words `section`,
+`sections`, `passage` are ignored. Substring fragments do not match words. An empty significant
+query or an absent annotated context returns no contextual evidence, rather than substituting
+global style averages. The complex example situations above require matching annotations; they
+are not claims of semantic inference.
+
+The current tendencies are recognised harmonic changes and symbolic attack counts per bar.
+Only passages with complete per-bar observations contribute; overlapping passage annotations
+count each `(work, bar)` once. Missing observations are unavailable, whereas measured zero
+counts remain valid. Signatures are returned only when their supporting occurrences fall inside
+a matching passage. Global style information remains separately available from
+`query_style_profile`. The query returns:
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -967,7 +1016,7 @@ The query matches the situation description against the formal, harmonic, textur
 |-------|------|-------------|
 | `work_id` | `Id<IngestedWork>` | Which work |
 | `region` | `(ScoreTime, ScoreTime)` | Which passage |
-| `relevance_score` | `f32` | How closely this example matches the query (0.0–1.0) |
+| `relevance_score` | `f32` | Lexical token coverage (currently 1 for a complete match), not calibrated semantic relevance |
 | `analysis_summary` | `String` | Concise analytical description of what happens in this passage |
 | `harmonic_reduction` | `Vec<String>` | Roman numeral analysis of the passage |
 | `formal_context` | `String` | Where in the formal structure this passage occurs |
@@ -978,8 +1027,13 @@ The query matches the situation description against the formal, harmonic, textur
 |-------|------|-------------|
 | `domain` | `String` | Analytical domain |
 | `observation` | `String` | e.g., "In development sections, this composer increases harmonic rhythm by 40% relative to exposition" |
-| `confidence` | `f32` | Based on sample size |
-| `supporting_examples_count` | `u32` | How many examples support this tendency |
+| `confidence` | `f32` | 1 for exact aggregation of supplied observations; not calibrated analytical or statistical confidence |
+| `supporting_examples_count` | `u32` | Number of fully observed matching annotated passages |
+
+MCP passage responses expose `region_start` and `region_end` in exact ScoreTime coordinates.
+Context responses additionally report `available`, `statistics_available`, a declared `method`
+and an actionable unavailable reason. These fields distinguish a matching annotation, measured
+local statistics and unavailable evidence.
 
 ### 5.3 Corpus-Level Queries
 
@@ -1048,7 +1102,7 @@ The query matches the situation description against the formal, harmonic, textur
 5. **Assign periods** (optional): `assign_work_to_period(work_id, composer_id, "Early")`, etc.
 6. **Analyse**: `analyze_work(work_id)` for each work. This runs the full analytical decomposition (§2) using the theory engine and synchronously refreshes affected composer and period aggregates.
 7. **Verify/rebuild profile** (optional): `rebuild_style_profile(composer_id)` deterministically recomputes the composer and period StyleProfiles from their analysed work memberships. Normal lifecycle workflows already perform this refresh; the explicit operation is useful after assembling or migrating a value outside those workflows.
-8. **Detect signatures**: `detect_signature_patterns(composer_id)`. This identifies statistically distinctive patterns by comparing against the corpus mean.
+8. **Detect signatures**: `detect_signature_patterns(composer_id)`. This reports descriptive harmonic-bigram contrasts against other composers, with explicit observation denominators and unavailable comparison evidence.
 9. **Query**: The profile is now available for composition-time queries.
 
 ### 6.3 Composition Workflow Integration
@@ -1086,7 +1140,7 @@ There is no runtime SQLite pattern index, comparison cache, or binary storage ba
 
 #### 7.1.1 JSON schema and migration boundary
 
-Corpus JSON schema version 4 is the current write format. Its strict projection covers every
+Corpus JSON schema version 5 is the current write format. Its strict projection covers every
 authoritative field of `IngestedWork`, `WorkMetadata`, `IngestionConfidence`, `WorkAnalysis`,
 `ComposerProfile`, `PeriodProfile`, `StyleProfile`, and `SignaturePattern`, including optional
 orchestration, composer active periods, all tonal plans and thematic structures, and the complete
@@ -1105,17 +1159,35 @@ historical model. Version 4 adds the required `duration_quantisation_residual`, 
 confidence dimension to be finite and in `[0,1]`, and requires both residuals to be finite and
 non-negative. Versions 1–3 migrate the historically unobserved duration residual to zero; this is
 a migration default, not evidence that old ingestion preserved durations. Full-corpus loads of
-versions 2–4 run validation, but only the structural Error rules (C2, C14, C15, and C16) block
+versions 2–5 run validation, but only the structural Error rules (C2, C14, C15, C16, and C17) block
 loading; ingestion and analysis quality findings (C1 and C3–C13) describe the evidence rather than
 the document's integrity, so a state produced by Sunny's own tools always reloads, and they remain
 diagnostics for `validate_corpus`. Version-2 migration loads retain their historical pre-freshness
-validation contract and therefore skip C15. Writers emit v4
-only. A supported-schema document round-trips every value represented by that schema; only v4 is
+validation contract and therefore skip C15. Version 5 adds required per-domain method/availability
+evidence and nullable exact melodic voice identities and thematic end positions. Versions 1–4
+retain supplied analysis values with absent evidence and voice/end provenance; they do not invent
+voice zero or a passage end. A v5 standalone work also rejects contradictory C17 evidence.
+Writers emit v5 only. A supported-schema document round-trips every value represented by that schema; only v5 is
 field-complete with respect to the current Corpus IR.
 
 ### 7.2 Incremental Updates
 
-When ownership, analysis, period membership, or work existence changes through a lifecycle workflow, affected composer and period aggregates are rebuilt synchronously before the operation returns. Composer signature patterns are invalidated when their underlying composer membership or analysis set changes and are populated only by the explicit detection workflow. Period-only changes preserve composer signatures. There is no background refresh or background persistence. Directly assembled C++ values and migration loads can retain supplied aggregates until `rebuild_style_profile` or another lifecycle workflow is invoked; C15 reports this stale state during direct validation, and a v3/v4 corpus load rejects it. Strict v2–v4 corpus loads reject graph contradictions through C14.
+When ownership, analysis, period membership, or work existence changes through a lifecycle workflow, affected composer and period aggregates are rebuilt synchronously before the operation returns. Composer signature patterns are invalidated when their underlying composer membership or analysis set changes and are populated only by the explicit detection workflow. Period-only changes preserve composer signatures. There is no background refresh or background persistence. Directly assembled C++ values and migration loads can retain supplied aggregates until `rebuild_style_profile` or another lifecycle workflow is invoked; C15 reports this stale state during direct validation, and a v3–v5 corpus load rejects it. Strict v2–v5 corpus loads reject graph contradictions through C14.
+
+Each `WorkAnalysis.evidence` entry uses one of `Unqualified`, `ExactSymbolic`, `Heuristic`, or
+`Unavailable`, with a named method, observation count and explicit unavailable field paths.
+Computed entries require positive observations and no unavailable reason. Unavailable entries
+require a reason and zero observations. Missing legacy entries are unqualified. Only an explicitly
+unavailable source domain or field is excluded from that profile field's values and denominator;
+supplied unqualified values remain represented and are reported as such by MCP inspection. The
+style confidence is a sample-size heuristic, not a probability of analytical accuracy.
+`get_work_analysis` exposes the complete record, each domain's qualification and its unavailable
+field paths. `query_style_profile` retains domain counts and adds `availability[domain].fields[name]`
+for every profile field: computed, unavailable, unqualified and contributing work counts, source
+field dependencies and methods, availability/status and qualification. Counts refer to distinct
+analysed works eligible for that field; they are not attack, lane or curve-sample weighting counts.
+A domain-level computed status does not qualify every field. Fields without an aggregate producer
+have unavailable field status even when other fields in their domain have observations.
 
 ---
 
@@ -1151,6 +1223,7 @@ When ownership, analysis, period membership, or work existence changes through a
 | C14 | Error | Corpus map identities, composer ownership, period membership, or bounded period ranges contradict one another |
 | C15 | Error | A composer or period's deterministic non-signature StyleProfile differs from the aggregate of its unique analysed work membership |
 | C16 | Error | A confidence dimension is non-finite or outside `[0,1]`, or an onset/duration quantisation residual is non-finite or negative |
+| C17 | Error | An analysis evidence domain/kind/method/count/reason contradicts its availability, unavailable fields repeat, or optional thematic span/voice or melodic lane provenance is invalid or contradicts its embedded Score. A thematic voice belongs to its starting measure; a melodic lane must occur in a measure of the named Part. Legacy absent voice indices remain unqualified. |
 
 ---
 
@@ -1191,13 +1264,13 @@ The full MCP tool set across the IR specifications and aggregate project model:
 | Registration group | Tools | Examples |
 |--------------------|------:|----------|
 | Core and Ableton | 11 | `analyze_harmony`, `voice_lead`, `get_ableton_session_state`, `get_ableton_remote_log` |
-| Score IR | 31 | `score_create`, `score_insert_chord_symbol`, `score_compile_to_musicxml` |
-| Timbre IR | 22 | `set_sound_source`, `map_timbre_parameter`, `validate_timbre` |
-| Mix IR | 27 | `set_channel_relative_level`, `resolve_mix_fader_levels`, `validate_mix` |
-| Corpus IR | 22 | `ingest_midi`, `remove_ingested_work`, `query_how_would_x_handle` |
-| Project | 4 | `project_validate`, `project_plan_to_ableton`, `project_apply_ableton_plan`, `project_compile_to_ableton` |
+| Score IR | 52 | `score_create`, `score_remove_part`, `score_reorder_parts`, `score_compile_to_musicxml` |
+| Timbre IR | 28 | `set_sound_source`, `map_timbre_parameter`, `validate_timbre` |
+| Mix IR | 33 | `set_channel_relative_level`, `resolve_mix_fader_levels`, `validate_mix` |
+| Corpus IR | 23 | `ingest_midi`, `get_work_analysis`, `query_how_would_x_handle` |
+| Project and workspace | 11 | `create_project`, `bind_project`, `get_project_json`, `project_plan_to_ableton`, `project_apply_ableton_plan` |
 
-Total: 117 MCP tools. `tools/list` is the runtime authority.
+Total: 158 MCP tools. `tools/list` is the runtime authority.
 
 ---
 

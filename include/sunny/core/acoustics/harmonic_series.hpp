@@ -61,8 +61,11 @@ constexpr std::array<HarmonicPartial, 16> HARMONIC_SERIES = {{
  */
 [[nodiscard]] inline Result<double> partial_frequency(int n, double fundamental) {
     if (n < 1) return std::unexpected(ErrorCode::InvalidPartialNumber);
-    if (fundamental <= 0.0) return std::unexpected(ErrorCode::InvalidFrequency);
-    return n * fundamental;
+    if (!std::isfinite(fundamental) || fundamental <= 0.0)
+        return std::unexpected(ErrorCode::InvalidFrequency);
+    const double frequency = n * fundamental;
+    if (!std::isfinite(frequency)) return std::unexpected(ErrorCode::ArithmeticOverflow);
+    return frequency;
 }
 
 /**
@@ -78,13 +81,20 @@ constexpr std::array<HarmonicPartial, 16> HARMONIC_SERIES = {{
  */
 [[nodiscard]] inline Result<std::vector<std::pair<double, double>>>
 harmonic_spectrum(double fundamental, int n_partials, double rolloff = 1.0) {
-    if (fundamental <= 0.0) return std::unexpected(ErrorCode::InvalidFrequency);
+    if (!std::isfinite(fundamental) || fundamental <= 0.0)
+        return std::unexpected(ErrorCode::InvalidFrequency);
     if (n_partials < 1) return std::unexpected(ErrorCode::InvalidPartialNumber);
+    if (!std::isfinite(rolloff) || rolloff < 0.0)
+        return std::unexpected(ErrorCode::InvalidAcousticParameter);
+    if (!std::isfinite(fundamental * n_partials))
+        return std::unexpected(ErrorCode::ArithmeticOverflow);
     std::vector<std::pair<double, double>> result;
     result.reserve(n_partials);
-    for (int n = 1; n <= n_partials; ++n) {
+    for (std::size_t n = 1; n <= static_cast<std::size_t>(n_partials); ++n) {
         double freq = n * fundamental;
-        double amp = 1.0 / std::pow(static_cast<double>(n), rolloff);
+        // Negative exponent avoids an overflowing reciprocal denominator;
+        // very small partial amplitudes may underflow to admitted zero.
+        double amp = std::pow(static_cast<double>(n), -rolloff);
         result.emplace_back(freq, amp);
     }
     return result;

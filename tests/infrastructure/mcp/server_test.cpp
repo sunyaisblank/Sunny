@@ -23,9 +23,11 @@
 #include <set>
 #include <sstream>
 #include <string>
+#include <sunny/core/corpus/workflows.hpp>
 #include <sunny/core/detail/serialization_integer.hpp>
 #include <sunny/core/harmony/roman_numeral.hpp>
 #include <sunny/core/scale/definitions.hpp>
+#include <sunny/core/score/serialization.hpp>
 #include <sunny/infrastructure/mcp/core_tools.hpp>
 #include <sunny/infrastructure/mcp/corpus_tools.hpp>
 #include <sunny/infrastructure/mcp/mix_tools.hpp>
@@ -148,27 +150,28 @@ TEST_CASE("Score MCP identity exhaustion never wraps or overwrites",
           "[mcp][score][identity][atomicity]") {
     McpServer server;
     auto session = std::make_shared<ScoreSession>();
-    session->next_score_id = std::numeric_limits<std::uint64_t>::max();
+    const auto last_identity = std::numeric_limits<std::uint64_t>::max() - 1;
+    session->next_score_id = last_identity;
     register_score_tools(server, session);
     const json create_params = {{"title", "Last identity"},
                                 {"total_bars", 1},
                                 {"parts", {{{"name", "Piano"}, {"instrument_type", 0}}}}};
 
     const auto last = call_tool(server, "score_create", create_params, 3010);
-    REQUIRE(last["score_id"] == std::numeric_limits<std::uint64_t>::max());
+    REQUIRE(last["score_id"] == last_identity);
     REQUIRE(session->scores.size() == 1);
-    REQUIRE(session->find(std::numeric_limits<std::uint64_t>::max()) != nullptr);
-    CHECK(session->find(std::numeric_limits<std::uint64_t>::max())->id ==
-          sunny::core::ScoreId{std::numeric_limits<std::uint64_t>::max()});
+    REQUIRE(session->find(last_identity) != nullptr);
+    CHECK(session->find(last_identity)->id == sunny::core::ScoreId{last_identity});
 
     const auto rejected_create = call_tool(server, "score_create", create_params, 3011);
-    CHECK(rejected_create["error"] == "score identity domain exhausted");
+    CHECK(rejected_create["error"] == "score identity allocation rejected");
+    CHECK(rejected_create["error_code"] ==
+          static_cast<int>(sunny::core::ErrorCode::ArithmeticOverflow));
     const auto rejected_reduction =
-        call_tool(server,
-                  "score_get_reduction",
-                  {{"score_id", std::numeric_limits<std::uint64_t>::max()}},
-                  3012);
-    CHECK(rejected_reduction["error"] == "score identity domain exhausted");
+        call_tool(server, "score_get_reduction", {{"score_id", last_identity}}, 3012);
+    CHECK(rejected_reduction["error"] == "score identity allocation rejected");
+    CHECK(rejected_reduction["error_code"] ==
+          static_cast<int>(sunny::core::ErrorCode::ArithmeticOverflow));
     CHECK(session->scores.size() == 1);
     CHECK(session->next_score_id == std::numeric_limits<std::uint64_t>::max());
 }
@@ -225,7 +228,7 @@ TEST_CASE("Score MCP authors one complete tuning atomically and exposes target r
     REQUIRE(changed["ok"] == true);
     const auto stored =
         call_tool(server, "score_get_json", {{"score_id", created["score_id"]}}, 3022);
-    CHECK(stored["schema_version"] == 8);
+    CHECK(stored["schema_version"] == sunny::core::SCORE_IR_SCHEMA_VERSION);
     CHECK(stored["tuning"]["name"] == "MCP custom");
     CHECK(stored["tuning"]["cents_from_reference"][60] == -901.25);
 
@@ -737,7 +740,7 @@ TEST_CASE("all public tools advertise object-shaped JSON Schemas", "[mcp][tools]
     auto response =
         server.process_request({{"jsonrpc", "2.0"}, {"method", "tools/list"}, {"id", 30}});
     const auto& tools = response["result"]["tools"];
-    REQUIRE(tools.size() == 117);
+    REQUIRE(tools.size() == 190);
     for (const auto& tool : tools) {
         CAPTURE(tool["name"]);
         const auto& schema = tool["inputSchema"];
@@ -841,6 +844,50 @@ TEST_CASE("tool registration rejects duplicate and malformed definitions", "[mcp
                                          {{"type", "array"}},
                                          [](const json&) -> json { return json::object(); }),
                     std::invalid_argument);
+}
+
+TEST_CASE("Explicitly closed tool inputs reject unknown fields before handler execution",
+          "[mcp][tools][schema]") {
+    McpServer server;
+    int invocations = 0;
+    const json child{{"type", "object"},
+                     {"additionalProperties", false},
+                     {"properties", {{"approved", {{"type", "boolean"}}}}},
+                     {"required", {"approved"}}};
+    server.register_tool("closed",
+                         "closed input",
+                         {{"type", "object"},
+                          {"additionalProperties", false},
+                          {"properties", {{"selection", child}}},
+                          {"required", {"selection"}}},
+                         [&invocations](const json&) -> json {
+                             ++invocations;
+                             return {{"success", true}};
+                         });
+    const json valid{{"selection", {{"approved", true}}}};
+    for (const auto& field : {"desired_projection", "unadvertised"}) {
+        auto outer = valid;
+        outer[field] = json::object();
+        const auto declined = call_tool(server, "closed", outer, 1);
+        CHECK(declined.contains("error"));
+        CHECK(invocations == 0);
+        auto nested = valid;
+        nested["selection"][field] = json::object();
+        CHECK(call_tool(server, "closed", nested, 2).contains("error"));
+        CHECK(invocations == 0);
+    }
+    CHECK(call_tool(server, "closed", valid, 3).at("success") == true);
+    CHECK(invocations == 1);
+    // Schemas that omit closure continue accepting useful undeclared fields.
+    server.register_tool("open",
+                         "open input",
+                         {{"type", "object"}, {"properties", json::object()}},
+                         [&invocations](const json&) -> json {
+                             ++invocations;
+                             return {{"success", true}};
+                         });
+    CHECK(call_tool(server, "open", {{"extra", 1}}, 4).at("success") == true);
+    CHECK(invocations == 2);
 }
 
 TEST_CASE("tools/call unknown tool", "[mcp][tools]") {
@@ -1613,7 +1660,7 @@ TEST_CASE("Score MCP authors typed harmony and exports structured MusicXML",
 
     const auto authored =
         call_tool(server, "score_get_json", {{"score_id", created["score_id"]}}, 507);
-    REQUIRE(authored["schema_version"] == 8);
+    REQUIRE(authored["schema_version"] == sunny::core::SCORE_IR_SCHEMA_VERSION);
     const auto& event = authored["parts"][0]["measures"][0]["voices"][0]["events"][1];
     CHECK(event["numeral"]["root"] == 5);
     CHECK(event["inversion"] == 1);
@@ -2615,8 +2662,11 @@ TEST_CASE("Project MCP plan/apply is read-only until one guarded one-shot applic
              {"mapping_provenance", "guarded plan fixture"}}}},
           {"aux_returns", json::array()}}}};
 
+    session.deployment->next_plan_id = std::numeric_limits<std::uint64_t>::max() - 1;
     const auto plan = call_tool(server, "project_plan_to_ableton", project_ids, 573);
     REQUIRE(plan["success"] == true);
+    CHECK(plan["plan_id"] == std::numeric_limits<std::uint64_t>::max() - 1);
+    CHECK(session.deployment->next_plan_id == std::numeric_limits<std::uint64_t>::max());
     CHECK(plan["one_shot"] == true);
     CHECK_FALSE(plan["planned_mutations"].empty());
     CHECK(plan["output_routing_bindings"] == project_ids["output_routing_bindings"]);
@@ -3238,6 +3288,62 @@ TEST_CASE("Every MCP validation surface preserves the complete diagnostic contra
 
     REQUIRE(responses[0]["diagnostics"][0].contains("part_id"));
     REQUIRE(responses[1]["diagnostics"][0].contains("part_id"));
+}
+
+TEST_CASE("Corpus MCP reports contextual availability and passage evidence",
+          "[mcp][corpus][evidence]") {
+    McpServer server;
+    auto session = std::make_shared<CorpusSession>();
+    register_corpus_tools(server, session);
+    using namespace sunny::core;
+    session->corpus.composers[1] =
+        create_composer_profile(ComposerProfileId{1}, "Observed composer");
+    WorkMetadata metadata;
+    metadata.title = "A known section";
+    metadata.composer = ComposerProfileId{1};
+    auto work = create_ingested_work(IngestedWorkId{1}, metadata);
+    work.analysis_complete = true;
+    FormalSection section;
+    section.label = "Development";
+    section.start_bar = 2;
+    section.end_bar = 4;
+    section.length_bars = 2;
+    work.analysis.formal_analysis.section_plan = {section};
+    work.analysis.formal_analysis.total_duration_bars = 4;
+    work.analysis.harmonic_analysis.harmonic_rhythm.changes_per_bar = {100, 2, 4, 100};
+    session->corpus.works[1] = work;
+    session->corpus.composers[1].works = {IngestedWorkId{1}};
+
+    const auto matched = call_tool(
+        server, "find_examples", {{"composer_id", 1}, {"criterion", "Development section"}}, 19101);
+    REQUIRE(matched["examples"].size() == 1);
+    CHECK(matched["examples"][0]["region_start"] ==
+          json{{"bar", 2}, {"beat", {{"num", 0}, {"den", 1}}}});
+    CHECK(matched["examples"][0]["region_end"] ==
+          json{{"bar", 4}, {"beat", {{"num", 0}, {"den", 1}}}});
+    const auto context = call_tool(server,
+                                   "query_how_would_x_handle",
+                                   {{"composer_id", 1}, {"situation", "Development"}},
+                                   19102);
+    CHECK(context["available"] == true);
+    CHECK(context["statistics_available"] == true);
+    REQUIRE(context["statistical_tendencies"].size() == 1);
+    CHECK(context["statistical_tendencies"][0]["observation"].get<std::string>().find(
+              "3.000000 per bar") != std::string::npos);
+    const auto absent = call_tool(server,
+                                  "query_how_would_x_handle",
+                                  {{"composer_id", 1}, {"situation", "Recapitulation"}},
+                                  19103);
+    CHECK(absent["available"] == false);
+    CHECK(absent["statistics_available"] == false);
+    CHECK(absent["statistical_tendencies"].empty());
+    CHECK(absent["unavailable_reason"].is_string());
+    const auto signatures =
+        call_tool(server, "detect_signature_patterns", {{"composer_id", 1}}, 19104);
+    CHECK(signatures["available"] == false);
+    CHECK(signatures["pattern_count"] == 0);
+    CHECK(signatures["baseline_works"].empty());
+    CHECK(signatures["unavailable_reason"].is_string());
 }
 
 TEST_CASE("Timbre MCP rejects integer narrowing before mutation",

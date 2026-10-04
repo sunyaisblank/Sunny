@@ -299,6 +299,11 @@ class TcpTransport final : public LomTransport {
         return last_connect_failure_;
     }
 
+    /// Compatibility failure for the current socket; profile/log diagnostics remain readable.
+    [[nodiscard]] const std::optional<std::string>& bridge_identity_error() const {
+        return bridge_identity_error_;
+    }
+
     /// Register a callback for state changes
     void on_state_change(std::function<void(ConnectionState)> callback);
 
@@ -320,7 +325,10 @@ class TcpTransport final : public LomTransport {
     void abandon_connection();
 
     /// Send a length-prefixed frame and receive the response
-    LomResponse send_and_receive(const std::string& json_payload);
+    LomResponse send_and_receive(const std::string& json_payload, bool require_identity = true);
+
+    /// Read-only, nonrecursive handshake before an ordinary request on each new socket.
+    bool verify_bridge_identity();
 
     /// Send exactly n bytes
     bool send_all(const void* data, std::size_t n);
@@ -335,6 +343,8 @@ class TcpTransport final : public LomTransport {
     std::unique_ptr<SocketHandle> socket_;
     ConnectionState state_ = ConnectionState::Disconnected;
     std::optional<ConnectFailure> last_connect_failure_;
+    bool bridge_identity_verified_ = false;
+    std::optional<std::string> bridge_identity_error_;
     std::function<void(ConnectionState)> state_callback_;
 };
 

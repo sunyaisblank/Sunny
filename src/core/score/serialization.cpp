@@ -19,6 +19,29 @@ using json = nlohmann::json;
 
 namespace {
 
+template <typename Identifier> json reserved_ids_to_json(const std::set<Identifier>& ids) {
+    auto values = json::array();
+    for (const auto id : ids)
+        values.push_back(id.value);
+    return values;
+}
+
+template <typename Identifier> std::set<Identifier> reserved_ids_from_json(const json& values) {
+    if (!values.is_array())
+        throw json::other_error::create(604, "identity reservations must be arrays", &values);
+    std::set<Identifier> result;
+    std::optional<std::uint64_t> previous;
+    for (const auto& value : values) {
+        const auto id = detail::checked_integer<std::uint64_t>(value, "reserved Score identity");
+        if (previous && id <= *previous)
+            throw json::other_error::create(
+                604, "identity reservations must be strictly ordered without duplicates", &values);
+        result.insert(Identifier{id});
+        previous = id;
+    }
+    return result;
+}
+
 template <typename EnumT>
 EnumT check_enum_range(const json& value, EnumT max_val, const char* name, const json& j) {
     const auto val = detail::checked_integer<int>(value, name);
@@ -1184,6 +1207,12 @@ nlohmann::json score_to_json(const Score& score) {
     j["schema_version"] = SCORE_IR_SCHEMA_VERSION;
     j["id"] = score.id.value;
     j["version"] = score.version;
+    const auto ids = collect_score_identities(score);
+    j["identity_reservations"] = {{"events", reserved_ids_to_json(ids.events)},
+                                  {"parts", reserved_ids_to_json(ids.parts)},
+                                  {"sections", reserved_ids_to_json(ids.sections)},
+                                  {"tuplets", reserved_ids_to_json(ids.tuplets)},
+                                  {"beams", reserved_ids_to_json(ids.beams)}};
 
     json tuning;
     tuning["name"] = score.tuning.name;
@@ -1287,6 +1316,17 @@ Result<Score> score_from_json(const nlohmann::json& j) {
         Score score;
         score.id = ScoreId{detail::checked_integer<std::uint64_t>(j.at("id"), "score id")};
         score.version = detail::checked_integer_or<std::uint64_t>(j, "version", 1, "score version");
+        if (version >= 9 || j.contains("identity_reservations")) {
+            const auto& ids = j.at("identity_reservations");
+            score.identity_reservations.events = reserved_ids_from_json<EventId>(ids.at("events"));
+            score.identity_reservations.parts = reserved_ids_from_json<PartId>(ids.at("parts"));
+            score.identity_reservations.sections =
+                reserved_ids_from_json<SectionId>(ids.at("sections"));
+            score.identity_reservations.tuplets =
+                reserved_ids_from_json<TupletId>(ids.at("tuplets"));
+            score.identity_reservations.beams =
+                reserved_ids_from_json<BeamGroupId>(ids.at("beams"));
+        }
         if (j.contains("state")) {
             if (version >= 5) {
                 throw json::other_error::create(
@@ -1385,6 +1425,14 @@ Result<Score> score_from_json(const nlohmann::json& j) {
             for (const auto& sj : j.at("stale_orchestration_regions")) {
                 score.stale_orchestration_regions.push_back(score_region_from_json(sj));
             }
+        }
+
+        // Old documents can reveal only their actual represented identities.
+        // Never infer that every hole below an imported maximum was used.
+        if (version < 9) {
+            retain_score_identities(score, ScoreIdentityReservations{});
+        } else if (collect_score_identities(score) != score.identity_reservations) {
+            return std::unexpected(ErrorCode::FormatError);
         }
 
         // Full validation on load (§13.3). Structural and rendering-domain

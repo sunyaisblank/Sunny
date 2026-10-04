@@ -13,7 +13,7 @@ namespace sunny::infrastructure {
 class LomTransport;
 
 /**
- * @brief Register validation, guarded plan/apply, and convenience deployment tools
+ * @brief Register owning authoring bindings/history, validation, and guarded deployment tools
  *
  * The supplied session must also be passed to the Score, Timbre, and Mix
  * registration groups so all tools resolve the same identity-stable objects.

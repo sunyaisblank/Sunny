@@ -266,6 +266,143 @@ TEST_CASE("S8 — cyclic tuplet nesting is rejected", "[score-ir][validation][tu
     }));
 }
 
+TEST_CASE("S8 counts rhythmic units rather than mixed-duration events",
+          "[score-ir][validation][tuplet][mixed-tuplet]") {
+    auto score = make_valid_score(1);
+    auto& events = score.parts[0].measures[0].voices[0].events;
+    const TupletContext context{TupletId{8300}, 3, 2, Beat{1, 8}, std::nullopt};
+    const auto group = [](Beat duration, TupletContext member_context) {
+        NoteGroup result;
+        result.notes.push_back(Note{SpelledPitch{0, 0, 4}, VelocityValue{{}, 80}});
+        result.duration = duration;
+        result.tuplet_context = member_context;
+        return result;
+    };
+    // W3C MusicXML's literal eighth-triplet example contains a written quarter
+    // and an eighth: two events, three eighth units, and a quarter allocation.
+    events = {{EventId{8301}, Beat::zero(), group(Beat{1, 6}, context)},
+              {EventId{8302}, Beat{1, 6}, group(Beat{1, 12}, context)},
+              {EventId{8303}, Beat{1, 4}, RestEvent{Beat{3, 4}, true}}};
+
+    SECTION("quarter plus eighth") {
+        CHECK(is_compilable(score));
+    }
+    SECTION("splitting one nominal unit may increase event cardinality") {
+        const TupletContext quarter_context{TupletId{8300}, 3, 2, Beat{1, 4}, std::nullopt};
+        events = {{EventId{8301}, Beat::zero(), group(Beat{1, 6}, quarter_context)},
+                  {EventId{8302}, Beat{1, 6}, group(Beat{1, 12}, quarter_context)},
+                  {EventId{8303}, Beat{1, 4}, RestEvent{Beat{1, 12}, true, quarter_context}},
+                  {EventId{8304}, Beat{1, 3}, RestEvent{Beat{1, 6}, true, quarter_context}},
+                  {EventId{8305}, Beat{1, 2}, RestEvent{Beat{1, 2}, true}}};
+        CHECK(is_compilable(score));
+    }
+    SECTION("a child can replace an outer unit with unequal members") {
+        const TupletContext outer{TupletId{8300}, 3, 2, Beat{1, 4}, std::nullopt};
+        const TupletContext inner{TupletId{8306}, 3, 2, Beat{1, 8}, TupletId{8300}};
+        events = {{EventId{8301}, Beat::zero(), group(Beat{1, 6}, outer)},
+                  {EventId{8302}, Beat{1, 6}, group(Beat{1, 6}, outer)},
+                  {EventId{8303}, Beat{1, 3}, group(Beat{1, 9}, inner)},
+                  {EventId{8304}, Beat{4, 9}, group(Beat{1, 18}, inner)},
+                  {EventId{8305}, Beat{1, 2}, RestEvent{Beat{1, 2}, true}}};
+        CHECK(is_compilable(score));
+    }
+}
+
+TEST_CASE("S8 still rejects malformed mixed-duration contexts and spans",
+          "[score-ir][validation][tuplet][mixed-tuplet]") {
+    auto score = make_valid_score(1);
+    auto& events = score.parts[0].measures[0].voices[0].events;
+    const TupletContext context{TupletId{8400}, 3, 2, Beat{1, 8}, std::nullopt};
+    events = {{EventId{8401}, Beat::zero(), RestEvent{Beat{1, 6}, true, context}},
+              {EventId{8402}, Beat{1, 6}, RestEvent{Beat{1, 12}, true, context}},
+              {EventId{8403}, Beat{1, 4}, RestEvent{Beat{3, 4}, true}}};
+
+    SECTION("incomplete exact span") {
+        std::get<RestEvent>(events[1].payload).tuplet_context.reset();
+    }
+    SECTION("inconsistent shared definition") {
+        std::get<RestEvent>(events[1].payload).tuplet_context->actual = 4;
+    }
+    SECTION("zero ratio") {
+        std::get<RestEvent>(events[0].payload).tuplet_context->actual = 0;
+        std::get<RestEvent>(events[1].payload).tuplet_context->actual = 0;
+    }
+    SECTION("disconnected members even when their sum is exact") {
+        events = {{EventId{8401}, Beat::zero(), RestEvent{Beat{1, 12}, true, context}},
+                  {EventId{8402}, Beat{1, 12}, RestEvent{Beat{1, 12}, true}},
+                  {EventId{8403}, Beat{1, 6}, RestEvent{Beat{1, 6}, true, context}},
+                  {EventId{8404}, Beat{1, 3}, RestEvent{Beat{2, 3}, true}}};
+    }
+    const auto diagnostics = validate_structural(score);
+    CHECK(std::any_of(diagnostics.begin(), diagnostics.end(), [](const Diagnostic& diagnostic) {
+        return diagnostic.rule == "S8" && diagnostic.severity == ValidationSeverity::Error;
+    }));
+    CHECK_FALSE(is_compilable(score));
+}
+
+TEST_CASE("S14 beam eligibility uses each member's cumulative written duration",
+          "[score-ir][validation][tuplet][mixed-tuplet][beam]") {
+    auto score = make_valid_score(1);
+    auto& voice = score.parts[0].measures[0].voices[0];
+    const BeamGroupId beam{8500};
+    const TupletContext context{TupletId{8500}, 3, 2, Beat{1, 4}, std::nullopt};
+    const auto group = [beam](Beat duration, TupletContext member_context) {
+        NoteGroup result;
+        result.notes.push_back(Note{SpelledPitch{0, 0, 4}, VelocityValue{{}, 80}});
+        result.duration = duration;
+        result.tuplet_context = member_context;
+        result.beam_group = beam;
+        return result;
+    };
+    SECTION("eighth glyphs inside a quarter-unit context can be beamed") {
+        voice.events = {{EventId{8501}, Beat::zero(), group(Beat{1, 12}, context)},
+                        {EventId{8502}, Beat{1, 12}, group(Beat{1, 12}, context)},
+                        {EventId{8503}, Beat{1, 6}, RestEvent{Beat{1, 3}, true, context}},
+                        {EventId{8504}, Beat{1, 2}, RestEvent{Beat{1, 2}, true}}};
+        voice.beam_groups = {{beam, {EventId{8501}, EventId{8502}}, {}}};
+        CHECK(is_compilable(score));
+    }
+    SECTION("a quarter glyph inside an eighth-unit context cannot be beamed") {
+        const TupletContext eighth_context{TupletId{8500}, 3, 2, Beat{1, 8}, std::nullopt};
+        voice.events = {{EventId{8501}, Beat::zero(), group(Beat{1, 6}, eighth_context)},
+                        {EventId{8502}, Beat{1, 6}, group(Beat{1, 12}, eighth_context)},
+                        {EventId{8503}, Beat{1, 4}, RestEvent{Beat{3, 4}, true}}};
+        voice.beam_groups = {{beam, {EventId{8501}, EventId{8502}}, {}}};
+        const auto diagnostics = validate_structural(score);
+        CHECK(std::any_of(diagnostics.begin(), diagnostics.end(), [](const Diagnostic& diagnostic) {
+            return diagnostic.rule == "S14" && diagnostic.severity == ValidationSeverity::Error;
+        }));
+        CHECK_FALSE(is_compilable(score));
+    }
+    SECTION("a nested quarter glyph uses both context ratios") {
+        const TupletContext inner{TupletId{8506}, 3, 2, Beat{1, 8}, TupletId{8500}};
+        voice.events = {{EventId{8501}, Beat::zero(), RestEvent{Beat{1, 6}, true, context}},
+                        {EventId{8502}, Beat{1, 6}, RestEvent{Beat{1, 6}, true, context}},
+                        {EventId{8503}, Beat{1, 3}, group(Beat{1, 9}, inner)},
+                        {EventId{8504}, Beat{4, 9}, group(Beat{1, 18}, inner)},
+                        {EventId{8505}, Beat{1, 2}, RestEvent{Beat{1, 2}, true}}};
+        voice.beam_groups = {{beam, {EventId{8503}, EventId{8504}}, {}}};
+        const auto diagnostics = validate_structural(score);
+        CHECK(std::any_of(diagnostics.begin(), diagnostics.end(), [](const Diagnostic& diagnostic) {
+            return diagnostic.rule == "S14" && diagnostic.severity == ValidationSeverity::Error;
+        }));
+        CHECK_FALSE(is_compilable(score));
+    }
+    SECTION("an unrepresentable duration product returns a checked diagnostic") {
+        const TupletContext huge_ratio{TupletId{8500}, 255, 1, Beat{1, 8}, std::nullopt};
+        voice.events = {{EventId{8501},
+                         Beat::zero(),
+                         group(Beat{std::numeric_limits<std::int64_t>::max(), 1}, huge_ratio)},
+                        {EventId{8502}, Beat{1, 6}, group(Beat{1, 12}, huge_ratio)}};
+        voice.beam_groups = {{beam, {EventId{8501}, EventId{8502}}, {}}};
+        const auto diagnostics = validate_structural(score);
+        CHECK(std::any_of(diagnostics.begin(), diagnostics.end(), [](const Diagnostic& diagnostic) {
+            return diagnostic.rule == "S14" &&
+                   diagnostic.error_code == ErrorCode::ArithmeticOverflow;
+        }));
+    }
+}
+
 // =============================================================================
 // S11: Tone row completeness
 // =============================================================================

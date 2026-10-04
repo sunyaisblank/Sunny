@@ -49,6 +49,49 @@ the exact `PartId` correspondence below is the composition law. A project is loc
 all three documents validate and the bijections hold. It is externally realized only to the extent
 reported by the selected target compiler and its evidence.
 
+### 1.2 Owning authoring bindings
+
+`McpSession` owns the canonical Score, Timbre, and Mix stores. `bind_project` joins one existing
+`score_id`, an exact collection of existing `profile_id` values, and one existing `mix_graph_id`.
+The Score identity is also the authoring-project identity; no parallel ID namespace or second live
+copy of a component is introduced. A Score, profile, or graph belongs to at most one authoring
+binding. Local `PartId` equality between different Scores never implies component ownership.
+`create_project(score_id)` constructs default sibling profiles and channels for an existing Score
+and establishes the binding as one request. Unbound scratch documents retain their independent
+tools and Score-only history.
+
+Every tool in a Score/Timbre/Mix registration group defaults to authoring-transaction routing;
+the explicitly declared pure queries and exports opt out. The bound owner is selected from the
+tool's existing document ID, so the original direct mutation tools and `score_undo`/`score_redo`
+use the same complete project history. Live target tools are outside this local rollback boundary.
+Binding starts a new history and discards incompatible pre-binding Score-only snapshots.
+
+One successful changed request records immutable complete before/after component values, with the
+newest 64 entries retained by default. Any new sibling edit clears redo. Undo/redo restores authored
+Score/Timbre/Mix state and original typed identities together while increasing the Score version
+and project revision. Score's typed identity reservations and observed channel reservations survive
+undo, removal, and redo; they reserve observed identities, preserving unused holes beneath imported
+high IDs. Session-wide profile/effect/preset/bus counters never rewind during history traversal.
+
+`score_add_part` adds its default Timbre profile and ChannelStrip in the same transaction.
+`score_remove_part` removes its owned siblings and their reverse group-membership edges; retained
+AudioFollower, sidechain, automation, relative-fader, and processing-rationale references must be
+explicitly repaired first. `score_reorder_parts` preserves identities and follows author order in
+the bound sibling collections. A rejection restores component values, reservations, counters, and
+history. Shared-preset history changes only the library identities touched by that edit, preserving
+independent presets from other projects; incoming retained morph references prevent their removal.
+
+Workspace save/open/import and explicit backup recovery persist the complete authored bindings and
+components under the [workspace contract](sunny-workspace-format.md). External asset collection
+remains outside that file format.
+
+Whole-measure insertion and deletion relocate bar-anchored Timbre and Mix controls inside the same
+transaction. Insertion shifts every later anchor by the inserted count. Deletion removes lane
+points inside the removed bars, shifts later points, and removes empty lanes. Morph endpoints inside
+the removed bars clip to the surviving join downbeat; collapsed morphs are removed. Responses report
+the affected counts. Existing interpolation follows the relocated anchors. Meter changes preserve
+bar anchors and are rejected atomically when an offset no longer fits its owning Score.
+
 ## 2. Identity and correspondence
 
 Let \(P(S)\) be the ordered sequence of Parts in the Score. Let \(p(x)\) denote the `PartId` carried
@@ -69,8 +112,11 @@ instrument category.
 
 T1 reports missing, duplicate, and unknown Timbre bindings. X1 reports missing, duplicate, and
 unknown Mix bindings. Error codes 6000–6003 and 7000/7006/7007 identify these cases.
-P2 reports a primary or via Timbre `AudioFollower` whose sidechain `PartId` is absent from the
-Score. Local Timbre validation separately rejects a zero or self-referential sidechain.
+P2 reports a primary or via Timbre `AudioFollower`, an active recursive Hybrid crossfade
+`AudioFollower`, or a Timbre compressor sidechain whose referenced `PartId` is absent from the
+Score, including references in bypassed compressor effects. Local Timbre modulation validation
+separately rejects zero or self-referential primary/via AudioFollower payloads. Presets store
+numeric parameter states rather than source/effect structures and add no typed Part edges.
 
 ## 3. Authoritative target allocation
 
@@ -105,7 +151,10 @@ Live; no per-document compile tool or position-based track overload remains.
 3. T1 correspondence;
 4. P2 cross-Part AudioFollower references;
 5. all local Mix validation rules;
-6. X1 correspondence.
+6. X1 correspondence;
+7. P4 exact temporal closure of all Timbre automation, preset morph endpoints, and Mix automation.
+   Controls occupy a measured bar with an in-meter rational offset, or the final downbeat
+   `(total_bars + 1, 0)`. They cannot refer to absent bars or the interior of the final endpoint.
 
 Diagnostics are stable-sorted by severity. `is_project_compilable(J)` holds iff the result contains
 no Error diagnostic. Warning and Info diagnostics remain visible but do not block compilation.
@@ -330,9 +379,10 @@ The aggregate model assumes only the target operations admitted by the bridge co
   `recording_quiescence_verified` and `playback_idle_verified` verdicts. These are sequential
   point observations, not a stop mutation, atomic tuple, future-stability proof, or playback trace.
   The same Clip record requires exact audio false/MIDI true/Arrangement false identity, on
-  Live 11+ exact Session true identity, and on Live 12+ exact Take-Lane false identity. Take lanes
-  arrived with Live 12, so below it the take-lane identity is null and its false value holds by
-  construction. For the required unlooped state, public
+  Live 11+ exact Session true identity, and on API-qualified Live 12+ exact Take-Lane false
+  identity. Live 11 already has take lanes; this adapter retains null below Live 12 because its
+  take-lane API is unqualified there. Null does not verify false identity or content absence.
+  For the required unlooped state, public
   `end_time` must independently equal the requested End Marker through
   `playback_end_verified`; neither derived equality is a playback trace.
   The containing Track independently retains the complete ordered ClipSlot vector, including empty
@@ -353,7 +403,7 @@ The aggregate model assumes only the target operations admitted by the bridge co
   This count is complete for the requested empty set but does not identify arbitrary nonempty
   Arrangement content, make the sequential reads atomic, or establish playback or sound.
   On Live 12+, the Track also retains the separate `take_lanes` cardinality and requires zero for a
-  generated Track; below Live 12 the count is null and take-lane absence holds by construction.
+  generated Track; below Live 12 the count is null and take-lane absence remains unverified.
   Take Lane Audition Mode can replace the normally audible main lane, but no public
   LOM audition-state property exists; eliminating the lane topology is therefore the complete
   tractable proposition, not evidence that an unobserved switch is off.
@@ -365,8 +415,14 @@ The aggregate model assumes only the target operations admitted by the bridge co
   `mpe_note_expression_neutrality_verified` remain false even when the ordinary note subset and
   Clip-envelope absence verify. Because the current snapshot schema
   omits note collections, each inserted batch is then re-queried with the closed nine-field
-  `get_all_notes_extended` shape. Final note verification requires both the exact insertion-returned
-  ID set and the compiler-retained property multiset; unsupported batches remain unverified;
+  population-readback shape. Live 11.1+ uses `get_all_notes_extended`; Live 11.0 uses
+  `get_notes_extended` with all pitches `[0,128)` and note starts in `[0, requested_end_marker)`
+  quarter-note beats. Its `observed_time_span` records that finite interval and
+  `entire_clip_population_observed` is false: notes outside it remain unobserved. Exact insertion
+  IDs and the retained property multiset can verify within that interval, but the complete batch
+  verdict also requires whole-Clip population access. Snapshots omit notes on every version, so
+  snapshot equality itself cannot establish note-content drift or absence outside a query;
+  unsupported batches remain unverified;
 - final Song tempo/meter and Scene-0 name/disabled tempo-meter overrides are compared with the
   compiler's stored property intent. It also retains the complete ordered Scene `is_triggered`
   vector and requires every value false. This is a finite point-in-time pending-launch predicate,
@@ -443,9 +499,13 @@ The MCP server serialises `process_request` calls per server instance and holds 
 through synchronous tool-handler execution. This applies both to the stdio loop and to concurrent
 calls through the public parsed-request seam. Tool registration completes before request handling,
 and shared Score/Timbre/Mix/Corpus session values therefore have one exclusive request owner. A
-future parallel dispatcher must route Score ownership through `ScoreDocument` snapshots and add
-corresponding Timbre/Mix/Corpus and per-project snapshot semantics before claiming to preserve the
-same preflight guarantee.
+bound authoring request prepares codec-created private candidates, stages them in the canonical
+identity-stable slots while retaining the original values in a rollback guard, and commits only
+after cross-document validation and immutable history preparation. Errors, exceptions, and counter
+overflow restore the originals with swaps and preallocated map nodes. Other requests cannot observe
+the staged candidate. Direct access to mutable session stores is not a concurrent-reader API.
+A future parallel dispatcher must use immutable aggregate publication rather than separately
+publishing sibling documents before claiming to preserve the same preflight guarantee.
 
 ## 8. Tractability boundary
 

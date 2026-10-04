@@ -19,6 +19,314 @@ namespace sunny::core {
 
 namespace {
 
+bool finite_between(float value, float minimum, float maximum) {
+    return std::isfinite(value) && value >= minimum && value <= maximum;
+}
+
+bool unit(float value) {
+    return finite_between(value, 0.0f, 1.0f);
+}
+bool positive(float value) {
+    return std::isfinite(value) && value > 0.0f;
+}
+bool nonnegative(float value) {
+    return std::isfinite(value) && value >= 0.0f;
+}
+template <typename E> bool defined(E value, E last) {
+    using Underlying = std::underlying_type_t<E>;
+    const auto raw = static_cast<Underlying>(value);
+    if constexpr (std::is_signed_v<Underlying>)
+        if (raw < 0) return false;
+    return raw <= static_cast<Underlying>(last);
+}
+
+bool envelope_domain(const Envelope& envelope, bool amplifier = false) {
+    for (const auto& stage : envelope.stages) {
+        if (!nonnegative(stage.duration) || !unit(stage.target_level) ||
+            !defined(stage.curve, EnvelopeCurve::Step) || !positive(stage.curvature))
+            return false;
+    }
+    if (!unit(envelope.velocity_sensitivity) || !unit(envelope.key_tracking)) return false;
+    if (envelope.loop && (envelope.loop->start_stage >= envelope.stages.size() ||
+                          envelope.loop->end_stage >= envelope.stages.size() ||
+                          envelope.loop->start_stage > envelope.loop->end_stage))
+        return false;
+    // Empty envelopes represent an unspecified contour. An explicit amplifier
+    // contour must release to silence, independently of the target device.
+    return !amplifier || envelope.stages.empty() || envelope.stages.back().target_level == 0.0f;
+}
+
+bool waveform_domain(const Waveform& waveform) {
+    if (!defined(waveform.type, WaveformType::Custom) || !unit(waveform.super_saw_detune) ||
+        waveform.super_saw_voices == 0)
+        return false;
+    std::set<std::uint16_t> harmonics;
+    for (const auto& partial : waveform.custom_harmonics) {
+        if (partial.partial_number == 0 || !harmonics.insert(partial.partial_number).second ||
+            !unit(partial.amplitude) || !unit(partial.phase))
+            return false;
+    }
+    return waveform.type != WaveformType::Custom || !waveform.custom_harmonics.empty();
+}
+
+bool filter_domain(const Filter& filter) {
+    return defined(filter.config.category, FilterCategory::Diode) &&
+           defined(filter.config.slope, FilterSlope::Pole4) &&
+           defined(filter.config.vowel, FormantVowel::U) && positive(filter.config.bandwidth) &&
+           finite_between(filter.config.comb_feedback, -1.0f, 1.0f) && positive(filter.cutoff) &&
+           unit(filter.resonance) && unit(filter.drive) && unit(filter.key_tracking) &&
+           finite_between(filter.envelope_depth, -1.0f, 1.0f) &&
+           (!filter.envelope || envelope_domain(*filter.envelope));
+}
+
+bool source_mapping_curve_domain(const MappingCurve& curve) {
+    if (!defined(curve.type, MappingCurveType::Custom)) return false;
+    if (curve.type != MappingCurveType::Custom) return curve.custom_points.empty();
+    if (curve.custom_points.size() < 2 || curve.custom_points.front().first != 0.0f ||
+        curve.custom_points.back().first != 1.0f)
+        return false;
+    float previous = -1.0f;
+    for (const auto& [x, y] : curve.custom_points) {
+        if (!unit(x) || !unit(y) || x <= previous) return false;
+        previous = x;
+    }
+    return true;
+}
+
+bool source_domain(const SoundSourceData& source) {
+    return std::visit(
+        [](const auto& value) -> bool {
+            using T = std::decay_t<decltype(value)>;
+            if constexpr (std::is_same_v<T, SubtractiveSynth>) {
+                for (const auto& oscillator : value.oscillators) {
+                    if (!waveform_domain(oscillator.waveform) ||
+                        !std::isfinite(oscillator.tune_cents) || !unit(oscillator.phase) ||
+                        !unit(oscillator.pulse_width) || !unit(oscillator.level))
+                        return false;
+                }
+                for (const auto level : value.oscillator_mix)
+                    if (!unit(level)) return false;
+                if (value.noise && (!defined(value.noise->colour, NoiseColour::Violet) ||
+                                    !unit(value.noise->level)))
+                    return false;
+                if (value.unison &&
+                    (value.unison->voice_count == 0 || !nonnegative(value.unison->detune) ||
+                     !unit(value.unison->stereo_spread) || !unit(value.unison->blend)))
+                    return false;
+                if (value.portamento && (!nonnegative(value.portamento->time) ||
+                                         !defined(value.portamento->mode, PortamentoMode::Legato) ||
+                                         !defined(value.portamento->curve, GlideCurve::SCurve)))
+                    return false;
+                return filter_domain(value.filter) &&
+                       (!value.filter_2 || filter_domain(*value.filter_2)) &&
+                       defined(value.filter_routing, SubtractiveSynth::FilterRouting::Parallel) &&
+                       envelope_domain(value.amplifier, true);
+            } else if constexpr (std::is_same_v<T, FMSynth>) {
+                if (!unit(value.feedback)) return false;
+                for (const auto& op : value.operators) {
+                    if (!positive(op.ratio) ||
+                        (op.fixed_frequency && !positive(*op.fixed_frequency)) || !unit(op.level) ||
+                        !std::isfinite(op.detune) || !envelope_domain(op.envelope) ||
+                        !waveform_domain(op.waveform))
+                        return false;
+                }
+                if (!value.algorithm.use_preset) {
+                    std::vector<std::size_t> indegree(value.operators.size());
+                    std::vector<std::vector<std::size_t>> successors(value.operators.size());
+                    std::set<std::pair<std::uint8_t, std::uint8_t>> edges;
+                    for (const auto& edge : value.algorithm.custom_routing) {
+                        if (edge.modulator >= value.operators.size() ||
+                            edge.carrier >= value.operators.size() || !unit(edge.depth) ||
+                            !edges.emplace(edge.modulator, edge.carrier).second)
+                            return false;
+                        successors[edge.modulator].push_back(edge.carrier);
+                        ++indegree[edge.carrier];
+                    }
+                    std::vector<std::size_t> ready;
+                    for (std::size_t i = 0; i < indegree.size(); ++i)
+                        if (indegree[i] == 0) ready.push_back(i);
+                    for (std::size_t cursor = 0; cursor < ready.size(); ++cursor)
+                        for (const auto next : successors[ready[cursor]])
+                            if (--indegree[next] == 0) ready.push_back(next);
+                    if (ready.size() != value.operators.size()) return false;
+                }
+                return true;
+            } else if constexpr (std::is_same_v<T, WavetableSynth>) {
+                return unit(value.position) && value.frame_count > 0 &&
+                       defined(value.interpolation, WavetableSynth::Interpolation::Spectral) &&
+                       (!value.filter || filter_domain(*value.filter)) &&
+                       envelope_domain(value.amplifier, true);
+            } else if constexpr (std::is_same_v<T, GranularSynth>) {
+                return finite_between(value.grain_size, 1.0f, 500.0f) &&
+                       positive(value.grain_density) && unit(value.position) &&
+                       unit(value.position_random) && nonnegative(value.pitch_random) &&
+                       defined(value.grain_envelope.shape, GrainEnvelopeShape::Rectangular) &&
+                       unit(value.grain_envelope.trapezoid_attack_ratio) &&
+                       unit(value.grain_envelope.trapezoid_release_ratio) &&
+                       value.grain_envelope.trapezoid_attack_ratio +
+                               value.grain_envelope.trapezoid_release_ratio <=
+                           1.0f &&
+                       unit(value.spray) && unit(value.stereo_spread) &&
+                       unit(value.reverse_probability);
+            } else if constexpr (std::is_same_v<T, AdditiveSynth>) {
+                if (value.partial_count == 0 || !envelope_domain(value.global_envelope, true))
+                    return false;
+                for (const auto& partial : value.partials)
+                    if (!positive(partial.ratio) || !unit(partial.amplitude) ||
+                        !unit(partial.phase) || !std::isfinite(partial.detune) ||
+                        (partial.envelope && !envelope_domain(*partial.envelope)))
+                        return false;
+                return true;
+            } else if constexpr (std::is_same_v<T, PhysicalModelSource>) {
+                return defined(value.model.category, PhysicalModelCategory::Bowed) &&
+                       defined(value.model.string_material, StringMaterial::Wire) &&
+                       unit(value.model.reed_stiffness) && unit(value.model.lip_mass) &&
+                       unit(value.model.bow_pressure) && unit(value.model.bow_speed) &&
+                       defined(value.exciter.type, ExciterType::Strike) &&
+                       unit(value.exciter.amplitude) && unit(value.exciter.brightness) &&
+                       unit(value.exciter.noise_mix) && positive(value.resonator.frequency_ratio) &&
+                       unit(value.resonator.decay) && nonnegative(value.resonator.inharm) &&
+                       value.resonator.mode_count > 0 && unit(value.coupling) &&
+                       unit(value.damping) && unit(value.brightness);
+            } else if constexpr (std::is_same_v<T, SamplerSource>) {
+                for (const auto& zone : value.sample_map.zones)
+                    if (zone.low_key > zone.high_key || zone.high_key > 127 ||
+                        zone.low_velocity > zone.high_velocity || zone.high_velocity > 127)
+                        return false;
+                for (const auto& microphone : value.microphone_positions)
+                    if (!unit(microphone.level)) return false;
+                return defined(value.round_robin_mode, RoundRobinMode::RoundRobin) &&
+                       std::isfinite(value.tuning_offset) &&
+                       (!value.envelope_override ||
+                        envelope_domain(*value.envelope_override, true)) &&
+                       (!value.filter || filter_domain(*value.filter));
+            } else {
+                if (!defined(value.routing.type, LayerRoutingType::Crossfade)) return false;
+                for (const auto& layer : value.layers)
+                    if (!layer || !source_domain(*layer)) return false;
+                for (const auto level : value.routing.mix_levels)
+                    if (!unit(level)) return false;
+                for (const auto& [low, high] : value.routing.velocity_ranges)
+                    if (low > high || high > 127) return false;
+                for (const auto& [low, high] : value.routing.key_ranges)
+                    if (low.letter > 6 || high.letter > 6 || midi_value(low) > midi_value(high))
+                        return false;
+                if (value.routing.type == LayerRoutingType::Mix &&
+                    !value.routing.mix_levels.empty() &&
+                    value.routing.mix_levels.size() != value.layers.size())
+                    return false;
+                if (value.routing.type == LayerRoutingType::VelocitySplit &&
+                    value.routing.velocity_ranges.size() != value.layers.size())
+                    return false;
+                if (value.routing.type == LayerRoutingType::KeySplit &&
+                    value.routing.key_ranges.size() != value.layers.size())
+                    return false;
+                if (value.routing.type == LayerRoutingType::Crossfade &&
+                    !source_mapping_curve_domain(value.routing.crossfade_curve))
+                    return false;
+                return true;
+            }
+        },
+        source.data);
+}
+
+bool effect_domain(const Effect& effect) {
+    if (!unit(effect.mix)) return false;
+    return std::visit(
+        [](const auto& value) -> bool {
+            using T = std::decay_t<decltype(value)>;
+            if constexpr (std::is_same_v<T, DistortionEffect>) {
+                if (!defined(value.algorithm.type, DistortionAlgorithmType::RingModulation) ||
+                    !unit(value.drive) || !unit(value.tone) || !unit(value.output_level))
+                    return false;
+                if (value.algorithm.type == DistortionAlgorithmType::Bitcrush &&
+                    (value.algorithm.bit_depth == 0 || value.algorithm.bit_depth > 32 ||
+                     !positive(value.algorithm.sample_rate_reduction)))
+                    return false;
+                if (value.algorithm.type == DistortionAlgorithmType::RingModulation &&
+                    !positive(value.algorithm.ring_mod_frequency))
+                    return false;
+                float previous = -2.0f;
+                for (const auto& [x, y] : value.algorithm.waveshaper_curve) {
+                    if (!finite_between(x, -1.0f, 1.0f) || !finite_between(y, -1.0f, 1.0f) ||
+                        x <= previous)
+                        return false;
+                    previous = x;
+                }
+                return true;
+            } else if constexpr (std::is_same_v<T, DelayEffect>) {
+                return (value.delay_time.synced ? value.delay_time.division > Beat::zero()
+                                                : positive(value.delay_time.ms)) &&
+                       unit(value.feedback) &&
+                       defined(value.stereo_mode, StereoDelayMode::PingPong) &&
+                       std::isfinite(value.stereo_offset) &&
+                       (!value.filter || filter_domain(*value.filter)) &&
+                       nonnegative(value.modulation_rate) && nonnegative(value.modulation_depth);
+            } else if constexpr (std::is_same_v<T, ReverbEffect>) {
+                return defined(value.algorithm.type, ReverbAlgorithmType::Shimmer) &&
+                       (value.algorithm.type != ReverbAlgorithmType::Convolution ||
+                        !value.algorithm.impulse_path.empty()) &&
+                       std::isfinite(value.algorithm.shimmer_pitch) && positive(value.decay_time) &&
+                       nonnegative(value.pre_delay) && unit(value.damping) &&
+                       unit(value.diffusion) && unit(value.size) &&
+                       unit(value.early_reflections_level) && positive(value.eq_low_cut) &&
+                       positive(value.eq_high_cut) && value.eq_low_cut < value.eq_high_cut;
+            } else if constexpr (std::is_same_v<T, ChorusEffect>) {
+                return positive(value.rate) && unit(value.depth) && value.voices > 0 &&
+                       finite_between(value.feedback, -1.0f, 1.0f) && unit(value.stereo_spread);
+            } else if constexpr (std::is_same_v<T, PhaserEffect>) {
+                return positive(value.rate) && unit(value.depth) && value.stages >= 2 &&
+                       value.stages <= 24 && finite_between(value.feedback, -1.0f, 1.0f) &&
+                       positive(value.center_frequency);
+            } else if constexpr (std::is_same_v<T, FlangerEffect>) {
+                return positive(value.rate) && unit(value.depth) &&
+                       finite_between(value.feedback, -1.0f, 1.0f) && nonnegative(value.manual);
+            } else if constexpr (std::is_same_v<T, EQEffect>) {
+                for (const auto& band : value.bands)
+                    if (!positive(band.frequency) || !std::isfinite(band.gain) ||
+                        !positive(band.q) || !defined(band.band_type, EQBandType::HighCut))
+                        return false;
+                return true;
+            } else {
+                return std::isfinite(value.threshold) && positive(value.ratio) &&
+                       value.ratio >= 1.0f && nonnegative(value.attack) &&
+                       nonnegative(value.release) && nonnegative(value.knee) &&
+                       std::isfinite(value.makeup_gain) &&
+                       (!value.sidechain || !value.sidechain->filter ||
+                        filter_domain(*value.sidechain->filter));
+            }
+        },
+        effect.parameters);
+}
+
+void check_intrinsic_domains(const TimbreProfile& profile, std::vector<Diagnostic>& diagnostics) {
+    const auto report = [&](const std::string& message) {
+        diagnostics.push_back({ValidationSeverity::Error,
+                               "T13",
+                               message,
+                               std::nullopt,
+                               profile.part_id,
+                               ErrorCode::TimbreInvalidParameter});
+    };
+    if (!source_domain(profile.source))
+        report("Sound source violates an intrinsic parameter domain");
+    std::set<std::uint64_t> ids;
+    for (const auto& effect : profile.insert_chain.effects) {
+        if (effect.id.value == 0 || !ids.insert(effect.id.value).second)
+            report("Effect identities must be positive and unique");
+        if (!effect_domain(effect))
+            report("Effect " + std::to_string(effect.id.value) +
+                   " violates an intrinsic parameter domain");
+    }
+    const auto& semantic = profile.semantic_descriptors;
+    if (!unit(semantic.brightness) || !unit(semantic.warmth) || !unit(semantic.roughness) ||
+        !unit(semantic.width) || !unit(semantic.density) || !unit(semantic.movement) ||
+        !unit(semantic.weight) || !defined(semantic.attack_character, AttackCharacter::Explosive) ||
+        !defined(semantic.sustain_character, SustainCharacter::Noisy) ||
+        !defined(semantic.derivation, DerivationMode::AudioDerived))
+        report("Semantic descriptors must be finite normalised values with defined categories");
+}
+
 // -------------------------------------------------------------------------
 // Helpers
 // -------------------------------------------------------------------------
@@ -127,9 +435,8 @@ void check_filter_nyquist(const Filter& f,
         add_diagnostic(out,
                        ValidationSeverity::Warning,
                        "T3",
-                       "Filter cutoff (" + std::to_string(static_cast<int>(f.cutoff)) +
-                           " Hz) exceeds Nyquist (" + std::to_string(static_cast<int>(nyquist)) +
-                           " Hz)",
+                       "Filter cutoff (" + std::to_string(f.cutoff) + " Hz) exceeds Nyquist (" +
+                           std::to_string(nyquist) + " Hz)",
                        ErrorCode::CutoffAboveNyquist,
                        part);
     }
@@ -228,7 +535,7 @@ void check_envelope_loop(const Envelope& env,
                          std::vector<Diagnostic>& out,
                          PartId part) {
     if (!env.loop) return;
-    auto stage_count = static_cast<std::uint8_t>(env.stages.size());
+    const auto stage_count = env.stages.size();
     if (env.loop->start_stage >= stage_count || env.loop->end_stage >= stage_count) {
         add_diagnostic(out,
                        ValidationSeverity::Error,
@@ -666,6 +973,15 @@ Result<void> validate_modulation_macro(const TimbreProfile& profile, const Macro
 
 std::vector<Diagnostic> validate_timbre(const TimbreProfile& profile, float sample_rate_hz) {
     std::vector<Diagnostic> diags;
+    check_intrinsic_domains(profile, diags);
+    if (!positive(sample_rate_hz)) {
+        add_diagnostic(diags,
+                       ValidationSeverity::Error,
+                       "T13",
+                       "Sample rate must be finite and positive",
+                       ErrorCode::TimbreInvalidParameter,
+                       profile.part_id);
+    }
     const float nyquist = sample_rate_hz / 2.0f;
 
     // T2: SoundSource validity

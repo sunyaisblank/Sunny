@@ -3,8 +3,8 @@
 The server tests pin the wire protocol used by the C++ ``TcpTransport``:
 4-byte big-endian length prefix followed by UTF-8 JSON, request/response
 over a single connection. The handler tests run against ``live_model``, the
-shared offline model of Live's Python API, so that no Ableton instance is
-required and no test can accept a host shape Live itself would reject.
+shared offline model of the source-observed Python API. It checks the modeled
+subset without an Ableton instance; exact-host qualification remains separate.
 """
 
 from __future__ import annotations
@@ -436,6 +436,66 @@ def test_note_readback_rejects_malformed_host_notes(live, monkeypatch):
     response = _call(handler, clip_path, "add_new_notes", {"notes": [_wire_note(62, 1.0, 1.0)]})
     assert response["success"] is False
     assert "note IDs" in response["error"]
+
+
+@pytest.mark.parametrize("version", [(11, 0, 0), (11, 1, 0), (12, 3, 5)])
+def test_versioned_note_population_readback_keeps_finite_range_coverage(version, monkeypatch):
+    """11.0 lacks full-population access; the finite query selects starts across all pitches."""
+    live = LiveSet(version).install(monkeypatch)
+    _, clip = _midi_track_with_clip(live)
+    handler = LomHandler(live.surface)
+    path = "song/tracks/0/clip_slots/0/clip"
+    notes = [
+        _wire_note(0, 0.0, 1.0),
+        _wire_note(60, 1.0 / 3.0, 2.0 / 3.0),
+        _wire_note(127, 3.75, 1.0),  # Duration crosses the queried end.
+        _wire_note(62, 4.0, 1.0),
+        _wire_note(64, 8.0, 1.0),
+    ]
+    assert _call(handler, path, "add_new_notes", {"notes": notes})["value"] == [1, 2, 3, 4, 5]
+    query = {
+        "return": NOTE_FIELDS,
+        "from_pitch": 0,
+        "pitch_span": 128,
+        "from_time": 0.0,
+        "time_span": 4.0,
+    }
+    ranged = _call(handler, path, "get_notes_extended", query)
+    assert ranged["success"] is True
+    assert [
+        (note["note_id"], note["pitch"], note["start_time"]) for note in ranged["value"]["notes"]
+    ] == [(1, 0, 0.0), (2, 60, 1.0 / 3.0), (3, 127, 3.75)]
+    assert all(set(note) == set(NOTE_FIELDS) for note in ranged["value"]["notes"])
+    assert hasattr(clip, "get_all_notes_extended") is (version >= (11, 1))
+    full = _call(handler, path, "get_all_notes_extended", {"return": NOTE_FIELDS})
+    if version < (11, 1):
+        assert full["success"] is False
+    else:
+        assert [note["note_id"] for note in full["value"]["notes"]] == [1, 2, 3, 4, 5]
+    for field, invalid in (
+        ("time_span", 0.0),
+        ("time_span", float("inf")),
+        ("from_time", -1.0),
+        ("from_pitch", False),
+        ("pitch_span", 127),
+        ("unknown", 0),
+    ):
+        malformed = {**query, field: invalid}
+        assert _call(handler, path, "get_notes_extended", malformed)["success"] is False
+    assert len(clip.get_notes_by_id([1, 2, 3, 4, 5])) == 5
+
+
+def test_legacy_model_omits_unavailable_extended_note_methods():
+    """A pre-11 model cannot accidentally satisfy the modern note contract."""
+    _, clip = _midi_track_with_clip(LiveSet((10, 1, 0)))
+    for name in (
+        "add_new_notes",
+        "get_notes_by_id",
+        "get_notes_extended",
+        "get_all_notes_extended",
+        "remove_notes_by_id",
+    ):
+        assert not hasattr(clip, name)
 
 
 def test_handler_enforces_get_set_call_algebra_without_silent_noops(live):
@@ -1648,7 +1708,7 @@ def test_target_snapshot_pitch_context_is_version_coupled(monkeypatch):
 def test_target_snapshot_take_lane_state_is_coupled_to_live_12(
     monkeypatch, sunny_native_module, version, take_lanes_available
 ):
-    """A Live 11 Set has no take lanes; its snapshot reports none, and Live 12 still does."""
+    """Live 11 take-lane topology is unobserved; Live 12 exposes its modeled count."""
     live = LiveSet(version).install(monkeypatch)
     _snapshot_fixture(live, instrument=None)
     response = _call(LomHandler(live.surface), "song", "sunny_get_target_snapshot")

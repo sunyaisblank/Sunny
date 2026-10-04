@@ -21,7 +21,7 @@ COPY include ./include
 COPY src ./src
 # Configure-time inputs: the bridge contract generates the protocol header,
 # and the version gate compares the Python and Max package metadata.
-COPY remote_script/Sunny/bridge_contract.json ./remote_script/Sunny/bridge_contract.json
+COPY remote_script/Sunny ./remote_script/Sunny
 COPY python/sunny/__init__.py ./python/sunny/__init__.py
 COPY max-package/CMakeLists.txt max-package/package-info.json ./max-package/
 
@@ -30,7 +30,7 @@ RUN cmake -B .bin -G Ninja \
         -DCMAKE_BUILD_TYPE=Release \
         -DSUNNY_BUILD_TESTS=OFF \
         -DSUNNY_BUILD_PYTHON_BINDINGS=OFF \
-    && cmake --build .bin --target sunny-mcp
+    && cmake --build .bin --target sunny-mcp --parallel 2
 
 # =============================================================================
 # Runtime Stage
@@ -40,11 +40,17 @@ FROM ubuntu:24.04 AS runtime
 RUN apt-get update && \
     apt-get install -y --no-install-recommends libstdc++6 \
     && rm -rf /var/lib/apt/lists/* \
-    && useradd --create-home --shell /bin/bash sunny
+    && useradd --create-home --shell /bin/bash sunny \
+    && mkdir /data && chown sunny:sunny /data
 
 COPY --from=builder /build/.bin/sunny-mcp /usr/local/bin/sunny-mcp
+COPY --from=builder /build/.bin/remote_script/Sunny /opt/sunny/remote-script/Sunny
 
 USER sunny
+
+# Mount a named volume at /data. Explicit workspace_save retains authored state;
+# a later container restores the supported main file before accepting MCP requests.
+ENV SUNNY_WORKSPACE_PATH=/data/workspace.sunny.json
 
 # MCP protocol runs on stdio; the Ableton TCP connection is outbound and
 # opt-in via SUNNY_ABLETON_HOST / SUNNY_TCP_PORT (see .env.example).

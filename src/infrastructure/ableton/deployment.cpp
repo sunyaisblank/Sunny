@@ -14,10 +14,28 @@ bool is_read_only_request(const LomRequest& request) {
     if (request.type == LomRequestType::GetProperty) return true;
     if (request.type != LomRequestType::CallMethod) return false;
     return request.property_or_method == "get_notes_by_id" ||
+           request.property_or_method == "get_notes_extended" ||
            request.property_or_method == "get_all_notes_extended" ||
            request.property_or_method == "sunny_get_target_profile" ||
            request.property_or_method == "sunny_get_target_snapshot" ||
            request.property_or_method == "sunny_get_device_parameter" ||
+           request.property_or_method == "sunny_get_step_envelope" ||
+           request.property_or_method == "sunny_managed_context" ||
+           request.property_or_method == "sunny_managed_operation" ||
+           request.property_or_method == "sunny_managed_observe" ||
+           request.property_or_method == "sunny_managed_sample_envelope" ||
+           request.property_or_method == "sunny_managed_preview_adoption" ||
+           request.property_or_method == "sunny_managed_preview_devices" ||
+           request.property_or_method == "sunny_managed_inspect_devices" ||
+           request.property_or_method == "sunny_managed_preview_song_settings" ||
+           request.property_or_method == "sunny_managed_inspect_song_settings" ||
+           request.property_or_method == "sunny_managed_preview_envelope_replacement" ||
+           request.property_or_method == "sunny_managed_preview_static_mixer" ||
+           request.property_or_method == "sunny_managed_inspect_static_mixer" ||
+           request.property_or_method == "sunny_managed_routing_candidates" ||
+           request.property_or_method == "sunny_managed_inspect_send" ||
+           request.property_or_method == "sunny_managed_preview_routing" ||
+           request.property_or_method == "sunny_managed_preview_group" ||
            request.property_or_method == "sunny_get_device_count";
 }
 

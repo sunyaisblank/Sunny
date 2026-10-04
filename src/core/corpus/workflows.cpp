@@ -75,6 +75,202 @@ bool has_melodic_evidence(const VoiceMelodicAnalysis& voice) {
            voice.conjunct_proportion != 0.0f || voice.chromaticism_rate != 0.0f;
 }
 
+struct FieldDefinition {
+    StyleProfileField field;
+    std::vector<StyleProfileSourceField> sources;
+};
+
+// Dependency paths describe the source values actually consumed below. A
+// missing producer has no dependencies and is never advertised as computed.
+const std::vector<FieldDefinition>& field_definitions() {
+    static const std::vector<FieldDefinition> fields = {
+        {{"harmonic", "chord_vocabulary_size"}, {{"harmonic", "chord_vocabulary"}}},
+        {{"harmonic", "chord_frequency"}, {{"harmonic", "chord_vocabulary"}}},
+        {{"harmonic", "preferred_progressions"}, {{"harmonic", "progression_inventory"}}},
+        {{"harmonic", "modulation_frequency"}, {{"harmonic", "modulation_inventory"}}},
+        {{"harmonic", "modulation_technique_preference"}, {{"harmonic", "modulation_inventory"}}},
+        {{"harmonic", "preferred_key_relationships"}, {{"harmonic", "tonal_plan.key_sequence"}}},
+        {{"harmonic", "preferred_key_signatures"}, {{"harmonic", "tonal_plan.key_sequence"}}},
+        {{"harmonic", "chromatic_density"},
+         {{"harmonic", "chromatic_techniques"}, {"harmonic", "chord_vocabulary"}}},
+        {{"harmonic", "secondary_dominant_frequency"}, {{"harmonic", "chromatic_techniques"}}},
+        {{"harmonic", "augmented_sixth_frequency"}, {{"harmonic", "chromatic_techniques"}}},
+        {{"harmonic", "neapolitan_frequency"}, {{"harmonic", "chromatic_techniques"}}},
+        {{"harmonic", "harmonic_rhythm_mean"}, {{"harmonic", "harmonic_rhythm.mean_rate"}}},
+        {{"harmonic", "harmonic_rhythm_variance"}, {{"harmonic", "harmonic_rhythm.variance"}}},
+        {{"harmonic", "cadence_type_distribution"}, {{"harmonic", "cadence_inventory.type"}}},
+        {{"harmonic", "deceptive_cadence_frequency"}, {{"harmonic", "cadence_inventory.type"}}},
+        {{"harmonic", "tonal_ambiguity_index"}, {}},
+        {{"melodic", "interval_distribution"},
+         {{"melodic", "per_voice_analysis.interval_distribution"}}},
+        {{"melodic", "preferred_intervals"},
+         {{"melodic", "per_voice_analysis.interval_distribution"}}},
+        {{"melodic", "conjunct_proportion"},
+         {{"melodic", "per_voice_analysis.conjunct_proportion"}}},
+        {{"melodic", "average_phrase_length"}, {}},
+        {{"melodic", "phrase_length_variance"}, {}},
+        {{"melodic", "contour_preferences"}, {{"melodic", "per_voice_analysis.contour_inventory"}}},
+        {{"melodic", "typical_range"},
+         {{"melodic", "per_voice_analysis.range_low"},
+          {"melodic", "per_voice_analysis.range_high"}}},
+        {{"melodic", "chromaticism_rate"}, {{"melodic", "per_voice_analysis.chromaticism_rate"}}},
+        {{"melodic", "scale_degree_emphasis"},
+         {{"melodic", "per_voice_analysis.scale_degree_distribution"}}},
+        {{"melodic", "ornament_density"}, {}},
+        {{"melodic", "sequence_frequency"},
+         {{"melodic", "thematic_material.occurrences.SequentialRepetition"}}},
+        {{"melodic", "leitmotif_usage"}, {}},
+        {{"rhythmic", "duration_distribution"}, {{"rhythmic", "duration_distribution"}}},
+        {{"rhythmic", "preferred_durations"}, {{"rhythmic", "duration_distribution"}}},
+        {{"rhythmic", "preferred_metres"}, {{"rhythmic", "metre_distribution"}}},
+        {{"rhythmic", "syncopation_index"}, {{"rhythmic", "syncopation_index"}}},
+        {{"rhythmic", "rhythmic_variety"}, {{"rhythmic", "duration_distribution"}}},
+        {{"rhythmic", "metrical_complexity"}, {{"rhythmic", "metrical_complexity"}}},
+        {{"rhythmic", "tempo_mean"}, {{"rhythmic", "tempo_profile"}}},
+        {{"rhythmic", "tempo_stddev"}, {{"rhythmic", "tempo_profile"}}},
+        {{"rhythmic", "rubato_tendency"}, {{"rhythmic", "rubato_degree"}}},
+        {{"rhythmic", "rhythmic_motif_consistency"}, {{"rhythmic", "rhythmic_motifs"}}},
+        {{"formal", "preferred_forms"}, {{"formal", "form_type"}}},
+        {{"formal", "average_work_length"}, {{"formal", "total_duration_bars"}}},
+        {{"formal", "section_proportions"}, {{"formal", "proportions"}}},
+        {{"formal", "exposition_recapitulation_ratio"}, {{"formal", "proportions"}}},
+        {{"formal", "development_proportion"}, {{"formal", "proportions"}}},
+        {{"formal", "introduction_frequency"},
+         {{"formal", "section_plan.label"},
+          {"formal", "section_plan.start_bar"},
+          {"formal", "section_plan.tempo"}}},
+        {{"formal", "coda_frequency"},
+         {{"formal", "section_plan.label"}, {"formal", "section_plan.end_bar"}}},
+        {{"formal", "climax_placement"}, {{"dynamic", "climax_position"}}},
+        {{"formal", "golden_ratio_adherence"}, {{"dynamic", "climax_position"}}},
+        {{"formal", "transition_technique"},
+         {{"formal", "section_plan.label"}, {"formal", "section_plan.character"}}},
+        {{"voice_leading", "parallel_fifths_tolerance"},
+         {{"voice_leading", "parallel_fifths_count"}}},
+        {{"voice_leading", "parallel_octaves_tolerance"},
+         {{"voice_leading", "parallel_octaves_count"}}},
+        {{"voice_leading", "preferred_motion_type"},
+         {{"voice_leading", "contrary_motion_proportion"},
+          {"voice_leading", "oblique_motion_proportion"},
+          {"voice_leading", "similar_motion_proportion"},
+          {"voice_leading", "parallel_motion_proportion"}}},
+        {{"voice_leading", "voice_independence_index"},
+         {{"voice_leading", "average_voice_independence"}}},
+        {{"voice_leading", "common_tone_retention"},
+         {{"voice_leading", "common_tone_retention_rate"}}},
+        {{"voice_leading", "leading_tone_resolution_rate"},
+         {{"voice_leading", "resolution_patterns"}}},
+        {{"voice_leading", "seventh_resolution_rate"}, {{"voice_leading", "resolution_patterns"}}},
+        {{"voice_leading", "spacing_preference"}, {{"voice_leading", "spacing_distribution"}}},
+        {{"voice_leading", "voice_crossing_tolerance"},
+         {{"voice_leading", "voice_crossing_count"}}},
+        {{"textural", "average_density"}, {{"textural", "average_density"}}},
+        {{"textural", "density_range_low"}, {{"textural", "density_curve"}}},
+        {{"textural", "density_range_high"}, {{"textural", "density_curve"}}},
+        {{"textural", "texture_type_distribution"}, {{"textural", "texture_type_proportions"}}},
+        {{"textural", "register_span_preference"}, {{"textural", "average_register_span"}}},
+        {{"textural", "density_dynamic_correlation"},
+         {{"textural", "density_curve"}, {"dynamic", "dynamic_shape"}}},
+        {{"dynamic", "dynamic_range_low"}, {{"dynamic", "dynamic_range_low"}}},
+        {{"dynamic", "dynamic_range_high"}, {{"dynamic", "dynamic_range_high"}}},
+        {{"dynamic", "most_frequent_dynamic"}, {{"dynamic", "dynamic_distribution"}}},
+        {{"dynamic", "dynamic_change_rate"}, {{"dynamic", "dynamic_change_rate"}}},
+        {{"dynamic", "subito_frequency"}, {{"dynamic", "subito_dynamics_count"}}},
+        {{"dynamic", "climax_dynamic"}, {{"dynamic", "dynamic_shape"}}},
+        {{"dynamic", "dynamic_arc_shape"}, {{"dynamic", "dynamic_shape"}}},
+        {{"orchestration", "preferred_instruments"}, {{"orchestration", "instrument_usage"}}},
+        {{"orchestration", "signature_combinations"},
+         {{"orchestration", "instrument_combinations"}}},
+        {{"orchestration", "doubling_preferences"}, {{"orchestration", "doubling_patterns"}}},
+        {{"orchestration", "melody_assignment_preference"},
+         {{"orchestration", "melody_carrier_distribution"}}},
+        {{"orchestration", "tutti_proportion"}, {}},
+        {{"orchestration", "solo_proportion"}, {}},
+        {{"orchestration", "build_up_technique"},
+         {{"orchestration", "orchestral_crescendo_patterns"}}},
+        {{"orchestration", "colour_signature"}, {}},
+        {{"motivic", "thematic_economy"}, {{"motivic", "thematic_economy"}}},
+        {{"motivic", "preferred_transformations"}, {{"motivic", "transformation_inventory"}}},
+        {{"motivic", "development_density"}, {{"motivic", "thematic_density"}}},
+        {{"motivic", "fragmentation_frequency"},
+         {{"motivic", "transformation_inventory.Fragmented"}}},
+        {{"motivic", "sequence_frequency"},
+         {{"motivic", "transformation_inventory.SequentialRepetition"}}},
+        {{"motivic", "cross_movement_thematic_links"}, {}},
+    };
+    return fields;
+}
+
+AnalysisEvidenceKind source_field_evidence(const WorkAnalysis& analysis,
+                                           StyleProfileSourceField field) {
+    const auto found = analysis.evidence.find(std::string{field.domain});
+    if (found == analysis.evidence.end()) return AnalysisEvidenceKind::Unqualified;
+    if (found->second.kind == AnalysisEvidenceKind::Unavailable)
+        return AnalysisEvidenceKind::Unavailable;
+    for (const auto& unavailable : found->second.unavailable_fields) {
+        if (field.path == unavailable ||
+            (field.path.starts_with(unavailable) && field.path.size() > unavailable.size() &&
+             field.path[unavailable.size()] == '.'))
+            return AnalysisEvidenceKind::Unavailable;
+    }
+    return found->second.kind;
+}
+
+bool source_available(const WorkAnalysis& analysis,
+                      std::string_view domain,
+                      std::string_view path) {
+    return source_field_evidence(analysis, {domain, path}) != AnalysisEvidenceKind::Unavailable;
+}
+
+bool has_unavailable_field(const WorkAnalysis& analysis,
+                           std::string_view domain,
+                           std::string_view field) {
+    const auto found = analysis.evidence.find(std::string{domain});
+    return found != analysis.evidence.end() &&
+           std::ranges::find(found->second.unavailable_fields, field) !=
+               found->second.unavailable_fields.end();
+}
+
+bool melodic_voice_available(const WorkAnalysis& analysis,
+                             const VoiceMelodicAnalysis& voice,
+                             std::string_view path) {
+    if (!has_melodic_evidence(voice) || !source_available(analysis, "melodic", path)) return false;
+    if (path == "per_voice_analysis.range" &&
+        (!source_available(analysis, "melodic", "per_voice_analysis.range_low") ||
+         !source_available(analysis, "melodic", "per_voice_analysis.range_high")))
+        return false;
+    if (voice.note_count == 0) {
+        if ((path.starts_with("per_voice_analysis.range") &&
+             has_unavailable_field(analysis, "melodic", "empty_lanes.range")) ||
+            (path == "per_voice_analysis.chromaticism_rate" &&
+             has_unavailable_field(analysis, "melodic", "empty_lanes.chromaticism_rate")))
+            return false;
+    }
+    if (path == "per_voice_analysis.conjunct_proportion" && voice.note_count < 2 &&
+        has_unavailable_field(
+            analysis, "melodic", "lanes_with_fewer_than_two_attacks.conjunct_proportion"))
+        return false;
+    return true;
+}
+
+bool field_available(const WorkAnalysis& analysis,
+                     std::string_view domain,
+                     std::string_view field) {
+    return style_profile_field_evidence(analysis, domain, field) !=
+           AnalysisEvidenceKind::Unavailable;
+}
+
+struct FieldMean {
+    float total = 0.0f;
+    std::size_t count = 0;
+
+    void add(float value) {
+        total += value;
+        ++count;
+    }
+    [[nodiscard]] float mean() const { return count ? total / static_cast<float>(count) : 0.0f; }
+};
+
 std::optional<float>
 pearson_correlation(const std::vector<std::pair<ScoreTime, std::uint8_t>>& density,
                     const std::vector<std::pair<ScoreTime, float>>& dynamics) {
@@ -208,14 +404,14 @@ void aggregate_harmonic(StyleProfile& out, const std::vector<const WorkAnalysis*
     std::map<std::string, std::uint32_t> key_relationships;
     std::map<std::string, std::uint32_t> key_signatures;
     std::map<std::uint8_t, std::uint32_t> cadence_types;
-    float total_hr_mean = 0.0f;
-    float total_hr_variance = 0.0f;
-    float total_modulations = 0.0f;
-    float total_chromatic_density = 0.0f;
-    float total_secondary_dominants = 0.0f;
-    float total_augmented_sixths = 0.0f;
-    float total_neapolitans = 0.0f;
-    float total_deceptive_cadences = 0.0f;
+    FieldMean total_hr_mean;
+    FieldMean total_hr_variance;
+    FieldMean total_modulations;
+    FieldMean total_chromatic_density;
+    FieldMean total_secondary_dominants;
+    FieldMean total_augmented_sixths;
+    FieldMean total_neapolitans;
+    FieldMean total_deceptive_cadences;
     std::uint32_t total_progression_occurrences = 0;
     std::uint32_t total_modulation_events = 0;
     std::uint32_t total_key_relationships = 0;
@@ -223,50 +419,72 @@ void aggregate_harmonic(StyleProfile& out, const std::vector<const WorkAnalysis*
 
     for (const auto* a : analyses) {
         std::uint32_t work_chords = 0;
-        for (const auto& [chord, count] : a->harmonic_analysis.chord_vocabulary) {
-            total_chord_counts[chord] += count;
-            work_chords += count;
-        }
-        for (const auto& progression : a->harmonic_analysis.progression_inventory) {
-            const auto occurrences = static_cast<std::uint32_t>(progression.occurrences.size());
-            if (occurrences == 0 || progression.roman_numerals.empty()) continue;
-            auto& aggregate = progressions[progression.roman_numerals];
-            aggregate.occurrences += occurrences;
-            total_progression_occurrences += occurrences;
-            if (!progression.key_context.empty())
-                aggregate.contexts.insert(progression.key_context);
-        }
-        for (const auto& modulation : a->harmonic_analysis.modulation_inventory) {
-            modulation_techniques[static_cast<std::uint8_t>(modulation.technique)]++;
-            total_modulation_events++;
-        }
-        for (const auto& [key, relationship, _] : a->harmonic_analysis.tonal_plan.key_sequence) {
-            if (!key.empty()) key_signatures[key]++;
-            if (!relationship.empty()) {
-                key_relationships[relationship]++;
-                total_key_relationships++;
+        float secondary = 0.0f, augmented = 0.0f, neapolitan = 0.0f, deceptive = 0.0f;
+        if (field_available(*a, "harmonic", "chord_frequency"))
+            for (const auto& [chord, count] : a->harmonic_analysis.chord_vocabulary) {
+                total_chord_counts[chord] += count;
+                work_chords += count;
             }
-        }
-        for (const auto& cadence : a->harmonic_analysis.cadence_inventory) {
-            if (const auto code = cadence_code(cadence.type)) {
-                cadence_types[*code]++;
-                total_cadences++;
+        if (field_available(*a, "harmonic", "preferred_progressions"))
+            for (const auto& progression : a->harmonic_analysis.progression_inventory) {
+                const auto occurrences = static_cast<std::uint32_t>(progression.occurrences.size());
+                if (occurrences == 0 || progression.roman_numerals.empty()) continue;
+                auto& aggregate = progressions[progression.roman_numerals];
+                aggregate.occurrences += occurrences;
+                total_progression_occurrences += occurrences;
+                if (!progression.key_context.empty())
+                    aggregate.contexts.insert(progression.key_context);
             }
-            if (cadence.type == "DC") total_deceptive_cadences += 1.0f;
-        }
-        for (const auto& event : a->harmonic_analysis.chromatic_techniques) {
-            const auto type = lowercase(event.type);
-            if (type.contains("secondary dominant")) total_secondary_dominants += 1.0f;
-            if (type.contains("augmented sixth")) total_augmented_sixths += 1.0f;
-            if (type.contains("neapolitan")) total_neapolitans += 1.0f;
-        }
-        if (work_chords > 0)
-            total_chromatic_density +=
-                static_cast<float>(a->harmonic_analysis.chromatic_techniques.size()) /
-                static_cast<float>(work_chords);
-        total_hr_mean += a->harmonic_analysis.harmonic_rhythm.mean_rate;
-        total_hr_variance += a->harmonic_analysis.harmonic_rhythm.variance;
-        total_modulations += static_cast<float>(a->harmonic_analysis.modulation_inventory.size());
+        if (field_available(*a, "harmonic", "modulation_technique_preference"))
+            for (const auto& modulation : a->harmonic_analysis.modulation_inventory) {
+                modulation_techniques[static_cast<std::uint8_t>(modulation.technique)]++;
+                total_modulation_events++;
+            }
+        if (field_available(*a, "harmonic", "preferred_key_relationships"))
+            for (const auto& [key, relationship, _] :
+                 a->harmonic_analysis.tonal_plan.key_sequence) {
+                if (!key.empty()) key_signatures[key]++;
+                if (!relationship.empty()) {
+                    key_relationships[relationship]++;
+                    total_key_relationships++;
+                }
+            }
+        if (field_available(*a, "harmonic", "cadence_type_distribution"))
+            for (const auto& cadence : a->harmonic_analysis.cadence_inventory) {
+                if (const auto code = cadence_code(cadence.type)) {
+                    cadence_types[*code]++;
+                    total_cadences++;
+                }
+                if (cadence.type == "DC") deceptive += 1.0f;
+            }
+        if (source_available(*a, "harmonic", "chromatic_techniques"))
+            for (const auto& event : a->harmonic_analysis.chromatic_techniques) {
+                const auto type = lowercase(event.type);
+                if (type.contains("secondary dominant")) secondary += 1.0f;
+                if (type.contains("augmented sixth")) augmented += 1.0f;
+                if (type.contains("neapolitan")) neapolitan += 1.0f;
+            }
+        if (field_available(*a, "harmonic", "chromatic_density"))
+            total_chromatic_density.add(
+                work_chords > 0
+                    ? static_cast<float>(a->harmonic_analysis.chromatic_techniques.size()) /
+                          static_cast<float>(work_chords)
+                    : 0.0f);
+        if (field_available(*a, "harmonic", "harmonic_rhythm_mean"))
+            total_hr_mean.add(a->harmonic_analysis.harmonic_rhythm.mean_rate);
+        if (field_available(*a, "harmonic", "harmonic_rhythm_variance"))
+            total_hr_variance.add(a->harmonic_analysis.harmonic_rhythm.variance);
+        if (field_available(*a, "harmonic", "modulation_frequency"))
+            total_modulations.add(
+                static_cast<float>(a->harmonic_analysis.modulation_inventory.size()));
+        if (field_available(*a, "harmonic", "secondary_dominant_frequency"))
+            total_secondary_dominants.add(secondary);
+        if (field_available(*a, "harmonic", "augmented_sixth_frequency"))
+            total_augmented_sixths.add(augmented);
+        if (field_available(*a, "harmonic", "neapolitan_frequency"))
+            total_neapolitans.add(neapolitan);
+        if (field_available(*a, "harmonic", "deceptive_cadence_frequency"))
+            total_deceptive_cadences.add(deceptive);
     }
 
     // Chord frequency (normalised)
@@ -281,15 +499,14 @@ void aggregate_harmonic(StyleProfile& out, const std::vector<const WorkAnalysis*
                 static_cast<float>(count) / static_cast<float>(grand_total);
     }
 
-    auto n = static_cast<float>(analyses.size());
-    out.harmonic_profile.harmonic_rhythm_mean = total_hr_mean / n;
-    out.harmonic_profile.harmonic_rhythm_variance = total_hr_variance / n;
-    out.harmonic_profile.modulation_frequency = total_modulations / n;
-    out.harmonic_profile.chromatic_density = total_chromatic_density / n;
-    out.harmonic_profile.secondary_dominant_frequency = total_secondary_dominants / n;
-    out.harmonic_profile.augmented_sixth_frequency = total_augmented_sixths / n;
-    out.harmonic_profile.neapolitan_frequency = total_neapolitans / n;
-    out.harmonic_profile.deceptive_cadence_frequency = total_deceptive_cadences / n;
+    out.harmonic_profile.harmonic_rhythm_mean = total_hr_mean.mean();
+    out.harmonic_profile.harmonic_rhythm_variance = total_hr_variance.mean();
+    out.harmonic_profile.modulation_frequency = total_modulations.mean();
+    out.harmonic_profile.chromatic_density = total_chromatic_density.mean();
+    out.harmonic_profile.secondary_dominant_frequency = total_secondary_dominants.mean();
+    out.harmonic_profile.augmented_sixth_frequency = total_augmented_sixths.mean();
+    out.harmonic_profile.neapolitan_frequency = total_neapolitans.mean();
+    out.harmonic_profile.deceptive_cadence_frequency = total_deceptive_cadences.mean();
 
     std::vector<std::pair<std::vector<std::string>, ProgressionAggregate>> ranked(
         progressions.begin(), progressions.end());
@@ -331,41 +548,46 @@ void aggregate_melodic(StyleProfile& out, const std::vector<const WorkAnalysis*>
     std::map<std::int8_t, std::uint32_t> total_intervals;
     std::map<std::uint8_t, std::uint32_t> contour_counts;
     std::map<std::uint8_t, std::uint32_t> scale_degree_counts;
-    float total_conjunct = 0.0f;
-    float total_chromaticism = 0.0f;
-    float total_range = 0.0f;
+    FieldMean total_conjunct;
+    FieldMean total_chromaticism;
+    FieldMean total_range;
     std::uint32_t total_contours = 0;
     std::uint32_t total_scale_degrees = 0;
     std::uint32_t total_thematic_occurrences = 0;
     std::uint32_t sequential_occurrences = 0;
-    std::size_t voice_count = 0;
 
     for (const auto* a : analyses) {
         for (const auto& voice : a->melodic_analysis.per_voice_analysis) {
             if (!has_melodic_evidence(voice)) continue;
-            for (const auto& [interval, count] : voice.interval_distribution)
-                total_intervals[interval] += count;
-            for (const auto& contour : voice.contour_inventory) {
-                contour_counts[static_cast<std::uint8_t>(contour.shape)]++;
-                total_contours++;
-            }
-            for (const auto& [degree, count] : voice.scale_degree_distribution) {
-                scale_degree_counts[degree] += count;
-                total_scale_degrees += count;
-            }
-            total_conjunct += voice.conjunct_proportion;
-            total_chromaticism += voice.chromaticism_rate;
-            total_range += static_cast<float>(static_cast<int>(voice.range_high) -
-                                              static_cast<int>(voice.range_low));
-            voice_count++;
+            if (melodic_voice_available(*a, voice, "per_voice_analysis.interval_distribution"))
+                for (const auto& [interval, count] : voice.interval_distribution)
+                    total_intervals[interval] += count;
+            if (melodic_voice_available(*a, voice, "per_voice_analysis.contour_inventory"))
+                for (const auto& contour : voice.contour_inventory) {
+                    contour_counts[static_cast<std::uint8_t>(contour.shape)]++;
+                    total_contours++;
+                }
+            if (melodic_voice_available(*a, voice, "per_voice_analysis.scale_degree_distribution"))
+                for (const auto& [degree, count] : voice.scale_degree_distribution) {
+                    scale_degree_counts[degree] += count;
+                    total_scale_degrees += count;
+                }
+            if (melodic_voice_available(*a, voice, "per_voice_analysis.conjunct_proportion"))
+                total_conjunct.add(voice.conjunct_proportion);
+            if (melodic_voice_available(*a, voice, "per_voice_analysis.chromaticism_rate"))
+                total_chromaticism.add(voice.chromaticism_rate);
+            if (melodic_voice_available(*a, voice, "per_voice_analysis.range"))
+                total_range.add(static_cast<float>(static_cast<int>(voice.range_high) -
+                                                   static_cast<int>(voice.range_low)));
         }
-        for (const auto& unit : a->melodic_analysis.thematic_material) {
-            for (const auto& occurrence : unit.occurrences) {
-                total_thematic_occurrences++;
-                if (occurrence.transformation == ThematicTransformation::SequentialRepetition)
-                    sequential_occurrences++;
+        if (field_available(*a, "melodic", "sequence_frequency"))
+            for (const auto& unit : a->melodic_analysis.thematic_material) {
+                for (const auto& occurrence : unit.occurrences) {
+                    total_thematic_occurrences++;
+                    if (occurrence.transformation == ThematicTransformation::SequentialRepetition)
+                        sequential_occurrences++;
+                }
             }
-        }
     }
 
     // Normalise intervals
@@ -387,12 +609,9 @@ void aggregate_melodic(StyleProfile& out, const std::vector<const WorkAnalysis*>
             out.melodic_profile.preferred_intervals.push_back(interval);
     }
 
-    if (voice_count > 0) {
-        out.melodic_profile.conjunct_proportion = total_conjunct / static_cast<float>(voice_count);
-        out.melodic_profile.chromaticism_rate =
-            total_chromaticism / static_cast<float>(voice_count);
-        out.melodic_profile.typical_range = total_range / static_cast<float>(voice_count);
-    }
+    out.melodic_profile.conjunct_proportion = total_conjunct.mean();
+    out.melodic_profile.chromaticism_rate = total_chromaticism.mean();
+    out.melodic_profile.typical_range = total_range.mean();
     if (total_contours > 0)
         for (const auto& [shape, count] : contour_counts)
             out.melodic_profile.contour_preferences[shape] =
@@ -413,32 +632,38 @@ void aggregate_rhythmic(StyleProfile& out, const std::vector<const WorkAnalysis*
     std::map<std::string, std::uint32_t> duration_counts;
     std::map<std::string, std::uint32_t> metre_counts;
     std::vector<float> tempos;
-    float total_sync = 0.0f;
-    float total_metric = 0.0f;
-    float total_rubato = 0.0f;
+    FieldMean total_sync;
+    FieldMean total_metric;
+    FieldMean total_rubato;
     std::uint32_t recurrent_motifs = 0;
     std::uint32_t total_motifs = 0;
 
     for (const auto* a : analyses) {
-        for (const auto& [duration, count] : a->rhythmic_analysis.duration_distribution)
-            duration_counts[duration] += count;
-        for (const auto& [metre, count] : a->rhythmic_analysis.metre_distribution)
-            metre_counts[metre] += count;
-        for (const auto& [_, tempo] : a->rhythmic_analysis.tempo_profile)
-            tempos.push_back(tempo);
-        for (const auto& motif : a->rhythmic_analysis.rhythmic_motifs) {
-            total_motifs++;
-            if (motif.occurrences > 1) recurrent_motifs++;
-        }
-        total_sync += a->rhythmic_analysis.syncopation_index;
-        total_metric += a->rhythmic_analysis.metrical_complexity;
-        total_rubato += a->rhythmic_analysis.rubato_degree;
+        if (field_available(*a, "rhythmic", "duration_distribution"))
+            for (const auto& [duration, count] : a->rhythmic_analysis.duration_distribution)
+                duration_counts[duration] += count;
+        if (field_available(*a, "rhythmic", "preferred_metres"))
+            for (const auto& [metre, count] : a->rhythmic_analysis.metre_distribution)
+                metre_counts[metre] += count;
+        if (field_available(*a, "rhythmic", "tempo_mean"))
+            for (const auto& [_, tempo] : a->rhythmic_analysis.tempo_profile)
+                tempos.push_back(tempo);
+        if (field_available(*a, "rhythmic", "rhythmic_motif_consistency"))
+            for (const auto& motif : a->rhythmic_analysis.rhythmic_motifs) {
+                total_motifs++;
+                if (motif.occurrences > 1) recurrent_motifs++;
+            }
+        if (field_available(*a, "rhythmic", "syncopation_index"))
+            total_sync.add(a->rhythmic_analysis.syncopation_index);
+        if (field_available(*a, "rhythmic", "metrical_complexity"))
+            total_metric.add(a->rhythmic_analysis.metrical_complexity);
+        if (field_available(*a, "rhythmic", "rubato_tendency"))
+            total_rubato.add(a->rhythmic_analysis.rubato_degree);
     }
 
-    auto n = static_cast<float>(analyses.size());
-    out.rhythmic_profile.syncopation_index = total_sync / n;
-    out.rhythmic_profile.metrical_complexity = total_metric / n;
-    out.rhythmic_profile.rubato_tendency = total_rubato / n;
+    out.rhythmic_profile.syncopation_index = total_sync.mean();
+    out.rhythmic_profile.metrical_complexity = total_metric.mean();
+    out.rhythmic_profile.rubato_tendency = total_rubato.mean();
     out.rhythmic_profile.preferred_metres = std::move(metre_counts);
 
     std::uint32_t duration_total = 0;
@@ -478,7 +703,7 @@ void aggregate_rhythmic(StyleProfile& out, const std::vector<const WorkAnalysis*
 void aggregate_formal(StyleProfile& out, const std::vector<const WorkAnalysis*>& analyses) {
     if (analyses.empty()) return;
 
-    float total_length = 0.0f;
+    FieldMean total_length;
     float total_climax = 0.0f;
     float total_golden_adherence = 0.0f;
     std::uint32_t climax_sources = 0;
@@ -486,57 +711,61 @@ void aggregate_formal(StyleProfile& out, const std::vector<const WorkAnalysis*>&
     float development_total = 0.0f;
     std::uint32_t ratio_sources = 0;
     std::uint32_t development_sources = 0;
-    std::uint32_t introductions = 0;
-    std::uint32_t codas = 0;
+    FieldMean introductions;
+    FieldMean codas;
     std::map<std::uint8_t, std::uint32_t> form_counts;
     std::map<std::string, std::pair<float, std::uint32_t>> section_proportions;
     std::map<std::string, std::uint32_t> transitions;
 
     for (const auto* a : analyses) {
-        total_length += static_cast<float>(a->formal_analysis.total_duration_bars);
-        if (!a->dynamic_analysis.dynamic_shape.empty() ||
-            a->dynamic_analysis.climax_position != 0.0f) {
+        if (field_available(*a, "formal", "average_work_length"))
+            total_length.add(static_cast<float>(a->formal_analysis.total_duration_bars));
+        if (field_available(*a, "formal", "climax_placement")) {
             total_climax += a->dynamic_analysis.climax_position;
             total_golden_adherence += std::clamp(
                 1.0f - std::abs(a->dynamic_analysis.climax_position - 0.618f) / 0.618f, 0.0f, 1.0f);
             climax_sources++;
         }
-        form_counts[static_cast<std::uint8_t>(a->formal_analysis.form_type)]++;
+        if (field_available(*a, "formal", "preferred_forms"))
+            form_counts[static_cast<std::uint8_t>(a->formal_analysis.form_type)]++;
 
         float exposition = 0.0f;
         float recapitulation = 0.0f;
         float development = 0.0f;
-        for (const auto& proportion : a->formal_analysis.proportions) {
-            auto& aggregate = section_proportions[proportion.label];
-            aggregate.first += proportion.proportion;
-            aggregate.second++;
-            if (contains_case_insensitive(proportion.label, "exposition"))
-                exposition += proportion.proportion;
-            if (contains_case_insensitive(proportion.label, "recapitulation"))
-                recapitulation += proportion.proportion;
-            if (contains_case_insensitive(proportion.label, "development"))
-                development += proportion.proportion;
-        }
-        if (exposition > 0.0f && recapitulation > 0.0f) {
+        if (field_available(*a, "formal", "section_proportions"))
+            for (const auto& proportion : a->formal_analysis.proportions) {
+                auto& aggregate = section_proportions[proportion.label];
+                aggregate.first += proportion.proportion;
+                aggregate.second++;
+                if (contains_case_insensitive(proportion.label, "exposition"))
+                    exposition += proportion.proportion;
+                if (contains_case_insensitive(proportion.label, "recapitulation"))
+                    recapitulation += proportion.proportion;
+                if (contains_case_insensitive(proportion.label, "development"))
+                    development += proportion.proportion;
+            }
+        if (field_available(*a, "formal", "exposition_recapitulation_ratio")) {
             ratio_total += recapitulation / exposition;
             ratio_sources++;
         }
-        if (development > 0.0f) {
+        if (field_available(*a, "formal", "development_proportion")) {
             development_total += development;
             development_sources++;
         }
 
-        for (const auto& section : a->formal_analysis.section_plan) {
-            if (contains_case_insensitive(section.label, "transition") && section.character &&
-                !section.character->empty())
-                transitions[*section.character]++;
-        }
+        if (field_available(*a, "formal", "transition_technique"))
+            for (const auto& section : a->formal_analysis.section_plan) {
+                if (contains_case_insensitive(section.label, "transition") && section.character &&
+                    !section.character->empty())
+                    transitions[*section.character]++;
+            }
+        bool introduction = false, coda = false;
         if (!a->formal_analysis.section_plan.empty()) {
             const auto first = std::ranges::min_element(
                 a->formal_analysis.section_plan, {}, &FormalSection::start_bar);
             const auto last = std::ranges::max_element(
                 a->formal_analysis.section_plan, {}, &FormalSection::end_bar);
-            if (contains_case_insensitive(last->label, "coda")) codas++;
+            if (contains_case_insensitive(last->label, "coda")) coda = true;
             if (contains_case_insensitive(first->label, "introduction")) {
                 const FormalSection* following = nullptr;
                 for (const auto& candidate : a->formal_analysis.section_plan)
@@ -545,16 +774,18 @@ void aggregate_formal(StyleProfile& out, const std::vector<const WorkAnalysis*>&
                         following = &candidate;
                 if (following && first->tempo > 0.0f && following->tempo > 0.0f &&
                     first->tempo < following->tempo)
-                    introductions++;
+                    introduction = true;
             }
         }
+        if (field_available(*a, "formal", "introduction_frequency"))
+            introductions.add(introduction ? 1.0f : 0.0f);
+        if (field_available(*a, "formal", "coda_frequency")) codas.add(coda ? 1.0f : 0.0f);
     }
 
-    auto n = static_cast<float>(analyses.size());
-    out.formal_profile.average_work_length = total_length / n;
+    out.formal_profile.average_work_length = total_length.mean();
     out.formal_profile.preferred_forms = form_counts;
-    out.formal_profile.introduction_frequency = static_cast<float>(introductions) / n;
-    out.formal_profile.coda_frequency = static_cast<float>(codas) / n;
+    out.formal_profile.introduction_frequency = introductions.mean();
+    out.formal_profile.coda_frequency = codas.mean();
     if (climax_sources > 0) {
         out.formal_profile.climax_placement = total_climax / static_cast<float>(climax_sources);
         out.formal_profile.golden_ratio_adherence =
@@ -584,11 +815,11 @@ void aggregate_voice_leading(StyleProfile& out, const std::vector<const WorkAnal
     if (analyses.empty()) return;
 
     std::array<float, 4> total_motion{};
-    float total_parallel_fifths = 0.0f;
-    float total_parallel_octaves = 0.0f;
-    float total_voice_crossings = 0.0f;
-    float total_common_tone = 0.0f;
-    float total_independence = 0.0f;
+    FieldMean total_parallel_fifths;
+    FieldMean total_parallel_octaves;
+    FieldMean total_voice_crossings;
+    FieldMean total_common_tone;
+    FieldMean total_independence;
     float leading_resolution_sum = 0.0f;
     float seventh_resolution_sum = 0.0f;
     std::uint32_t leading_resolution_weight = 0;
@@ -598,43 +829,52 @@ void aggregate_voice_leading(StyleProfile& out, const std::vector<const WorkAnal
 
     for (const auto* a : analyses) {
         const auto& voice = a->voice_leading_analysis;
-        total_parallel_fifths += static_cast<float>(voice.parallel_fifths_count);
-        total_parallel_octaves += static_cast<float>(voice.parallel_octaves_count);
-        total_voice_crossings += static_cast<float>(voice.voice_crossing_count);
-        total_motion[0] += voice.contrary_motion_proportion;
-        total_motion[1] += voice.oblique_motion_proportion;
-        total_motion[2] += voice.similar_motion_proportion;
-        total_motion[3] += voice.parallel_motion_proportion;
-        total_common_tone += voice.common_tone_retention_rate;
-        total_independence += voice.average_voice_independence;
+        if (field_available(*a, "voice_leading", "parallel_fifths_tolerance"))
+            total_parallel_fifths.add(static_cast<float>(voice.parallel_fifths_count));
+        if (field_available(*a, "voice_leading", "parallel_octaves_tolerance"))
+            total_parallel_octaves.add(static_cast<float>(voice.parallel_octaves_count));
+        if (field_available(*a, "voice_leading", "voice_crossing_tolerance"))
+            total_voice_crossings.add(static_cast<float>(voice.voice_crossing_count));
+        if (field_available(*a, "voice_leading", "preferred_motion_type")) {
+            total_motion[0] += voice.contrary_motion_proportion;
+            total_motion[1] += voice.oblique_motion_proportion;
+            total_motion[2] += voice.similar_motion_proportion;
+            total_motion[3] += voice.parallel_motion_proportion;
+        }
+        if (field_available(*a, "voice_leading", "common_tone_retention"))
+            total_common_tone.add(voice.common_tone_retention_rate);
+        if (field_available(*a, "voice_leading", "voice_independence_index"))
+            total_independence.add(voice.average_voice_independence);
 
         for (const auto& pattern : voice.resolution_patterns) {
             const auto tendency = lowercase(pattern.tendency_tone);
-            if (tendency.contains("leading") || tendency.contains("scale degree 7")) {
+            if (field_available(*a, "voice_leading", "leading_tone_resolution_rate") &&
+                (tendency.contains("leading") || tendency.contains("scale degree 7"))) {
                 leading_resolution_sum +=
                     pattern.proportion_resolved * static_cast<float>(pattern.frequency);
                 leading_resolution_weight += pattern.frequency;
             }
-            if (tendency.contains("seventh") || tendency.contains("7th")) {
+            if (field_available(*a, "voice_leading", "seventh_resolution_rate") &&
+                (tendency.contains("seventh") || tendency.contains("7th"))) {
                 seventh_resolution_sum +=
                     pattern.proportion_resolved * static_cast<float>(pattern.frequency);
                 seventh_resolution_weight += pattern.frequency;
             }
         }
-        for (const auto& [spacing, count] : voice.spacing_distribution) {
-            if (spacing <= 12)
-                close_spacing += count;
-            else
-                open_spacing += count;
-        }
+        if (field_available(*a, "voice_leading", "spacing_preference"))
+            for (const auto& [spacing, count] : voice.spacing_distribution) {
+                if (spacing <= 12)
+                    close_spacing += count;
+                else
+                    open_spacing += count;
+            }
     }
 
-    auto n = static_cast<float>(analyses.size());
-    out.voice_leading_profile.parallel_fifths_tolerance = total_parallel_fifths / n;
-    out.voice_leading_profile.parallel_octaves_tolerance = total_parallel_octaves / n;
-    out.voice_leading_profile.voice_crossing_tolerance = total_voice_crossings / n;
-    out.voice_leading_profile.common_tone_retention = total_common_tone / n;
-    out.voice_leading_profile.voice_independence_index = total_independence / n;
+    out.voice_leading_profile.parallel_fifths_tolerance = total_parallel_fifths.mean();
+    out.voice_leading_profile.parallel_octaves_tolerance = total_parallel_octaves.mean();
+    out.voice_leading_profile.voice_crossing_tolerance = total_voice_crossings.mean();
+    out.voice_leading_profile.common_tone_retention = total_common_tone.mean();
+    out.voice_leading_profile.voice_independence_index = total_independence.mean();
 
     static constexpr std::array<const char*, 4> motion_names = {
         "contrary", "oblique", "similar", "parallel"};
@@ -662,41 +902,49 @@ void aggregate_voice_leading(StyleProfile& out, const std::vector<const WorkAnal
 void aggregate_textural(StyleProfile& out, const std::vector<const WorkAnalysis*>& analyses) {
     if (analyses.empty()) return;
 
-    float total_density = 0.0f;
-    float total_span = 0.0f;
+    FieldMean total_density;
+    FieldMean total_span;
     float min_density = 1e9f;
     float max_density = 0.0f;
     std::map<std::string, float> total_texture_type;
+    std::size_t texture_sources = 0;
     float total_correlation = 0.0f;
     std::uint32_t correlation_sources = 0;
 
     for (const auto* a : analyses) {
-        total_density += a->textural_analysis.average_density;
-        total_span += a->textural_analysis.average_register_span;
+        if (field_available(*a, "textural", "average_density"))
+            total_density.add(a->textural_analysis.average_density);
+        if (field_available(*a, "textural", "register_span_preference"))
+            total_span.add(a->textural_analysis.average_register_span);
 
-        for (const auto& [_, density] : a->textural_analysis.density_curve) {
-            float d = static_cast<float>(density);
-            if (d < min_density) min_density = d;
-            if (d > max_density) max_density = d;
+        if (field_available(*a, "textural", "density_range_low"))
+            for (const auto& [_, density] : a->textural_analysis.density_curve) {
+                float d = static_cast<float>(density);
+                if (d < min_density) min_density = d;
+                if (d > max_density) max_density = d;
+            }
+
+        if (field_available(*a, "textural", "texture_type_distribution")) {
+            ++texture_sources;
+            for (const auto& [type, prop] : a->textural_analysis.texture_type_proportions)
+                total_texture_type[type] += prop;
         }
-
-        for (const auto& [type, prop] : a->textural_analysis.texture_type_proportions)
-            total_texture_type[type] += prop;
-        if (const auto correlation = pearson_correlation(a->textural_analysis.density_curve,
-                                                         a->dynamic_analysis.dynamic_shape)) {
+        if (field_available(*a, "textural", "density_dynamic_correlation")) {
+            const auto correlation = pearson_correlation(a->textural_analysis.density_curve,
+                                                         a->dynamic_analysis.dynamic_shape);
             total_correlation += *correlation;
             correlation_sources++;
         }
     }
 
-    auto n = static_cast<float>(analyses.size());
-    out.textural_profile.average_density = total_density / n;
-    out.textural_profile.register_span_preference = total_span / n;
+    out.textural_profile.average_density = total_density.mean();
+    out.textural_profile.register_span_preference = total_span.mean();
     out.textural_profile.density_range_low = (min_density < 1e9f) ? min_density : 0.0f;
     out.textural_profile.density_range_high = max_density;
 
     for (const auto& [type, total] : total_texture_type)
-        out.textural_profile.texture_type_distribution[type] = total / n;
+        out.textural_profile.texture_type_distribution[type] =
+            total / static_cast<float>(texture_sources);
     if (correlation_sources > 0)
         out.textural_profile.density_dynamic_correlation =
             total_correlation / static_cast<float>(correlation_sources);
@@ -729,32 +977,39 @@ void aggregate_dynamic(StyleProfile& out, const std::vector<const WorkAnalysis*>
     float highest_intensity = -1.0f;
     std::string lowest_name;
     std::string highest_name;
-    float total_change_rate = 0.0f;
-    float total_subito = 0.0f;
+    FieldMean total_change_rate;
+    FieldMean total_subito;
     std::map<std::string, std::uint32_t> total_dist;
     std::map<std::string, std::uint32_t> climax_dynamics;
     std::map<ContourShape, std::uint32_t> arc_shapes;
 
     for (const auto* a : analyses) {
         const auto& dynamics = a->dynamic_analysis;
-        if (const auto low = dynamic_intensity(dynamics.dynamic_range_low)) {
+        if (const auto low = field_available(*a, "dynamic", "dynamic_range_low")
+                                 ? dynamic_intensity(dynamics.dynamic_range_low)
+                                 : std::nullopt) {
             if (*low < lowest_intensity) {
                 lowest_intensity = *low;
                 lowest_name = dynamics.dynamic_range_low;
             }
         }
-        if (const auto high = dynamic_intensity(dynamics.dynamic_range_high)) {
+        if (const auto high = field_available(*a, "dynamic", "dynamic_range_high")
+                                  ? dynamic_intensity(dynamics.dynamic_range_high)
+                                  : std::nullopt) {
             if (*high > highest_intensity) {
                 highest_intensity = *high;
                 highest_name = dynamics.dynamic_range_high;
             }
         }
-        total_change_rate += dynamics.dynamic_change_rate;
-        total_subito += static_cast<float>(dynamics.subito_dynamics_count);
+        if (field_available(*a, "dynamic", "dynamic_change_rate"))
+            total_change_rate.add(dynamics.dynamic_change_rate);
+        if (field_available(*a, "dynamic", "subito_frequency"))
+            total_subito.add(static_cast<float>(dynamics.subito_dynamics_count));
 
-        for (const auto& [dyn, count] : dynamics.dynamic_distribution)
-            total_dist[dyn] += count;
-        if (!dynamics.dynamic_shape.empty()) {
+        if (field_available(*a, "dynamic", "most_frequent_dynamic"))
+            for (const auto& [dyn, count] : dynamics.dynamic_distribution)
+                total_dist[dyn] += count;
+        if (field_available(*a, "dynamic", "climax_dynamic") && !dynamics.dynamic_shape.empty()) {
             const auto climax = std::ranges::max_element(
                 dynamics.dynamic_shape, {}, [](const auto& sample) { return sample.second; });
             climax_dynamics[nearest_dynamic(climax->second)]++;
@@ -762,11 +1017,10 @@ void aggregate_dynamic(StyleProfile& out, const std::vector<const WorkAnalysis*>
         }
     }
 
-    auto n = static_cast<float>(analyses.size());
     out.dynamic_profile.dynamic_range_low = lowest_name;
     out.dynamic_profile.dynamic_range_high = highest_name;
-    out.dynamic_profile.dynamic_change_rate = total_change_rate / n;
-    out.dynamic_profile.subito_frequency = total_subito / n;
+    out.dynamic_profile.dynamic_change_rate = total_change_rate.mean();
+    out.dynamic_profile.subito_frequency = total_subito.mean();
 
     const auto most_frequent = std::ranges::max_element(
         total_dist, [](const auto& lhs, const auto& rhs) { return lhs.second < rhs.second; });
@@ -793,42 +1047,56 @@ void aggregate_orchestration(StyleProfile& out, const std::vector<const WorkAnal
     using DoublingKey = std::tuple<std::string, std::string, std::int8_t>;
     std::map<DoublingKey, std::uint32_t> doublings;
     std::set<std::string> build_up_techniques;
-    std::uint32_t orch_count = 0;
+    std::uint32_t orch_count = 0, usage_sources = 0, melody_sources = 0;
 
     for (const auto* a : analyses) {
         if (!a->orchestration_analysis) continue;
+        if (!field_available(*a, "orchestration", "preferred_instruments") &&
+            !field_available(*a, "orchestration", "melody_assignment_preference") &&
+            !field_available(*a, "orchestration", "signature_combinations") &&
+            !field_available(*a, "orchestration", "doubling_preferences") &&
+            !field_available(*a, "orchestration", "build_up_technique"))
+            continue;
         const auto& orchestration = *a->orchestration_analysis;
         orch_count++;
-        for (const auto& [inst, usage] : orchestration.instrument_usage)
-            total_usage[inst] += usage;
-        for (const auto& [inst, prop] : orchestration.melody_carrier_distribution)
-            total_melody[inst] += prop;
-        for (const auto& combination : orchestration.instrument_combinations) {
-            auto instruments = combination.instruments;
-            std::ranges::sort(instruments);
-            combinations[{std::move(instruments),
-                          combination.typical_context,
-                          combination.interval_relationship}] += combination.frequency;
+        if (field_available(*a, "orchestration", "preferred_instruments")) {
+            ++usage_sources;
+            for (const auto& [inst, usage] : orchestration.instrument_usage)
+                total_usage[inst] += usage;
         }
-        for (const auto& doubling : orchestration.doubling_patterns)
-            doublings[{
-                doubling.source_instrument, doubling.doubling_instrument, doubling.interval}] +=
-                doubling.frequency;
-        for (const auto& crescendo : orchestration.orchestral_crescendo_patterns) {
-            if (crescendo.register_expansion) build_up_techniques.insert("register expansion");
-            if (crescendo.instrument_entry_order.size() > 1)
-                build_up_techniques.insert("instrument accretion");
+        if (field_available(*a, "orchestration", "melody_assignment_preference")) {
+            ++melody_sources;
+            for (const auto& [inst, prop] : orchestration.melody_carrier_distribution)
+                total_melody[inst] += prop;
         }
+        if (field_available(*a, "orchestration", "signature_combinations"))
+            for (const auto& combination : orchestration.instrument_combinations) {
+                auto instruments = combination.instruments;
+                std::ranges::sort(instruments);
+                combinations[{std::move(instruments),
+                              combination.typical_context,
+                              combination.interval_relationship}] += combination.frequency;
+            }
+        if (field_available(*a, "orchestration", "doubling_preferences"))
+            for (const auto& doubling : orchestration.doubling_patterns)
+                doublings[{
+                    doubling.source_instrument, doubling.doubling_instrument, doubling.interval}] +=
+                    doubling.frequency;
+        if (field_available(*a, "orchestration", "build_up_technique"))
+            for (const auto& crescendo : orchestration.orchestral_crescendo_patterns) {
+                if (crescendo.register_expansion) build_up_techniques.insert("register expansion");
+                if (crescendo.instrument_entry_order.size() > 1)
+                    build_up_techniques.insert("instrument accretion");
+            }
     }
 
     if (orch_count == 0) return;
 
     OrchestrationStyleProfile osp;
-    auto n = static_cast<float>(orch_count);
     for (const auto& [inst, total] : total_usage)
-        osp.preferred_instruments[inst] = total / n;
+        osp.preferred_instruments[inst] = total / static_cast<float>(usage_sources);
     for (const auto& [inst, total] : total_melody)
-        osp.melody_assignment_preference[inst] = total / n;
+        osp.melody_assignment_preference[inst] = total / static_cast<float>(melody_sources);
     for (const auto& [key, frequency] : combinations) {
         const auto& [instruments, context, interval] = key;
         osp.signature_combinations.push_back({instruments, frequency, context, interval});
@@ -845,36 +1113,51 @@ void aggregate_orchestration(StyleProfile& out, const std::vector<const WorkAnal
 void aggregate_motivic(StyleProfile& out, const std::vector<const WorkAnalysis*>& analyses) {
     if (analyses.empty()) return;
 
-    float total_economy = 0.0f;
-    float total_density = 0.0f;
+    FieldMean total_economy;
+    FieldMean total_density;
     std::map<std::uint8_t, std::uint32_t> transformations;
     std::uint32_t total_transformations = 0;
     std::uint32_t fragmentations = 0;
     std::uint32_t sequences = 0;
+    std::uint32_t fragmentation_observations = 0, sequence_observations = 0;
 
     for (const auto* a : analyses) {
-        total_economy += a->motivic_analysis.thematic_economy;
-        total_density += a->motivic_analysis.thematic_density;
-        for (const auto& event : a->motivic_analysis.transformation_inventory) {
-            transformations[static_cast<std::uint8_t>(event.transformation)]++;
-            total_transformations++;
-            if (event.transformation == ThematicTransformation::Fragmented) fragmentations++;
-            if (event.transformation == ThematicTransformation::SequentialRepetition) sequences++;
-        }
+        if (field_available(*a, "motivic", "thematic_economy"))
+            total_economy.add(a->motivic_analysis.thematic_economy);
+        if (field_available(*a, "motivic", "development_density"))
+            total_density.add(a->motivic_analysis.thematic_density);
+        if (field_available(*a, "motivic", "fragmentation_frequency"))
+            fragmentation_observations +=
+                static_cast<std::uint32_t>(a->motivic_analysis.transformation_inventory.size());
+        if (field_available(*a, "motivic", "sequence_frequency"))
+            sequence_observations +=
+                static_cast<std::uint32_t>(a->motivic_analysis.transformation_inventory.size());
+        if (field_available(*a, "motivic", "preferred_transformations"))
+            for (const auto& event : a->motivic_analysis.transformation_inventory) {
+                transformations[static_cast<std::uint8_t>(event.transformation)]++;
+                total_transformations++;
+                if (field_available(*a, "motivic", "fragmentation_frequency") &&
+                    event.transformation == ThematicTransformation::Fragmented)
+                    fragmentations++;
+                if (field_available(*a, "motivic", "sequence_frequency") &&
+                    event.transformation == ThematicTransformation::SequentialRepetition)
+                    sequences++;
+            }
     }
 
-    auto n = static_cast<float>(analyses.size());
-    out.motivic_profile.thematic_economy = total_economy / n;
-    out.motivic_profile.development_density = total_density / n;
+    out.motivic_profile.thematic_economy = total_economy.mean();
+    out.motivic_profile.development_density = total_density.mean();
     if (total_transformations > 0) {
         for (const auto& [transformation, count] : transformations)
             out.motivic_profile.preferred_transformations[transformation] =
                 static_cast<float>(count) / static_cast<float>(total_transformations);
-        out.motivic_profile.fragmentation_frequency =
-            static_cast<float>(fragmentations) / static_cast<float>(total_transformations);
-        out.motivic_profile.sequence_frequency =
-            static_cast<float>(sequences) / static_cast<float>(total_transformations);
     }
+    if (fragmentation_observations > 0)
+        out.motivic_profile.fragmentation_frequency =
+            static_cast<float>(fragmentations) / static_cast<float>(fragmentation_observations);
+    if (sequence_observations > 0)
+        out.motivic_profile.sequence_frequency =
+            static_cast<float>(sequences) / static_cast<float>(sequence_observations);
 }
 
 std::vector<const WorkAnalysis*> collect_analyses(const CorpusDatabase& corpus,
@@ -898,6 +1181,9 @@ StyleProfile build_style_profile(const std::vector<const WorkAnalysis*>& analyse
         const float n = static_cast<float>(analyses.size());
         profile.confidence = std::min(0.95f, 1.0f - 1.0f / (0.2f * n + 1.0f));
 
+        // Each producer admits its own source fields. Cross-domain outputs,
+        // such as formal climax placement from dynamics, use that source's
+        // evidence rather than the availability of an unrelated whole domain.
         aggregate_harmonic(profile, analyses);
         aggregate_melodic(profile, analyses);
         aggregate_rhythmic(profile, analyses);
@@ -939,6 +1225,121 @@ bool bounded_ranges_overlap(const PeriodProfile& lhs, const PeriodProfile& rhs) 
 }
 
 } // anonymous namespace
+
+std::span<const StyleProfileField> style_profile_fields() {
+    static const auto fields = [] {
+        std::vector<StyleProfileField> result;
+        for (const auto& definition : field_definitions())
+            result.push_back(definition.field);
+        return result;
+    }();
+    return fields;
+}
+
+std::span<const StyleProfileSourceField> style_profile_field_sources(std::string_view domain,
+                                                                     std::string_view field) {
+    const auto found = std::ranges::find_if(field_definitions(), [&](const auto& definition) {
+        return definition.field.domain == domain && definition.field.name == field;
+    });
+    if (found == field_definitions().end()) return {};
+    return found->sources;
+}
+
+AnalysisEvidenceKind style_profile_field_evidence(const WorkAnalysis& analysis,
+                                                  std::string_view domain,
+                                                  std::string_view field) {
+    const auto found = std::ranges::find_if(field_definitions(), [&](const auto& definition) {
+        return definition.field.domain == domain && definition.field.name == field;
+    });
+    if (found == field_definitions().end() || found->sources.empty())
+        return AnalysisEvidenceKind::Unavailable;
+    auto kind = AnalysisEvidenceKind::ExactSymbolic;
+    for (const auto source : found->sources) {
+        const auto evidence = source_field_evidence(analysis, source);
+        if (evidence == AnalysisEvidenceKind::Unavailable) return evidence;
+        if (evidence == AnalysisEvidenceKind::Unqualified)
+            kind = evidence;
+        else if (evidence == AnalysisEvidenceKind::Heuristic &&
+                 kind != AnalysisEvidenceKind::Unqualified)
+            kind = evidence;
+        if (source.path.starts_with("per_voice_analysis.") &&
+            !std::ranges::any_of(analysis.melodic_analysis.per_voice_analysis,
+                                 [&](const auto& voice) {
+                                     return melodic_voice_available(analysis, voice, source.path);
+                                 }))
+            return AnalysisEvidenceKind::Unavailable;
+    }
+    if (domain == "melodic" && field == "sequence_frequency" &&
+        !std::ranges::any_of(analysis.melodic_analysis.thematic_material,
+                             [](const auto& unit) { return !unit.occurrences.empty(); }))
+        return AnalysisEvidenceKind::Unavailable;
+    if (domain == "motivic" &&
+        (field == "preferred_transformations" || field == "fragmentation_frequency" ||
+         field == "sequence_frequency") &&
+        analysis.motivic_analysis.transformation_inventory.empty())
+        return AnalysisEvidenceKind::Unavailable;
+    if (domain == "rhythmic" && field == "rhythmic_motif_consistency" &&
+        analysis.rhythmic_analysis.rhythmic_motifs.empty())
+        return AnalysisEvidenceKind::Unavailable;
+    if (domain == "rhythmic" && (field == "tempo_mean" || field == "tempo_stddev") &&
+        analysis.rhythmic_analysis.tempo_profile.empty())
+        return AnalysisEvidenceKind::Unavailable;
+    if (domain == "dynamic" && (field == "climax_dynamic" || field == "dynamic_arc_shape") &&
+        analysis.dynamic_analysis.dynamic_shape.empty())
+        return AnalysisEvidenceKind::Unavailable;
+    if (domain == "voice_leading") {
+        if (field == "spacing_preference" &&
+            analysis.voice_leading_analysis.spacing_distribution.empty())
+            return AnalysisEvidenceKind::Unavailable;
+        if (field == "leading_tone_resolution_rate" || field == "seventh_resolution_rate") {
+            const bool observed = std::ranges::any_of(
+                analysis.voice_leading_analysis.resolution_patterns, [&](const auto& pattern) {
+                    const auto tendency = lowercase(pattern.tendency_tone);
+                    return pattern.frequency > 0 &&
+                           (field == "leading_tone_resolution_rate"
+                                ? tendency.contains("leading") ||
+                                      tendency.contains("scale degree 7")
+                                : tendency.contains("seventh") || tendency.contains("7th"));
+                });
+            if (!observed) return AnalysisEvidenceKind::Unavailable;
+        }
+    }
+    if (domain == "formal") {
+        // Current FormalSection values lack partial-bar offsets. Refuse that
+        // work's proportions conservatively instead of averaging truncated zeros.
+        if ((field == "section_proportions" || field == "development_proportion" ||
+             field == "exposition_recapitulation_ratio") &&
+            !source_available(analysis, "formal", "partial_bar_sections.proportions"))
+            return AnalysisEvidenceKind::Unavailable;
+        if ((field == "climax_placement" || field == "golden_ratio_adherence") &&
+            kind == AnalysisEvidenceKind::Unqualified &&
+            analysis.dynamic_analysis.dynamic_shape.empty() &&
+            analysis.dynamic_analysis.climax_position == 0.0f)
+            return AnalysisEvidenceKind::Unavailable;
+        if (field == "development_proportion" &&
+            !std::ranges::any_of(analysis.formal_analysis.proportions, [](const auto& item) {
+                return contains_case_insensitive(item.label, "development");
+            }))
+            return AnalysisEvidenceKind::Unavailable;
+        if (field == "exposition_recapitulation_ratio") {
+            float exposition = 0.0f;
+            bool recapitulation = false;
+            for (const auto& item : analysis.formal_analysis.proportions) {
+                if (contains_case_insensitive(item.label, "exposition"))
+                    exposition += item.proportion;
+                if (contains_case_insensitive(item.label, "recapitulation")) recapitulation = true;
+            }
+            if (exposition <= 0.0f || !recapitulation) return AnalysisEvidenceKind::Unavailable;
+        }
+    }
+    if (domain == "orchestration" && !analysis.orchestration_analysis)
+        return AnalysisEvidenceKind::Unavailable;
+    if (domain == "textural" && field == "density_dynamic_correlation" &&
+        !pearson_correlation(analysis.textural_analysis.density_curve,
+                             analysis.dynamic_analysis.dynamic_shape))
+        return AnalysisEvidenceKind::Unavailable;
+    return kind;
+}
 
 // =============================================================================
 // Profile Management
@@ -1102,7 +1503,8 @@ Result<void> analyze_work(CorpusDatabase& corpus, IngestedWorkId work_id, const 
     if (!effective_score) return std::unexpected(ErrorCode::InvalidMutation);
 
     auto analysis = analyze_score(*effective_score);
-    work->analysis = std::move(analysis);
+    if (!analysis) return std::unexpected(analysis.error());
+    work->analysis = std::move(*analysis);
     work->analysis_complete = true;
     refresh_all_aggregates(corpus);
     return {};
@@ -1124,37 +1526,77 @@ bool style_profile_is_fresh(const CorpusDatabase& corpus,
     return expected == profile;
 }
 
-Result<void> detect_signature_patterns(CorpusDatabase& corpus, ComposerProfileId composer_id) {
+Result<void> detect_signature_patterns(CorpusDatabase& corpus,
+                                       ComposerProfileId composer_id,
+                                       SignatureDetectionEvidence* evidence) {
     auto* composer = find_composer(corpus, composer_id);
     if (!composer) return std::unexpected(not_found());
 
-    // Signature pattern detection requires comparing the composer's
-    // distributions against the corpus mean. For each chord progression,
-    // interval, or rhythmic figure that appears significantly more often
-    // for this composer than the corpus average, a SignaturePattern is
-    // created with a distinctiveness score (z-score or frequency ratio).
-    //
-    // The current implementation identifies the most frequent chord
-    // progressions as candidate signatures.
+    using Bigram = std::vector<std::string>;
+    struct Counts {
+        std::uint64_t windows = 0;
+        std::map<Bigram, std::uint64_t> occurrences;
+        std::map<Bigram, std::vector<std::pair<IngestedWorkId, ScoreTime>>> examples;
+        std::vector<IngestedWorkId> works;
+    };
+    Counts target;
+    Counts baseline;
+    // Corpus map traversal visits each work once. Unassigned works are not a
+    // comparative composer baseline, and the target is excluded from it.
+    for (const auto& [_, work] : corpus.works) {
+        if (!work.analysis_complete || work.metadata.composer.value == 0) continue;
+        const auto evidence = work.analysis.evidence.find("harmonic");
+        if (evidence != work.analysis.evidence.end() &&
+            evidence->second.kind == AnalysisEvidenceKind::Unavailable)
+            continue;
+        auto& counts = work.metadata.composer == composer_id ? target : baseline;
+        const auto before = counts.windows;
+        for (const auto& prog : work.analysis.harmonic_analysis.progression_inventory) {
+            if (prog.length != 2 || prog.roman_numerals.size() != 2) continue;
+            const auto n = static_cast<std::uint64_t>(prog.occurrences.size());
+            counts.windows += n;
+            counts.occurrences[prog.roman_numerals] += n;
+            for (const auto& position : prog.occurrences)
+                counts.examples[prog.roman_numerals].emplace_back(work.id, position);
+        }
+        if (counts.windows != before) counts.works.push_back(work.id);
+    }
+    SignatureDetectionEvidence support;
+    support.target_windows = target.windows;
+    support.baseline_windows = baseline.windows;
+    support.target_works = target.works;
+    support.baseline_works = baseline.works;
+    support.available = target.windows > 0 && baseline.windows > 0;
+    if (evidence) *evidence = support;
+
     std::vector<SignaturePattern> patterns;
     std::uint64_t pattern_id = 1;
-
-    for (const auto& wid : composer->works) {
-        const auto* work = find_work(corpus, wid);
-        if (!work || !work->analysis_complete) continue;
-
-        for (const auto& prog : work->analysis.harmonic_analysis.progression_inventory) {
-            if (prog.occurrences.size() >= 3) {
-                SignaturePattern pat;
-                pat.id = SignaturePatternId{pattern_id++};
-                pat.description = "Recurring progression";
-                pat.domain = PatternDomain::Harmonic;
-                pat.pattern_data = prog.roman_numerals;
-                pat.distinctiveness = static_cast<float>(prog.occurrences.size());
-                for (const auto& pos : prog.occurrences)
-                    pat.examples.push_back({wid, pos});
-                patterns.push_back(std::move(pat));
-            }
+    if (support.available) {
+        for (const auto& [bigram, n] : target.occurrences) {
+            const auto found = baseline.occurrences.find(bigram);
+            const auto m = found == baseline.occurrences.end() ? std::uint64_t{0} : found->second;
+            const double a = static_cast<double>(target.windows);
+            const double b = static_cast<double>(baseline.windows);
+            const double target_rate = static_cast<double>(n) / a;
+            const double baseline_rate = static_cast<double>(m) / b;
+            const double pooled = (static_cast<double>(n) + static_cast<double>(m)) / (a + b);
+            const double variance = pooled * (1.0 - pooled) * (1.0 / a + 1.0 / b);
+            if (target_rate <= baseline_rate || variance <= 0.0) continue;
+            const double z = (target_rate - baseline_rate) / std::sqrt(variance);
+            // A declared descriptive selection threshold; no significance or
+            // perceptual-confidence interpretation is attached to it.
+            if (z < 1.5) continue;
+            SignaturePattern pat;
+            pat.id = SignaturePatternId{pattern_id++};
+            pat.description = "Observed harmonic bigram: target " + std::to_string(n) + "/" +
+                              std::to_string(target.windows) + ", other composers " +
+                              std::to_string(m) + "/" + std::to_string(baseline.windows) +
+                              "; descriptive pooled-proportion z (uncalibrated)";
+            pat.domain = PatternDomain::Harmonic;
+            pat.pattern_data = bigram;
+            pat.distinctiveness = static_cast<float>(z);
+            pat.examples = target.examples.at(bigram);
+            patterns.push_back(std::move(pat));
         }
     }
 
@@ -1180,34 +1622,48 @@ std::vector<AnnotatedExample> find_examples(const CorpusDatabase& corpus,
     const auto* composer = find_composer(corpus, composer_id);
     if (!composer) return results;
 
-    // Search all works for passages matching the criterion.
-    // The criterion is matched against section labels, thematic labels,
-    // and analysis summaries. A production implementation would use
-    // semantic matching; this provides keyword-based filtering.
+    // This is explicit lexical passage retrieval, not semantic inference.
+    // All significant query tokens must occur in the annotated section text.
+    auto tokens = [](const std::string& input) {
+        std::set<std::string> result;
+        std::string token;
+        const auto flush = [&] {
+            static const std::set<std::string> ignored = {
+                "a", "an", "the", "in", "of", "at", "section", "sections", "passage"};
+            if (!token.empty() && !ignored.contains(token)) result.insert(token);
+            token.clear();
+        };
+        for (const auto ch : input) {
+            const auto c = static_cast<unsigned char>(ch);
+            if (std::isalnum(c))
+                token.push_back(static_cast<char>(std::tolower(c)));
+            else
+                flush();
+        }
+        flush();
+        return result;
+    };
+    const auto required = tokens(criterion);
+    if (required.empty()) return results;
     for (const auto& wid : composer->works) {
         const auto* work = find_work(corpus, wid);
         if (!work || !work->analysis_complete) continue;
 
         for (const auto& sec : work->analysis.formal_analysis.section_plan) {
-            if (sec.label.find(criterion) != std::string::npos ||
-                (sec.character && sec.character->find(criterion) != std::string::npos)) {
+            const auto available = tokens(sec.label + " " + sec.character.value_or(""));
+            if (std::includes(
+                    available.begin(), available.end(), required.begin(), required.end())) {
                 AnnotatedExample ex;
                 ex.work_id = wid;
                 ex.region_start = ScoreTime{sec.start_bar, Beat{0, 1}};
                 ex.region_end = ScoreTime{sec.end_bar, Beat{0, 1}};
-                ex.relevance_score = 0.5f;
-                ex.analysis_summary = sec.label;
+                ex.relevance_score = 1.0f; // every significant lexical token matched
+                ex.analysis_summary = "Annotated section lexical match: " + sec.label;
                 ex.formal_context = sec.label;
                 results.push_back(std::move(ex));
             }
         }
     }
-
-    // Sort by relevance
-    std::sort(
-        results.begin(), results.end(), [](const AnnotatedExample& a, const AnnotatedExample& b) {
-            return a.relevance_score > b.relevance_score;
-        });
 
     return results;
 }
@@ -1294,32 +1750,81 @@ Result<HowWouldXHandleResult> how_would_x_handle(const CorpusDatabase& corpus,
     // Find relevant examples by keyword matching against formal sections
     result.relevant_examples = find_examples(corpus, composer_id, situation);
 
-    // Add statistical tendencies from the style profile
-    const auto& sp = composer->style_profile;
-    if (sp.sample_size > 0) {
-        if (sp.harmonic_profile.harmonic_rhythm_mean > 0.0f) {
-            Tendency t;
-            t.domain = "harmonic";
-            t.observation = "Average harmonic rhythm: " +
-                            std::to_string(sp.harmonic_profile.harmonic_rhythm_mean) +
-                            " changes per bar";
-            t.confidence = sp.confidence;
-            t.supporting_examples_count = sp.sample_size;
-            result.statistical_tendencies.push_back(std::move(t));
-        }
+    // Aggregate only observed bars belonging to the returned passages. A
+    // missing per-bar series is unavailable, not an observed zero. Deduplicate
+    // overlapping annotations so the denominator counts each bar once.
+    const auto local_tendency =
+        [&](const std::string& domain, const std::string& label, auto series) {
+            double sum = 0.0;
+            std::uint64_t bars = 0;
+            std::uint32_t passages = 0;
+            std::map<std::uint64_t, std::set<std::uint32_t>> matched_bars;
+            for (const auto& example : result.relevant_examples) {
+                const auto* work = find_work(corpus, example.work_id);
+                if (work) {
+                    const auto evidence = work->analysis.evidence.find(domain);
+                    if (evidence != work->analysis.evidence.end() &&
+                        evidence->second.kind == AnalysisEvidenceKind::Unavailable)
+                        continue;
+                }
+                if (!work || example.region_start.bar == 0 ||
+                    example.region_end.bar <= example.region_start.bar ||
+                    series(work->analysis).size() < example.region_end.bar - 1)
+                    continue;
+                const auto& observations = series(work->analysis);
+                bool usable = true;
+                for (auto bar = example.region_start.bar; bar < example.region_end.bar; ++bar)
+                    if (!std::isfinite(observations[bar - 1]) || observations[bar - 1] < 0.0f)
+                        usable = false;
+                if (!usable) continue;
+                ++passages;
+                for (auto bar = example.region_start.bar; bar < example.region_end.bar; ++bar)
+                    matched_bars[example.work_id.value].insert(bar);
+            }
+            for (const auto& [work_id, positions] : matched_bars) {
+                const auto* work = find_work(corpus, IngestedWorkId{work_id});
+                if (!work) continue;
+                const auto& values = series(work->analysis);
+                for (const auto bar : positions) {
+                    if (bar == 0 || bar > values.size()) continue;
+                    sum += values[bar - 1];
+                    ++bars;
+                }
+            }
+            if (bars == 0) return;
+            Tendency tendency;
+            tendency.domain = domain;
+            tendency.observation = "Matched annotated passages: " + label + " = " +
+                                   std::to_string(sum / static_cast<double>(bars)) + " per bar (" +
+                                   std::to_string(sum) + " observations / " + std::to_string(bars) +
+                                   " distinct bars)";
+            tendency.confidence = 1.0f; // exact aggregation of supplied per-bar observations
+            tendency.supporting_examples_count = passages;
+            result.statistical_tendencies.push_back(std::move(tendency));
+        };
+    local_tendency("harmonic",
+                   "recognized chord changes",
+                   [](const WorkAnalysis& analysis) -> const std::vector<float>& {
+                       return analysis.harmonic_analysis.harmonic_rhythm.changes_per_bar;
+                   });
+    local_tendency("rhythmic",
+                   "symbolic attacks",
+                   [](const WorkAnalysis& analysis) -> const std::vector<float>& {
+                       return analysis.rhythmic_analysis.onset_density;
+                   });
 
-        if (sp.melodic_profile.conjunct_proportion > 0.0f) {
-            Tendency t;
-            t.domain = "melodic";
-            t.observation = "Conjunct motion proportion: " +
-                            std::to_string(sp.melodic_profile.conjunct_proportion);
-            t.confidence = sp.confidence;
-            t.supporting_examples_count = sp.sample_size;
-            result.statistical_tendencies.push_back(std::move(t));
-        }
+    for (const auto& pattern : composer->style_profile.signature_patterns) {
+        auto contextual = pattern;
+        std::erase_if(contextual.examples, [&](const auto& occurrence) {
+            return std::ranges::none_of(result.relevant_examples, [&](const auto& example) {
+                return occurrence.first == example.work_id &&
+                       occurrence.second >= example.region_start &&
+                       occurrence.second < example.region_end;
+            });
+        });
+        if (!contextual.examples.empty())
+            result.signature_patterns.push_back(std::move(contextual));
     }
-
-    result.signature_patterns = sp.signature_patterns;
 
     return result;
 }

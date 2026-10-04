@@ -6,7 +6,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <numeric>
+#include <optional>
 #include <sunny/core/melody/analysis.hpp>
 
 namespace sunny::core {
@@ -222,177 +224,122 @@ bool follows_tendency(MidiNote from,
 
 namespace {
 
-std::vector<int> extract_directed_intervals(std::span<const MidiNote> notes) {
-    std::vector<int> intervals;
-    intervals.reserve(notes.size() - 1);
-    for (std::size_t i = 1; i < notes.size(); ++i) {
-        intervals.push_back(static_cast<int>(notes[i]) - static_cast<int>(notes[i - 1]));
+// A scale-degree coordinate carries its register, including degrees below
+// a non-C root. Missing coordinates denote chromatic notes, not a valid -1.
+std::optional<int>
+note_to_degree(MidiNote note, PitchClass root, std::span<const Interval> intervals) {
+    int offset = static_cast<int>(note) - static_cast<int>(root);
+    int octave = offset / 12;
+    int pitch_offset = offset % 12;
+    if (pitch_offset < 0) {
+        pitch_offset += 12;
+        --octave;
     }
-    return intervals;
-}
-
-// Map a MIDI note to its scale degree index (-1 if not in scale)
-int note_to_degree(MidiNote note, PitchClass root, std::span<const Interval> intervals) {
-    PitchClass pc = pitch_class(note);
-    for (int d = 0; d < static_cast<int>(intervals.size()); ++d) {
-        if (transpose(root, intervals[d]) == pc) return d;
-    }
-    return -1;
-}
-
-} // namespace
-
-Result<std::vector<DetectedSequence>>
-detect_real_sequences(std::span<const MidiNote> notes, int min_length, int min_reps) {
-    if (notes.size() < 2) {
-        return std::unexpected(ErrorCode::InvalidMelody);
-    }
-
-    auto intervals = extract_directed_intervals(notes);
-    std::vector<DetectedSequence> results;
-
-    int n = static_cast<int>(intervals.size());
-
-    for (int len = min_length; len <= n / min_reps; ++len) {
-        for (int start = 0; start + len <= n; ++start) {
-            // Extract pattern
-            std::span<const int> pattern(intervals.data() + start, len);
-
-            int reps = 1;
-            int transposition = 0;
-
-            // Check for subsequent repetitions at a fixed transposition
-            int next = start + len;
-            if (next + len > n) continue;
-
-            // Determine transposition from first note difference
-            transposition = static_cast<int>(notes[next]) - static_cast<int>(notes[start]);
-
-            while (next + len <= n) {
-                bool match = true;
-                // Check interval pattern matches
-                for (int k = 0; k < len; ++k) {
-                    if (intervals[next + k] != pattern[k]) {
-                        match = false;
-                        break;
-                    }
-                }
-                // Check transposition is consistent
-                int actual_trans = static_cast<int>(notes[next]) - static_cast<int>(notes[start]);
-                if (!match || actual_trans != transposition * reps) {
-                    break;
-                }
-                ++reps;
-                next += len;
-            }
-
-            if (reps >= min_reps) {
-                // Check we haven't already recorded a sequence at this start with longer pattern
-                bool duplicate = false;
-                for (auto& existing : results) {
-                    if (existing.start_index == static_cast<std::size_t>(start) &&
-                        existing.pattern_length >= static_cast<std::size_t>(len)) {
-                        duplicate = true;
-                        break;
-                    }
-                }
-                if (!duplicate) {
-                    results.push_back({static_cast<std::size_t>(start),
-                                       static_cast<std::size_t>(len),
-                                       reps,
-                                       transposition,
-                                       true});
-                }
-            }
+    for (std::size_t d = 0; d < intervals.size(); ++d) {
+        if (intervals[d] == pitch_offset) {
+            return octave * static_cast<int>(intervals.size()) + static_cast<int>(d);
         }
     }
-
-    return results;
+    return std::nullopt;
 }
 
-Result<std::vector<DetectedSequence>> detect_tonal_sequences(std::span<const MidiNote> notes,
-                                                             PitchClass key_root,
-                                                             std::span<const Interval> intervals,
-                                                             int min_length,
-                                                             int min_reps) {
-    if (notes.size() < 2) {
-        return std::unexpected(ErrorCode::InvalidMelody);
-    }
+bool valid_sequence_controls(std::size_t note_count,
+                             int min_length,
+                             int min_reps,
+                             SequenceLayout layout) {
+    return note_count >= 2 &&
+           note_count <= static_cast<std::size_t>(std::numeric_limits<int>::max()) &&
+           min_length >= 1 && min_reps >= 2 &&
+           (layout == SequenceLayout::Adjacent || layout == SequenceLayout::SharedEndpoint);
+}
 
-    // Map notes to scale degrees
-    std::vector<int> degrees;
-    degrees.reserve(notes.size());
-    for (auto note : notes) {
-        degrees.push_back(note_to_degree(note, key_root, intervals));
-    }
-
-    // Extract diatonic interval pattern (degree differences)
-    std::vector<int> degree_intervals;
-    degree_intervals.reserve(degrees.size() - 1);
-    for (std::size_t i = 1; i < degrees.size(); ++i) {
-        if (degrees[i] == -1 || degrees[i - 1] == -1) {
-            degree_intervals.push_back(999); // non-diatonic marker
-        } else {
-            degree_intervals.push_back(degrees[i] - degrees[i - 1]);
-        }
-    }
-
+std::vector<DetectedSequence> detect_sequences(std::span<const std::optional<int>> coordinates,
+                                               int min_length,
+                                               int min_reps,
+                                               SequenceLayout layout,
+                                               bool is_real) {
     std::vector<DetectedSequence> results;
-    int n = static_cast<int>(degree_intervals.size());
-
-    for (int len = min_length; len <= n / min_reps; ++len) {
-        for (int start = 0; start + len <= n; ++start) {
-            // Check pattern has no non-diatonic markers
-            bool has_invalid = false;
-            for (int k = 0; k < len; ++k) {
-                if (degree_intervals[start + k] == 999) {
-                    has_invalid = true;
+    const auto n = coordinates.size();
+    const auto required_reps = static_cast<std::size_t>(min_reps);
+    const auto max_length = layout == SequenceLayout::Adjacent
+                                ? (n / required_reps == 0 ? 0 : n / required_reps - 1)
+                                : (n - 1) / required_reps;
+    for (auto length = static_cast<std::size_t>(min_length); length <= max_length; ++length) {
+        const auto stride = length + (layout == SequenceLayout::Adjacent ? 1 : 0);
+        for (std::size_t start = 0; start + length < n; ++start) {
+            if (!coordinates[start]) continue;
+            bool valid_pattern = true;
+            for (std::size_t k = 1; k <= length; ++k) {
+                if (!coordinates[start + k]) {
+                    valid_pattern = false;
                     break;
                 }
             }
-            if (has_invalid) continue;
-
+            if (!valid_pattern) continue;
+            auto next = start + stride;
+            if (next + length >= n || !coordinates[next]) continue;
+            const int increment = *coordinates[next] - *coordinates[start];
             int reps = 1;
-            int next = start + len;
-
-            while (next + len <= n) {
+            while (next + length < n) {
+                // int64 avoids an overflowing increment*reps even for very
+                // long inputs. Admitted MIDI/scale coordinates remain small.
+                const auto expected_shift = static_cast<std::int64_t>(increment) * reps;
                 bool match = true;
-                for (int k = 0; k < len; ++k) {
-                    if (degree_intervals[next + k] != degree_intervals[start + k]) {
+                for (std::size_t k = 0; k <= length; ++k) {
+                    if (!coordinates[next + k] ||
+                        *coordinates[next + k] - *coordinates[start + k] != expected_shift) {
                         match = false;
                         break;
                     }
                 }
                 if (!match) break;
                 ++reps;
-                next += len;
+                next += stride;
             }
-
             if (reps >= min_reps) {
-                int transposition = (degrees[start + len] != -1 && degrees[start] != -1)
-                                        ? degrees[start + len] - degrees[start]
-                                        : 0;
-
-                bool duplicate = false;
-                for (auto& existing : results) {
-                    if (existing.start_index == static_cast<std::size_t>(start) &&
-                        existing.pattern_length >= static_cast<std::size_t>(len)) {
-                        duplicate = true;
-                        break;
-                    }
-                }
-                if (!duplicate) {
-                    results.push_back({static_cast<std::size_t>(start),
-                                       static_cast<std::size_t>(len),
-                                       reps,
-                                       transposition,
-                                       false});
-                }
+                results.push_back({start, length, reps, increment, is_real, layout});
             }
         }
     }
-
     return results;
+}
+
+} // namespace
+
+Result<std::vector<DetectedSequence>> detect_real_sequences(std::span<const MidiNote> notes,
+                                                            int min_length,
+                                                            int min_reps,
+                                                            SequenceLayout layout) {
+    if (!valid_sequence_controls(notes.size(), min_length, min_reps, layout)) {
+        return std::unexpected(ErrorCode::InvalidMelody);
+    }
+    std::vector<std::optional<int>> coordinates;
+    coordinates.reserve(notes.size());
+    for (auto note : notes)
+        coordinates.push_back(static_cast<int>(note));
+    return detect_sequences(coordinates, min_length, min_reps, layout, true);
+}
+
+Result<std::vector<DetectedSequence>> detect_tonal_sequences(std::span<const MidiNote> notes,
+                                                             PitchClass key_root,
+                                                             std::span<const Interval> intervals,
+                                                             int min_length,
+                                                             int min_reps,
+                                                             SequenceLayout layout) {
+    if (!valid_sequence_controls(notes.size(), min_length, min_reps, layout)) {
+        return std::unexpected(ErrorCode::InvalidMelody);
+    }
+    if (intervals.empty() || intervals.size() > 12 || intervals.front() != 0 ||
+        intervals.back() > 11 ||
+        std::adjacent_find(intervals.begin(), intervals.end(), std::greater_equal<>{}) !=
+            intervals.end()) {
+        return std::unexpected(ErrorCode::InvalidScaleName);
+    }
+    std::vector<std::optional<int>> coordinates;
+    coordinates.reserve(notes.size());
+    for (auto note : notes)
+        coordinates.push_back(note_to_degree(note, key_root, intervals));
+    return detect_sequences(coordinates, min_length, min_reps, layout, false);
 }
 
 } // namespace sunny::core

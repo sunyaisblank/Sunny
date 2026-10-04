@@ -25,14 +25,21 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <limits>
 #include <map>
 #include <numeric>
 #include <optional>
 #include <set>
+#include <sunny/core/form/motif.hpp>
+#include <sunny/core/form/structure.hpp>
 #include <sunny/core/harmony/roman_numeral.hpp>
 #include <sunny/core/melody/analysis.hpp>
 #include <sunny/core/pitch/pitch_class_set.hpp>
 #include <sunny/core/pitch/spelled_pitch.hpp>
+#include <sunny/core/score/harmony_analysis.hpp>
+#include <sunny/core/score/projection.hpp>
+#include <sunny/core/score/time.hpp>
+#include <sunny/core/score/validation.hpp>
 
 namespace sunny::core {
 
@@ -42,117 +49,64 @@ namespace {
 // Shared helpers
 // =========================================================================
 
-/// Extract the active key signature at a given bar from the key map.
-KeySignature key_at_bar(const Score& score, std::uint32_t bar) {
+/// Exact key-map context includes intra-bar changes.
+KeySignature key_at_position(const Score& score, ScoreTime position) {
     KeySignature key = score.key_map.front().key;
     for (const auto& entry : score.key_map) {
-        if (entry.position.bar <= bar)
-            key = entry.key;
-        else
-            break;
+        if (entry.position > position) break;
+        key = entry.key;
     }
     return key;
 }
 
-/// Collect all NoteGroups at a given bar across all parts/voices.
-/// Returns pitch class sets suitable for chord recognition.
-std::vector<PitchClassSet> collect_pcs_per_beat(const Score& score, std::uint32_t bar_index) {
-    std::vector<PitchClassSet> result;
-    // Aggregate all sounding pitches at each distinct offset
-    std::map<Beat, PitchClassSet> offset_pcs;
-    for (const auto& part : score.parts) {
-        if (bar_index >= part.measures.size()) continue;
-        const auto& measure = part.measures[bar_index];
-        for (const auto& voice : measure.voices) {
-            for (const auto& event : voice.events) {
-                const auto* ng = event.as_note_group();
-                if (!ng) continue;
-                for (const auto& note : ng->notes) {
-                    offset_pcs[event.offset].insert(pc(note.pitch));
-                }
-            }
-        }
-    }
-    for (const auto& [offset, pcs] : offset_pcs) {
-        if (pcs.size() >= 2) result.push_back(pcs);
-    }
-    return result;
-}
+using MelodicLane = std::pair<PartId, std::uint8_t>;
 
-/// One sounding attack in a voice: a NoteGroup that begins at least one new note.
-struct SoundingOnset {
-    std::uint32_t bar_index = 0; ///< 0-indexed measure of the attack
-    Beat offset;                 ///< attack offset within that measure
-    Beat duration;               ///< sounding duration, extended through tie continuations
-    /// Highest note of the group when that note is attacked here rather than held.
-    std::optional<MidiNote> melody_note;
+struct MelodicAttack {
+    SymbolicNoteSpan source;
+    MidiNote pitch{};
+    Beat duration{};
+    KeySignature key{};
 };
 
-/// Distinct voice indices used anywhere in a part, in ascending order.
-std::set<std::uint8_t> voice_indices(const Part& part) {
-    std::set<std::uint8_t> indices;
-    for (const auto& measure : part.measures)
-        for (const auto& voice : measure.voices)
-            indices.insert(voice.voice_index);
-    return indices;
-}
+struct AnalysisNotes {
+    std::vector<SymbolicNoteSpan> folded;
+    std::map<MelodicLane, std::vector<MelodicAttack>> lanes;
+};
 
-/// Fold same-pitch tie chains of one voice into sounding onsets.
-///
-/// A note continues the previous NoteGroup of the same voice when that group
-/// held a note of the same pitch with tie_forward; the continuation is part
-/// of one sounding note (ingestion spec stage 4), so it adds duration but no
-/// attack, interval or onset. A rest breaks every pending tie.
-std::vector<SoundingOnset> sounding_onsets(const Part& part, std::uint8_t voice_idx) {
-    std::vector<SoundingOnset> onsets;
-    std::set<int> tied_pitches;
-    for (std::uint32_t bar = 0; bar < part.measures.size(); ++bar) {
-        for (const auto& voice : part.measures[bar].voices) {
-            if (voice.voice_index != voice_idx) continue;
-            for (const auto& event : voice.events) {
-                if (event.is_rest()) tied_pitches.clear();
-                const auto* ng = event.as_note_group();
-                if (!ng || ng->notes.empty()) continue;
+Result<AnalysisNotes> analysis_notes(const Score& score) {
+    if (score.key_map.empty()) return std::unexpected(ErrorCode::InvalidMutation);
+    auto projected = project_symbolic_notes(score);
+    if (!projected) return std::unexpected(projected.error());
+    auto folded = fold_symbolic_ties(*projected);
+    if (!folded) return std::unexpected(folded.error());
+    AnalysisNotes result;
+    result.folded = std::move(*folded);
+    // Empty represented lanes still have a record, with note_count=0.
+    for (const auto& part : score.parts)
+        for (const auto& measure : part.measures)
+            for (const auto& voice : measure.voices)
+                result.lanes.try_emplace({part.id, voice.voice_index});
 
-                bool attacks = false;
-                std::optional<MidiNote> highest;
-                bool highest_attacked = false;
-                std::set<int> next_tied;
-                for (const auto& note : ng->notes) {
-                    const auto m = midi(note.pitch);
-                    const int key = m ? static_cast<int>(*m) : -1;
-                    const bool continued = m && tied_pitches.contains(key);
-                    if (!continued) attacks = true;
-                    if (m && (!highest || *m > *highest)) {
-                        highest = *m;
-                        highest_attacked = !continued;
-                    }
-                    if (note.tie_forward && m) next_tied.insert(key);
-                }
-                tied_pitches = std::move(next_tied);
-
-                if (!attacks && !onsets.empty()) {
-                    onsets.back().duration = onsets.back().duration + ng->duration;
-                    continue;
-                }
-                SoundingOnset onset;
-                onset.bar_index = bar;
-                onset.offset = event.offset;
-                onset.duration = ng->duration;
-                if (highest && highest_attacked && *highest > 0) onset.melody_note = *highest;
-                onsets.push_back(onset);
-            }
-        }
+    std::map<MelodicLane, std::map<Beat, MelodicAttack>> attacks;
+    for (const auto& note : result.folded) {
+        auto pitch = midi(note.pitch);
+        if (!pitch) return std::unexpected(pitch.error());
+        auto duration = checked_sub(note.end, note.start);
+        if (!duration) return std::unexpected(duration.error());
+        auto& onsets = attacks[{note.part_id, note.voice_index}];
+        const auto found = onsets.find(note.start);
+        // Consider newly attacked heads only; a sustained higher note cannot
+        // conceal a lower attack. Equal unisons keep stable source identity.
+        if (found == onsets.end() || *pitch > found->second.pitch)
+            onsets.insert_or_assign(
+                note.start,
+                MelodicAttack{
+                    note, *pitch, *duration, key_at_position(score, note.source_position)});
     }
-    return onsets;
-}
-
-/// Extract a melodic line (sequence of attacked MIDI notes) from a single voice.
-std::vector<MidiNote> extract_melody_line(const Part& part, std::uint8_t voice_idx) {
-    std::vector<MidiNote> notes;
-    for (const auto& onset : sounding_onsets(part, voice_idx))
-        if (onset.melody_note) notes.push_back(*onset.melody_note);
-    return notes;
+    for (auto& [lane, onsets] : attacks)
+        for (auto& [start, attack] : onsets)
+            result.lanes[lane].push_back(std::move(attack));
+    return result;
 }
 
 /// Dynamic level to string for map keys
@@ -327,140 +281,100 @@ TonalPlan analyze_tonal_plan(const Score& score) {
 // Harmonic Analysis
 // =========================================================================
 
-HarmonicAnalysisRecord analyze_harmonic(const Score& score) {
+Result<HarmonicAnalysisRecord> analyze_harmonic(const Score& score) {
+    if (!is_compilable(score)) return std::unexpected(ErrorCode::InvalidMutation);
     HarmonicAnalysisRecord result;
+    Score analytical = score;
+    if (!analytical.stale_harmonic_regions.empty()) {
+        auto refreshed = refresh_stale_regions(analytical);
+        if (!refreshed) return std::unexpected(refreshed.error());
+    }
+    if (analytical.harmonic_annotations.empty()) {
+        auto layer = derive_harmonic_layer(analytical);
+        if (!layer) return std::unexpected(layer.error());
+        analytical.harmonic_annotations = std::move(*layer);
+    }
+    for (const auto& ann : analytical.harmonic_annotations) {
+        // Chord vocabulary
+        result.chord_vocabulary[ann.roman_numeral]++;
 
-    // If the Score already has harmonic annotations, use them directly
-    if (!score.harmonic_annotations.empty()) {
-        for (const auto& ann : score.harmonic_annotations) {
-            // Chord vocabulary
-            result.chord_vocabulary[ann.roman_numeral]++;
-
-            // Cadence inventory
-            if (ann.cadence) {
-                CadenceEvent ce;
-                ce.position = ann.position;
-                // Convert  CadenceType to string
-                switch (*ann.cadence) {
-                case sunny::core::CadenceType::PAC:
-                    ce.type = "PAC";
-                    break;
-                case sunny::core::CadenceType::IAC:
-                    ce.type = "IAC";
-                    break;
-                case sunny::core::CadenceType::Half:
-                    ce.type = "HC";
-                    break;
-                case sunny::core::CadenceType::Plagal:
-                    ce.type = "PC";
-                    break;
-                case sunny::core::CadenceType::Deceptive:
-                    ce.type = "DC";
-                    break;
-                case sunny::core::CadenceType::PhrygianHalf:
-                    ce.type = "Phrygian";
-                    break;
-                default:
-                    ce.type = "PAC";
-                    break;
-                }
-                ce.section_context = section_for_bar(score.section_map, ann.position.bar);
-                result.cadence_inventory.push_back(std::move(ce));
+        // Cadence inventory
+        if (ann.cadence) {
+            CadenceEvent ce;
+            ce.position = ann.position;
+            // Convert  CadenceType to string
+            switch (*ann.cadence) {
+            case sunny::core::CadenceType::PAC:
+                ce.type = "PAC";
+                break;
+            case sunny::core::CadenceType::IAC:
+                ce.type = "IAC";
+                break;
+            case sunny::core::CadenceType::Half:
+                ce.type = "HC";
+                break;
+            case sunny::core::CadenceType::Plagal:
+                ce.type = "PC";
+                break;
+            case sunny::core::CadenceType::Deceptive:
+                ce.type = "DC";
+                break;
+            case sunny::core::CadenceType::PhrygianHalf:
+                ce.type = "Phrygian";
+                break;
+            case sunny::core::CadenceType::None:
+                continue;
+            default:
+                return std::unexpected(ErrorCode::InvariantViolation);
             }
+            ce.section_context = section_for_bar(analytical.section_map, ann.position.bar);
+            result.cadence_inventory.push_back(std::move(ce));
         }
-
-        // Build progression patterns from consecutive annotations
-        if (score.harmonic_annotations.size() >= 2) {
-            for (std::size_t i = 0; i + 1 < score.harmonic_annotations.size(); ++i) {
-                std::vector<std::string> pair = {score.harmonic_annotations[i].roman_numeral,
-                                                 score.harmonic_annotations[i + 1].roman_numeral};
-                // Check if this bigram already exists
-                bool found = false;
-                for (auto& prog : result.progression_inventory) {
-                    if (prog.roman_numerals == pair) {
-                        prog.occurrences.push_back(score.harmonic_annotations[i].position);
-                        found = true;
-                        break;
-                    }
-                }
-                if (!found) {
-                    ProgressionPattern pp;
-                    pp.roman_numerals = pair;
-                    pp.length = 2;
-                    pp.occurrences.push_back(score.harmonic_annotations[i].position);
-                    {
-                        auto kn = to_spn(score.harmonic_annotations[i].key_context.root);
-                        pp.key_context = kn ? *kn : "C4";
-                    }
-                    result.progression_inventory.push_back(std::move(pp));
-                }
-            }
-        }
-
-        // Harmonic rhythm: count chord changes per bar
-        std::map<std::uint32_t, std::uint32_t> changes_per_bar;
-        for (const auto& ann : score.harmonic_annotations)
-            changes_per_bar[ann.position.bar]++;
-
-        float total_changes = 0.0f;
-        for (std::uint32_t bar = 1; bar <= score.metadata.total_bars; ++bar) {
-            float c = static_cast<float>(changes_per_bar[bar]);
-            result.harmonic_rhythm.changes_per_bar.push_back(c);
-            total_changes += c;
-        }
-        if (score.metadata.total_bars > 0) {
-            result.harmonic_rhythm.mean_rate =
-                total_changes / static_cast<float>(score.metadata.total_bars);
-            float var_sum = 0.0f;
-            for (float c : result.harmonic_rhythm.changes_per_bar) {
-                float diff = c - result.harmonic_rhythm.mean_rate;
-                var_sum += diff * diff;
-            }
-            result.harmonic_rhythm.variance =
-                var_sum / static_cast<float>(score.metadata.total_bars);
-        }
-
-        result.tonal_plan = analyze_tonal_plan(score);
-
-        return result;
     }
 
-    // No pre-existing annotations: recognize chords from note content
-    KeySignature current_key = score.key_map.front().key;
-    auto scale_ints = current_key.mode.get_intervals();
-    PitchClass key_pc = pc(current_key.root);
-
-    for (std::uint32_t bar = 0; bar < score.metadata.total_bars; ++bar) {
-        current_key = key_at_bar(score, bar + 1);
-        scale_ints = current_key.mode.get_intervals();
-        const bool is_minor_key = scale_ints.size() >= 3 && scale_ints[2] == 3;
-        key_pc = pc(current_key.root);
-
-        auto pcs_list = collect_pcs_per_beat(score, bar);
-        std::uint32_t bar_chord_count = 0;
-
-        for (const auto& pcs : pcs_list) {
-            auto chord_result = recognize_chord(pcs);
-            if (!chord_result) continue;
-
-            auto [root, quality] = *chord_result;
-            auto numeral = chord_to_numeral(root, quality, key_pc, scale_ints, is_minor_key);
-
-            if (numeral) {
-                result.chord_vocabulary[*numeral]++;
-                bar_chord_count++;
+    // Build progression patterns from consecutive annotations
+    if (analytical.harmonic_annotations.size() >= 2) {
+        for (std::size_t i = 0; i + 1 < analytical.harmonic_annotations.size(); ++i) {
+            std::vector<std::string> pair = {analytical.harmonic_annotations[i].roman_numeral,
+                                             analytical.harmonic_annotations[i + 1].roman_numeral};
+            // Check if this bigram already exists
+            bool found = false;
+            for (auto& prog : result.progression_inventory) {
+                if (prog.roman_numerals == pair) {
+                    prog.occurrences.push_back(analytical.harmonic_annotations[i].position);
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                ProgressionPattern pp;
+                pp.roman_numerals = pair;
+                pp.length = 2;
+                pp.occurrences.push_back(analytical.harmonic_annotations[i].position);
+                {
+                    auto kn = to_spn(analytical.harmonic_annotations[i].key_context.root);
+                    if (!kn) return std::unexpected(kn.error());
+                    pp.key_context = *kn;
+                }
+                result.progression_inventory.push_back(std::move(pp));
             }
         }
-
-        result.harmonic_rhythm.changes_per_bar.push_back(static_cast<float>(bar_chord_count));
     }
 
-    // Compute mean and variance of harmonic rhythm
-    float total = 0.0f;
-    for (float c : result.harmonic_rhythm.changes_per_bar)
-        total += c;
+    // Harmonic rhythm: count chord changes per bar
+    std::map<std::uint32_t, std::uint32_t> changes_per_bar;
+    for (const auto& ann : analytical.harmonic_annotations)
+        changes_per_bar[ann.position.bar]++;
+
+    float total_changes = 0.0f;
+    for (std::uint32_t bar = 1; bar <= score.metadata.total_bars; ++bar) {
+        float c = static_cast<float>(changes_per_bar[bar]);
+        result.harmonic_rhythm.changes_per_bar.push_back(c);
+        total_changes += c;
+    }
     if (score.metadata.total_bars > 0) {
-        result.harmonic_rhythm.mean_rate = total / static_cast<float>(score.metadata.total_bars);
+        result.harmonic_rhythm.mean_rate =
+            total_changes / static_cast<float>(score.metadata.total_bars);
         float var_sum = 0.0f;
         for (float c : result.harmonic_rhythm.changes_per_bar) {
             float diff = c - result.harmonic_rhythm.mean_rate;
@@ -478,182 +392,243 @@ HarmonicAnalysisRecord analyze_harmonic(const Score& score) {
 // Melodic Analysis
 // =========================================================================
 
-MelodicAnalysisRecord analyze_melodic(const Score& score) {
+namespace {
+
+Result<MelodicAnalysisRecord> melodic_from_notes(const AnalysisNotes& notes) {
     MelodicAnalysisRecord result;
-
     std::size_t max_notes = 0;
-    PartId melody_voice{};
-
-    for (const auto& part : score.parts) {
-        VoiceMelodicAnalysis vma;
-        vma.part_id = part.id;
-
-        auto melody = extract_melody_line(part, 0);
-        vma.note_count = static_cast<std::uint32_t>(melody.size());
-        if (melody.empty()) {
-            result.per_voice_analysis.push_back(std::move(vma));
-            continue;
-        }
-
-        // Range
-        auto [mn, mx] = std::minmax_element(melody.begin(), melody.end());
-        vma.range_low = static_cast<std::int8_t>(*mn);
-        vma.range_high = static_cast<std::int8_t>(*mx);
-
-        // Statistics via
-        auto stats = compute_melody_statistics(melody);
-        if (stats) {
-            vma.conjunct_proportion = static_cast<float>(stats->conjunct_ratio);
-
-            // Interval distribution
-            for (int i = 0; i < 25; ++i) {
-                if (stats->interval_histogram[i] > 0) {
-                    std::int8_t interval = static_cast<std::int8_t>(i - 12);
-                    vma.interval_distribution[interval] =
-                        static_cast<std::uint32_t>(stats->interval_histogram[i]);
+    for (const auto& [lane, attacks] : notes.lanes) {
+        if (attacks.size() > std::numeric_limits<std::uint32_t>::max())
+            return std::unexpected(ErrorCode::ArithmeticOverflow);
+        VoiceMelodicAnalysis voice;
+        voice.part_id = lane.first;
+        voice.voice_index = lane.second;
+        voice.note_count = static_cast<std::uint32_t>(attacks.size());
+        if (!attacks.empty()) {
+            std::vector<MidiNote> pitches;
+            for (const auto& attack : attacks)
+                pitches.push_back(attack.pitch);
+            std::sort(pitches.begin(), pitches.end());
+            voice.range_low = static_cast<std::int8_t>(pitches.front());
+            voice.range_high = static_cast<std::int8_t>(pitches.back());
+            voice.tessitura_low = static_cast<std::int8_t>(pitches[pitches.size() / 10]);
+            voice.tessitura_high = static_cast<std::int8_t>(pitches[(pitches.size() * 9) / 10]);
+            std::size_t chromatic = 0, conjunct = 0;
+            for (std::size_t i = 0; i < attacks.size(); ++i) {
+                const auto& attack = attacks[i];
+                const auto intervals = attack.key.mode.get_intervals();
+                const int offset = (static_cast<int>(pc(attack.source.pitch)) -
+                                    static_cast<int>(pc(attack.key.root)) + 12) %
+                                   12;
+                const auto found = std::ranges::find(intervals, offset);
+                const auto degree =
+                    found == intervals.end()
+                        ? std::uint8_t{0}
+                        : static_cast<std::uint8_t>(std::distance(intervals.begin(), found) + 1);
+                ++voice.scale_degree_distribution[degree];
+                if (degree == 0) ++chromatic;
+                if (i > 0) {
+                    const int interval =
+                        static_cast<int>(attack.pitch) - static_cast<int>(attacks[i - 1].pitch);
+                    ++voice.interval_distribution[static_cast<std::int8_t>(interval)];
+                    if (std::abs(interval) <= 2) ++conjunct;
                 }
             }
-
-            // Chromaticism rate and scale degree distribution. Scale intervals
-            // are semitones from the root, so degree k+1 is root + intervals[k].
-            // Bucket 0 counts non-diatonic pitches so the histogram accounts
-            // for every melody note.
-            KeySignature key = key_at_bar(score, 1);
-            const PitchClass root = pc(key.root);
-            std::vector<PitchClass> scale_pcs;
-            for (auto iv : key.mode.get_intervals())
-                scale_pcs.push_back(PitchClass::wrapped(root + iv));
-            std::uint32_t chromatic_count = 0;
-            std::uint32_t total_notes = 0;
-            for (int i = 0; i < 12; ++i) {
-                const auto count = stats->pitch_class_histogram[i];
-                if (count == 0) continue;
-                total_notes += count;
-                const auto found =
-                    std::find(scale_pcs.begin(), scale_pcs.end(), PitchClass::wrapped(i));
-                const auto degree =
-                    found == scale_pcs.end()
-                        ? std::uint8_t{0}
-                        : static_cast<std::uint8_t>(std::distance(scale_pcs.begin(), found) + 1);
-                if (degree == 0) chromatic_count += count;
-                vma.scale_degree_distribution[degree] += count;
+            voice.chromaticism_rate = static_cast<float>(chromatic) / attacks.size();
+            if (attacks.size() > 1)
+                voice.conjunct_proportion = static_cast<float>(conjunct) / (attacks.size() - 1);
+            if (attacks.size() > max_notes) {
+                max_notes = attacks.size();
+                result.primary_melody_voice = lane.first;
+                result.primary_melody_voice_index = lane.second;
             }
-            if (total_notes > 0)
-                vma.chromaticism_rate =
-                    static_cast<float>(chromatic_count) / static_cast<float>(total_notes);
         }
-
-        // Track primary melody voice (most notes)
-        if (melody.size() > max_notes) {
-            max_notes = melody.size();
-            melody_voice = part.id;
-        }
-
-        result.per_voice_analysis.push_back(std::move(vma));
+        result.per_voice_analysis.push_back(std::move(voice));
     }
-
-    result.primary_melody_voice = melody_voice;
     return result;
 }
 
-// =========================================================================
-// Rhythmic Analysis
-// =========================================================================
+struct MetricalContext {
+    std::vector<Beat> downbeats;
+    std::map<PartId, std::vector<Beat>> group_starts;
+    std::map<std::pair<PartId, std::uint32_t>, TimeSignature> metres;
+};
 
-RhythmicAnalysisRecord analyze_rhythmic(const Score& score) {
+Result<MetricalContext> metrical_context(const Score& score) {
+    MetricalContext result;
+    if (score.time_map.empty()) return std::unexpected(ErrorCode::InvalidTimeSignature);
+    if (score.metadata.total_bars == std::numeric_limits<std::uint32_t>::max())
+        return std::unexpected(ErrorCode::ArithmeticOverflow);
+    for (const auto& part : score.parts)
+        if (part.measures.size() != score.metadata.total_bars)
+            return std::unexpected(ErrorCode::InvalidMutation);
+    TimeSignature global = score.time_map.front().time_signature;
+    std::size_t entry = 0;
+    for (std::uint32_t bar = 1; bar <= score.metadata.total_bars; ++bar) {
+        while (entry + 1 < score.time_map.size() && score.time_map[entry + 1].bar <= bar)
+            global = score.time_map[++entry].time_signature;
+        auto start = score_time_to_absolute_beat({bar, Beat::zero()}, score.time_map);
+        auto end = score_time_to_absolute_beat({bar + 1, Beat::zero()}, score.time_map);
+        if (!start) return std::unexpected(start.error());
+        if (!end) return std::unexpected(end.error());
+        result.downbeats.push_back(*start);
+        for (const auto& part : score.parts) {
+            const auto& local = part.measures[bar - 1].local_time;
+            const auto& metre = local ? *local : global;
+            result.metres.emplace(std::pair{part.id, bar}, metre);
+            int pulse = 0;
+            for (const int group : metre.groups()) {
+                if (pulse > 0) {
+                    auto boundary = checked_add(*start, Beat{pulse, metre.denominator()});
+                    if (!boundary) return std::unexpected(boundary.error());
+                    // Score's global bar frame owns the next downbeat. Local
+                    // grouping affects pulses represented inside that frame.
+                    if (*boundary < *end) result.group_starts[part.id].push_back(*boundary);
+                }
+                pulse += group;
+            }
+        }
+        if (bar == score.metadata.total_bars) result.downbeats.push_back(*end);
+    }
+    return result;
+}
+
+Result<bool> is_metrically_syncopating(const SymbolicNoteSpan& note,
+                                       const MetricalContext& context) {
+    const auto found = context.metres.find({note.part_id, note.source_position.bar});
+    if (found == context.metres.end()) return std::unexpected(ErrorCode::InvalidMutation);
+    const auto& metre = found->second;
+    auto pulses = checked_mul(note.source_position.beat, Beat{metre.denominator(), 1});
+    if (!pulses) return std::unexpected(pulses.error());
+    int strength = 0;
+    if (note.source_position.beat == Beat::zero())
+        strength = 3;
+    else if (pulses->denominator() == 1) {
+        strength = 1;
+        int group_start = 0;
+        for (const int group : metre.groups()) {
+            if (pulses->numerator() == group_start) {
+                strength = 2;
+                break;
+            }
+            group_start += group;
+        }
+    }
+    if (strength == 3) return false;
+    const auto past_stronger = [&](const std::vector<Beat>& boundaries) {
+        const auto next = std::upper_bound(boundaries.begin(), boundaries.end(), note.start);
+        return next != boundaries.end() && *next < note.end;
+    };
+    if (past_stronger(context.downbeats)) return true;
+    if (strength < 2) {
+        const auto groups = context.group_starts.find(note.part_id);
+        if (groups != context.group_starts.end() && past_stronger(groups->second)) return true;
+    }
+    if (strength == 0) {
+        // Only the next denominator pulse can be needed. Arithmetic avoids
+        // enumerating potentially very large numerators for every bar.
+        const auto next_pulse = pulses->numerator() / pulses->denominator() + 1;
+        const Beat offset{next_pulse, metre.denominator()};
+        if (offset < metre.measure_duration()) {
+            auto bar_start = checked_sub(note.start, note.source_position.beat);
+            if (!bar_start) return std::unexpected(bar_start.error());
+            auto next = checked_add(*bar_start, offset);
+            if (!next) return std::unexpected(next.error());
+            if (*next < note.end) return true;
+        }
+    }
+    return false;
+}
+
+Result<RhythmicAnalysisRecord> rhythmic_from_notes(const Score& score, const AnalysisNotes& notes) {
     RhythmicAnalysisRecord result;
-    std::uint32_t total_note_events = 0;
-    double total_note_dur = 0.0;
-    double total_rest_dur = 0.0;
-    std::uint32_t time_sig_changes = 0;
-
     for (std::uint32_t bar = 1; bar <= score.metadata.total_bars; ++bar) {
         const TimeSignature* active = nullptr;
         for (const auto& entry : score.time_map) {
             if (entry.bar > bar) break;
             active = &entry.time_signature;
         }
-        if (active) result.metre_distribution[metre_key(*active)]++;
+        if (active) ++result.metre_distribution[metre_key(*active)];
     }
 
-    for (std::uint32_t bar = 0; bar < score.metadata.total_bars; ++bar) {
-        for (const auto& part : score.parts) {
-            if (bar >= part.measures.size()) continue;
-            const auto& measure = part.measures[bar];
-            if (measure.local_time) time_sig_changes++;
+    double rest_duration = 0.0, allocated_duration = 0.0;
+    std::uint64_t time_changes = score.time_map.empty() ? 0 : score.time_map.size() - 1;
+    for (const auto& part : score.parts)
+        for (const auto& measure : part.measures) {
+            if (measure.local_time) ++time_changes;
             for (const auto& voice : measure.voices)
-                for (const auto& event : voice.events)
-                    if (const auto* r = event.as_rest()) total_rest_dur += r->duration.to_float();
+                for (const auto& event : voice.events) {
+                    if (const auto* rest = event.as_rest()) {
+                        rest_duration += rest->duration.to_float();
+                        allocated_duration += rest->duration.to_float();
+                    } else if (const auto* group = event.as_note_group()) {
+                        // A chord occupies one voice allocation, independent
+                        // of how many pitches or duplicate unisons it contains.
+                        allocated_duration += group->duration.to_float();
+                    }
+                }
+        }
+    result.onset_density.resize(score.metadata.total_bars, 0.0f);
+    auto metre = metrical_context(score);
+    if (!metre) return std::unexpected(metre.error());
+    std::uint64_t eligible = 0, syncopating = 0;
+    for (const auto& note : notes.folded) {
+        auto duration = checked_sub(note.end, note.start);
+        if (!duration) return std::unexpected(duration.error());
+        ++result.duration_distribution[beat_key(*duration)];
+        if (note.source_position.bar == 0 || note.source_position.bar > score.metadata.total_bars)
+            return std::unexpected(ErrorCode::InvalidMutation);
+        ++result.onset_density[note.source_position.bar - 1];
+        if (!note.grace) {
+            ++eligible;
+            auto sync = is_metrically_syncopating(note, *metre);
+            if (!sync) return std::unexpected(sync.error());
+            if (*sync) ++syncopating;
         }
     }
-
-    // Onsets are sounding attacks: tie continuations extend the attacked
-    // note's duration and contribute no onset of their own.
-    std::vector<float> bar_onsets(score.metadata.total_bars, 0.0f);
-    std::uint32_t weak_onsets = 0;
-    for (const auto& part : score.parts) {
-        for (const auto voice_idx : voice_indices(part)) {
-            for (const auto& onset : sounding_onsets(part, voice_idx)) {
-                if (onset.bar_index >= score.metadata.total_bars) continue;
-                result.duration_distribution[beat_key(onset.duration)]++;
-                total_note_events++;
-                total_note_dur += onset.duration.to_float();
-                bar_onsets[onset.bar_index] += 1.0f;
-                // Weak positions: offbeat eighths and sixteenths
-                const double offset_in_quarters = onset.offset.to_float() * 4.0;
-                if (offset_in_quarters - std::floor(offset_in_quarters) > 0.1) weak_onsets++;
-            }
-        }
+    if (eligible > 0) result.syncopation_index = static_cast<float>(syncopating) / eligible;
+    if (allocated_duration > 0.0)
+        result.rest_proportion = static_cast<float>(rest_duration / allocated_duration);
+    if (score.metadata.total_bars > 0)
+        result.metrical_complexity = static_cast<float>(time_changes) / score.metadata.total_bars;
+    for (const auto& tempo : score.tempo_map) {
+        auto effective =
+            effective_quarter_tempo_at(tempo.position, score.tempo_map, score.time_map);
+        if (!effective) return std::unexpected(effective.error());
+        result.tempo_profile.emplace_back(tempo.position,
+                                          static_cast<float>(effective->to_float()));
     }
-    result.onset_density = std::move(bar_onsets);
-
-    // Rest proportion
-    const double total_dur = total_note_dur + total_rest_dur;
-    if (total_dur > 0.0) {
-        result.rest_proportion = static_cast<float>(total_rest_dur / total_dur);
+    for (const auto& section : score.section_map) {
+        std::size_t count = 0;
+        for (const auto& note : notes.folded)
+            if (note.source_position >= section.start && note.source_position < section.end)
+                ++count;
+        const auto bars =
+            section.end.bar - section.start.bar + (section.end.beat > Beat::zero() ? 1U : 0U);
+        if (bars > 0)
+            result.note_density_by_section[section.label] = static_cast<float>(count) / bars;
     }
-
-    // Syncopation index: ratio of onsets on weak metrical positions
-    if (total_note_events > 0) {
-        result.syncopation_index =
-            static_cast<float>(weak_onsets) / static_cast<float>(total_note_events);
-    }
-
-    // Metrical complexity: time sig changes / total bars + asymmetric penalty
-    if (score.metadata.total_bars > 0) {
-        result.metrical_complexity =
-            static_cast<float>(time_sig_changes) / static_cast<float>(score.metadata.total_bars);
-    }
-
-    // Tempo profile from tempo map
-    for (const auto& te : score.tempo_map) {
-        result.tempo_profile.push_back({te.position, static_cast<float>(te.bpm.to_float())});
-    }
-
-    // Note density by section
-    for (const auto& sec : score.section_map) {
-        float section_onsets = 0.0f;
-        std::uint32_t section_bars = 0;
-        for (std::uint32_t bar = sec.start.bar;
-             bar < sec.end.bar && bar <= score.metadata.total_bars;
-             ++bar) {
-            if (bar - 1 < result.onset_density.size())
-                section_onsets += result.onset_density[bar - 1];
-            section_bars++;
-        }
-        if (section_bars > 0)
-            result.note_density_by_section[sec.label] =
-                section_onsets / static_cast<float>(section_bars);
-    }
-
     return result;
+}
+
+} // namespace
+
+// =========================================================================
+// Rhythmic Analysis
+// =========================================================================
+
+Result<RhythmicAnalysisRecord> analyze_rhythmic(const Score& score) {
+    auto notes = analysis_notes(score);
+    if (!notes) return std::unexpected(notes.error());
+    return rhythmic_from_notes(score, *notes);
 }
 
 // =========================================================================
 // Formal Analysis
 // =========================================================================
 
-FormalAnalysisRecord analyze_formal(const Score& score) {
+Result<FormalAnalysisRecord> analyze_formal(const Score& score) {
+    if (score.key_map.empty()) return std::unexpected(ErrorCode::InvalidMutation);
     FormalAnalysisRecord result;
     result.total_duration_bars = score.metadata.total_bars;
 
@@ -664,14 +639,10 @@ FormalAnalysisRecord analyze_formal(const Score& score) {
         fs.start_bar = sec.start.bar;
         fs.end_bar = sec.end.bar;
         fs.length_bars = sec.end.bar - sec.start.bar;
-        {
-            auto ks = key_at_bar(score, sec.start.bar);
-            auto kn = to_spn(ks.root);
-            fs.key = kn ? *kn : "C4";
-        }
-        if (!score.tempo_map.empty()) {
-            fs.tempo = static_cast<float>(score.tempo_map.front().bpm.to_float());
-        }
+        fs.key = key_signature_name(key_at_position(score, sec.start));
+        auto tempo = effective_quarter_tempo_at(sec.start, score.tempo_map, score.time_map);
+        if (!tempo) return std::unexpected(tempo.error());
+        fs.tempo = static_cast<float>(tempo->to_float());
         result.section_plan.push_back(std::move(fs));
     }
 
@@ -689,33 +660,37 @@ FormalAnalysisRecord analyze_formal(const Score& score) {
         }
     }
 
-    // Classify form from section label pattern.
-    // Inline pattern matching avoids including.h, which
-    // conflicts with.h on the CadenceType enum.
-    if (!result.section_plan.empty()) {
-        std::vector<std::string> labels;
-        labels.reserve(result.section_plan.size());
-        for (const auto& fs : result.section_plan)
-            labels.push_back(fs.label);
-
-        // Check for common patterns
-        if (labels.size() == 2) {
-            result.form_type = FormClassification::BinarySimple;
-        } else if (labels.size() == 3 && labels[0] == labels[2]) {
-            result.form_type = FormClassification::Ternary;
-        } else if (labels.size() >= 3 && labels[0] == labels[2] && labels[0] != labels[1]) {
-            result.form_type = FormClassification::BinaryRounded;
-        } else if (labels.size() >= 5) {
-            // Check for rondo (A B A C A...)
-            bool is_rondo = true;
-            for (std::size_t i = 0; i < labels.size(); i += 2) {
-                if (labels[i] != labels[0]) {
-                    is_rondo = false;
-                    break;
-                }
-            }
-            if (is_rondo) result.form_type = FormClassification::Rondo;
-        }
+    std::vector<std::string> labels;
+    for (const auto& section : result.section_plan)
+        labels.push_back(section.label);
+    switch (classify_form(labels)) {
+    case SectionalForm::Binary:
+        result.form_type = FormClassification::BinarySimple;
+        break;
+    case SectionalForm::RoundedBinary:
+        result.form_type = FormClassification::BinaryRounded;
+        break;
+    case SectionalForm::Ternary:
+        result.form_type = FormClassification::Ternary;
+        break;
+    case SectionalForm::Rondo:
+        result.form_type = FormClassification::Rondo;
+        break;
+    case SectionalForm::Sonata:
+        result.form_type = FormClassification::SonataAllegro;
+        break;
+    case SectionalForm::ThemeVariations:
+        result.form_type = FormClassification::ThemeAndVariations;
+        break;
+    case SectionalForm::Strophic:
+        result.form_type = FormClassification::Strophic;
+        break;
+    case SectionalForm::ThroughComposed:
+        result.form_type = FormClassification::ThroughComposed;
+        break;
+    case SectionalForm::Unknown:
+        result.form_type = FormClassification::Other;
+        break;
     }
 
     result.tonal_plan = analyze_tonal_plan(score);
@@ -727,84 +702,98 @@ FormalAnalysisRecord analyze_formal(const Score& score) {
 // Voice-Leading Analysis
 // =========================================================================
 
-VoiceLeadingAnalysisRecord analyze_voice_leading(const Score& score) {
-    VoiceLeadingAnalysisRecord result;
+namespace {
 
-    // We analyze consecutive vertical sonorities for motion types.
-    // For each pair of measures, extract pitch sets and classify motion.
+struct VoiceLeadingComputation {
+    VoiceLeadingAnalysisRecord record;
+    std::uint64_t motion_samples = 0;
+    std::uint64_t spacing_samples = 0;
+    std::uint64_t retention_observations = 0;
+};
 
-    std::uint32_t total_pairs = 0;
-    std::uint32_t contrary_count = 0;
-    std::uint32_t similar_count = 0;
-    std::uint32_t oblique_count = 0;
-    std::uint32_t parallel_count = 0;
-
-    // Extract per-bar pitch sequences for each part
-    for (std::size_t pi = 0; pi + 1 < score.parts.size(); ++pi) {
-        const auto& upper = score.parts[pi];
-        const auto& lower = score.parts[pi + 1];
-
-        for (std::uint32_t bar = 0; bar + 1 < score.metadata.total_bars; ++bar) {
-            if (bar >= upper.measures.size() || bar >= lower.measures.size()) continue;
-
-            // Get first note of each part in consecutive bars
-            auto get_first_midi = [](const Measure& m) -> int {
-                for (const auto& voice : m.voices) {
-                    for (const auto& ev : voice.events) {
-                        const auto* ng = ev.as_note_group();
-                        if (ng && !ng->notes.empty()) {
-                            auto m_val = midi(ng->notes[0].pitch);
-                            if (m_val) return *m_val;
-                        }
-                    }
-                }
-                return -1;
-            };
-
-            int upper1 = get_first_midi(upper.measures[bar]);
-            int upper2 = get_first_midi(upper.measures[bar + 1]);
-            int lower1 = get_first_midi(lower.measures[bar]);
-            int lower2 = get_first_midi(lower.measures[bar + 1]);
-
-            if (upper1 < 0 || upper2 < 0 || lower1 < 0 || lower2 < 0) continue;
-
-            int upper_motion = upper2 - upper1;
-            int lower_motion = lower2 - lower1;
-
-            total_pairs++;
-
-            if (upper_motion == 0 || lower_motion == 0) {
-                oblique_count++;
-            } else if ((upper_motion > 0 && lower_motion < 0) ||
-                       (upper_motion < 0 && lower_motion > 0)) {
-                contrary_count++;
-            } else if (upper_motion == lower_motion) {
-                parallel_count++;
-                // Check for parallel fifths/octaves
-                int interval1 = std::abs(upper1 - lower1) % 12;
-                int interval2 = std::abs(upper2 - lower2) % 12;
-                if (interval1 == 7 && interval2 == 7) result.parallel_fifths_count++;
-                if (interval1 == 0 && interval2 == 0) result.parallel_octaves_count++;
-            } else {
-                similar_count++;
-            }
-
-            // Spacing distribution
-            int spacing = std::abs(upper1 - lower1);
-            if (spacing <= 127)
-                result.spacing_distribution[static_cast<std::int8_t>(std::min(spacing, 24))]++;
+Result<VoiceLeadingComputation> voice_leading_from_notes(const AnalysisNotes& notes) {
+    auto slices = partition_symbolic_notes(notes.folded);
+    if (!slices) return std::unexpected(slices.error());
+    VoiceLeadingComputation result;
+    std::map<MelodicLane, int> previous;
+    std::uint64_t contrary = 0, similar = 0, oblique = 0, parallel = 0;
+    std::uint64_t retained = 0, retention_total = 0;
+    for (const auto& slice : *slices) {
+        std::map<MelodicLane, int> current;
+        for (const auto index : slice.sounding_indices) {
+            const auto& note = notes.folded[index];
+            auto pitch = midi(note.pitch);
+            if (!pitch) return std::unexpected(pitch.error());
+            const MelodicLane lane{note.part_id, note.voice_index};
+            const int value = static_cast<int>(*pitch);
+            auto [found, inserted] = current.try_emplace(lane, value);
+            if (!inserted) found->second = std::max(found->second, value);
         }
+        // Representative notes remain in their structural lane; no sorting by
+        // pitch that could hide a crossing. All lane pairs are sampled.
+        for (auto first = current.begin(); first != current.end(); ++first) {
+            for (auto second = std::next(first); second != current.end(); ++second) {
+                ++result.record.spacing_distribution[static_cast<std::int8_t>(
+                    std::abs(first->second - second->second))];
+                ++result.spacing_samples;
+                const auto old_first = previous.find(first->first);
+                const auto old_second = previous.find(second->first);
+                if (old_first == previous.end() || old_second == previous.end()) continue;
+                const int motion_first = first->second - old_first->second;
+                const int motion_second = second->second - old_second->second;
+                if (motion_first == 0 && motion_second == 0) continue;
+                ++result.motion_samples;
+                if (motion_first == 0 || motion_second == 0)
+                    ++oblique;
+                else if ((motion_first > 0) != (motion_second > 0))
+                    ++contrary;
+                else if (motion_first == motion_second) {
+                    ++parallel;
+                    const int before = std::abs(old_first->second - old_second->second) % 12;
+                    const int after = std::abs(first->second - second->second) % 12;
+                    if (before == 7 && after == 7) ++result.record.parallel_fifths_count;
+                    if (before == 0 && after == 0) ++result.record.parallel_octaves_count;
+                } else
+                    ++similar;
+                const int before_order = old_first->second - old_second->second;
+                const int after_order = first->second - second->second;
+                if ((before_order < 0 && after_order > 0) || (before_order > 0 && after_order < 0))
+                    ++result.record.voice_crossing_count;
+            }
+        }
+        if (!previous.empty()) {
+            std::set<int> before, after;
+            for (const auto& [lane, pitch] : previous)
+                before.insert(pitch);
+            for (const auto& [lane, pitch] : current)
+                after.insert(pitch);
+            retention_total += before.size();
+            result.retention_observations += before.size();
+            for (const auto pitch : before)
+                if (after.contains(pitch)) ++retained;
+        }
+        previous = std::move(current);
     }
-
-    if (total_pairs > 0) {
-        auto n = static_cast<float>(total_pairs);
-        result.contrary_motion_proportion = static_cast<float>(contrary_count) / n;
-        result.similar_motion_proportion = static_cast<float>(similar_count) / n;
-        result.oblique_motion_proportion = static_cast<float>(oblique_count) / n;
-        result.parallel_motion_proportion = static_cast<float>(parallel_count) / n;
+    if (result.motion_samples > 0) {
+        const auto total = static_cast<float>(result.motion_samples);
+        result.record.contrary_motion_proportion = static_cast<float>(contrary) / total;
+        result.record.similar_motion_proportion = static_cast<float>(similar) / total;
+        result.record.oblique_motion_proportion = static_cast<float>(oblique) / total;
+        result.record.parallel_motion_proportion = static_cast<float>(parallel) / total;
     }
-
+    if (retention_total > 0)
+        result.record.common_tone_retention_rate = static_cast<float>(retained) / retention_total;
     return result;
+}
+
+} // namespace
+
+Result<VoiceLeadingAnalysisRecord> analyze_voice_leading(const Score& score) {
+    auto notes = analysis_notes(score);
+    if (!notes) return std::unexpected(notes.error());
+    auto computation = voice_leading_from_notes(*notes);
+    if (!computation) return std::unexpected(computation.error());
+    return std::move(computation->record);
 }
 
 // =========================================================================
@@ -1022,28 +1011,25 @@ std::optional<OrchestrationAnalysisRecord> analyze_orchestration(const Score& sc
 
     OrchestrationAnalysisRecord result;
 
-    // Instrument usage: proportion of measures where each part plays
+    // Instrument-name presence is a union of active global bars. Several
+    // Parts may share a display name; later silent Parts cannot erase sound.
+    std::map<std::string, std::set<std::uint32_t>> active_by_name;
     for (const auto& part : score.parts) {
-        std::uint32_t active_bars = 0;
-        for (const auto& measure : part.measures) {
-            bool has_notes = false;
-            for (const auto& voice : measure.voices) {
-                for (const auto& event : voice.events) {
-                    if (event.is_note_group()) {
-                        has_notes = true;
-                        break;
-                    }
-                }
-                if (has_notes) break;
-            }
-            if (has_notes) active_bars++;
+        auto& active = active_by_name[part.definition.name];
+        for (std::uint32_t bar = 0; bar < part.measures.size(); ++bar) {
+            const bool sounding =
+                std::ranges::any_of(part.measures[bar].voices, [](const auto& voice) {
+                    return std::ranges::any_of(
+                        voice.events, [](const auto& event) { return event.is_note_group(); });
+                });
+            if (sounding) active.insert(bar);
         }
-        float usage =
-            (score.metadata.total_bars > 0)
-                ? static_cast<float>(active_bars) / static_cast<float>(score.metadata.total_bars)
-                : 0.0f;
-        result.instrument_usage[part.definition.name] = usage;
     }
+    for (const auto& [name, active] : active_by_name)
+        result.instrument_usage[name] =
+            score.metadata.total_bars > 0
+                ? static_cast<float>(active.size()) / static_cast<float>(score.metadata.total_bars)
+                : 0.0f;
 
     // Melody carrier: which part has the highest notes most often
     std::map<std::string, std::uint32_t> melody_counts;
@@ -1085,37 +1071,377 @@ std::optional<OrchestrationAnalysisRecord> analyze_orchestration(const Score& sc
 // Motivic Analysis
 // =========================================================================
 
-MotivicAnalysisRecord analyze_motivic(const Score&) {
-    MotivicAnalysisRecord result;
+namespace {
 
-    // Motivic analysis requires pre-identified thematic units, which
-    // depend on formal segmentation and human annotation. Without
-    // pre-existing thematic units, we compute basic statistics:
-    // thematic density = 0 (no identified themes) and economy = 0.
+struct MotifWindow {
+    MelodicLane lane;
+    std::size_t index = 0;
+    std::size_t length = 0;
+};
 
-    // If thematic material is available through section annotations,
-    // record it; otherwise leave empty.
-    result.thematic_density = 0.0f;
-    result.thematic_economy = 0.0f;
+struct MotivicComputation {
+    MotivicAnalysisRecord record;
+    std::uint64_t candidate_windows = 0;
+};
 
+Result<MotivicComputation> motivic_from_notes(const Score& score, const AnalysisNotes& notes) {
+    // Ordered signatures contain exact directed intervals and exact duration
+    // ratios. Float serialization is an output boundary, never a matching key.
+    using Signature = std::pair<std::vector<std::int8_t>, std::vector<Beat>>;
+    std::map<Signature, std::vector<MotifWindow>> groups;
+    MotivicComputation result;
+    std::size_t total_attacks = 0;
+    for (const auto& [lane, attacks] : notes.lanes) {
+        total_attacks += attacks.size();
+        for (std::size_t length = 3; length <= 8; ++length) {
+            for (std::size_t start = 0; start + length <= attacks.size(); ++start) {
+                bool contiguous = true;
+                Signature signature;
+                for (std::size_t offset = 0; offset < length; ++offset) {
+                    const auto& attack = attacks[start + offset];
+                    if (offset > 0) {
+                        const auto& previous = attacks[start + offset - 1];
+                        if (previous.source.end != attack.source.start) {
+                            contiguous = false;
+                            break;
+                        }
+                        signature.first.push_back(static_cast<std::int8_t>(
+                            static_cast<int>(attack.pitch) - static_cast<int>(previous.pitch)));
+                    }
+                    auto ratio = checked_div(attack.duration, attacks[start].duration);
+                    if (!ratio) return std::unexpected(ratio.error());
+                    signature.second.push_back(*ratio);
+                }
+                if (!contiguous) continue;
+                ++result.candidate_windows;
+                groups[std::move(signature)].push_back({lane, start, length});
+            }
+        }
+    }
+
+    std::set<std::pair<MelodicLane, std::size_t>> covered;
+    for (auto& [signature, windows] : groups) {
+        std::ranges::sort(windows, [&](const auto& left, const auto& right) {
+            const auto& left_attack = notes.lanes.at(left.lane)[left.index];
+            const auto& right_attack = notes.lanes.at(right.lane)[right.index];
+            if (left_attack.source.start != right_attack.source.start)
+                return left_attack.source.start < right_attack.source.start;
+            return left.lane < right.lane;
+        });
+        std::map<MelodicLane, Beat> previous_end;
+        std::vector<MotifWindow> selected;
+        for (const auto& window : windows) {
+            const auto& attacks = notes.lanes.at(window.lane);
+            const auto found = previous_end.find(window.lane);
+            if (found != previous_end.end() && attacks[window.index].source.start < found->second)
+                continue;
+            previous_end[window.lane] = attacks[window.index + window.length - 1].source.end;
+            selected.push_back(window);
+        }
+        if (selected.size() < 2) continue;
+        const auto& original = selected.front();
+        const auto& original_lane = notes.lanes.at(original.lane);
+        std::vector<MidiNote> original_pitches;
+        ThematicUnit unit;
+        unit.id = ThematicUnitId{result.record.thematic_units.size() + 1};
+        unit.label =
+            "exact-window-" + std::to_string(original.length) + "-" + std::to_string(unit.id.value);
+        unit.intervals = signature.first;
+        for (const auto interval : unit.intervals)
+            unit.contour.push_back(static_cast<std::int8_t>((interval > 0) - (interval < 0)));
+        for (std::size_t offset = 0; offset < original.length; ++offset) {
+            original_pitches.push_back(original_lane[original.index + offset].pitch);
+            unit.rhythm.push_back(
+                static_cast<float>(original_lane[original.index + offset].duration.to_float()));
+        }
+        for (const auto& window : selected) {
+            const auto& attacks = notes.lanes.at(window.lane);
+            const auto& first = attacks[window.index];
+            const auto& last = attacks[window.index + window.length - 1];
+            std::vector<MidiNote> pitches;
+            for (std::size_t offset = 0; offset < window.length; ++offset) {
+                pitches.push_back(attacks[window.index + offset].pitch);
+                covered.insert({window.lane, window.index + offset});
+            }
+            const auto pitch_transform = classify_transformation(original_pitches, pitches);
+            if (pitch_transform != MotivicTransform::Repetition &&
+                pitch_transform != MotivicTransform::Transposition)
+                return std::unexpected(ErrorCode::InvariantViolation);
+            auto scale = checked_div(first.duration, original_lane[original.index].duration);
+            if (!scale) return std::unexpected(scale.error());
+            ThematicOccurrence occurrence;
+            occurrence.position = first.source.source_position;
+            occurrence.part_id = window.lane.first;
+            occurrence.voice_index = window.lane.second;
+            auto end = absolute_beat_to_score_time(
+                last.source.end, score.time_map, score.metadata.total_bars);
+            if (!end) return std::unexpected(end.error());
+            occurrence.end = *end;
+            occurrence.key = key_signature_name(first.key);
+            occurrence.transformation = pitch_transform == MotivicTransform::Transposition
+                                            ? ThematicTransformation::TransposedExact
+                                            : ThematicTransformation::Original;
+            if (*scale != Beat{1, 1}) {
+                // The single occurrence label gives duration scaling priority;
+                // a concurrent exact transposition also has its own inventory entry.
+                if (pitch_transform == MotivicTransform::Transposition)
+                    result.record.transformation_inventory.push_back(
+                        {unit.id,
+                         occurrence.position,
+                         ThematicTransformation::TransposedExact,
+                         occurrence.key});
+                occurrence.transformation = *scale > Beat{1, 1}
+                                                ? ThematicTransformation::Augmented
+                                                : ThematicTransformation::Diminished;
+            }
+            if (occurrence.transformation != ThematicTransformation::Original)
+                result.record.transformation_inventory.push_back(
+                    {unit.id, occurrence.position, occurrence.transformation, occurrence.key});
+            unit.occurrences.push_back(std::move(occurrence));
+        }
+        result.record.thematic_units.push_back(std::move(unit));
+    }
+    if (total_attacks > 0)
+        result.record.thematic_density = static_cast<float>(covered.size()) / total_attacks;
+    // Economy and human developmental classifications have no finite contract
+    // here; analyze_score explicitly marks those fields unavailable.
     return result;
+}
+
+} // namespace
+
+Result<MelodicAnalysisRecord> analyze_melodic(const Score& score) {
+    auto notes = analysis_notes(score);
+    if (!notes) return std::unexpected(notes.error());
+    auto result = melodic_from_notes(*notes);
+    if (!result) return std::unexpected(result.error());
+    auto motifs = motivic_from_notes(score, *notes);
+    if (!motifs) return std::unexpected(motifs.error());
+    result->thematic_material = std::move(motifs->record.thematic_units);
+    return result;
+}
+
+Result<MotivicAnalysisRecord> analyze_motivic(const Score& score) {
+    auto notes = analysis_notes(score);
+    if (!notes) return std::unexpected(notes.error());
+    auto computation = motivic_from_notes(score, *notes);
+    if (!computation) return std::unexpected(computation.error());
+    return std::move(computation->record);
 }
 
 // =========================================================================
 // Full Analysis
 // =========================================================================
 
-WorkAnalysis analyze_score(const Score& score) {
+Result<WorkAnalysis> analyze_score(const Score& score) {
+    auto harmonic = analyze_harmonic(score);
+    if (!harmonic) return std::unexpected(harmonic.error());
+    auto notes = analysis_notes(score);
+    if (!notes) return std::unexpected(notes.error());
+    auto melodic = melodic_from_notes(*notes);
+    if (!melodic) return std::unexpected(melodic.error());
+    auto rhythmic = rhythmic_from_notes(score, *notes);
+    if (!rhythmic) return std::unexpected(rhythmic.error());
+    auto formal = analyze_formal(score);
+    if (!formal) return std::unexpected(formal.error());
+    auto voice_leading = voice_leading_from_notes(*notes);
+    if (!voice_leading) return std::unexpected(voice_leading.error());
+    auto motivic = motivic_from_notes(score, *notes);
+    if (!motivic) return std::unexpected(motivic.error());
     WorkAnalysis wa;
-    wa.harmonic_analysis = analyze_harmonic(score);
-    wa.melodic_analysis = analyze_melodic(score);
-    wa.rhythmic_analysis = analyze_rhythmic(score);
-    wa.formal_analysis = analyze_formal(score);
-    wa.voice_leading_analysis = analyze_voice_leading(score);
+    wa.harmonic_analysis = std::move(*harmonic);
+    wa.melodic_analysis = std::move(*melodic);
+    wa.rhythmic_analysis = std::move(*rhythmic);
+    wa.formal_analysis = std::move(*formal);
+    wa.voice_leading_analysis = std::move(voice_leading->record);
     wa.textural_analysis = analyze_textural(score);
     wa.dynamic_analysis = analyze_dynamic(score);
     wa.orchestration_analysis = analyze_orchestration(score);
-    wa.motivic_analysis = analyze_motivic(score);
+    wa.motivic_analysis = std::move(motivic->record);
+    wa.melodic_analysis.thematic_material = wa.motivic_analysis.thematic_units;
+
+    const auto evidence = [&](std::string domain,
+                              AnalysisEvidenceKind kind,
+                              std::string method,
+                              std::uint64_t observations,
+                              std::vector<std::string> unavailable,
+                              std::string reason = {}) {
+        AnalysisEvidence item;
+        item.kind = observations == 0 ? AnalysisEvidenceKind::Unavailable : kind;
+        item.method = std::move(method);
+        item.observations = observations;
+        item.unavailable_fields = std::move(unavailable);
+        if (observations == 0) item.unavailable_reason = std::move(reason);
+        wa.evidence.emplace(std::move(domain), std::move(item));
+    };
+    std::uint64_t melodic_attacks = 0;
+    for (const auto& [lane, attacks] : notes->lanes)
+        melodic_attacks += attacks.size();
+    std::uint64_t explicit_dynamics = 0, hairpins = 0;
+    for (const auto& part : score.parts) {
+        hairpins += part.hairpins.size();
+        for (const auto& measure : part.measures)
+            for (const auto& voice : measure.voices)
+                for (const auto& event : voice.events)
+                    if (const auto* group = event.as_note_group())
+                        for (const auto& note : group->notes)
+                            if (note.dynamic) ++explicit_dynamics;
+    }
+
+    evidence("harmonic",
+             AnalysisEvidenceKind::Heuristic,
+             "Exact symbolic sounding boundaries with active key/mode; supplied annotations or "
+             "finite chord/Roman-numeral/cadence recognition; annotation counts per global bar.",
+             notes->folded.size() + score.harmonic_annotations.size(),
+             {"modulation_inventory",
+              "chromatic_techniques",
+              "tonicisation_frequency",
+              "harmonic_rhythm.rate_by_section",
+              "cadence_inventory.approach",
+              "cadence_inventory.is_structural"},
+             "No symbolic notes or supplied harmonic annotations.");
+    std::vector<std::string> melodic_unavailable{
+        "per_voice_analysis.contour_inventory",
+        "per_voice_analysis.leap_resolution_rate",
+        "per_voice_analysis.longest_ascending_run",
+        "per_voice_analysis.longest_descending_run",
+        "thematic_material.occurrences.SequentialRepetition"};
+    if (std::ranges::any_of(wa.melodic_analysis.per_voice_analysis,
+                            [](const auto& voice) { return voice.note_count == 0; })) {
+        melodic_unavailable.insert(
+            melodic_unavailable.end(),
+            {"empty_lanes.range", "empty_lanes.tessitura", "empty_lanes.chromaticism_rate"});
+    }
+    if (std::ranges::any_of(wa.melodic_analysis.per_voice_analysis,
+                            [](const auto& voice) { return voice.note_count < 2; }))
+        melodic_unavailable.push_back("lanes_with_fewer_than_two_attacks.conjunct_proportion");
+    evidence(
+        "melodic",
+        AnalysisEvidenceKind::Heuristic,
+        "Per (PartId,voice_index), highest newly attacked MIDI note per exact onset after "
+        "individual tie folding; full directed intervals, 10th/90th order-statistic tessitura, "
+        "per-attack exact key/mode degrees; primary lane has most selected attacks.",
+        melodic_attacks,
+        std::move(melodic_unavailable),
+        "No selected melodic attacks.");
+    std::vector<std::string> rhythmic_unavailable{"rhythmic_motifs", "rubato_degree"};
+    if (std::ranges::none_of(notes->folded, [](const auto& note) { return !note.grace; }))
+        rhythmic_unavailable.push_back("syncopation_index");
+    evidence(
+        "rhythmic",
+        AnalysisEvidenceKind::Heuristic,
+        "Individual folded symbolic note durations and attacks (chord/unison multiplicity "
+        "retained); "
+        "rest proportion counts voice allocations once; nongrace attack syncopation share requires "
+        "strict sustain past a later stronger boundary: downbeat=3, grouped beat start=2, "
+        "denominator-unit interior pulse=1, other offset=0, including ties/bar crossings; "
+        "local grouping applies inside global bar frames; global/local metre-change count per bar; "
+        "effective quarter-BPM at tempo events; section attacks per touched global bar.",
+        score.metadata.total_bars,
+        std::move(rhythmic_unavailable),
+        "No measured bars.");
+    std::vector<std::string> formal_unavailable{"thematic_assignment",
+                                                "symmetry_analysis",
+                                                "section_plan.character",
+                                                "section_plan.subsections"};
+    if (score.section_map.empty()) formal_unavailable.push_back("form_type");
+    if (std::ranges::any_of(score.section_map, [](const auto& section) {
+            return section.start.beat != Beat::zero() || section.end.beat != Beat::zero();
+        })) {
+        formal_unavailable.push_back("partial_bar_sections.length_bars");
+        formal_unavailable.push_back("partial_bar_sections.proportions");
+    }
+    evidence(
+        "formal",
+        AnalysisEvidenceKind::Heuristic,
+        "Supplied section labels classified by the core finite form classifier; bar-index lengths "
+        "and proportions; exact section-start key/mode and instantaneous effective quarter-BPM "
+        "including ramps and metric modulation; declared key-map tonal plan.",
+        score.metadata.total_bars,
+        std::move(formal_unavailable),
+        "No measured bars.");
+    std::vector<std::string> voice_unavailable{"average_voice_independence", "resolution_patterns"};
+    if (voice_leading->motion_samples == 0) {
+        voice_unavailable.insert(voice_unavailable.end(),
+                                 {"contrary_motion_proportion",
+                                  "similar_motion_proportion",
+                                  "oblique_motion_proportion",
+                                  "parallel_motion_proportion",
+                                  "parallel_fifths_count",
+                                  "parallel_octaves_count",
+                                  "voice_crossing_count"});
+    }
+    if (voice_leading->retention_observations == 0)
+        voice_unavailable.push_back("common_tone_retention_rate");
+    if (voice_leading->spacing_samples == 0) voice_unavailable.push_back("spacing_distribution");
+    evidence(
+        "voice_leading",
+        AnalysisEvidenceKind::Heuristic,
+        "Exact sounding-event boundary slices; highest sounding MIDI pitch per structural lane, "
+        "all simultaneous lane pairs; moving consecutive pairs only; exact directed crossings "
+        "and compound spacing; parallel perfect intervals require equal nonzero displacement; "
+        "common-tone retention counts unique MIDI pitches retained from the previous slice; "
+        "observations combine independent spacing pairs and previous unique-pitch comparisons.",
+        voice_leading->spacing_samples + voice_leading->retention_observations,
+        std::move(voice_unavailable),
+        "No simultaneous lane-pair spacing or previous sounding pitch to compare.");
+    // Part-count alone does not establish contrapuntal texture, so no musical
+    // mono-/homo-/polyphonic classification is claimed by this bar inventory.
+    wa.textural_analysis.texture_type_proportions.clear();
+    evidence("textural",
+             AnalysisEvidenceKind::Heuristic,
+             "Per-global-bar part presence and note-register extrema; per-bar and section means "
+             "describe inventories, not simultaneous sounding texture.",
+             score.metadata.total_bars,
+             {"texture_type_proportions", "spacing_profile"},
+             "No measured bars.");
+    // Written marks can support a traversal/bar profile, but mapping accented
+    // intensities back to an ordinary section dynamic would invent a marking.
+    wa.dynamic_analysis.dynamic_by_section.clear();
+    std::vector<std::string> dynamic_unavailable{"dynamic_by_section"};
+    if (explicit_dynamics == 0)
+        dynamic_unavailable.insert(dynamic_unavailable.end(),
+                                   {"dynamic_range_low",
+                                    "dynamic_range_high",
+                                    "dynamic_distribution",
+                                    "dynamic_change_rate",
+                                    "dynamic_shape",
+                                    "climax_position",
+                                    "subito_dynamics_count"});
+    evidence("dynamic",
+             AnalysisEvidenceKind::Heuristic,
+             "Explicit written note dynamics and part hairpins; typed intensity order; "
+             "change count in part/measure/voice/event/note traversal per bar; latest visited "
+             "marked intensity carried to each bar and its first maximal bar as climax.",
+             explicit_dynamics + hairpins,
+             std::move(dynamic_unavailable),
+             "No explicit written note dynamics or hairpins.");
+    evidence(
+        "orchestration",
+        AnalysisEvidenceKind::Heuristic,
+        "For multi-part scores, per-instrument-name bar presence and highest visited MIDI pitch "
+        "per global bar as a melody-carrier heuristic; no sounding simultaneity or doubling claim.",
+        wa.orchestration_analysis ? score.metadata.total_bars : 0,
+        {"instrument_combinations",
+         "doubling_patterns",
+         "orchestral_crescendo_patterns",
+         "density_orchestration_correlation"},
+        "Orchestration analysis requires multiple parts.");
+    evidence(
+        "motivic",
+        AnalysisEvidenceKind::Heuristic,
+        "Exhaustive contiguous 3–8 selected-note windows per melodic lane: exact directed "
+        "semitone intervals and exact rational duration ratios; greedy nonoverlap within each "
+        "lane, independent occurrences across lanes. Repetition, exact transposition and uniform "
+        "duration scaling only; scaling has occurrence-label priority, concurrent transposition "
+        "is also inventoried. Density is the union of covered selected attacks / all selected "
+        "attacks. Stored float rhythms are original whole-note durations, never matching keys.",
+        motivic->candidate_windows,
+        {"thematic_economy",
+         "developmental_techniques",
+         "transformation_inventory.Fragmented",
+         "transformation_inventory.SequentialRepetition"},
+        "No contiguous allocated melodic window of 3–8 notes.");
     return wa;
 }
 

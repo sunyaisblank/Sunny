@@ -10,9 +10,11 @@
 
 #include <algorithm>
 #include <catch2/catch_test_macros.hpp>
+#include <limits>
 #include <optional>
 #include <set>
 #include <string>
+#include <sunny/core/score/serialization.hpp>
 #include <sunny/infrastructure/mcp/score_tools.hpp>
 #include <sunny/infrastructure/mcp/server.hpp>
 #include <tuple>
@@ -101,6 +103,61 @@ json insert_quarter(ScoreFixture& fixture,
 }
 
 } // anonymous namespace
+
+TEST_CASE("Score creation and reduction use checked global high-water identities",
+          "[mcp][score][identity][allocation]") {
+    constexpr auto maximum = std::numeric_limits<std::uint64_t>::max();
+    for (const bool reduction : {false, true}) {
+        INFO("reduction=" << reduction);
+        ScoreFixture fixture;
+        const json specification{{"total_bars", 2},
+                                 {"parts", {{{"name", "Piano"}, {"instrument_type", 0}}}}};
+        REQUIRE_FALSE(fixture.call("score_create", specification).contains("error"));
+        const auto allocate = [&] {
+            return reduction ? fixture.call("score_get_reduction", {{"score_id", 1}})
+                             : fixture.call("score_create", specification);
+        };
+        const auto original = sunny::core::score_to_json(*fixture.session->find(1));
+        for (const auto counter : {std::uint64_t{0}, std::uint64_t{1}, maximum}) {
+            fixture.session->next_score_id = counter;
+            REQUIRE(allocate().contains("error"));
+            CHECK(fixture.session->next_score_id == counter);
+            CHECK(fixture.session->scores.size() == 1);
+            CHECK(sunny::core::score_to_json(*fixture.session->find(1)) == original);
+        }
+        auto imported = *fixture.session->find(1);
+        imported.id = sunny::core::ScoreId{73};
+        fixture.session->scores.emplace(73, imported);
+        fixture.session->next_score_id = 70;
+        CHECK(allocate().contains("error"));
+        CHECK(fixture.session->next_score_id == 70);
+        CHECK(fixture.session->scores.size() == 2);
+        fixture.session->next_score_id = maximum - 1;
+        const auto last = allocate();
+        REQUIRE_FALSE(last.contains("error"));
+        CHECK(last.at("score_id") == maximum - 1);
+        CHECK(fixture.session->next_score_id == maximum);
+        CHECK(allocate().contains("error"));
+        CHECK(fixture.session->scores.size() == 3);
+    }
+}
+
+TEST_CASE("Failed Score candidates consume no global identities",
+          "[mcp][score][identity][allocation]") {
+    ScoreFixture fixture;
+    const json specification{{"total_bars", 2},
+                             {"parts", {{{"name", "Piano"}, {"instrument_type", 0}}}}};
+    REQUIRE_FALSE(fixture.call("score_create", specification).contains("error"));
+    const auto before = sunny::core::score_to_json(*fixture.session->find(1));
+    auto invalid = specification;
+    invalid["total_bars"] = 0;
+    CHECK(fixture.call("score_create", invalid).contains("error"));
+    CHECK(fixture.call("score_get_reduction", {{"score_id", 1}, {"view_type", "unknown"}})
+              .contains("error"));
+    CHECK(fixture.session->next_score_id == 2);
+    CHECK(fixture.session->scores.size() == 1);
+    CHECK(sunny::core::score_to_json(*fixture.session->find(1)) == before);
+}
 
 // =============================================================================
 // Issue #9: distinct default MIDI channels
@@ -265,8 +322,15 @@ TEST_CASE("MCP region end_bar is inclusive", "[mcp][score][region][regression]")
         const auto& properties = tool["inputSchema"]["properties"];
         if (!properties.contains("region")) continue;
         INFO(tool["name"]);
-        CHECK(properties["region"]["description"].get<std::string>().find("inclusive") !=
-              std::string::npos);
+        const auto& region = properties["region"];
+        const auto description = region["description"].get<std::string>();
+        if (region.contains("properties") && region["properties"].contains("start")) {
+            REQUIRE(region["properties"].contains("end"));
+            CHECK(description.find("Half-open") != std::string::npos);
+        } else {
+            // Existing bar-region schemas describe their fields in prose.
+            CHECK(description.find("inclusive") != std::string::npos);
+        }
     }
 }
 

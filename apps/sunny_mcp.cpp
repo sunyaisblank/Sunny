@@ -11,6 +11,8 @@
  * Configuration (environment):
  *   SUNNY_ABLETON_HOST  Remote Script host; unset means offline mode
  *   SUNNY_TCP_PORT      Remote Script port (default 9001)
+ *   SUNNY_WORKSPACE_PATH  Restore an explicitly saved workspace at startup
+ *   SUNNY_WORKSPACE_RECOVERY  'backup' explicitly restores .bak without repairing the main file
  *
  * Usage:
  *   ./sunny-mcp                   # Start server on stdio (offline mode)
@@ -23,10 +25,12 @@
 #include <cstdint>
 #include <cstdlib>
 #include <exception>
+#include <filesystem>
 #include <iostream>
 #include <limits>
 #include <memory>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <sunny/infrastructure/ableton/dispatcher.hpp>
@@ -38,6 +42,7 @@
 #include <sunny/infrastructure/mcp/score_tools.hpp>
 #include <sunny/infrastructure/mcp/server.hpp>
 #include <sunny/infrastructure/mcp/timbre_tools.hpp>
+#include <sunny/infrastructure/mcp/workspace_state.hpp>
 #include <sunny/infrastructure/orchestrator.hpp>
 
 namespace {
@@ -60,6 +65,36 @@ int run_server() {
     Orchestrator orchestrator;
     McpServer server;
     McpSession session;
+
+    if (const char* workspace = std::getenv("SUNNY_WORKSPACE_PATH")) {
+        if (*workspace == '\0') throw std::runtime_error("SUNNY_WORKSPACE_PATH must not be empty");
+        const std::filesystem::path path(workspace);
+        session.realization->workspace_path = std::filesystem::absolute(path).string();
+        const char* recovery = std::getenv("SUNNY_WORKSPACE_RECOVERY");
+        if (recovery && std::string_view(recovery) != "backup")
+            throw std::runtime_error("SUNNY_WORKSPACE_RECOVERY must be 'backup' or unset");
+        if (recovery) {
+            const auto restored = recover_workspace_backup(session, path, true);
+            if (!restored)
+                throw std::runtime_error("Workspace backup recovery failed: " +
+                                         restored.error().message);
+            std::cerr << "sunny-mcp: restored explicit backup for " << path
+                      << "; main file remains unchanged until workspace_save\n";
+        } else if (std::filesystem::exists(path)) {
+            const auto opened = open_workspace(session, path);
+            if (!opened)
+                throw std::runtime_error(
+                    "Workspace startup open failed: " + opened.error().message +
+                    "; inspect the file or explicitly set "
+                    "SUNNY_WORKSPACE_RECOVERY=backup");
+            std::cerr << "sunny-mcp: restored authored workspace from " << path << "\n";
+        } else {
+            std::cerr << "sunny-mcp: new workspace; use workspace_save with path " << path
+                      << " to retain authored state\n";
+        }
+    } else if (std::getenv("SUNNY_WORKSPACE_RECOVERY")) {
+        throw std::runtime_error("SUNNY_WORKSPACE_RECOVERY requires SUNNY_WORKSPACE_PATH");
+    }
 
     // Ableton connection is opt-in: without SUNNY_ABLETON_HOST the server
     // runs offline and Ableton-mutating tools decline loudly.

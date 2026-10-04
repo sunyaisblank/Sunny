@@ -29,7 +29,7 @@ namespace sunny::core {
 // =============================================================================
 
 /// Current schema version for serialised Score IR documents
-constexpr int SCORE_IR_SCHEMA_VERSION = 8;
+constexpr int SCORE_IR_SCHEMA_VERSION = 9;
 
 /** @brief Serialise one articulation mapping in canonical tagged-union form. */
 [[nodiscard]] nlohmann::json articulation_mapping_to_json(const ArticulationMapping& mapping);

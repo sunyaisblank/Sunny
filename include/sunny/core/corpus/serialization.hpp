@@ -19,13 +19,16 @@
  * - v3: the writer and strict reader project every authoritative
  *   WorkAnalysis, StyleProfile, SignaturePattern, metadata, confidence, and
  *   composer lifecycle field then known.
- * - v4 (current): IngestionConfidence separately persists RMS onset and
+ * - v4: IngestionConfidence separately persists RMS onset and
  *   duration quantisation error. v1-v3 migrate the historically absent
  *   duration residual to zero; v4 requires both fields.
+ * - v5 (current): persists analytical method/availability evidence and exact
+ *   thematic voice/span provenance. v1-v4 retain supplied values but migrate
+ *   absent evidence and voice/end identity as unqualified/unknown.
  *
  * Invariants:
  * - Round-trip preserves all fields exactly
- * - Schema version is checked on load; accepted range is [1, 4]
+ * - Schema version is checked on load; accepted range is [1, 5]
  */
 
 #pragma once
@@ -36,7 +39,10 @@
 
 namespace sunny::core {
 
-constexpr int CORPUS_IR_SCHEMA_VERSION = 4;
+constexpr int CORPUS_IR_SCHEMA_VERSION = 5;
+
+/** Serialise the current embedded analysis record, without its enclosing Score. */
+[[nodiscard]] nlohmann::json work_analysis_to_json(const WorkAnalysis& analysis);
 
 /**
  * @brief Serialise a ComposerProfile to JSON.

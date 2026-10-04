@@ -169,6 +169,20 @@ bool validate_schema_value(nlohmann::json& value,
     }
 
     if (value.is_object()) {
+        // Explicitly closed public contracts reject unadvertised input before
+        // any handler or owning/native state transition.
+        if (schema.contains("additionalProperties") &&
+            schema["additionalProperties"].is_boolean() &&
+            !schema["additionalProperties"].get<bool>()) {
+            const auto properties = schema.value("properties", nlohmann::json::object());
+            for (const auto& [name, child] : value.items()) {
+                static_cast<void>(child);
+                if (!properties.contains(name)) {
+                    error = path + "." + name + " is not an advertised property";
+                    return false;
+                }
+            }
+        }
         if (schema.contains("required") && schema["required"].is_array()) {
             for (const auto& required : schema["required"]) {
                 if (!required.is_string()) continue;
@@ -241,7 +255,16 @@ void McpServer::register_tool(std::string name,
     entry.definition.description = std::move(description);
     entry.definition.input_schema = normalise_input_schema(input_schema);
     entry.handler = std::move(handler);
+    entry.document_domain = registration_domain_;
     tools_[std::move(name)] = std::move(entry);
+}
+
+void McpServer::set_tool_document_domain(const std::string& name, McpDocumentDomain domain) {
+    tools_.at(name).document_domain = domain;
+}
+
+void McpServer::set_tool_executor(McpToolExecutor executor) {
+    tool_executor_ = std::move(executor);
 }
 
 void McpServer::run() {
@@ -252,7 +275,7 @@ void McpServer::run(std::istream& input, std::ostream& output) {
     running_.store(true, std::memory_order_relaxed);
     std::string line;
 
-    constexpr std::size_t MAX_LINE_LENGTH = std::size_t{4} * 1024 * 1024; // 4 MiB
+    constexpr std::size_t MAX_LINE_LENGTH = MCP_MAX_INPUT_BYTES;
 
     // Replacement keeps one malformed UTF-8 byte in a tool payload from
     // aborting the write and, with it, the session.
@@ -458,7 +481,11 @@ McpServer::handle_tools_call(const nlohmann::json& id, const nlohmann::json& par
     }
 
     try {
-        auto result = it->second.handler(arguments);
+        auto result =
+            tool_executor_ && it->second.document_domain != McpDocumentDomain::None
+                ? tool_executor_(
+                      it->second.document_domain, tool_name, arguments, it->second.handler)
+                : it->second.handler(arguments);
         const bool is_error = (result.is_object() && result.contains("error")) ||
                               (result.is_object() && result.contains("success") &&
                                result["success"].is_boolean() && !result["success"].get<bool>());

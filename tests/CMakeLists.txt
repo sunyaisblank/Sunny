@@ -18,6 +18,8 @@ target_sources(
         core/corpus/aggregation_test.cpp
         core/corpus/analysis_test.cpp
         core/corpus/document_test.cpp
+        core/corpus/evidence_test.cpp
+        core/corpus/field_availability_test.cpp
         core/corpus/schema_migration_test.cpp
         core/corpus/serialization_test.cpp
         core/corpus/types_test.cpp
@@ -72,6 +74,7 @@ target_sources(
         core/score/workflows_test.cpp
         core/timbre/document_test.cpp
         core/timbre/serialization_test.cpp
+        core/timbre/live_capabilities_test.cpp
         core/timbre/types_test.cpp
         core/timbre/validation_test.cpp
         core/timbre/workflows_test.cpp
@@ -120,6 +123,25 @@ target_sources(
     PRIVATE
         infrastructure/ableton/dispatcher_test.cpp
         infrastructure/ableton/lom_protocol_test.cpp
+        infrastructure/ableton/managed_realization_test.cpp
+        infrastructure/ableton/managed_devices_test.cpp
+        infrastructure/ableton/managed_device_recovery_test.cpp
+        infrastructure/ableton/managed_recovery_test.cpp
+        infrastructure/ableton/managed_clip_geometry_test.cpp
+        infrastructure/ableton/managed_song_settings_test.cpp
+        infrastructure/ableton/managed_envelope_revision_test.cpp
+        infrastructure/ableton/managed_mixer_test.cpp
+        infrastructure/ableton/managed_group_test.cpp
+        infrastructure/ableton/managed_group_device_song_test.cpp
+        infrastructure/ableton/managed_routing_test.cpp
+        infrastructure/ableton/managed_clip_revision_test.cpp
+        infrastructure/ableton/native_mixer_units_test.cpp
+        infrastructure/ableton/native_mix_plan_test.cpp
+        infrastructure/ableton/managed_device_modes_test.cpp
+        infrastructure/ableton/native_effect_plan_test.cpp
+        infrastructure/ableton/native_units_test.cpp
+        infrastructure/ableton/native_timbre_plan_test.cpp
+        infrastructure/ableton/realization_store_test.cpp
         infrastructure/ableton/target_profile_test.cpp
         infrastructure/ableton/target_snapshot_test.cpp
         infrastructure/ableton/transport_test.cpp
@@ -137,7 +159,15 @@ target_sources(
         infrastructure/formats/score_to_lilypond_test.cpp
         infrastructure/formats/score_to_musicxml_test.cpp
         infrastructure/mcp/ir_tools_test.cpp
+        infrastructure/mcp/corpus_evidence_test.cpp
+        infrastructure/mcp/corpus_field_availability_test.cpp
+        infrastructure/mcp/session_ids_test.cpp
+        infrastructure/mcp/project_session_test.cpp
+        infrastructure/mcp/realization_tools_test.cpp
+        infrastructure/mcp/project_timeline_test.cpp
+        infrastructure/mcp/workspace_state_test.cpp
         infrastructure/mcp/score_tools_test.cpp
+        infrastructure/mcp/score_notation_tools_test.cpp
         infrastructure/mcp/server_test.cpp
         infrastructure/orchestrator_test.cpp
 )

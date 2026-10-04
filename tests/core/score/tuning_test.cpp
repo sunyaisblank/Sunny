@@ -144,7 +144,7 @@ TEST_CASE("Score tuning schema six round-trips exactly and older schemas migrate
     score.tuning.cents_from_reference[60] = -901.25;
 
     auto encoded = score_to_json(score);
-    CHECK(encoded.at("schema_version") == 8);
+    CHECK(encoded.at("schema_version") == SCORE_IR_SCHEMA_VERSION);
     CHECK(encoded.at("tuning").at("cents_from_reference").size() == 128);
     auto decoded = score_from_json(encoded);
     REQUIRE(decoded.has_value());
@@ -198,7 +198,9 @@ TEST_CASE("Derived scores preserve tuning and MIDI exposes unsupported tuning re
     REQUIRE(custom.has_value());
     score.tuning = *custom;
 
-    const auto reduced = piano_reduction(score, ScoreId{45});
+    const auto reduced_result = piano_reduction(score, ScoreId{45});
+    REQUIRE(reduced_result.has_value());
+    const auto& reduced = *reduced_result;
     CHECK(reduced.tuning == score.tuning);
 
     auto compiled = compile_to_midi(score);

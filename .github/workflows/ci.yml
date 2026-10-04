@@ -61,6 +61,7 @@ jobs:
           sudo apt-get install -y cmake ninja-build python3-dev
 
       - name: Initialize CodeQL
+        id: codeql-init
         uses: github/codeql-action/init@v3
         with:
           languages: cpp
@@ -73,6 +74,11 @@ jobs:
 
       - name: Perform CodeQL analysis
         uses: github/codeql-action/analyze@v3
+
+      - name: Test custom CodeQL type models
+        run: >-
+          "${{ steps.codeql-init.outputs.codeql-path }}" test run
+          --threads=2 --ram=4096 .analysis/codeql/test
 
   # Python tests (with native module)
   python-test:
@@ -97,6 +103,10 @@ jobs:
       - name: Install dependencies
         run: uv sync --all-extras
 
+      - name: Install independent notation parser
+        if: matrix.python-version == '3.12'
+        run: sudo apt-get update && sudo apt-get install -y lilypond
+
       # sunny-mcp drives the end-to-end tests against the offline Live model.
       - name: Build native module and MCP server for this Python
         run: |
@@ -107,6 +117,8 @@ jobs:
           cmake --build .bin-python --target sunny_native sunny-mcp
 
       - name: Run tests
+        env:
+          SUNNY_LILYPOND_COMMAND: ${{ matrix.python-version == '3.12' && 'lilypond' || '' }}
         run: |
           PYTHONPATH=python:remote_script:.bin-python/python \
           SUNNY_MCP_BINARY=.bin-python/sunny-mcp \
@@ -143,7 +155,7 @@ jobs:
             '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"ci","version":"1"}}}' \
             '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' \
             | docker run -i --rm sunny-mcp:ci \
-            | python3 -c "import json,sys; r=[json.loads(l) for l in sys.stdin]; assert r[0]['result']['serverInfo']['name']=='sunny-mcp'; assert len(r[1]['result']['tools'])==117, len(r[1]['result']['tools'])"
+            | python3 -c "import json,sys; r=[json.loads(l) for l in sys.stdin]; assert r[0]['result']['serverInfo']['name']=='sunny-mcp'; names={t['name'] for t in r[1]['result']['tools']}; assert {'score_create','get_timbre_json','replace_timbre_effect','remove_timbre_automation','get_mix_json','replace_mix_effect','remove_mix_effect','reorder_mix_effects','query_how_would_x_handle','project_plan_to_ableton','project_realization_plan','project_realization_apply'} <= names"
 
       - uses: actions/setup-python@v5
         with:
@@ -151,10 +163,53 @@ jobs:
 
       - name: End-to-end through the container
         run: |
-          python -m pip install pytest
-          SUNNY_MCP_COMMAND="docker run -i --rm --network host -e SUNNY_ABLETON_HOST -e SUNNY_TCP_PORT sunny-mcp:ci" \
+          python -m pip install pytest 'mido>=1.3,<2'
+          SUNNY_TEST_BRIDGE_BIND_HOST=0.0.0.0 \
+          SUNNY_TEST_BRIDGE_HOST=host.docker.internal \
+          SUNNY_MCP_COMMAND="docker run -i --rm --add-host host.docker.internal:host-gateway -e SUNNY_ABLETON_HOST -e SUNNY_TCP_PORT sunny-mcp:ci" \
           PYTHONPATH=remote_script:python \
           python -m pytest tests/python/test_live_end_to_end.py -v --tb=short
+
+      - name: Managed native authoring and recovery through the container
+        run: |
+          SUNNY_TEST_BRIDGE_BIND_HOST=0.0.0.0 \
+          SUNNY_TEST_BRIDGE_HOST=host.docker.internal \
+          SUNNY_NATIVE_MCP_COMMAND="docker run -i --rm --user $(id -u):$(id -g) --add-host host.docker.internal:host-gateway --mount type=bind,source={workspace_dir},target=/data -e SUNNY_WORKSPACE_PATH -e SUNNY_ABLETON_HOST -e SUNNY_TCP_PORT sunny-mcp:ci" \
+          PYTHONPATH=remote_script:python \
+          python -m pytest \
+            tests/python/test_mcp_realization_workflow.py \
+            tests/python/test_mcp_realization_mismatch.py \
+            tests/python/test_mcp_note_population_workflow.py \
+            tests/python/test_mcp_native_device_workflow.py \
+            tests/python/test_mcp_native_recovery_workflow.py \
+            tests/python/test_mcp_mix_realization_workflow.py \
+            tests/python/test_mcp_native_geometry_workflow.py \
+            tests/python/test_mcp_native_clip_revision_workflow.py \
+            tests/python/test_mcp_native_song_settings_workflow.py \
+            tests/python/test_mcp_native_envelope_revision_workflow.py \
+            tests/python/test_mcp_native_effect_workflow.py \
+            tests/python/test_mcp_native_mixer_workflow.py \
+            tests/python/test_mcp_retired_part_recovery.py \
+            tests/python/test_mcp_historical_part_recovery.py \
+            tests/python/test_mcp_native_routing_workflow.py \
+            tests/python/test_mcp_project_portfolio.py \
+            tests/python/test_mcp_native_project_portfolio.py \
+            tests/python/test_mcp_project_realization_coordinator.py \
+            tests/python/test_mcp_project_realization_native_admission.py \
+            tests/python/test_mcp_historic_device_recovery_workflow.py \
+            tests/python/test_mcp_source_projection_boundary.py \
+            tests/python/test_mcp_bypassed_effect_intent.py \
+            tests/python/test_mcp_bypassed_effect_coordinator.py \
+            tests/python/test_mcp_project_final_pan_observation.py \
+            tests/python/test_mcp_project_preserved_devices_summary.py \
+            tests/python/test_mcp_coordinator_capacity_independent.py \
+            -v --tb=short
+
+      - name: Authoring and recovery across container restarts
+        run: |
+          SUNNY_WORKSPACE_MCP_COMMAND="docker run -i --rm --user $(id -u):$(id -g) --network none --mount type=bind,source={workspace_dir},target=/data -e SUNNY_WORKSPACE_PATH -e SUNNY_WORKSPACE_RECOVERY sunny-mcp:ci" \
+          PYTHONPATH=remote_script:python \
+          python -m pytest tests/python/test_mcp_workspace_workflow.py tests/python/test_mcp_native_timbre_plan.py -v --tb=short
 
   # Python linting
   lint:
@@ -244,6 +299,8 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: sunny-max-macos
+          include-hidden-files: true
+          if-no-files-found: error
           path: |
             .bin-max/package
             .bin-max/Sunny-*.zip
@@ -276,6 +333,8 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: sunny-max-windows
+          include-hidden-files: true
+          if-no-files-found: error
           path: |
             .bin-max/package
             .bin-max/Sunny-*.zip

@@ -11,7 +11,8 @@
  * where g(a, b) is an amplitude weighting function.
  *
  * Invariants:
- * - roughness(f, f, ...) == 0 (identical tones have no beating)
+ * - equal-frequency pairs contribute zero; other pairs may contribute even
+ *   when the two spectra are identical
  * - roughness increases then decreases as frequency difference grows
  */
 
@@ -55,12 +56,18 @@ roughness(std::span<const std::pair<double, double>> partials_a,
 [[nodiscard]] inline Result<double>
 roughness_product(std::span<const std::pair<double, double>> partials_a,
                   std::span<const std::pair<double, double>> partials_b) {
+    if (auto valid = detail::validate_acoustic_partials(partials_a); !valid)
+        return std::unexpected(valid.error());
+    if (auto valid = detail::validate_acoustic_partials(partials_b); !valid)
+        return std::unexpected(valid.error());
     double total = 0.0;
     for (const auto& [fa, aa] : partials_a) {
         for (const auto& [fb, ab] : partials_b) {
             auto d = plomp_levelt_dissonance(fa, fb);
             if (!d) return std::unexpected(d.error());
+            if (*d == 0.0 || aa == 0.0 || ab == 0.0) continue;
             total += (aa * ab) * *d;
+            if (!std::isfinite(total)) return std::unexpected(ErrorCode::ArithmeticOverflow);
         }
     }
     return total;

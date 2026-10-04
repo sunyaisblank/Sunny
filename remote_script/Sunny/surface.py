@@ -45,6 +45,7 @@ except ImportError as framework_error:
 
 from .diagnostics import RemoteLog
 from .handler import LomHandler
+from .managed import ManagedRegistry
 from .server import TcpServer
 
 if TYPE_CHECKING:
@@ -88,7 +89,14 @@ class SunnyControlSurface(ControlSurface):
         sunny_logger = logging.getLogger("sunny")
         sunny_logger.setLevel(logging.INFO)
         sunny_logger.addHandler(self._remote_log)
-        self._handler = LomHandler(self, self._remote_log)
+        self._managed_registry = ManagedRegistry(self)
+        self._handler = LomHandler(
+            self,
+            self._remote_log,
+            envelope_authorizer=self._managed_registry.authorize_envelope,
+            managed_registry=self._managed_registry,
+        )
+        self._managed_registry.attach_handler(self._handler)
         host, port = _server_configuration()
         self._server = TcpServer(
             host=host,

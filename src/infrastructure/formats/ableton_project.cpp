@@ -845,16 +845,8 @@ requested_note_states(const std::vector<AbletonNoteDeployment::RequestedNote>& n
 Result<void> observe_final_notes(AbletonProjectPostconditionEvidence& result,
                                  LomTransport& transport) {
     if (!result.observed) return std::unexpected(ErrorCode::ProtocolError);
-    const nlohmann::json query = {{"return",
-                                   nlohmann::json::array({"note_id",
-                                                          "pitch",
-                                                          "start_time",
-                                                          "duration",
-                                                          "velocity",
-                                                          "mute",
-                                                          "probability",
-                                                          "velocity_deviation",
-                                                          "release_velocity"})}};
+    auto target_profile = transport.target_profile();
+    if (!target_profile || !*target_profile) return std::unexpected(ErrorCode::ProtocolError);
 
     for (auto& evidence : result.note_batches) {
         if (evidence.deployment_action != AbletonNoteAction::Inserted) {
@@ -876,10 +868,10 @@ Result<void> observe_final_notes(AbletonProjectPostconditionEvidence& result,
             continue;
         }
 
-        const auto response = transport.send(LomProtocol::call_method(
+        const auto response = transport.send(ableton_note_population_request(
             LomPaths::clip(evidence.track_index, static_cast<int>(evidence.slot_index)),
-            "get_all_notes_extended",
-            {query}));
+            **target_profile,
+            clip->requested_end_marker));
         if (!response.success) return std::unexpected(ErrorCode::SendFailed);
         auto observed = parse_ableton_note_readback(response);
         if (!observed) return std::unexpected(observed.error());
@@ -909,11 +901,20 @@ Result<void> observe_final_notes(AbletonProjectPostconditionEvidence& result,
                                      observed_ids == requested_ids;
         evidence.properties_verified =
             unmatched.empty() && evidence.observed_notes.size() == evidence.requested_notes.size();
-        evidence.verified = evidence.identity_verified && evidence.properties_verified;
+        evidence.entire_clip_population_observed = (**target_profile).live_version.at_least(11, 1);
+        if (!evidence.entire_clip_population_observed) {
+            evidence.observed_time_span = clip->requested_end_marker;
+            result.warnings.push_back(
+                "Live 11.0 final note readback for Part " + std::to_string(evidence.part_id.value) +
+                " covers all pitches within [0, " + std::to_string(clip->requested_end_marker) +
+                ") quarter-note beats; notes outside this interval remain unobserved");
+        }
+        evidence.verified = evidence.identity_verified && evidence.properties_verified &&
+                            evidence.entire_clip_population_observed;
         if (evidence.identity_verified) result.notes_verified += matching_notes;
         if (evidence.verified) {
             ++result.note_batches_verified;
-        } else {
+        } else if (!evidence.identity_verified || !evidence.properties_verified) {
             result.warnings.push_back(
                 "Post-deployment Clip notes for Part " + std::to_string(evidence.part_id.value) +
                 " do not prove the exact created-ID set and requested property multiset");
@@ -1094,9 +1095,9 @@ evaluate_postcondition_intent(AbletonProjectPostconditionEvidence result,
     result.observed = true;
     const auto& song = validated->song_state;
     const auto& tracks = song.at("tracks");
-    // Take lanes arrived with Live 12. An earlier Set has none, so their
-    // absence holds by construction and the snapshot carries no take-lane fields.
-    const bool take_lanes_exist = validated->target_profile.live_version.at_least(12, 0);
+    // Live 11 already has take lanes (Live 11 manual, Comping). The adapter
+    // cannot inspect their topology on that version; a null snapshot field is
+    // unavailable evidence, never evidence that the Set has no take lanes.
     if (result.song_state) {
         auto& evidence = *result.song_state;
         if (evidence.requested_is_counting_in || evidence.requested_arrangement_overdub ||
@@ -1411,9 +1412,8 @@ evaluate_postcondition_intent(AbletonProjectPostconditionEvidence result,
                 *evidence.observed_arrangement_clip_count ==
                     evidence.requested_arrangement_clip_count;
             evidence.take_lanes_absent_verified =
-                evidence.take_lane_topology_observed
-                    ? *evidence.observed_take_lane_count == evidence.requested_take_lane_count
-                    : !take_lanes_exist;
+                evidence.take_lane_topology_observed &&
+                *evidence.observed_take_lane_count == evidence.requested_take_lane_count;
             evidence.ungrouped_verified = !evidence.observed_group_track_index.has_value();
             evidence.crossfade_neutral_verified =
                 *evidence.observed_crossfade_assign == evidence.requested_crossfade_assign;
@@ -1705,10 +1705,9 @@ evaluate_postcondition_intent(AbletonProjectPostconditionEvidence result,
                     (!evidence.location_identity_available ||
                      (evidence.observed_is_session_clip &&
                       *evidence.observed_is_session_clip == evidence.requested_is_session_clip &&
-                      (evidence.observed_is_take_lane_clip
-                           ? *evidence.observed_is_take_lane_clip ==
-                                 evidence.requested_is_take_lane_clip
-                           : !take_lanes_exist)));
+                      evidence.observed_is_take_lane_clip &&
+                      *evidence.observed_is_take_lane_clip ==
+                          evidence.requested_is_take_lane_clip));
                 evidence.observed_length = observed->at("length").get<double>();
                 evidence.observed_signature_numerator =
                     observed->at("signature_numerator").get<int>();

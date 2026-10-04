@@ -16,6 +16,7 @@ import queue
 import shlex
 import subprocess
 import threading
+import time
 from fractions import Fraction
 from pathlib import Path
 from typing import Any
@@ -69,13 +70,18 @@ class _McpClient:
         self,
         binary: Path | None,
         port: int,
-        host: str = "127.0.0.1",
+        host: str | None = "127.0.0.1",
         command: list[str] | None = None,
     ) -> None:
         # ``command`` replaces the binary, e.g. ``docker run -i --rm -e
         # SUNNY_ABLETON_HOST -e SUNNY_TCP_PORT sunny-mcp``; the host and port
         # still travel in the environment.
-        environment = dict(os.environ, SUNNY_ABLETON_HOST=host, SUNNY_TCP_PORT=str(port))
+        environment = dict(os.environ)
+        if host is None:
+            environment.pop("SUNNY_ABLETON_HOST", None)
+            environment.pop("SUNNY_TCP_PORT", None)
+        else:
+            environment.update(SUNNY_ABLETON_HOST=host, SUNNY_TCP_PORT=str(port))
         self._process = subprocess.Popen(
             command or [str(binary)],
             stdin=subprocess.PIPE,
@@ -129,15 +135,17 @@ def bridge(request, monkeypatch):
     """Yield ``(live, client)``: a modelled Live Set behind the real bridge and an MCP client.
 
     SUNNY_MCP_COMMAND runs the server another way, such as through the Docker
-    image with host networking, so the same tests cover the container.
+    image with ordinary bridge networking, so the same tests cover the container.
     """
     command = os.environ.get("SUNNY_MCP_COMMAND")
     binary = None if command else _sunny_mcp_binary()
     # Tests may request another Live version with indirect parametrisation.
-    live = LiveSet(getattr(request, "param", (12, 3, 5))).install(monkeypatch)
+    live = LiveSet(getattr(request, "param", (12, 4, 0))).install(monkeypatch)
+    bind_host = os.environ.get("SUNNY_TEST_BRIDGE_BIND_HOST", "127.0.0.1")
+    client_host = os.environ.get("SUNNY_TEST_BRIDGE_HOST", "127.0.0.1")
     # Port 0 asks the OS for an ephemeral port; the surface's own parser
     # accepts only 1..65535, so the configuration is supplied directly.
-    monkeypatch.setattr(surface_module, "_server_configuration", lambda: ("127.0.0.1", 0))
+    monkeypatch.setattr(surface_module, "_server_configuration", lambda: (bind_host, 0))
     main_thread = _LiveMainThread()
     surface = SunnyControlSurface(object())
     surface.schedule_message = main_thread.schedule_message
@@ -150,8 +158,19 @@ def bridge(request, monkeypatch):
         client = _McpClient(
             binary,
             surface._server.bound_port,
+            host=client_host,
             command=shlex.split(command) if command else None,
         )
+        # Docker Desktop may advertise a newly bound WSL port after the local
+        # listener starts. Establish readiness through read-only product calls;
+        # no musical mutation is retried or sent before the route is usable.
+        deadline = time.monotonic() + 10.0
+        while True:
+            readiness = client.call("get_ableton_session_state")
+            if readiness.get("success") is True:
+                break
+            assert time.monotonic() < deadline, readiness
+            threading.Event().wait(0.1)
         yield live, client
     finally:
         if client is not None:
@@ -175,6 +194,11 @@ def _beats(whole_notes: Fraction) -> float:
 
 
 def _clip_notes(clip) -> list[tuple[int, float, float, float, bool, float]]:
+    notes = (
+        clip.get_all_notes_extended()
+        if hasattr(clip, "get_all_notes_extended")
+        else clip.get_notes_extended(0, 128, 0.0, clip.end_marker)
+    )
     return sorted(
         (
             note.pitch,
@@ -184,7 +208,7 @@ def _clip_notes(clip) -> list[tuple[int, float, float, float, bool, float]]:
             note.mute,
             note.release_velocity,
         )
-        for note in clip.get_all_notes_extended()
+        for note in notes
     )
 
 
@@ -197,6 +221,7 @@ def _event_id(client: _McpClient, score_id: int, part_index: int, bar: int, offs
     raise AssertionError(f"no note at bar {bar} offset {offset}")
 
 
+@pytest.mark.parametrize("bridge", [(12, 3, 5), (12, 4, 0)], indirect=True)
 def test_score_compiles_to_exact_live_notes_with_a_tie_and_a_triplet(bridge):
     """A two-bar 4/4 score reaches Live as exactly the hand-derived notes."""
     live, client = bridge
@@ -431,12 +456,12 @@ def test_progression_clip_and_session_state_reach_live(bridge):
     assert state["track_count"] == 1
     assert state["return_track_count"] == 1
     assert state["tempo"] == 120.0
-    assert state["target_profile"]["live"]["version"]["string"] == "12.3.5"
+    assert state["target_profile"]["live"]["version"]["string"] == "12.4.0"
 
 
-@pytest.mark.parametrize("bridge", [(11, 3, 0)], indirect=True)
-def test_project_plan_applies_against_live_11_without_take_lanes(bridge):
-    """A Live 11 Set has no take lanes; planning and applying a project still completes."""
+@pytest.mark.parametrize("bridge", [(11, 0, 0), (11, 3, 0)], indirect=True)
+def test_project_plan_applies_against_live_11_with_unobserved_take_lanes(bridge):
+    """Missing take-lane API evidence stays unavailable without blocking note authoring."""
     live, client = bridge
     existing = live.song.create_midi_track(-1)
     existing.name = "User Track"
@@ -483,13 +508,20 @@ def test_project_plan_applies_against_live_11_without_take_lanes(bridge):
     assert {entry["outcome"] for entry in applied["deployment"]["mutation_journal"]} == {
         "acknowledged"
     }
-    # Live 11 has no take lanes, so their absence and the clip's identity verify
-    # without take-lane evidence.
+    # Live 11 has take lanes, but this adapter cannot inspect them. Neither
+    # their absence nor the complete identity tuple follows from a null field.
     postconditions = applied["postconditions"]
     assert postconditions["track_gates"][0]["take_lane_topology_observed"] is False
-    assert postconditions["track_gates"][0]["take_lanes_absent_verified"] is True
+    assert postconditions["track_gates"][0]["take_lanes_absent_verified"] is False
     assert postconditions["clips"][0]["observed_is_take_lane_clip"] is None
-    assert postconditions["clips"][0]["clip_identity_verified"] is True
+    assert postconditions["clips"][0]["clip_identity_verified"] is False
+    note_evidence = postconditions["note_batches"][0]
+    legacy_range = live.application.version_tuple() < (11, 1)
+    assert note_evidence["identity_verified"] is True
+    assert note_evidence["properties_verified"] is True
+    assert note_evidence["entire_clip_population_observed"] is not legacy_range
+    assert note_evidence["observed_time_span"] == (4.0 if legacy_range else None)
+    assert note_evidence["verified"] is not legacy_range
     assert [track.name for track in live.song.tracks] == ["Lead", "User Track"]
     lead = live.song.tracks[0]
     assert _clip_notes(lead.clip_slots[0].clip) == [(60, 0.0, 1.0, 80.0, False, 64.0)]

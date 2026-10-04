@@ -976,7 +976,11 @@ Figured bass symbols and their interval meanings:
 
 Accidentals in figures: A slash through a number, or ♯/♭ before a number, raises/lowers the indicated interval. A standalone accidental applies to the 3rd.
 
-**Status**: Implemented. `voice_leading/figured_bass`: `parse_figured_bass()`, `figured_bass_intervals()`, `realise_figured_bass()` (single-chord), `realise_figured_bass_sequence()` (voice-led progression integrating `voice_leading/voice_leading`).
+**Implemented profile**: Generic intervals count letters above the bass; the unaltered target takes its accidental from the seven-note key. Thus in C major, 5/3 above B♭ requires D/F, whereas the enharmonic bass A♯ requires C/E. The spelled-bass/key-tonic overload preserves this distinction. The MIDI-only overload admits basses belonging to the supplied key scale and rejects chromatic ambiguity with `InvalidSpelledPitch`. Scale offsets must increase strictly from zero within [0,11], with exactly seven degrees.
+
+The parser accepts the table's shorthands and slash-separated single-digit figures [1,9], with optional `#`/`b` prefixes. Explicit natural signs, crossed numerals, standalone accidentals, and other engraving conventions remain outside this text profile. `FigureAccidental::Natural` means no alteration of the key-relative tone; Sharp/Flat add/subtract one semitone. Empty programmatic symbols, invalid figures/accidental enums, malformed strings, and more than 12 upper voices return errors. The preferred MIDI octave is [0,9], with -1 selecting bass octave+1 clamped to that range. Upper notes must remain above the bass, satisfy the compound interval's minimum register, and fit MIDI [0,127].
+
+**Status**: Implemented. `voice_leading/figured_bass`: parsing, single-chord realization, and spelled or MIDI bass sequences. For equal upper-voice counts, sequence realization minimizes summed absolute semitone motion between sorted voices, subject to the figures, register, and MIDI bounds; cardinality changes use direct realization. This exact finite objective does not enforce every contrapuntal constraint in §7.4 or choose a stylistically unique realization. The letter/key interpretation follows [Mount, Figured Bass](https://milnepublishing.geneseo.edu/fundamentals-function-form/chapter/21-figured-bass/).
 
 ---
 
@@ -1029,10 +1033,9 @@ These are heuristic preferences from common-practice style, not absolute rules.
 
 **Definition 8.5.1** [C]. A *real sequence* is a repetition of a melodic pattern transposed by a fixed chromatic interval. A *tonal sequence* (or *diatonic sequence*) is a repetition of a melodic pattern transposed by a fixed diatonic interval (the chromatic intervals vary to stay within the key).
 
-**Detection algorithm** [C]: Given a melody and a minimum pattern length *l*:
-1. For each starting position *i*, extract the interval pattern of length *l*.
-2. Search for subsequent occurrences of the same (or diatonically equivalent) interval pattern.
-3. Report matches with their transposition level and type (real or tonal).
+**Detection algorithm** [C]: Minimum pattern length *l* counts directed intervals, so a motif contains *l*+1 notes. Admitted controls require *l*≥1 and a repetition count ≥2 (including the initial motif); invalid controls return `InvalidMelody`. `SequenceLayout::Adjacent` is the default: successive motifs begin *l*+1 note indices apart. `SharedEndpoint` explicitly selects motifs beginning *l* indices apart and sharing their endpoint. The result stores this convention alongside its start, interval length, repetition count, and fixed transposition increment. A zero increment admits exact repetition.
+
+For each start and admitted interval length, compare all motif notes under one fixed chromatic increment (real) or scale-degree increment (tonal). Tonal coordinates retain octave/register, including negative coordinates below the tonic; octave transposition spans the scale's cardinality rather than zero. Scale offsets must be strictly increasing in [0,11] and start at zero; non-scale notes prevent a tonal match. Every reported pattern is an exact pitch relation under the selected segmentation. This does not establish rhythmic identity, perceptual prominence, or formal function without those inputs. [Mount's sequence discussion](https://milnepublishing.geneseo.edu/fundamentals-function-form/chapter/25-diatonic-descending-fifth-sequences/) motivates successive predictable pitch levels, while Sunny's two explicit layouts define its finite search contract.
 
 ---
 
@@ -1249,18 +1252,15 @@ Motivic analysis is heuristic because motif identity is not a purely formal prop
 
 ### 11.1 Neo-Riemannian Operations
 
-**Definition 11.1.1** [C]. The three principal neo-Riemannian operations act on the set of 24 major and minor triads (the consonant triads). Each operation is an involution (self-inverse) and changes exactly one pitch class by a semitone:
+**Definition 11.1.1** [C]. The three principal neo-Riemannian operations act on the set of 24 major and minor triads (the consonant triads). Each operation is an involution (self-inverse) and preserves two pitch classes. P and L move the remaining pitch class by one semitone; R moves it by a whole tone. These are pitch-class relations, independent of a chosen register or voice assignment.
 
 **P** (Parallel): Exchanges major and minor triads sharing a root.
 - *P*({0, 4, 7}) = {0, 3, 7} (C major → C minor)
 - Changes the third; root and fifth are common tones.
 
 **R** (Relative): Exchanges relative major and minor triads.
-- *R*({0, 4, 7}) = {4, 7, 11} ≡ {9, 0, 4} (C major → A minor)
-- Wait — more carefully: *R*({0, 4, 7}) = {0, 4, 9} (C major → A minor).
+- *R*({0, 4, 7}) = {0, 4, 9} (C major → A minor).
 - Changes the fifth of the major triad (or the root of the minor triad); two common tones.
-
-Let me define these precisely by their action on the consonant triad:
 
 Represent a triad as (root, quality) where quality ∈ {major, minor}.
 
@@ -1284,14 +1284,21 @@ Or equivalently in terms of pitch class sets:
 
 **Definition 11.2.1** [C]. The group generated by P, L, R under composition is the *PLR group*, isomorphic to the dihedral group of order 24 acting on the set of 24 consonant triads. This group is also known as the *Schritt-Wechsel group*.
 
-Compound operations of musical interest:
+Sunny's `apply_plr_sequence` evaluates its supplied operation array from left to right. This
+differs from ordinary right-to-left function composition; a sequence `[L,P]` denotes `P ∘ L`.
 
-| Compound | = | Musical Effect |
-|----------|---|---------------|
-| LP | L ∘ P | Slide transformation (e.g., C major → C♯ minor) |
-| RP | R ∘ P | Nebenverwandt (e.g., C major → F minor) |
-| PLP | P ∘ L ∘ P | Hexatonic pole (e.g., C major → A♭ major) — maximally distant in the hexatonic cycle |
-| LPL = RPR | | Equivalent to transposition by tritone with quality change |
+| Sunny sequence | Function composition | Result on C major |
+|----------------|----------------------|-------------------|
+| `[L,P]` | P ∘ L | E major |
+| `[R,P]` | P ∘ R | A major |
+| `[L,P,R]` | R ∘ P ∘ L | C♯ minor (slide) |
+| `[P,L,P]` or `[L,P,L]` | P ∘ L ∘ P or L ∘ P ∘ L | A♭ minor (hexatonic pole) |
+| `[R,P,R]` | R ∘ P ∘ R | F♯ minor |
+
+The elementary common-tone definitions are also described in
+[Satyendra's analysis of Lewin](https://music.arts.uci.edu/abauer/3.1/notes/Satyendra_Lewin_JMT.pdf).
+The table follows by successive application of the elementary definitions above; compound
+names do not change the evaluation order.
 
 ### 11.3 The Tonnetz
 
@@ -1301,11 +1308,13 @@ Compound operations of musical interest:
 - The vertical axis represents minor thirds (interval 3).
 - Equivalently: one axis is perfect fifths (7), the other is major thirds (4).
 
-Under 12-TET, the Tonnetz tiles the torus **Z/12Z** × **Z/12Z** (since both axis generators eventually cycle). Each triangular cell of the Tonnetz corresponds to a consonant triad.
+Under 12-TET, the minimal periodic pitch-class coordinates for these two axes are
+**Z/3Z** × **Z/4Z**, with vertex pitch class `4i + 3j (mod 12)`. These twelve vertices carry
+twenty-four consonant-triad triangles; larger periodic drawings repeat their pitch classes.
 
 The neo-Riemannian operations correspond to specific geometric moves on the Tonnetz:
-- **P**: Reflects across the edge shared by the two triangles of a (root, third) edge.
-- **R**: Reflects across the edge shared by root and fifth.
+- **P**: Reflects across the edge shared by root and fifth.
+- **R**: Reflects across the edge shared by the major triad's root and third.
 - **L**: Reflects across the edge shared by third and fifth.
 
 **Distance on the Tonnetz**: The minimum number of PLR moves between two triads provides a measure of their transformational distance.
@@ -1581,13 +1590,21 @@ Ableton Live or a render device.
 
 CB(*f*) ≈ 25 + 75 · (1 + 1.4 · (*f* / 1000)²)^0.69 Hz
 
-**Plomp-Levelt model** [E]: The dissonance *d* between two pure tones at frequencies *f*₁ < *f*₂ is:
+**Implemented Plomp-Levelt fit** [E]: Sunny uses the frequency scaling and amplitude
+normalization published in [Sethares's reference programs](https://sethares.engr.wisc.edu/comprog.html):
 
-*d*(*f*₁, *f*₂) = *e*^(−*a*·*s*) − *e*^(−*b*·*s*)
+*d*(*f*₁, *f*₂) = 5 [exp(−3.51*x*) − exp(−5.75*x*)],
 
-where *s* = (*f*₂ − *f*₁) / (0.24 · CB((*f*₁ + *f*₂)/2)), and *a* ≈ 3.5, *b* ≈ 5.75 are empirical constants.
+where *x* = 0.24 |*f*₂ − *f*₁| / (0.0207 min(*f*₁,*f*₂) + 18.96).
+The Bark bandwidth approximation above is a separate estimate, not this fit's scaling.
+The pair function peaks at *x* = ln(5.75/3.51)/(5.75−3.51), with value approximately
+0.898782427; at 440 Hz the peak separation is approximately 25.769923 Hz.
 
-For complex tones (with harmonics), total dissonance is the sum of pairwise dissonances between all partial pairs.
+`sethares_dissonance(A,B)` sums between-spectrum pairs using min-amplitude weighting,
+matching the published BASIC cross-spectrum loop. It omits within-spectrum terms from the
+MATLAB program's combined-spectrum sum. All frequencies must be finite and positive;
+amplitudes must be finite and nonnegative. Non-finite intermediate/output arithmetic returns
+an error. Sweep ratios must be finite, positive and ordered, with a positive step count.
 
 **Sethares model** [E]: Extends Plomp-Levelt to arbitrary spectra, providing a dissonance function over all intervals for a given timbre. The minima of this function correspond to the "consonant" intervals for that timbre — which for harmonic timbres approximate the just intervals, and for inharmonic timbres produce different consonance patterns.
 
@@ -1601,11 +1618,20 @@ These models are empirical; parameter values derive from psychoacoustic experime
 
 where *g*(*a*, *b*) is an amplitude weighting (e.g., min(*a*, *b*) or *a* · *b*).
 
+An equal-frequency pair contributes zero. Identical complex spectra may still have positive
+cross-pair roughness when their unequal-frequency partials are close together; identical
+spectra do not imply zero total roughness.
+
 ### 14.4 Virtual Pitch and Missing Fundamental
 
 **Definition 14.4.1** [E]. *Virtual pitch* is the phenomenon whereby a listener perceives a fundamental frequency that is not physically present, inferred from the harmonic relationships among the upper partials. This is modelled by finding the fundamental frequency whose harmonic series best matches the observed partials (e.g., Terhardt's algorithm, Goldstein's optimal processor).
 
 This is an empirical model; the specification defines the interface (input: set of partial frequencies; output: estimated fundamental) but delegates the model to a configurable implementation.
+
+The current implementation is a bounded subharmonic-coincidence heuristic, not a full Terhardt
+or Goldstein model. It considers candidates at or above 20 Hz, harmonics 1…`max_harmonic`,
+and finite nonnegative cents tolerance. Input frequencies must be finite and positive.
+Its `confidence` is the matched-observation fraction, not a perceptual probability.
 
 ---
 

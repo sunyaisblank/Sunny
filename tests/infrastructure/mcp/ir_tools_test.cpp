@@ -529,3 +529,87 @@ TEST_CASE("morph_presets rejects unknown presets and times before the score star
 }
 
 } // namespace
+
+TEST_CASE("MCP Timbre inspect revise and explicit cleanup repair effect references",
+          "[mcp][ir][authoring]") {
+    McpServer server;
+    auto session = std::make_shared<TimbreSession>();
+    register_timbre_tools(server, session);
+    REQUIRE(succeeded(
+        call_tool(server, "create_timbre_profile", {{"part_id", 1}, {"name", "Fixture"}}, 1)));
+    auto effect =
+        call_tool(server, "add_effect", {{"profile_id", 1}, {"effect_type", "reverb"}}, 2);
+    REQUIRE(succeeded(effect));
+    const auto inspect = [&] {
+        return call_tool(server, "get_timbre_json", {{"profile_id", 1}}, 3);
+    };
+    const auto original = inspect();
+    CHECK(call_tool(server,
+                    "set_parameter",
+                    {{"profile_id", 1}, {"path", "source.filter.cutoff"}, {"value", -100}},
+                    4)
+              .contains("error"));
+    CHECK(inspect() == original);
+    REQUIRE(succeeded(call_tool(server,
+                                "add_automation",
+                                {{"profile_id", 1},
+                                 {"path", "insert_chain.effects[0].mix"},
+                                 {"breakpoints", {{{"bar", 1}, {"value", 0.5}}}}},
+                                5)));
+    CHECK(call_tool(
+              server, "remove_effect", {{"profile_id", 1}, {"effect_id", effect["effect_id"]}}, 6)
+              .contains("error"));
+    REQUIRE(succeeded(
+        call_tool(server, "remove_timbre_automation", {{"profile_id", 1}, {"index", 0}}, 7)));
+    REQUIRE(succeeded(call_tool(server,
+                                "replace_timbre_effect",
+                                {{"profile_id", 1},
+                                 {"effect_id", effect["effect_id"]},
+                                 {"configuration", {{"effect_type", "delay"}, {"delay_ms", 250}}}},
+                                8)));
+    REQUIRE(succeeded(call_tool(
+        server, "remove_effect", {{"profile_id", 1}, {"effect_id", effect["effect_id"]}}, 9)));
+    CHECK(session->find(1)->insert_chain.effects.empty());
+    CHECK(call_tool(server, "remove_timbre_automation", {{"profile_id", 1}, {"index", 0}}, 10)
+              .contains("error"));
+}
+
+TEST_CASE("MCP Mix effect mistakes reject atomically and valid effects remain revisable",
+          "[mcp][ir][authoring]") {
+    McpServer server;
+    auto session = std::make_shared<MixSession>();
+    register_mix_tools(server, session);
+    REQUIRE(succeeded(call_tool(server, "create_mix_graph", {{"part_ids", {17}}}, 1)));
+    const auto inspect = [&] { return call_tool(server, "get_mix_json", {{"graph_id", 1}}, 2); };
+    const auto before = inspect();
+    CHECK(call_tool(server,
+                    "add_channel_effect",
+                    {{"graph_id", 1},
+                     {"channel_id", 1},
+                     {"effect_type", "compressor"},
+                     {"ratio", 0.25},
+                     {"attack", -10}},
+                    3)
+              .contains("error"));
+    CHECK(inspect() == before);
+    CHECK(session->next_effect_id == 1);
+    auto effect = call_tool(server,
+                            "add_channel_effect",
+                            {{"graph_id", 1}, {"channel_id", 1}, {"effect_type", "compressor"}},
+                            4);
+    REQUIRE(succeeded(effect));
+    const auto id = effect["effect_id"];
+    REQUIRE(succeeded(
+        call_tool(server,
+                  "replace_mix_effect",
+                  {{"graph_id", 1},
+                   {"effect_id", id},
+                   {"configuration", {{"effect_type", "compressor"}, {"threshold", -12}}}},
+                  5)));
+    auto parameters =
+        call_tool(server, "inspect_mix_effect", {{"graph_id", 1}, {"effect_id", id}}, 6);
+    CHECK(parameters["parameters"]["threshold"] == -12);
+    REQUIRE(
+        succeeded(call_tool(server, "remove_mix_effect", {{"graph_id", 1}, {"effect_id", id}}, 7)));
+    CHECK(session->find(1)->channels[0].insert_chain.effects.empty());
+}
