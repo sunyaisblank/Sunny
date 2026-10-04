@@ -293,6 +293,8 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: sunny-max-macos
+          include-hidden-files: true
+          if-no-files-found: error
           path: |
             .bin-max/package
             .bin-max/Sunny-*.zip
@@ -325,6 +327,8 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: sunny-max-windows
+          include-hidden-files: true
+          if-no-files-found: error
           path: |
             .bin-max/package
             .bin-max/Sunny-*.zip
