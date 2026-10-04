@@ -518,29 +518,181 @@ Result<void> set_channel_send(
 // Effect Chain
 // =============================================================================
 
+namespace {
+
+bool valid_mix_candidate(const MixGraph& graph) {
+    return std::ranges::none_of(validate_mix(graph), [](const Diagnostic& diagnostic) {
+        return diagnostic.severity == ValidationSeverity::Error;
+    });
+}
+
+struct MixChainLocation {
+    MixEffectChain* chain;
+    std::string path;
+};
+
+std::vector<MixChainLocation> mix_chains(MixGraph& graph) {
+    std::vector<MixChainLocation> result;
+    for (auto& channel : graph.channels)
+        result.push_back({&channel.insert_chain,
+                          "channels[" + std::to_string(channel.part_id.value) + "].insert_chain"});
+    for (auto& group : graph.group_buses)
+        result.push_back({&group.insert_chain,
+                          "group_buses[" + std::to_string(group.id.value) + "].insert_chain"});
+    for (auto& aux : graph.aux_buses)
+        result.push_back(
+            {&aux.effect_chain, "aux_buses[" + std::to_string(aux.id.value) + "].effect_chain"});
+    result.push_back({&graph.master_bus.insert_chain, "master_bus.insert_chain"});
+    return result;
+}
+
+Result<void>
+change_mix_chain(MixGraph& graph, const std::string& path, const std::vector<MixEffectId>& order) {
+    MixGraph candidate = graph;
+    for (auto& location : mix_chains(candidate)) {
+        if (location.path != path) continue;
+        const auto before = location.chain->effects;
+        if (order.size() > before.size()) return std::unexpected(invalid_param());
+        std::vector<MixEffect> after;
+        std::unordered_set<std::uint64_t> seen;
+        for (const auto id : order) {
+            const auto found = std::ranges::find(before, id, &MixEffect::id);
+            if (found == before.end() || !seen.insert(id.value).second)
+                return std::unexpected(invalid_param());
+            after.push_back(*found);
+        }
+        // Position-addressed effect lanes retain the same effect identity. A
+        // lane naming a removed effect is a user decision, never a retargeting.
+        for (auto& lane : candidate.automation) {
+            const auto relocate = [&](const std::string& prefix) -> bool {
+                for (std::size_t i = 0; i < before.size(); ++i) {
+                    const auto old_prefix = prefix + ".effects[" + std::to_string(i) + "].";
+                    if (!lane.target.starts_with(old_prefix)) continue;
+                    const auto found = std::ranges::find(after, before[i].id, &MixEffect::id);
+                    if (found == after.end()) return false;
+                    lane.target = prefix + ".effects[" + std::to_string(found - after.begin()) +
+                                  "]." + lane.target.substr(old_prefix.size());
+                    break;
+                }
+                return true;
+            };
+            if (!relocate(path)) return std::unexpected(ErrorCode::InvalidPath);
+            if (path.starts_with("aux_buses[") &&
+                !relocate("aux_sends" + path.substr(std::string{"aux_buses"}.size())))
+                return std::unexpected(ErrorCode::InvalidPath);
+        }
+        for (const auto& channel : candidate.channels) {
+            if (!channel.intent) continue;
+            for (const auto& rationale : channel.intent->processing_rationale)
+                if (std::ranges::find(before, rationale.effect_id, &MixEffect::id) !=
+                        before.end() &&
+                    !seen.contains(rationale.effect_id.value))
+                    return std::unexpected(ErrorCode::InvalidPath);
+        }
+        location.chain->effects = std::move(after);
+        if (!valid_mix_candidate(candidate)) return std::unexpected(invalid_param());
+        graph = std::move(candidate);
+        return {};
+    }
+    return std::unexpected(not_found());
+}
+
+} // namespace
+
 Result<void> add_channel_effect(MixGraph& graph, ChannelStripId channel_id, MixEffect effect) {
-    auto* ch = find_channel(graph, channel_id);
+    MixGraph candidate = graph;
+    auto* ch = find_channel(candidate, channel_id);
     if (!ch) return std::unexpected(not_found());
     ch->insert_chain.effects.push_back(std::move(effect));
+    if (!valid_mix_candidate(candidate)) return std::unexpected(invalid_param());
+    graph = std::move(candidate);
     return {};
 }
 
 Result<void> add_bus_effect(MixGraph& graph, GroupBusId bus_id, MixEffect effect) {
-    auto* g = find_group(graph, bus_id);
+    MixGraph candidate = graph;
+    auto* g = find_group(candidate, bus_id);
     if (!g) return std::unexpected(not_found());
     g->insert_chain.effects.push_back(std::move(effect));
+    if (!valid_mix_candidate(candidate)) return std::unexpected(invalid_param());
+    graph = std::move(candidate);
     return {};
 }
 
 Result<void> add_aux_effect(MixGraph& graph, AuxBusId aux_id, MixEffect effect) {
-    auto* a = find_aux(graph, aux_id);
+    MixGraph candidate = graph;
+    auto* a = find_aux(candidate, aux_id);
     if (!a) return std::unexpected(not_found());
     a->effect_chain.effects.push_back(std::move(effect));
+    if (!valid_mix_candidate(candidate)) return std::unexpected(invalid_param());
+    graph = std::move(candidate);
     return {};
 }
 
-void add_master_effect(MixGraph& graph, MixEffect effect) {
-    graph.master_bus.insert_chain.effects.push_back(std::move(effect));
+Result<void> add_master_effect(MixGraph& graph, MixEffect effect) {
+    MixGraph candidate = graph;
+    candidate.master_bus.insert_chain.effects.push_back(std::move(effect));
+    if (!valid_mix_candidate(candidate)) return std::unexpected(invalid_param());
+    graph = std::move(candidate);
+    return {};
+}
+
+Result<void> replace_mix_effect(MixGraph& graph,
+                                MixEffectId effect_id,
+                                MixEffectParameters parameters,
+                                bool enabled) {
+    MixGraph candidate = graph;
+    for (auto& location : mix_chains(candidate)) {
+        const auto found = std::ranges::find(location.chain->effects, effect_id, &MixEffect::id);
+        if (found == location.chain->effects.end()) continue;
+        found->parameters = std::move(parameters);
+        found->enabled = enabled;
+        if (!valid_mix_candidate(candidate)) return std::unexpected(invalid_param());
+        graph = std::move(candidate);
+        return {};
+    }
+    return std::unexpected(not_found());
+}
+
+Result<void> remove_mix_effect(MixGraph& graph, MixEffectId effect_id) {
+    for (const auto& location : mix_chains(graph)) {
+        if (std::ranges::find(location.chain->effects, effect_id, &MixEffect::id) ==
+            location.chain->effects.end())
+            continue;
+        std::vector<MixEffectId> order;
+        for (const auto& effect : location.chain->effects)
+            if (effect.id != effect_id) order.push_back(effect.id);
+        return change_mix_chain(graph, location.path, order);
+    }
+    return std::unexpected(not_found());
+}
+
+Result<void> reorder_mix_effects(MixGraph& graph,
+                                 const std::string& chain_path,
+                                 const std::vector<MixEffectId>& order) {
+    for (const auto& location : mix_chains(graph))
+        if (location.path == chain_path && order.size() != location.chain->effects.size())
+            return std::unexpected(invalid_param());
+    return change_mix_chain(graph, chain_path, order);
+}
+
+Result<void> remove_mix_automation(MixGraph& graph, std::size_t index) {
+    if (index >= graph.automation.size()) return std::unexpected(not_found());
+    graph.automation.erase(graph.automation.begin() + static_cast<std::ptrdiff_t>(index));
+    return {};
+}
+
+Result<void> remove_mix_parameter_mapping(MixGraph& graph,
+                                          MixEffectId effect_id,
+                                          const std::string& source_path) {
+    for (const auto& location : mix_chains(graph)) {
+        const auto found = std::ranges::find(location.chain->effects, effect_id, &MixEffect::id);
+        if (found != location.chain->effects.end()) {
+            if (found->parameter_map.erase(source_path) == 0) return std::unexpected(not_found());
+            return {};
+        }
+    }
+    return std::unexpected(not_found());
 }
 
 Result<float> get_mix_effect_parameter(const MixEffect& effect, const std::string& path) {

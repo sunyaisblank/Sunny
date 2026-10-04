@@ -340,6 +340,30 @@ parse_ableton_note_readback(const LomResponse& response) {
     return parse_note_readback_impl(response);
 }
 
+LomRequest ableton_note_population_request(const LomPath& clip_path,
+                                           const AbletonTargetProfile& profile,
+                                           double clip_end) {
+    nlohmann::json query = {{"return",
+                             {"note_id",
+                              "pitch",
+                              "start_time",
+                              "duration",
+                              "velocity",
+                              "mute",
+                              "probability",
+                              "velocity_deviation",
+                              "release_velocity"}}};
+    // Current LOM (Live 12.4.5) dates full-population access to 11.1, and
+    // ranged access to 11.0. Neither fact alone verifies the Python runtime.
+    if (profile.live_version.at_least(11, 1))
+        return LomProtocol::call_method(clip_path, "get_all_notes_extended", {query});
+    query["from_pitch"] = 0;
+    query["pitch_span"] = 128;
+    query["from_time"] = 0.0;
+    query["time_span"] = clip_end;
+    return LomProtocol::call_method(clip_path, "get_notes_extended", {query});
+}
+
 Result<AbletonCompilationResult>
 compile_to_ableton(const Score& score, LomTransport& transport, int ppq) {
     AbletonCompilationResult result;
@@ -801,18 +825,27 @@ compile_to_ableton(const Score& score, LomTransport& transport, int ppq) {
                 if (!id_verified_notes) return std::unexpected(id_verified_notes.error());
                 const auto id_observed_states = observed_note_states(*deployment);
 
-                const nlohmann::json all_query = {{"return", query.at("return")}};
-                resp = transport.send(LomProtocol::call_method(
-                    LomPaths::clip(ti.track_index, 0), "get_all_notes_extended", {all_query}));
+                resp = transport.send(ableton_note_population_request(
+                    LomPaths::clip(ti.track_index, 0), result.target_profile, clip_length_beats));
                 if (!resp.success) return std::unexpected(ErrorCode::SendFailed);
                 const auto verified_notes = apply_note_readback(*deployment, resp);
                 if (!verified_notes) return std::unexpected(verified_notes.error());
                 if (observed_note_states(*deployment) != id_observed_states)
                     return std::unexpected(ErrorCode::ProtocolError);
+                deployment->entire_clip_population_observed =
+                    result.target_profile.live_version.at_least(11, 1);
+                if (!deployment->entire_clip_population_observed) {
+                    deployment->observed_time_span = clip_length_beats;
+                    result.warnings.push_back(
+                        "Live 11.0 note readback covers all pitches within [0, " +
+                        std::to_string(clip_length_beats) +
+                        ") quarter-note beats; notes outside this interval remain unobserved");
+                }
                 result.notes_verified += *verified_notes;
-                if (deployment->properties_verified) {
+                if (deployment->properties_verified &&
+                    deployment->entire_clip_population_observed) {
                     result.note_batches_verified++;
-                } else {
+                } else if (!deployment->properties_verified) {
                     result.warnings.push_back(
                         "Live note readback for track '" + ti.name +
                         "' differed from the requested deterministic nine-field note state");

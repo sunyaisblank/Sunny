@@ -25,9 +25,9 @@ Roman-numeral analysis, voice leading and species counterpoint, rhythm, tuning s
 set theory and acoustics. Pitch and time arithmetic is exact: durations are rational numbers and
 overflow is checked, and the engine refuses an invalid request rather than guessing.
 
-Everything is exposed as MCP tools by the `sunny-mcp` program, which speaks JSON-RPC on standard
-input and output. `tools/list` returns the current inventory. The same engine is also available
-from Python.
+The `sunny-mcp` program exposes theory and document workflows as MCP tools and speaks JSON-RPC on
+standard input and output. `tools/list` returns the current inventory. Some structural editing
+operations remain available only in C++. The engine is also available from Python.
 
 ```
 AI client ──MCP (stdio)──▶ sunny-mcp ──TCP 9001──▶ Sunny Remote Script ──▶ Ableton Live
@@ -38,7 +38,7 @@ AI client ──MCP (stdio)──▶ sunny-mcp ──TCP 9001──▶ Sunny Rem
 Documents reach Live only as a project: a Score, one Timbre profile for each of its parts, and a
 Mix graph. `project_plan_to_ableton` records a snapshot of the Live Set and the exact list of
 changes without touching Live. `project_apply_ableton_plan` applies that plan once, refuses if
-the Set has changed in the meantime, and returns a journal of every change it attempted,
+the observed Set properties have changed in the meantime, and returns a journal of every change it attempted,
 including after a partial failure. `project_compile_to_ableton` does both in one call. Values
 Live cannot represent, such as a fader above +6 dB, are refused before anything is sent.
 
@@ -97,8 +97,9 @@ Without `SUNNY_ABLETON_HOST` the server runs offline: theory, document and notat
 and tools that change Live decline with an explicit error. `SUNNY_TCP_PORT` defaults to 9001.
 Under WSL2 with Live on the Windows host, use the Windows host's IP address.
 
-The server also runs from a Docker image, which needs nothing else installed on the host. MCP
-still travels over standard input and output, so the client starts the container itself:
+Docker is the normal delivery path. It needs Docker installed on the client machine; a native
+Sunny build is optional. MCP still travels over standard input and output, so the client starts
+the container itself:
 
 ```bash
 docker build -t sunny-mcp .
@@ -131,11 +132,39 @@ The script listens on TCP port 9001, bound to `127.0.0.1` unless `SUNNY_BIND_HOS
 environment of the Live process. If you bind to another interface, restrict access with a
 firewall: the port accepts commands that change your Live Set.
 
-Note writing needs Live 11 or later. Inserting native devices for Timbre and Mix uses
-`Track.insert_device`, which needs Live 12.3 or later and supports Live's built-in devices only.
-Each deployment result reports what Live could not represent (for example third-party plug-ins
-or modulation the Live API does not expose) instead of silently dropping it. The Remote Script
-runs inside Live's own Python, which is 3.7 in Live 11, so it avoids newer syntax.
+The bridge and server must use the same bridge contract. The Remote Script runs inside Live's
+own Python and retains Python 3.7 syntax compatibility for Live 11.
+
+Sunny's operation choices follow the version floors in the official
+[Live Object Model reference](https://docs.cycling74.com/apiref/lom/), whose current reference
+describes Live 12.4.5:
+
+| Live version | Note insertion and readback | Native device insertion |
+|---|---|---|
+| Before 11.0 | Note intent retained; insertion unavailable | Unavailable |
+| 11.0.x | Insert notes; read all pitches with note starts in `[0, generated clip end)` | Unavailable |
+| 11.1–11.x | Insert notes; read the complete Clip note population | Unavailable |
+| 12.0–12.2 | Same complete-population readback | Unavailable |
+| 12.3+ | Same complete-population readback | Version-admitted native Live devices |
+
+The [Clip reference](https://docs.cycling74.com/apiref/lom/clip/) dates ranged note access to
+11.0 and complete-population access to 11.1. Live 11.0 evidence includes
+`observed_time_span` and sets `entire_clip_population_observed` to false: notes outside the query
+remain unobserved. Snapshots omit notes on every version, so snapshot equality cannot establish
+note-content stability. Live 11 already has [take lanes](https://www.ableton.com/en/live-manual/11/comping/);
+this adapter's unavailable Live-11 take-lane observation cannot establish their absence.
+
+[Track.insert_device](https://docs.cycling74.com/apiref/lom/track/) has a Live 12.3 floor and
+native-device placement restrictions. Version eligibility does not establish edition, licensing,
+installed devices, or exact-host acceptance. Max for Live availability remains unknown until
+independent evidence is supplied. No exact version/edition/OS combination has yet passed Sunny's
+real-host qualification.
+
+Each deployment result reports capability and mapping gaps, including unsupported source
+configurations, third-party plug-ins, Group creation, and automation-envelope authoring. Static
+native parameter mapping currently requires explicit bindings. Temporary parameter control with
+[live.remote~](https://docs.cycling74.com/reference/live.remote~/) disables automation and does
+not author saved envelopes.
 
 ## Live testing
 
@@ -155,8 +184,11 @@ reach the one running Live:
    pytest tests/python/test_live_host.py -s
    ```
 
-The check deploys a small two-part project, verifies it by reading Live back, and prints what it
-observed. The same scenario runs against the offline Live model in every CI build.
+The check deploys a small two-part project, reads selected properties back, and prints what it
+observed. The same scenario runs against the offline Live model in every CI build. This smoke
+check covers one workflow; the independent device, Python runtime-type, routing, transport,
+reconnect, persistence, and large-Set probes in
+[issue #22](https://github.com/sunyaisblank/Sunny/issues/22) require additional host checks.
 
 When something goes wrong inside Live, `get_ableton_remote_log` returns the Remote Script's own
 records: every request with its outcome, every refusal and every error, numbered so a client can
@@ -199,12 +231,13 @@ Max externals on macOS and Windows.
 ## Limitations
 
 - Sunny has not yet been run against a real Live Set end to end. Behaviour that Ableton's
-  documentation does not settle is listed in GitHub issue #22 and is settled by the live check
-  above.
+  documentation does not settle is listed in GitHub issue #22.
 - Known defects and their status are tracked as GitHub issues labelled `remediation`.
-- Documents live in the server's memory for the life of the process. Score, Mix and Corpus
-  documents can be exported with `score_get_json`, `get_mix_json` and `get_corpus_json`; Timbre
-  profiles have no JSON export tool yet.
+- Documents live in the server's memory for the life of the process. Score, Timbre, Mix and Corpus
+  documents can be exported with `score_get_json`, `get_timbre_json`, `get_mix_json` and
+  `get_corpus_json`. Whole-project save/open and automatic persistence remain unavailable.
+- A fresh project deployment creates tracks and clips again. Reapplying edited documents requires
+  an ownership/reconciliation workflow that is not yet implemented.
 - Audio is never rendered or analysed, so nothing Sunny reports is a claim about how the result
   sounds. Loudness targets and reference comparisons are intentions, not measurements.
 - Live's current-scale setting is readable but not written.

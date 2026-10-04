@@ -825,7 +825,8 @@ void register_timbre_tools(McpServer& server, std::shared_ptr<TimbreSession> ses
             if (params.contains("weight"))
                 d.weight = static_cast<float>(params["weight"].get<double>());
             if (params.contains("tags")) d.tags = params["tags"].get<std::vector<std::string>>();
-            set_semantic_descriptors(*p, d);
+            if (!set_semantic_descriptors(*p, d))
+                return error_response("Semantic descriptor values must be finite and in [0, 1]");
             return {{"success", true}};
         });
 
@@ -1110,6 +1111,83 @@ void register_timbre_tools(McpServer& server, std::shared_ptr<TimbreSession> ses
                     {"source_value", *source_value},
                     {"target_value", *target_value}};
         });
+
+    server.register_tool("get_timbre_json",
+                         "Inspect the complete TimbreProfile, effect IDs, modulation, automation, "
+                         "presets and mappings",
+                         {{"profile_id", "integer"}},
+                         [session](const json& params) -> json {
+                             const auto id = detail::checked_integer<std::uint64_t>(
+                                 params.at("profile_id"), "profile id");
+                             const auto* profile = session->find(id);
+                             if (!profile) return profile_not_found(id);
+                             return timbre_to_json(*profile);
+                         });
+
+    server.register_tool(
+        "replace_timbre_effect",
+        "Replace an effect at its stable ID using a complete add_effect configuration; omitted "
+        "fields use add_effect defaults; references are retained and validated",
+        {{"type", "object"},
+         {"properties",
+          {{"profile_id", {{"type", "integer"}}},
+           {"effect_id", {{"type", "integer"}}},
+           {"configuration",
+            {{"type", "object"},
+             {"properties", {{"effect_type", {{"type", "string"}}}}},
+             {"required", {"effect_type"}}}}}},
+         {"required", {"profile_id", "effect_id", "configuration"}}},
+        [session](const json& params) -> json {
+            const auto id =
+                detail::checked_integer<std::uint64_t>(params.at("profile_id"), "profile id");
+            auto* profile = session->find(id);
+            if (!profile) return profile_not_found(id);
+            const auto effect_id =
+                detail::checked_integer<std::uint64_t>(params.at("effect_id"), "effect id");
+            auto effect = build_effect(params.at("configuration"), effect_id);
+            if (!effect || !replace_effect(*profile, std::move(*effect)))
+                return error_response(
+                    "Effect replacement has invalid parameters or retained references; inspect the "
+                    "profile and remove incompatible references first");
+            return {{"success", true}};
+        });
+
+    for (const auto& kind : {std::string{"automation"},
+                             std::string{"modulation"},
+                             std::string{"macro"},
+                             std::string{"parameter_mapping"}}) {
+        json properties = {{"profile_id", {{"type", "integer"}}}};
+        const auto field = kind == "parameter_mapping" ? "path" : "index";
+        properties[field] = {{"type", kind == "parameter_mapping" ? "string" : "integer"}};
+        server.register_tool(
+            "remove_timbre_" + kind,
+            "Remove one " + kind +
+                "; index is zero-based for lanes/routings and the stable source index for a macro; "
+                "referenced macros are refused",
+            {{"type", "object"}, {"properties", properties}, {"required", {"profile_id", field}}},
+            [session, kind](const json& params) -> json {
+                const auto id =
+                    detail::checked_integer<std::uint64_t>(params.at("profile_id"), "profile id");
+                auto* profile = session->find(id);
+                if (!profile) return profile_not_found(id);
+                Result<void> outcome;
+                if (kind == "parameter_mapping")
+                    outcome =
+                        remove_parameter_mapping(*profile, params.at("path").get<std::string>());
+                else if (kind == "macro")
+                    outcome = remove_macro(
+                        *profile,
+                        detail::checked_integer<std::uint8_t>(params.at("index"), "macro index"));
+                else {
+                    const auto index = detail::checked_integer<std::size_t>(params.at("index"),
+                                                                            "collection index");
+                    outcome = kind == "automation" ? remove_automation(*profile, index)
+                                                   : remove_modulation(*profile, index);
+                }
+                if (!outcome) return error_response("Entry does not exist or still has references");
+                return {{"success", true}};
+            });
+    }
 
     // =========================================================================
     // validate_timbre

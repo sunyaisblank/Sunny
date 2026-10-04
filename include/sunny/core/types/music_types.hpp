@@ -93,6 +93,7 @@ enum class ErrorCode : int {
     InvalidJIRatio = 3191,
     InvalidFrequency = 3192,
     InvalidPartialNumber = 3193,
+    InvalidAcousticParameter = 3194,
     InvalidKNetEdgeIndex = 3195,
     ScaleNotFound = 3010,
     TemperamentNotFound = 3011,

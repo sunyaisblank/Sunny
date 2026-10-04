@@ -403,63 +403,77 @@ void validate_s7(const Score& score, std::vector<Diagnostic>& out) {
             const auto& measure = part.measures[mi];
             for (const auto& voice : measure.voices) {
                 for (std::size_t ei = 0; ei < voice.events.size(); ++ei) {
-                    const auto* ng = voice.events[ei].as_note_group();
-                    if (!ng) continue;
+                    const auto* group = voice.events[ei].as_note_group();
+                    if (!group || std::none_of(group->notes.begin(),
+                                               group->notes.end(),
+                                               [](const Note& note) { return note.tie_forward; }))
+                        continue;
 
-                    for (std::size_t ni = 0; ni < ng->notes.size(); ++ni) {
-                        if (!ng->notes[ni].tie_forward) continue;
-
-                        // Find the next measured event in this voice. Point
-                        // directions/chord symbols do not interrupt temporal
-                        // adjacency; a Rest or different-pitch NoteGroup does.
-                        const Event* next_measured = nullptr;
-                        for (std::size_t next_index = ei + 1; next_index < voice.events.size();
-                             ++next_index) {
-                            const auto& candidate = voice.events[next_index];
+                    // Find temporal adjacency once per group. Point events do
+                    // not interrupt a duration tie; rests and missing voices do.
+                    const Event* next = nullptr;
+                    ScoreTime next_position{};
+                    for (std::size_t j = ei + 1; j < voice.events.size(); ++j) {
+                        const auto& candidate = voice.events[j];
+                        if (candidate.is_note_group() || candidate.is_rest()) {
+                            next = &candidate;
+                            next_position = {measure.bar_number, candidate.offset};
+                            break;
+                        }
+                    }
+                    for (std::size_t m = mi + 1; !next && m < part.measures.size(); ++m) {
+                        const auto& next_measure = part.measures[m];
+                        const auto continuation =
+                            std::find_if(next_measure.voices.begin(),
+                                         next_measure.voices.end(),
+                                         [&](const Voice& candidate) {
+                                             return candidate.voice_index == voice.voice_index;
+                                         });
+                        if (continuation == next_measure.voices.end()) break;
+                        for (const auto& candidate : continuation->events) {
                             if (candidate.is_note_group() || candidate.is_rest()) {
-                                next_measured = &candidate;
+                                next = &candidate;
+                                next_position = {next_measure.bar_number, candidate.offset};
                                 break;
                             }
                         }
-                        for (std::size_t next_measure = mi + 1;
-                             !next_measured && next_measure < part.measures.size();
-                             ++next_measure) {
-                            const Voice* continuation = nullptr;
-                            for (const auto& candidate_voice : part.measures[next_measure].voices) {
-                                if (candidate_voice.voice_index == voice.voice_index) {
-                                    continuation = &candidate_voice;
-                                    break;
-                                }
-                            }
-                            if (!continuation) break;
-                            for (const auto& candidate : continuation->events) {
-                                if (candidate.is_note_group() || candidate.is_rest()) {
-                                    next_measured = &candidate;
-                                    break;
-                                }
-                            }
-                        }
+                    }
 
+                    const NoteGroup* next_group = next ? next->as_note_group() : nullptr;
+                    bool adjacent = false;
+                    const ScoreTime position{measure.bar_number, voice.events[ei].offset};
+                    auto start = score_time_to_absolute_beat(position, score.time_map);
+                    if (next_group && start && group->duration > Beat::zero()) {
+                        auto end = checked_add(*start, group->duration);
+                        auto next_start =
+                            score_time_to_absolute_beat(next_position, score.time_map);
+                        adjacent = end && next_start && *end == *next_start;
+                    }
+                    // Each target note can continue at most one incoming tie.
+                    // This mirrors projection's ordered consumption of unisons.
+                    std::vector<bool> consumed(next_group ? next_group->notes.size() : 0, false);
+                    for (std::size_t ni = 0; ni < group->notes.size(); ++ni) {
+                        const auto& note = group->notes[ni];
+                        if (!note.tie_forward) continue;
                         bool found = false;
-                        if (next_measured) {
-                            if (const auto* next_group = next_measured->as_note_group()) {
-                                found = std::any_of(next_group->notes.begin(),
-                                                    next_group->notes.end(),
-                                                    [&](const Note& note) {
-                                                        return !note.grace &&
-                                                               note.pitch == ng->notes[ni].pitch;
-                                                    });
+                        if (adjacent && !note.grace) {
+                            for (std::size_t j = 0; j < next_group->notes.size(); ++j) {
+                                const auto& target = next_group->notes[j];
+                                if (!consumed[j] && !target.grace && target.pitch == note.pitch) {
+                                    consumed[j] = true;
+                                    found = true;
+                                    break;
+                                }
                             }
                         }
-
                         if (!found) {
                             out.push_back(make_diagnostic(
                                 ValidationSeverity::Error,
                                 "S7",
-                                "Tie forward on note with no matching pitch "
-                                "at adjacent position",
+                                "Tie forward on note " + std::to_string(ni) +
+                                    " has no distinct matching spelled pitch at its exact end",
                                 ErrorCode::TieMismatch,
-                                ScoreTime{measure.bar_number, voice.events[ei].offset},
+                                position,
                                 part.id));
                         }
                     }

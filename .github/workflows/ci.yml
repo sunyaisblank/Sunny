@@ -143,7 +143,7 @@ jobs:
             '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"ci","version":"1"}}}' \
             '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' \
             | docker run -i --rm sunny-mcp:ci \
-            | python3 -c "import json,sys; r=[json.loads(l) for l in sys.stdin]; assert r[0]['result']['serverInfo']['name']=='sunny-mcp'; assert len(r[1]['result']['tools'])==117, len(r[1]['result']['tools'])"
+            | python3 -c "import json,sys; r=[json.loads(l) for l in sys.stdin]; assert r[0]['result']['serverInfo']['name']=='sunny-mcp'; names={t['name'] for t in r[1]['result']['tools']}; assert {'score_create','get_timbre_json','replace_timbre_effect','remove_timbre_automation','get_mix_json','replace_mix_effect','remove_mix_effect','reorder_mix_effects','query_how_would_x_handle','project_plan_to_ableton'} <= names"
 
       - uses: actions/setup-python@v5
         with:

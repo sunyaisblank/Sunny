@@ -23,6 +23,7 @@
 #include <set>
 #include <sstream>
 #include <string>
+#include <sunny/core/corpus/workflows.hpp>
 #include <sunny/core/detail/serialization_integer.hpp>
 #include <sunny/core/harmony/roman_numeral.hpp>
 #include <sunny/core/scale/definitions.hpp>
@@ -737,7 +738,7 @@ TEST_CASE("all public tools advertise object-shaped JSON Schemas", "[mcp][tools]
     auto response =
         server.process_request({{"jsonrpc", "2.0"}, {"method", "tools/list"}, {"id", 30}});
     const auto& tools = response["result"]["tools"];
-    REQUIRE(tools.size() == 117);
+    REQUIRE(tools.size() == 129);
     for (const auto& tool : tools) {
         CAPTURE(tool["name"]);
         const auto& schema = tool["inputSchema"];
@@ -3238,6 +3239,62 @@ TEST_CASE("Every MCP validation surface preserves the complete diagnostic contra
 
     REQUIRE(responses[0]["diagnostics"][0].contains("part_id"));
     REQUIRE(responses[1]["diagnostics"][0].contains("part_id"));
+}
+
+TEST_CASE("Corpus MCP reports contextual availability and passage evidence",
+          "[mcp][corpus][evidence]") {
+    McpServer server;
+    auto session = std::make_shared<CorpusSession>();
+    register_corpus_tools(server, session);
+    using namespace sunny::core;
+    session->corpus.composers[1] =
+        create_composer_profile(ComposerProfileId{1}, "Observed composer");
+    WorkMetadata metadata;
+    metadata.title = "A known section";
+    metadata.composer = ComposerProfileId{1};
+    auto work = create_ingested_work(IngestedWorkId{1}, metadata);
+    work.analysis_complete = true;
+    FormalSection section;
+    section.label = "Development";
+    section.start_bar = 2;
+    section.end_bar = 4;
+    section.length_bars = 2;
+    work.analysis.formal_analysis.section_plan = {section};
+    work.analysis.formal_analysis.total_duration_bars = 4;
+    work.analysis.harmonic_analysis.harmonic_rhythm.changes_per_bar = {100, 2, 4, 100};
+    session->corpus.works[1] = work;
+    session->corpus.composers[1].works = {IngestedWorkId{1}};
+
+    const auto matched = call_tool(
+        server, "find_examples", {{"composer_id", 1}, {"criterion", "Development section"}}, 19101);
+    REQUIRE(matched["examples"].size() == 1);
+    CHECK(matched["examples"][0]["region_start"] ==
+          json{{"bar", 2}, {"beat", {{"num", 0}, {"den", 1}}}});
+    CHECK(matched["examples"][0]["region_end"] ==
+          json{{"bar", 4}, {"beat", {{"num", 0}, {"den", 1}}}});
+    const auto context = call_tool(server,
+                                   "query_how_would_x_handle",
+                                   {{"composer_id", 1}, {"situation", "Development"}},
+                                   19102);
+    CHECK(context["available"] == true);
+    CHECK(context["statistics_available"] == true);
+    REQUIRE(context["statistical_tendencies"].size() == 1);
+    CHECK(context["statistical_tendencies"][0]["observation"].get<std::string>().find(
+              "3.000000 per bar") != std::string::npos);
+    const auto absent = call_tool(server,
+                                  "query_how_would_x_handle",
+                                  {{"composer_id", 1}, {"situation", "Recapitulation"}},
+                                  19103);
+    CHECK(absent["available"] == false);
+    CHECK(absent["statistics_available"] == false);
+    CHECK(absent["statistical_tendencies"].empty());
+    CHECK(absent["unavailable_reason"].is_string());
+    const auto signatures =
+        call_tool(server, "detect_signature_patterns", {{"composer_id", 1}}, 19104);
+    CHECK(signatures["available"] == false);
+    CHECK(signatures["pattern_count"] == 0);
+    CHECK(signatures["baseline_works"].empty());
+    CHECK(signatures["unavailable_reason"].is_string());
 }
 
 TEST_CASE("Timbre MCP rejects integer narrowing before mutation",

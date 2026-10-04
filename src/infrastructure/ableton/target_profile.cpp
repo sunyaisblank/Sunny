@@ -171,7 +171,8 @@ Result<AbletonTargetProfile> target_profile_from_json(const nlohmann::json& valu
 
         // The bridge is part of this repository.  Reject a peer that claims a
         // different host contract, or capability flags inconsistent with the
-        // documented version thresholds, instead of trusting self-description.
+        // documented Max/LOM version thresholds, instead of trusting
+        // self-description. These floors are not Python runtime or licence proof.
         if (profile.adapter_name != "Sunny Remote Script" ||
             profile.adapter_runtime != "control_surface_python" ||
             profile.adapter_contract != "version_coupled_private" ||

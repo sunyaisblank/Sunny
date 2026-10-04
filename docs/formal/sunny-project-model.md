@@ -330,9 +330,10 @@ The aggregate model assumes only the target operations admitted by the bridge co
   `recording_quiescence_verified` and `playback_idle_verified` verdicts. These are sequential
   point observations, not a stop mutation, atomic tuple, future-stability proof, or playback trace.
   The same Clip record requires exact audio false/MIDI true/Arrangement false identity, on
-  Live 11+ exact Session true identity, and on Live 12+ exact Take-Lane false identity. Take lanes
-  arrived with Live 12, so below it the take-lane identity is null and its false value holds by
-  construction. For the required unlooped state, public
+  Live 11+ exact Session true identity, and on API-qualified Live 12+ exact Take-Lane false
+  identity. Live 11 already has take lanes; this adapter retains null below Live 12 because its
+  take-lane API is unqualified there. Null does not verify false identity or content absence.
+  For the required unlooped state, public
   `end_time` must independently equal the requested End Marker through
   `playback_end_verified`; neither derived equality is a playback trace.
   The containing Track independently retains the complete ordered ClipSlot vector, including empty
@@ -353,7 +354,7 @@ The aggregate model assumes only the target operations admitted by the bridge co
   This count is complete for the requested empty set but does not identify arbitrary nonempty
   Arrangement content, make the sequential reads atomic, or establish playback or sound.
   On Live 12+, the Track also retains the separate `take_lanes` cardinality and requires zero for a
-  generated Track; below Live 12 the count is null and take-lane absence holds by construction.
+  generated Track; below Live 12 the count is null and take-lane absence remains unverified.
   Take Lane Audition Mode can replace the normally audible main lane, but no public
   LOM audition-state property exists; eliminating the lane topology is therefore the complete
   tractable proposition, not evidence that an unobserved switch is off.
@@ -365,8 +366,14 @@ The aggregate model assumes only the target operations admitted by the bridge co
   `mpe_note_expression_neutrality_verified` remain false even when the ordinary note subset and
   Clip-envelope absence verify. Because the current snapshot schema
   omits note collections, each inserted batch is then re-queried with the closed nine-field
-  `get_all_notes_extended` shape. Final note verification requires both the exact insertion-returned
-  ID set and the compiler-retained property multiset; unsupported batches remain unverified;
+  population-readback shape. Live 11.1+ uses `get_all_notes_extended`; Live 11.0 uses
+  `get_notes_extended` with all pitches `[0,128)` and note starts in `[0, requested_end_marker)`
+  quarter-note beats. Its `observed_time_span` records that finite interval and
+  `entire_clip_population_observed` is false: notes outside it remain unobserved. Exact insertion
+  IDs and the retained property multiset can verify within that interval, but the complete batch
+  verdict also requires whole-Clip population access. Snapshots omit notes on every version, so
+  snapshot equality itself cannot establish note-content drift or absence outside a query;
+  unsupported batches remain unverified;
 - final Song tempo/meter and Scene-0 name/disabled tempo-meter overrides are compared with the
   compiler's stored property intent. It also retains the complete ordered Scene `is_triggered`
   vector and requires every value false. This is a finite point-in-time pending-launch predicate,

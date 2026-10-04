@@ -1124,37 +1124,73 @@ bool style_profile_is_fresh(const CorpusDatabase& corpus,
     return expected == profile;
 }
 
-Result<void> detect_signature_patterns(CorpusDatabase& corpus, ComposerProfileId composer_id) {
+Result<void> detect_signature_patterns(CorpusDatabase& corpus,
+                                       ComposerProfileId composer_id,
+                                       SignatureDetectionEvidence* evidence) {
     auto* composer = find_composer(corpus, composer_id);
     if (!composer) return std::unexpected(not_found());
 
-    // Signature pattern detection requires comparing the composer's
-    // distributions against the corpus mean. For each chord progression,
-    // interval, or rhythmic figure that appears significantly more often
-    // for this composer than the corpus average, a SignaturePattern is
-    // created with a distinctiveness score (z-score or frequency ratio).
-    //
-    // The current implementation identifies the most frequent chord
-    // progressions as candidate signatures.
+    using Bigram = std::vector<std::string>;
+    struct Counts {
+        std::uint64_t windows = 0;
+        std::map<Bigram, std::uint64_t> occurrences;
+        std::map<Bigram, std::vector<std::pair<IngestedWorkId, ScoreTime>>> examples;
+        std::vector<IngestedWorkId> works;
+    };
+    Counts target;
+    Counts baseline;
+    // Corpus map traversal visits each work once. Unassigned works are not a
+    // comparative composer baseline, and the target is excluded from it.
+    for (const auto& [_, work] : corpus.works) {
+        if (!work.analysis_complete || work.metadata.composer.value == 0) continue;
+        auto& counts = work.metadata.composer == composer_id ? target : baseline;
+        const auto before = counts.windows;
+        for (const auto& prog : work.analysis.harmonic_analysis.progression_inventory) {
+            if (prog.length != 2 || prog.roman_numerals.size() != 2) continue;
+            const auto n = static_cast<std::uint64_t>(prog.occurrences.size());
+            counts.windows += n;
+            counts.occurrences[prog.roman_numerals] += n;
+            for (const auto& position : prog.occurrences)
+                counts.examples[prog.roman_numerals].emplace_back(work.id, position);
+        }
+        if (counts.windows != before) counts.works.push_back(work.id);
+    }
+    SignatureDetectionEvidence support;
+    support.target_windows = target.windows;
+    support.baseline_windows = baseline.windows;
+    support.target_works = target.works;
+    support.baseline_works = baseline.works;
+    support.available = target.windows > 0 && baseline.windows > 0;
+    if (evidence) *evidence = support;
+
     std::vector<SignaturePattern> patterns;
     std::uint64_t pattern_id = 1;
-
-    for (const auto& wid : composer->works) {
-        const auto* work = find_work(corpus, wid);
-        if (!work || !work->analysis_complete) continue;
-
-        for (const auto& prog : work->analysis.harmonic_analysis.progression_inventory) {
-            if (prog.occurrences.size() >= 3) {
-                SignaturePattern pat;
-                pat.id = SignaturePatternId{pattern_id++};
-                pat.description = "Recurring progression";
-                pat.domain = PatternDomain::Harmonic;
-                pat.pattern_data = prog.roman_numerals;
-                pat.distinctiveness = static_cast<float>(prog.occurrences.size());
-                for (const auto& pos : prog.occurrences)
-                    pat.examples.push_back({wid, pos});
-                patterns.push_back(std::move(pat));
-            }
+    if (support.available) {
+        for (const auto& [bigram, n] : target.occurrences) {
+            const auto found = baseline.occurrences.find(bigram);
+            const auto m = found == baseline.occurrences.end() ? std::uint64_t{0} : found->second;
+            const double a = static_cast<double>(target.windows);
+            const double b = static_cast<double>(baseline.windows);
+            const double target_rate = static_cast<double>(n) / a;
+            const double baseline_rate = static_cast<double>(m) / b;
+            const double pooled = (static_cast<double>(n) + static_cast<double>(m)) / (a + b);
+            const double variance = pooled * (1.0 - pooled) * (1.0 / a + 1.0 / b);
+            if (target_rate <= baseline_rate || variance <= 0.0) continue;
+            const double z = (target_rate - baseline_rate) / std::sqrt(variance);
+            // A declared descriptive selection threshold; no significance or
+            // perceptual-confidence interpretation is attached to it.
+            if (z < 1.5) continue;
+            SignaturePattern pat;
+            pat.id = SignaturePatternId{pattern_id++};
+            pat.description = "Observed harmonic bigram: target " + std::to_string(n) + "/" +
+                              std::to_string(target.windows) + ", other composers " +
+                              std::to_string(m) + "/" + std::to_string(baseline.windows) +
+                              "; descriptive pooled-proportion z (uncalibrated)";
+            pat.domain = PatternDomain::Harmonic;
+            pat.pattern_data = bigram;
+            pat.distinctiveness = static_cast<float>(z);
+            pat.examples = target.examples.at(bigram);
+            patterns.push_back(std::move(pat));
         }
     }
 
@@ -1180,34 +1216,48 @@ std::vector<AnnotatedExample> find_examples(const CorpusDatabase& corpus,
     const auto* composer = find_composer(corpus, composer_id);
     if (!composer) return results;
 
-    // Search all works for passages matching the criterion.
-    // The criterion is matched against section labels, thematic labels,
-    // and analysis summaries. A production implementation would use
-    // semantic matching; this provides keyword-based filtering.
+    // This is explicit lexical passage retrieval, not semantic inference.
+    // All significant query tokens must occur in the annotated section text.
+    auto tokens = [](const std::string& input) {
+        std::set<std::string> result;
+        std::string token;
+        const auto flush = [&] {
+            static const std::set<std::string> ignored = {
+                "a", "an", "the", "in", "of", "at", "section", "sections", "passage"};
+            if (!token.empty() && !ignored.contains(token)) result.insert(token);
+            token.clear();
+        };
+        for (const auto ch : input) {
+            const auto c = static_cast<unsigned char>(ch);
+            if (std::isalnum(c))
+                token.push_back(static_cast<char>(std::tolower(c)));
+            else
+                flush();
+        }
+        flush();
+        return result;
+    };
+    const auto required = tokens(criterion);
+    if (required.empty()) return results;
     for (const auto& wid : composer->works) {
         const auto* work = find_work(corpus, wid);
         if (!work || !work->analysis_complete) continue;
 
         for (const auto& sec : work->analysis.formal_analysis.section_plan) {
-            if (sec.label.find(criterion) != std::string::npos ||
-                (sec.character && sec.character->find(criterion) != std::string::npos)) {
+            const auto available = tokens(sec.label + " " + sec.character.value_or(""));
+            if (std::includes(
+                    available.begin(), available.end(), required.begin(), required.end())) {
                 AnnotatedExample ex;
                 ex.work_id = wid;
                 ex.region_start = ScoreTime{sec.start_bar, Beat{0, 1}};
                 ex.region_end = ScoreTime{sec.end_bar, Beat{0, 1}};
-                ex.relevance_score = 0.5f;
-                ex.analysis_summary = sec.label;
+                ex.relevance_score = 1.0f; // every significant lexical token matched
+                ex.analysis_summary = "Annotated section lexical match: " + sec.label;
                 ex.formal_context = sec.label;
                 results.push_back(std::move(ex));
             }
         }
     }
-
-    // Sort by relevance
-    std::sort(
-        results.begin(), results.end(), [](const AnnotatedExample& a, const AnnotatedExample& b) {
-            return a.relevance_score > b.relevance_score;
-        });
 
     return results;
 }
@@ -1294,32 +1344,75 @@ Result<HowWouldXHandleResult> how_would_x_handle(const CorpusDatabase& corpus,
     // Find relevant examples by keyword matching against formal sections
     result.relevant_examples = find_examples(corpus, composer_id, situation);
 
-    // Add statistical tendencies from the style profile
-    const auto& sp = composer->style_profile;
-    if (sp.sample_size > 0) {
-        if (sp.harmonic_profile.harmonic_rhythm_mean > 0.0f) {
-            Tendency t;
-            t.domain = "harmonic";
-            t.observation = "Average harmonic rhythm: " +
-                            std::to_string(sp.harmonic_profile.harmonic_rhythm_mean) +
-                            " changes per bar";
-            t.confidence = sp.confidence;
-            t.supporting_examples_count = sp.sample_size;
-            result.statistical_tendencies.push_back(std::move(t));
-        }
+    // Aggregate only observed bars belonging to the returned passages. A
+    // missing per-bar series is unavailable, not an observed zero. Deduplicate
+    // overlapping annotations so the denominator counts each bar once.
+    const auto local_tendency =
+        [&](const std::string& domain, const std::string& label, auto series) {
+            double sum = 0.0;
+            std::uint64_t bars = 0;
+            std::uint32_t passages = 0;
+            std::map<std::uint64_t, std::set<std::uint32_t>> matched_bars;
+            for (const auto& example : result.relevant_examples) {
+                const auto* work = find_work(corpus, example.work_id);
+                if (!work || example.region_start.bar == 0 ||
+                    example.region_end.bar <= example.region_start.bar ||
+                    series(work->analysis).size() < example.region_end.bar - 1)
+                    continue;
+                const auto& observations = series(work->analysis);
+                bool usable = true;
+                for (auto bar = example.region_start.bar; bar < example.region_end.bar; ++bar)
+                    if (!std::isfinite(observations[bar - 1]) || observations[bar - 1] < 0.0f)
+                        usable = false;
+                if (!usable) continue;
+                ++passages;
+                for (auto bar = example.region_start.bar; bar < example.region_end.bar; ++bar)
+                    matched_bars[example.work_id.value].insert(bar);
+            }
+            for (const auto& [work_id, positions] : matched_bars) {
+                const auto* work = find_work(corpus, IngestedWorkId{work_id});
+                if (!work) continue;
+                const auto& values = series(work->analysis);
+                for (const auto bar : positions) {
+                    if (bar == 0 || bar > values.size()) continue;
+                    sum += values[bar - 1];
+                    ++bars;
+                }
+            }
+            if (bars == 0) return;
+            Tendency tendency;
+            tendency.domain = domain;
+            tendency.observation = "Matched annotated passages: " + label + " = " +
+                                   std::to_string(sum / static_cast<double>(bars)) + " per bar (" +
+                                   std::to_string(sum) + " observations / " + std::to_string(bars) +
+                                   " distinct bars)";
+            tendency.confidence = 1.0f; // exact aggregation of supplied per-bar observations
+            tendency.supporting_examples_count = passages;
+            result.statistical_tendencies.push_back(std::move(tendency));
+        };
+    local_tendency("harmonic",
+                   "recognized chord changes",
+                   [](const WorkAnalysis& analysis) -> const std::vector<float>& {
+                       return analysis.harmonic_analysis.harmonic_rhythm.changes_per_bar;
+                   });
+    local_tendency("rhythmic",
+                   "symbolic attacks",
+                   [](const WorkAnalysis& analysis) -> const std::vector<float>& {
+                       return analysis.rhythmic_analysis.onset_density;
+                   });
 
-        if (sp.melodic_profile.conjunct_proportion > 0.0f) {
-            Tendency t;
-            t.domain = "melodic";
-            t.observation = "Conjunct motion proportion: " +
-                            std::to_string(sp.melodic_profile.conjunct_proportion);
-            t.confidence = sp.confidence;
-            t.supporting_examples_count = sp.sample_size;
-            result.statistical_tendencies.push_back(std::move(t));
-        }
+    for (const auto& pattern : composer->style_profile.signature_patterns) {
+        auto contextual = pattern;
+        std::erase_if(contextual.examples, [&](const auto& occurrence) {
+            return std::ranges::none_of(result.relevant_examples, [&](const auto& example) {
+                return occurrence.first == example.work_id &&
+                       occurrence.second >= example.region_start &&
+                       occurrence.second < example.region_end;
+            });
+        });
+        if (!contextual.examples.empty())
+            result.signature_patterns.push_back(std::move(contextual));
     }
-
-    result.signature_patterns = sp.signature_patterns;
 
     return result;
 }

@@ -330,6 +330,16 @@ bool valid_all_notes_query(const json& value) {
            valid_note_return_fields(value.at("return"));
 }
 
+bool valid_ranged_notes_query(const json& value) {
+    return value.is_object() && value.size() == 5 && value.contains("return") &&
+           valid_note_return_fields(value.at("return")) && value.contains("from_pitch") &&
+           json_to_int(value.at("from_pitch")) == 0 && value.contains("pitch_span") &&
+           json_to_int(value.at("pitch_span")) == 128 && value.contains("from_time") &&
+           finite_number(value.at("from_time")) && value.at("from_time").get<double>() == 0.0 &&
+           value.contains("time_span") && finite_number(value.at("time_span")) &&
+           value.at("time_span").get<double>() > 0.0;
+}
+
 } // namespace
 
 sunny::core::Result<void> LomProtocol::validate_request(const LomRequest& request) {
@@ -419,6 +429,7 @@ sunny::core::Result<void> LomProtocol::validate_request(const LomRequest& reques
              is_one_of(name,
                        {"add_new_notes",
                         "get_notes_by_id",
+                        "get_notes_extended",
                         "get_all_notes_extended",
                         "sunny_clear_all_envelopes"}));
         break;
@@ -560,6 +571,7 @@ sunny::core::Result<void> LomProtocol::validate_request(const LomRequest& reques
                     (name == "add_new_notes"            ? valid_note_dictionary(args[0])
                      : name == "get_notes_by_id"        ? valid_note_id_query(args[0])
                      : name == "get_all_notes_extended" ? valid_all_notes_query(args[0])
+                     : name == "get_notes_extended"     ? valid_ranged_notes_query(args[0])
                                                         : false);
     } else if (*kind == PathKind::Device) {
         if (name == "sunny_get_device_parameter")

@@ -125,7 +125,23 @@ add_channel_effect(MixGraph& graph, ChannelStripId channel_id, MixEffect effect)
 /**
  * @brief Add a mix effect to the master bus chain.
  */
-void add_master_effect(MixGraph& graph, MixEffect effect);
+[[nodiscard]] Result<void> add_master_effect(MixGraph& graph, MixEffect effect);
+
+/** Replace source configuration/enablement at a stable identity, retaining mappings and lanes. */
+[[nodiscard]] Result<void> replace_mix_effect(MixGraph& graph,
+                                              MixEffectId effect_id,
+                                              MixEffectParameters parameters,
+                                              bool enabled);
+/** Refuse removal while automation or processing rationale still names the effect. */
+[[nodiscard]] Result<void> remove_mix_effect(MixGraph& graph, MixEffectId effect_id);
+/** Exact permutation of a canonical owner chain; automation follows stable effect IDs. */
+[[nodiscard]] Result<void> reorder_mix_effects(MixGraph& graph,
+                                               const std::string& chain_path,
+                                               const std::vector<MixEffectId>& order);
+[[nodiscard]] Result<void> remove_mix_automation(MixGraph& graph, std::size_t index);
+[[nodiscard]] Result<void> remove_mix_parameter_mapping(MixGraph& graph,
+                                                        MixEffectId effect_id,
+                                                        const std::string& source_path);
 
 /** Read one numeric, boolean, or enum MixEffect parameter as a scalar. */
 [[nodiscard]] Result<float> get_mix_effect_parameter(const MixEffect& effect,

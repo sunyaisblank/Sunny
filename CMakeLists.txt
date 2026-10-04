@@ -127,6 +127,7 @@ target_sources(
         src/core/score/harmony_analysis.cpp
         src/core/score/midi_compiler.cpp
         src/core/score/mutations.cpp
+        src/core/score/projection.cpp
         src/core/score/queries.cpp
         src/core/score/score_document.cpp
         src/core/score/serialization.cpp

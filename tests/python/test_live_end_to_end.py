@@ -175,6 +175,11 @@ def _beats(whole_notes: Fraction) -> float:
 
 
 def _clip_notes(clip) -> list[tuple[int, float, float, float, bool, float]]:
+    notes = (
+        clip.get_all_notes_extended()
+        if hasattr(clip, "get_all_notes_extended")
+        else clip.get_notes_extended(0, 128, 0.0, clip.end_marker)
+    )
     return sorted(
         (
             note.pitch,
@@ -184,7 +189,7 @@ def _clip_notes(clip) -> list[tuple[int, float, float, float, bool, float]]:
             note.mute,
             note.release_velocity,
         )
-        for note in clip.get_all_notes_extended()
+        for note in notes
     )
 
 
@@ -434,9 +439,9 @@ def test_progression_clip_and_session_state_reach_live(bridge):
     assert state["target_profile"]["live"]["version"]["string"] == "12.3.5"
 
 
-@pytest.mark.parametrize("bridge", [(11, 3, 0)], indirect=True)
-def test_project_plan_applies_against_live_11_without_take_lanes(bridge):
-    """A Live 11 Set has no take lanes; planning and applying a project still completes."""
+@pytest.mark.parametrize("bridge", [(11, 0, 0), (11, 3, 0)], indirect=True)
+def test_project_plan_applies_against_live_11_with_unobserved_take_lanes(bridge):
+    """Missing take-lane API evidence stays unavailable without blocking note authoring."""
     live, client = bridge
     existing = live.song.create_midi_track(-1)
     existing.name = "User Track"
@@ -483,13 +488,20 @@ def test_project_plan_applies_against_live_11_without_take_lanes(bridge):
     assert {entry["outcome"] for entry in applied["deployment"]["mutation_journal"]} == {
         "acknowledged"
     }
-    # Live 11 has no take lanes, so their absence and the clip's identity verify
-    # without take-lane evidence.
+    # Live 11 has take lanes, but this adapter cannot inspect them. Neither
+    # their absence nor the complete identity tuple follows from a null field.
     postconditions = applied["postconditions"]
     assert postconditions["track_gates"][0]["take_lane_topology_observed"] is False
-    assert postconditions["track_gates"][0]["take_lanes_absent_verified"] is True
+    assert postconditions["track_gates"][0]["take_lanes_absent_verified"] is False
     assert postconditions["clips"][0]["observed_is_take_lane_clip"] is None
-    assert postconditions["clips"][0]["clip_identity_verified"] is True
+    assert postconditions["clips"][0]["clip_identity_verified"] is False
+    note_evidence = postconditions["note_batches"][0]
+    legacy_range = live.application.version_tuple() < (11, 1)
+    assert note_evidence["identity_verified"] is True
+    assert note_evidence["properties_verified"] is True
+    assert note_evidence["entire_clip_population_observed"] is not legacy_range
+    assert note_evidence["observed_time_span"] == (4.0 if legacy_range else None)
+    assert note_evidence["verified"] is not legacy_range
     assert [track.name for track in live.song.tracks] == ["Lead", "User Track"]
     lead = live.song.tracks[0]
     assert _clip_notes(lead.clip_slots[0].clip) == [(60, 0.0, 1.0, 80.0, False, 64.0)]

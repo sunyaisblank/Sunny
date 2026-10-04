@@ -8,6 +8,7 @@
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
+#include <limits>
 #include <sunny/core/corpus/workflows.hpp>
 
 using namespace sunny::core;
@@ -391,20 +392,58 @@ TEST_CASE("rebuild_style_profile fails for missing composer", "[corpus-ir][workf
 // Detect Signature Patterns
 // =============================================================================
 
-TEST_CASE("detect_signature_patterns", "[corpus-ir][workflow]") {
+TEST_CASE("signature detection compares actual harmonic bigram proportions",
+          "[corpus-ir][workflow][evidence]") {
     auto db = make_corpus();
+    ProgressionPattern iv{
+        {"I", "V"}, 2, {{1, Beat::zero()}, {3, Beat::zero()}, {5, Beat::zero()}}, "C"};
+    ProgressionPattern vi{
+        {"V", "I"}, 2, {{2, Beat::zero()}, {4, Beat::zero()}, {6, Beat::zero()}}, "C"};
+    db.works[1].analysis.harmonic_analysis.progression_inventory = {iv, vi};
+    auto baseline = vi;
+    baseline.occurrences.insert(
+        baseline.occurrences.end(), iv.occurrences.begin(), iv.occurrences.end());
+    db.works[6].analysis.harmonic_analysis.progression_inventory = {baseline};
 
-    // Add a recurring progression to one of A's works
-    ProgressionPattern prog;
-    prog.roman_numerals = {"I", "IV", "V", "I"};
-    prog.length = 4;
-    prog.occurrences = {
-        ScoreTime{1, Beat{0, 1}}, ScoreTime{20, Beat{0, 1}}, ScoreTime{50, Beat{0, 1}}};
-    db.works[1].analysis.harmonic_analysis.progression_inventory.push_back(prog);
+    SignatureDetectionEvidence evidence;
+    REQUIRE(detect_signature_patterns(db, ComposerProfileId{1}, &evidence));
+    REQUIRE(evidence.available);
+    CHECK(evidence.target_windows == 6);
+    CHECK(evidence.baseline_windows == 6);
+    CHECK(evidence.target_works == std::vector<IngestedWorkId>{IngestedWorkId{1}});
+    CHECK(evidence.baseline_works == std::vector<IngestedWorkId>{IngestedWorkId{6}});
+    const auto& patterns = db.composers[1].style_profile.signature_patterns;
+    REQUIRE(patterns.size() == 1);
+    CHECK(std::get<std::vector<std::string>>(patterns[0].pattern_data) == iv.roman_numerals);
+    // Independently: pA=3/6, pB=0/6, pooled=1/4, SE=sqrt(3/16*1/3)=1/4.
+    CHECK(patterns[0].distinctiveness == Catch::Approx(2.0f));
+    CHECK(patterns[0].examples.size() == 3);
+    CHECK(patterns[0].description.find("target 3/6, other composers 0/6") != std::string::npos);
 
-    auto r = detect_signature_patterns(db, ComposerProfileId{1});
-    CHECK(r.has_value());
-    CHECK_FALSE(db.composers[1].style_profile.signature_patterns.empty());
+    SECTION("identical comparison rates are not distinctive") {
+        db.works[6].analysis.harmonic_analysis.progression_inventory = {iv, vi};
+        REQUIRE(detect_signature_patterns(db, ComposerProfileId{1}, &evidence));
+        CHECK(evidence.available);
+        CHECK(db.composers[1].style_profile.signature_patterns.empty());
+    }
+    SECTION("no comparative observations means unavailable") {
+        db.works[6].analysis.harmonic_analysis.progression_inventory.clear();
+        REQUIRE(detect_signature_patterns(db, ComposerProfileId{1}, &evidence));
+        CHECK_FALSE(evidence.available);
+        CHECK(evidence.baseline_windows == 0);
+        CHECK(db.composers[1].style_profile.signature_patterns.empty());
+    }
+    SECTION("unequal window totals with identical proportions remain neutral") {
+        const auto iv_positions = iv.occurrences;
+        const auto vi_positions = vi.occurrences;
+        iv.occurrences.insert(iv.occurrences.end(), iv_positions.begin(), iv_positions.end());
+        vi.occurrences.insert(vi.occurrences.end(), vi_positions.begin(), vi_positions.end());
+        db.works[6].analysis.harmonic_analysis.progression_inventory = {iv, vi};
+        REQUIRE(detect_signature_patterns(db, ComposerProfileId{1}, &evidence));
+        CHECK(evidence.target_windows == 6);
+        CHECK(evidence.baseline_windows == 12);
+        CHECK(db.composers[1].style_profile.signature_patterns.empty());
+    }
 }
 
 // =============================================================================
@@ -452,6 +491,25 @@ TEST_CASE("find_examples returns empty for no match", "[corpus-ir][workflow]") {
     CHECK(results.empty());
 }
 
+TEST_CASE("passage retrieval matches whole lexical tokens and exposes exact boundaries",
+          "[corpus-ir][workflow][evidence]") {
+    auto db = make_corpus();
+    FormalSection section;
+    section.label = "Development";
+    section.start_bar = 2;
+    section.end_bar = 4;
+    section.length_bars = 2;
+    db.works[1].analysis.formal_analysis.section_plan = {section};
+    const auto matched = find_examples(db, ComposerProfileId{1}, "in the DEVELOPMENT section");
+    REQUIRE(matched.size() == 1);
+    CHECK(matched[0].region_start == ScoreTime{2, Beat::zero()});
+    CHECK(matched[0].region_end == ScoreTime{4, Beat::zero()});
+    CHECK(matched[0].relevance_score == 1.0f);
+    CHECK(find_examples(db, ComposerProfileId{1}, "velop").empty());
+    CHECK(find_examples(db, ComposerProfileId{1}, "development recapitulation").empty());
+    CHECK(find_examples(db, ComposerProfileId{1}, "the section").empty());
+}
+
 // =============================================================================
 // Query: Progression Examples
 // =============================================================================
@@ -494,13 +552,55 @@ TEST_CASE("get_formal_template for unrepresented form", "[corpus-ir][workflow]")
 // Query: HowWouldXHandle
 // =============================================================================
 
-TEST_CASE("how_would_x_handle returns tendencies", "[corpus-ir][workflow]") {
+TEST_CASE("context query does not substitute global averages for absent context",
+          "[corpus-ir][workflow][evidence]") {
     auto db = make_corpus();
     (void)rebuild_style_profile(db, ComposerProfileId{1});
 
     auto r = how_would_x_handle(db, ComposerProfileId{1}, "development section");
     CHECK(r.has_value());
-    CHECK_FALSE(r->statistical_tendencies.empty());
+    CHECK(r->relevant_examples.empty());
+    CHECK(r->statistical_tendencies.empty());
+    CHECK(r->signature_patterns.empty());
+}
+
+TEST_CASE("context tendencies aggregate only complete matched passages",
+          "[corpus-ir][workflow][evidence]") {
+    auto db = make_corpus();
+    FormalSection development;
+    development.label = "Development";
+    development.start_bar = 2;
+    development.end_bar = 4;
+    development.length_bars = 2;
+    db.works[1].analysis.formal_analysis.section_plan = {development, development};
+    db.works[1].analysis.harmonic_analysis.harmonic_rhythm.changes_per_bar = {100, 2, 4, 100};
+    db.works[1].analysis.rhythmic_analysis.onset_density = {100, 1, 3, 100};
+    REQUIRE(rebuild_style_profile(db, ComposerProfileId{1}));
+    auto result = how_would_x_handle(db, ComposerProfileId{1}, "development section");
+    REQUIRE(result);
+    REQUIRE(result->statistical_tendencies.size() == 2);
+    CHECK(result->statistical_tendencies[0].observation.find("3.000000 per bar") !=
+          std::string::npos);
+    CHECK(result->statistical_tendencies[0].observation.find(
+              "6.000000 observations / 2 distinct bars") != std::string::npos);
+    CHECK(result->statistical_tendencies[1].observation.find("2.000000 per bar") !=
+          std::string::npos);
+    CHECK(result->statistical_tendencies[0].supporting_examples_count == 2);
+    // The identical annotated passages do not double the observed-bar denominator.
+    db.works[1].analysis.harmonic_analysis.harmonic_rhythm.changes_per_bar = {100, 2};
+    result = how_would_x_handle(db, ComposerProfileId{1}, "development");
+    REQUIRE(result);
+    REQUIRE(result->statistical_tendencies.size() == 1);
+    CHECK(result->statistical_tendencies[0].domain == "rhythmic");
+    db.works[1].analysis.rhythmic_analysis.onset_density = {100, -1, 3, 100};
+    result = how_would_x_handle(db, ComposerProfileId{1}, "development");
+    REQUIRE(result);
+    CHECK(result->statistical_tendencies.empty());
+    db.works[1].analysis.rhythmic_analysis.onset_density = {
+        100, std::numeric_limits<float>::infinity(), 3, 100};
+    result = how_would_x_handle(db, ComposerProfileId{1}, "development");
+    REQUIRE(result);
+    CHECK(result->statistical_tendencies.empty());
 }
 
 TEST_CASE("how_would_x_handle fails for missing composer", "[corpus-ir][workflow]") {

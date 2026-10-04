@@ -16,6 +16,7 @@
 #include <sunny/core/corpus/serialization.hpp>
 #include <sunny/core/corpus/workflows.hpp>
 #include <sunny/core/detail/serialization_integer.hpp>
+#include <sunny/core/score/serialization_primitives.hpp>
 #include <sunny/infrastructure/compilation_workflows.hpp>
 #include <sunny/infrastructure/corpus/ingestion.hpp>
 #include <sunny/infrastructure/mcp/corpus_tools.hpp>
@@ -41,6 +42,8 @@ json example_j(const AnnotatedExample& e) {
               {"analysis_summary", e.analysis_summary},
               {"formal_context", e.formal_context}};
     j["work_id"] = e.work_id.value;
+    j["region_start"] = score_time_to_json(e.region_start);
+    j["region_end"] = score_time_to_json(e.region_end);
     if (!e.harmonic_reduction.empty()) {
         j["harmonic_reduction"] = e.harmonic_reduction;
     }
@@ -462,12 +465,31 @@ void register_corpus_tools(McpServer& server, std::shared_ptr<CorpusSession> ses
         [session](const json& params) -> json {
             auto cid = ComposerProfileId{
                 detail::checked_integer_or<std::uint64_t>(params, "composer_id", 0, "composer id")};
-            auto r = detect_signature_patterns(session->corpus, cid);
+            SignatureDetectionEvidence evidence;
+            auto r = detect_signature_patterns(session->corpus, cid, &evidence);
             if (!r) return error_response("detection failed: composer not found");
 
             auto it = session->corpus.composers.find(cid.value);
+            json target_works = json::array();
+            json baseline_works = json::array();
+            for (const auto id : evidence.target_works)
+                target_works.push_back(id.value);
+            for (const auto id : evidence.baseline_works)
+                baseline_works.push_back(id.value);
             return {{"composer_id", cid.value},
-                    {"pattern_count", it->second.style_profile.signature_patterns.size()}};
+                    {"pattern_count", it->second.style_profile.signature_patterns.size()},
+                    {"available", evidence.available},
+                    {"method", "observed_harmonic_bigram_pooled_proportion_z"},
+                    {"interpretation",
+                     "descriptive contrast; overlapping windows; no calibrated significance"},
+                    {"target_windows", evidence.target_windows},
+                    {"baseline_windows", evidence.baseline_windows},
+                    {"target_works", target_works},
+                    {"baseline_works", baseline_works},
+                    {"unavailable_reason",
+                     evidence.available ? json(nullptr)
+                                        : json("Analysed harmonic bigram observations are required "
+                                               "for the target and at least one other composer")}};
         });
 
     // =========================================================================
@@ -537,7 +559,11 @@ void register_corpus_tools(McpServer& server, std::shared_ptr<CorpusSession> ses
                              json arr = json::array();
                              for (const auto& e : examples)
                                  arr.push_back(example_j(e));
-                             return {{"examples", arr}, {"count", examples.size()}};
+                             return {{"examples", arr},
+                                     {"count", examples.size()},
+                                     {"method", "all_significant_tokens_in_annotated_section"},
+                                     {"relevance_interpretation",
+                                      "lexical match coverage, not calibrated semantic relevance"}};
                          });
 
     server.register_tool(
@@ -621,7 +647,23 @@ void register_corpus_tools(McpServer& server, std::shared_ptr<CorpusSession> ses
 
             return {{"relevant_examples", examples},
                     {"statistical_tendencies", tendencies},
-                    {"signature_patterns", patterns}};
+                    {"signature_patterns", patterns},
+                    {"available", !result.relevant_examples.empty()},
+                    {"statistics_available", !result.statistical_tendencies.empty()},
+                    {"statistics_unavailable_reason",
+                     !result.statistical_tendencies.empty()
+                         ? json(nullptr)
+                         : json("No complete finite nonnegative per-bar observations support the "
+                                "matching passages")},
+                    {"method", "annotated_section_lexical_match_and_matched_bar_aggregation"},
+                    {"confidence_interpretation",
+                     "arithmetic aggregation of supplied observations; not calibrated musical or "
+                     "statistical confidence"},
+                    {"unavailable_reason",
+                     !result.relevant_examples.empty()
+                         ? json(nullptr)
+                         : json("No annotated section matches all significant query tokens; no "
+                                "contextual inference is available")}};
         });
 
     // =========================================================================

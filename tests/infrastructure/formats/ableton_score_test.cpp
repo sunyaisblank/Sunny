@@ -137,6 +137,7 @@ class ScoreReadbackTransport final : public LomTransport {
         requests.push_back(request);
         if (request.type == LomRequestType::CallMethod &&
             (request.property_or_method == "get_notes_by_id" ||
+             request.property_or_method == "get_notes_extended" ||
              request.property_or_method == "get_all_notes_extended")) {
             if (malformed_note_readback)
                 return {true,
@@ -231,7 +232,7 @@ class ScoreReadbackTransport final : public LomTransport {
     [[nodiscard]] bool is_connected() const override { return true; }
 
     [[nodiscard]] Result<std::optional<AbletonTargetProfile>> target_profile() override {
-        return std::optional<AbletonTargetProfile>{modeled_target_profile({12, 3, 0, "12.3.0"})};
+        return std::optional<AbletonTargetProfile>{modeled_target_profile(version)};
     }
 
     [[nodiscard]] Result<std::optional<std::uint32_t>> scene_count() override {
@@ -239,6 +240,7 @@ class ScoreReadbackTransport final : public LomTransport {
     }
 
     std::vector<LomRequest> requests;
+    AbletonVersion version{12, 3, 0, "12.3.0"};
     bool omit_property_evidence = false;
     bool diverge_tempo = false;
     bool malformed_tempo = false;
@@ -911,6 +913,42 @@ TEST_CASE("Live 12 note deployment does not claim an unobserved tuning context",
     }));
 }
 
+TEST_CASE("Live 11.0 note readback retains bounded evidence without a complete population verdict",
+          "[ableton][compiler][note-evidence]") {
+    auto score = make_test_score(1);
+    insert_note(score, 0, SpelledPitch{0, 0, 4}, Beat::zero(), Beat{1, 4});
+    ScoreReadbackTransport transport;
+    transport.version = {11, 0, 0, "11.0.0"};
+    const auto result = compile_to_ableton(score, transport);
+    REQUIRE(result.has_value());
+    CHECK(result->notes_verified == 1);
+    CHECK(result->note_batches_verified == 0);
+    REQUIRE(result->note_deployments.size() == 1);
+    CHECK(result->note_deployments[0].properties_verified);
+    CHECK_FALSE(result->note_deployments[0].entire_clip_population_observed);
+    REQUIRE(result->note_deployments[0].observed_time_span.has_value());
+    CHECK(*result->note_deployments[0].observed_time_span == 4.0);
+    REQUIRE(
+        std::none_of(transport.requests.begin(), transport.requests.end(), [](const auto& request) {
+            return request.property_or_method == "get_all_notes_extended";
+        }));
+    const auto query =
+        std::find_if(transport.requests.begin(), transport.requests.end(), [](const auto& request) {
+            return request.property_or_method == "get_notes_extended";
+        });
+    REQUIRE(query != transport.requests.end());
+    const auto& payload = std::get<nlohmann::json>(query->args.at(0));
+    CHECK(payload.at("from_pitch") == 0);
+    CHECK(payload.at("pitch_span") == 128);
+    CHECK(payload.at("from_time") == 0.0);
+    CHECK(payload.at("time_span") == 4.0);
+    CHECK(LomProtocol::validate_request(*query));
+    const auto newer = ableton_note_population_request(
+        LomPaths::clip(0, 0), modeled_target_profile({11, 1, 0, "11.1.0"}), 4.0);
+    CHECK(newer.property_or_method == "get_all_notes_extended");
+    CHECK(std::get<nlohmann::json>(newer.args.at(0)).size() == 1);
+}
+
 TEST_CASE("live note insertion requires exact unique creation IDs",
           "[ableton][compiler][note-evidence]") {
     auto score = make_test_score(1);
@@ -935,6 +973,8 @@ TEST_CASE("live note insertion requires exact unique creation IDs",
     CHECK(result->note_deployments[0].created_note_ids == std::vector<int>{100, 101});
     CHECK(result->note_deployments[0].cardinality_verified);
     CHECK(result->note_deployments[0].properties_verified);
+    CHECK(result->note_deployments[0].entire_clip_population_observed);
+    CHECK_FALSE(result->note_deployments[0].observed_time_span.has_value());
     REQUIRE(result->note_deployments[0].requested_notes.size() == 2);
     CHECK(result->note_deployments[0].requested_notes[0].pitch == 60);
     CHECK(result->note_deployments[0].requested_notes[0].start_time == 0.0);

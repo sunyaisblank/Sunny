@@ -14,6 +14,7 @@ bool is_read_only_request(const LomRequest& request) {
     if (request.type == LomRequestType::GetProperty) return true;
     if (request.type != LomRequestType::CallMethod) return false;
     return request.property_or_method == "get_notes_by_id" ||
+           request.property_or_method == "get_notes_extended" ||
            request.property_or_method == "get_all_notes_extended" ||
            request.property_or_method == "sunny_get_target_profile" ||
            request.property_or_method == "sunny_get_target_snapshot" ||

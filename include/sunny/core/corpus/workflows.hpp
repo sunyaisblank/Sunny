@@ -111,10 +111,23 @@ analyze_work(CorpusDatabase& corpus, IngestedWorkId work_id, const Score* score 
                                           const StyleProfile& profile);
 
 /**
- * @brief Detect statistically distinctive patterns for a composer.
+ * Supporting inventory for a descriptive comparison of observed harmonic
+ * bigram proportions. Overlapping windows are not independent trials; the
+ * pooled proportion z score is an effect summary, not a calibrated p value.
  */
-[[nodiscard]] Result<void> detect_signature_patterns(CorpusDatabase& corpus,
-                                                     ComposerProfileId composer_id);
+struct SignatureDetectionEvidence {
+    std::uint64_t target_windows = 0;
+    std::uint64_t baseline_windows = 0;
+    std::vector<IngestedWorkId> target_works;
+    std::vector<IngestedWorkId> baseline_works;
+    bool available = false;
+};
+
+/** Compare harmonic bigrams against analysed works owned by other composers. */
+[[nodiscard]] Result<void>
+detect_signature_patterns(CorpusDatabase& corpus,
+                          ComposerProfileId composer_id,
+                          SignatureDetectionEvidence* evidence = nullptr);
 
 // =============================================================================
 // Query

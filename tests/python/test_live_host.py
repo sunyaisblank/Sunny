@@ -9,8 +9,9 @@ SUNNY_MCP_COMMAND may replace the local binary, for example:
     export SUNNY_MCP_COMMAND="docker run -i --rm -e SUNNY_ABLETON_HOST -e SUNNY_TCP_PORT sunny-mcp"
     pytest tests/python/test_live_host.py -s
 
-The printed observations, including the Remote Script's own log, are the
-record that settles the open assumptions in issue #22.
+The printed observations and Remote Script log cover this small deployment
+only. Issue #22 also requires explicit device/mode, runtime-type, running
+transport, routing and large-Set probes; this smoke test cannot close it.
 """
 
 from __future__ import annotations

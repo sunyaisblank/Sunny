@@ -47,7 +47,7 @@ struct AbletonTargetProfile {
     CapabilityState structural_snapshot = CapabilityState::Available;
 };
 
-/** Build the public-LOM feature profile implied by an observed Live version. */
+/** Model version floors from the Max LOM; Python runtime and licensing need host evidence. */
 [[nodiscard]] AbletonTargetProfile modeled_target_profile(AbletonVersion version);
 
 /** Validate a profile supplied by any transport, including non-wire implementations. */

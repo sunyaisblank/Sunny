@@ -746,6 +746,9 @@ json note_postcondition_evidence_j(
              {"observed_notes", std::move(observed)},
              {"identity_verified", evidence.identity_verified},
              {"properties_verified", evidence.properties_verified},
+             {"entire_clip_population_observed", evidence.entire_clip_population_observed},
+             {"observed_time_span",
+              evidence.observed_time_span ? json(*evidence.observed_time_span) : json(nullptr)},
              {"verified", evidence.verified}});
     }
     return encoded;

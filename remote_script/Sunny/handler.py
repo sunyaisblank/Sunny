@@ -322,6 +322,22 @@ def _valid_all_notes_query(value: Any) -> bool:
     )
 
 
+def _valid_ranged_notes_query(value: Any) -> bool:
+    return (
+        isinstance(value, dict)
+        and set(value) == {"return", "from_pitch", "pitch_span", "from_time", "time_span"}
+        and _valid_all_notes_query({"return": value["return"]})
+        and type(value["from_pitch"]) is int
+        and value["from_pitch"] == 0
+        and type(value["pitch_span"]) is int
+        and value["pitch_span"] == 128
+        and _finite_number(value["from_time"])
+        and value["from_time"] == 0.0
+        and _finite_number(value["time_span"])
+        and value["time_span"] > 0.0
+    )
+
+
 def _valid_request_arguments(req_type: str, kind: str, name: str, args: list[Any]) -> bool:
     if req_type == "get":
         return not args
@@ -428,6 +444,8 @@ def _valid_request_arguments(req_type: str, kind: str, name: str, args: list[Any
             if name == "get_notes_by_id"
             else _valid_all_notes_query(args[0])
             if name == "get_all_notes_extended"
+            else _valid_ranged_notes_query(args[0])
+            if name == "get_notes_extended"
             else False
         )
     if kind == "device":
@@ -521,6 +539,7 @@ def _request_allowed(req_type: str, path: str, name: str, args: list[Any]) -> bo
             in (
                 "add_new_notes",
                 "get_notes_by_id",
+                "get_notes_extended",
                 "get_all_notes_extended",
                 "sunny_clear_all_envelopes",
             )
@@ -675,6 +694,17 @@ class LomHandler:
                     return {"success": True, "value": self._midi_notes_dictionary(notes)}
                 if name == "get_all_notes_extended":
                     notes = obj.get_all_notes_extended()
+                    return {"success": True, "value": self._midi_notes_dictionary(notes)}
+                if name == "get_notes_extended":
+                    query = args[0]
+                    # Python keyword arguments/MidiNoteVector are observed in
+                    # Live's MxDCore source, not the Max-side dictionary ABI.
+                    notes = obj.get_notes_extended(
+                        from_pitch=query["from_pitch"],
+                        pitch_span=query["pitch_span"],
+                        from_time=float(query["from_time"]),
+                        time_span=float(query["time_span"]),
+                    )
                     return {"success": True, "value": self._midi_notes_dictionary(notes)}
                 if name in _STRUCTURAL_CALLS:
                     getattr(obj, name)(*args)
@@ -1281,7 +1311,8 @@ class LomHandler:
             if arrangement_clips is None:
                 raise RuntimeError("Track returned invalid arrangement_clips collection")
             arrangement_clip_count = len(arrangement_clips)
-        # Take lanes arrived with Live 12; a Live 11 Track has no take_lanes.
+        # Live 11 has take lanes in its UI, but this adapter only reads their
+        # Python API topology on Live 12+. Null means unobserved, not absent.
         if take_lane_state_available:
             take_lanes = _lom_sequence(track.take_lanes)
             if take_lanes is None:

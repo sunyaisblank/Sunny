@@ -684,8 +684,20 @@ bool finite_range(float value, float minimum, float maximum) {
     return std::isfinite(value) && value >= minimum && value <= maximum;
 }
 
+template <typename E> bool defined(E value, E last) {
+    using Underlying = std::underlying_type_t<E>;
+    const auto raw = static_cast<Underlying>(value);
+    if constexpr (std::is_signed_v<Underlying>)
+        if (raw < 0) return false;
+    return raw <= static_cast<Underlying>(last);
+}
+
 std::optional<std::string> sidechain_parameter_reason(const MixSidechainConfig& sidechain) {
+    if (!defined(sidechain.source, SidechainSourceType::ExternalBus))
+        return "sidechain source is not a defined value";
     if (!sidechain.filter) return std::nullopt;
+    if (!defined(sidechain.filter->filter_type, MixEQBandType::TiltShelf))
+        return "sidechain filter type is not a defined value";
     if (!finite_range(sidechain.filter->frequency, 20.0f, 20000.0f))
         return "sidechain filter frequency must be in [20, 20000] Hz";
     if (!finite_range(sidechain.filter->q, std::numeric_limits<float>::min(), 100.0f))
@@ -694,6 +706,9 @@ std::optional<std::string> sidechain_parameter_reason(const MixSidechainConfig& 
 }
 
 std::optional<std::string> compressor_parameter_reason(const MixCompressor& value) {
+    if (!defined(value.detection, DetectionMode::Envelope) ||
+        !defined(value.topology, CompressorTopology::FeedBack))
+        return "compressor detection or topology is not a defined value";
     if (!finite_range(value.threshold, -160.0f, 60.0f))
         return "compressor threshold must be in [-160, 60] dB";
     if (!finite_range(value.ratio, 1.0f, 1000.0f)) return "compressor ratio must be in [1, 1000]";
@@ -738,6 +753,10 @@ void check_effect_parameters(const MixGraph& graph, std::vector<Diagnostic>& out
                             reason = "EQ supports at most eight bands";
                         } else {
                             for (const auto& band : parameters.bands) {
+                                if (!defined(band.band_type, MixEQBandType::TiltShelf)) {
+                                    reason = "EQ band type is not a defined value";
+                                    break;
+                                }
                                 if (!finite_range(band.frequency, 20.0f, 20000.0f)) {
                                     reason = "EQ frequency must be in [20, 20000] Hz";
                                     break;
@@ -769,7 +788,9 @@ void check_effect_parameters(const MixGraph& graph, std::vector<Diagnostic>& out
                     } else if constexpr (std::is_same_v<T, MixGate>) {
                         reason = gate_parameter_reason(parameters);
                     } else if constexpr (std::is_same_v<T, MixLimiter>) {
-                        if (!finite_range(parameters.ceiling, -60.0f, 6.0f))
+                        if (!defined(parameters.algorithm, LimiterAlgorithm::ISP))
+                            reason = "limiter algorithm is not a defined value";
+                        else if (!finite_range(parameters.ceiling, -60.0f, 6.0f))
                             reason = "limiter ceiling must be in [-60, 6] dBFS";
                         else if (!finite_range(parameters.release,
                                                std::numeric_limits<float>::min(),
@@ -778,7 +799,9 @@ void check_effect_parameters(const MixGraph& graph, std::vector<Diagnostic>& out
                         else if (!finite_range(parameters.lookahead, 0.0f, 1000.0f))
                             reason = "limiter lookahead must be in [0, 1000] ms";
                     } else if constexpr (std::is_same_v<T, MixMultibandDynamics>) {
-                        if (parameters.crossover_frequencies.size() > 7)
+                        if (!defined(parameters.crossover_slope, CrossoverSlope::LinearPhase))
+                            reason = "crossover slope is not a defined value";
+                        else if (parameters.crossover_frequencies.size() > 7)
                             reason = "multiband dynamics supports at most seven crossovers";
                         else if ((!parameters.crossover_frequencies.empty() ||
                                   !parameters.bands.empty()) &&
@@ -803,7 +826,11 @@ void check_effect_parameters(const MixGraph& graph, std::vector<Diagnostic>& out
                                 reason = gate_parameter_reason(*band.expander);
                         }
                     } else if constexpr (std::is_same_v<T, MixSaturation>) {
-                        if (!unit_interval(parameters.drive) || !unit_interval(parameters.mix))
+                        if (!defined(parameters.algorithm.type, SaturationTypeTag::Hard) ||
+                            !defined(parameters.algorithm.tape_speed, TapeSpeed::Ips30) ||
+                            !defined(parameters.algorithm.console_type, ConsoleType::Generic))
+                            reason = "saturation algorithm is not a defined value";
+                        else if (!unit_interval(parameters.drive) || !unit_interval(parameters.mix))
                             reason = "saturation drive and mix must be in [0, 1]";
                         else if (!finite_range(parameters.output_level, -120.0f, 120.0f))
                             reason = "saturation output level must be in [-120, 120] dB";
@@ -822,9 +849,11 @@ void check_effect_parameters(const MixGraph& graph, std::vector<Diagnostic>& out
                                  !finite_range(*parameters.mono_below, 20.0f, 20000.0f))
                             reason = "mono-below frequency must be in [20, 20000] Hz";
                     } else if constexpr (std::is_same_v<T, MixDelay>) {
-                        if (!parameters.tempo_synced &&
-                            (!std::isfinite(parameters.delay_ms) || parameters.delay_ms <= 0.0f ||
-                             parameters.delay_ms > 10000.0f))
+                        if (!defined(parameters.stereo_mode, MixDelayMode::PingPong))
+                            reason = "delay stereo mode is not a defined value";
+                        else if (!parameters.tempo_synced &&
+                                 (!std::isfinite(parameters.delay_ms) ||
+                                  parameters.delay_ms <= 0.0f || parameters.delay_ms > 10000.0f))
                             reason = "delay time must be in (0, 10000] ms";
                         else if (parameters.tempo_synced &&
                                  parameters.beat_division.numerator() <= 0)
@@ -853,8 +882,10 @@ void check_effect_parameters(const MixGraph& graph, std::vector<Diagnostic>& out
                         else if (!unit_interval(parameters.mix))
                             reason = "delay mix must be in [0, 1]";
                     } else if constexpr (std::is_same_v<T, MixReverb>) {
-                        if (parameters.algorithm == MixReverbAlgorithm::Convolution &&
-                            parameters.impulse_response.empty())
+                        if (!defined(parameters.algorithm, MixReverbAlgorithm::Shimmer))
+                            reason = "reverb algorithm is not a defined value";
+                        else if (parameters.algorithm == MixReverbAlgorithm::Convolution &&
+                                 parameters.impulse_response.empty())
                             reason = "convolution reverb requires an impulse response";
                         else if (parameters.algorithm == MixReverbAlgorithm::Shimmer &&
                                  (!std::isfinite(parameters.shimmer_pitch) ||

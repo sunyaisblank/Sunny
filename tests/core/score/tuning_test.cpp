@@ -198,7 +198,9 @@ TEST_CASE("Derived scores preserve tuning and MIDI exposes unsupported tuning re
     REQUIRE(custom.has_value());
     score.tuning = *custom;
 
-    const auto reduced = piano_reduction(score, ScoreId{45});
+    const auto reduced_result = piano_reduction(score, ScoreId{45});
+    REQUIRE(reduced_result.has_value());
+    const auto& reduced = *reduced_result;
     CHECK(reduced.tuning == score.tuning);
 
     auto compiled = compile_to_midi(score);

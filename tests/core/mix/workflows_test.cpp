@@ -316,7 +316,7 @@ TEST_CASE("add_aux_effect appends to aux effect chain", "[mix-ir][workflow]") {
 
 TEST_CASE("add_master_effect appends to master chain", "[mix-ir][workflow]") {
     auto graph = create_mix_graph(MixGraphId{1}, {PartId{1}});
-    add_master_effect(graph, {MixEffectId{1}, MixLimiter{}, true});
+    REQUIRE(add_master_effect(graph, {MixEffectId{1}, MixLimiter{}, true}));
     CHECK(graph.master_bus.insert_chain.effects.size() == 1);
 }
 
@@ -661,7 +661,7 @@ TEST_CASE("Mix automation targets resolve every structural path family of spec 9
                 .has_value());
     MixLimiter limiter;
     limiter.ceiling = -1.0f;
-    add_master_effect(graph, {MixEffectId{2}, limiter, true});
+    REQUIRE(add_master_effect(graph, {MixEffectId{2}, limiter, true}));
 
     const auto read = [&](const std::string& path) {
         return get_mix_automation_target(graph, path);
@@ -864,4 +864,127 @@ TEST_CASE("validate returns diagnostics", "[mix-ir][workflow]") {
     auto diags = validate(graph);
     // Should at least get X4 (no insert) and I1 (no intent)
     CHECK(diags.size() >= 2);
+}
+
+TEST_CASE("Mix effect mutations refuse invalid parameters at every owner atomically",
+          "[mix-ir][workflow][authoring]") {
+    auto graph = create_mix_graph(MixGraphId{1}, {PartId{17}});
+    REQUIRE(create_group_bus(graph, GroupBusId{7}, "Group", {}));
+    REQUIRE(create_aux_bus(graph, AuxBusId{8}, "Aux"));
+    const auto before = mix_to_json(graph);
+    MixCompressor invalid;
+    invalid.ratio = 0.25f;
+    invalid.attack = -10.0f;
+    CHECK_FALSE(add_channel_effect(graph, ChannelStripId{1}, {MixEffectId{5}, invalid, true}));
+    CHECK(mix_to_json(graph) == before);
+    CHECK_FALSE(add_bus_effect(graph, GroupBusId{7}, {MixEffectId{5}, invalid, true}));
+    CHECK(mix_to_json(graph) == before);
+    CHECK_FALSE(add_aux_effect(graph, AuxBusId{8}, {MixEffectId{5}, invalid, true}));
+    CHECK(mix_to_json(graph) == before);
+    CHECK_FALSE(add_master_effect(graph, {MixEffectId{5}, invalid, true}));
+    CHECK(mix_to_json(graph) == before);
+    MixCompressor boundary;
+    boundary.ratio = 1.0f;
+    boundary.attack = 0.0f;
+    REQUIRE(add_channel_effect(graph, ChannelStripId{1}, {MixEffectId{5}, boundary, true}));
+    const auto accepted = mix_to_json(graph);
+    CHECK_FALSE(add_master_effect(graph, {MixEffectId{5}, MixLimiter{}, true}));
+    CHECK_FALSE(replace_mix_effect(graph, MixEffectId{5}, invalid, true));
+    CHECK(mix_to_json(graph) == accepted);
+}
+
+TEST_CASE(
+    "Mix effect order preserves lane identity and removal requires explicit reference cleanup",
+    "[mix-ir][workflow][authoring]") {
+    auto graph = create_mix_graph(MixGraphId{1}, {PartId{17}});
+    REQUIRE(add_channel_effect(graph, ChannelStripId{1}, {MixEffectId{5}, MixCompressor{}, true}));
+    REQUIRE(add_channel_effect(graph, ChannelStripId{1}, {MixEffectId{9}, MixCompressor{}, true}));
+    REQUIRE(add_automation(graph,
+                           {"channels[17].insert_chain.effects[0].parameters.threshold",
+                            {{SCORE_START, -10.0f}},
+                            InterpolationMode::Linear,
+                            std::nullopt}));
+    const auto before = mix_to_json(graph);
+    CHECK_FALSE(
+        reorder_mix_effects(graph, "channels[17].insert_chain", {MixEffectId{5}, MixEffectId{5}}));
+    CHECK(mix_to_json(graph) == before);
+    REQUIRE(
+        reorder_mix_effects(graph, "channels[17].insert_chain", {MixEffectId{9}, MixEffectId{5}}));
+    CHECK(graph.automation[0].target ==
+          "channels[17].insert_chain.effects[1].parameters.threshold");
+    const auto reordered = mix_to_json(graph);
+    CHECK_FALSE(remove_mix_effect(graph, MixEffectId{5}));
+    CHECK(mix_to_json(graph) == reordered);
+    REQUIRE(remove_mix_effect(graph, MixEffectId{9}));
+    CHECK(graph.automation[0].target ==
+          "channels[17].insert_chain.effects[0].parameters.threshold");
+    REQUIRE(remove_mix_automation(graph, 0));
+    REQUIRE(remove_mix_effect(graph, MixEffectId{5}));
+    CHECK(graph.channels[0].insert_chain.effects.empty());
+}
+
+TEST_CASE("Every admitted Mix effect variant rejects an independent invalid domain fixture",
+          "[mix-ir][workflow][authoring]") {
+    auto graph = create_mix_graph(MixGraphId{1}, {PartId{1}});
+    const auto before = mix_to_json(graph);
+    std::vector<MixEffectParameters> invalid;
+    MixEQ eq;
+    eq.bands = {MixEQBand{}};
+    eq.bands[0].q = 0.0f;
+    invalid.emplace_back(eq);
+    MixCompressor compressor;
+    compressor.ratio = 0.25f;
+    invalid.emplace_back(compressor);
+    MixGate gate;
+    gate.hold = -1.0f;
+    invalid.emplace_back(gate);
+    MixLimiter limiter;
+    limiter.lookahead = -1.0f;
+    invalid.emplace_back(limiter);
+    MixMultibandDynamics multiband;
+    multiband.crossover_frequencies = {1000.0f, 500.0f};
+    multiband.bands.resize(3);
+    invalid.emplace_back(multiband);
+    MixSaturation saturation;
+    saturation.mix = 1.01f;
+    invalid.emplace_back(saturation);
+    MixStereoProcessor stereo;
+    stereo.width = -0.1f;
+    invalid.emplace_back(stereo);
+    MixDelay delay;
+    delay.delay_ms = 0.0f;
+    invalid.emplace_back(delay);
+    MixReverb reverb;
+    reverb.pre_delay = -1.0f;
+    invalid.emplace_back(reverb);
+    limiter = MixLimiter{};
+    limiter.algorithm = static_cast<LimiterAlgorithm>(255);
+    invalid.emplace_back(limiter);
+    for (const auto& parameters : invalid) {
+        CAPTURE(parameters.index());
+        CHECK_FALSE(add_master_effect(graph, {MixEffectId{1}, parameters, true}));
+        CHECK(mix_to_json(graph) == before);
+    }
+}
+
+TEST_CASE("Mix replacement cannot silently discard automation and retained mapping semantics",
+          "[mix-ir][workflow][authoring]") {
+    auto graph = create_mix_graph(MixGraphId{1}, {PartId{17}});
+    REQUIRE(add_channel_effect(graph, ChannelStripId{1}, {MixEffectId{5}, MixCompressor{}, true}));
+    REQUIRE(add_automation(graph,
+                           {"channels[17].insert_chain.effects[0].parameters.threshold",
+                            {{SCORE_START, -10.0f}},
+                            InterpolationMode::Linear,
+                            std::nullopt}));
+    MixDeviceParameter mapping;
+    mapping.parameter_name = "Threshold";
+    mapping.source_min = -100.0f;
+    mapping.source_max = 0.0f;
+    REQUIRE(map_mix_effect_parameter(graph, MixEffectId{5}, "threshold", mapping));
+    const auto before = mix_to_json(graph);
+    CHECK_FALSE(replace_mix_effect(graph, MixEffectId{5}, MixReverb{}, true));
+    CHECK(mix_to_json(graph) == before);
+    REQUIRE(remove_mix_automation(graph, 0));
+    REQUIRE(remove_mix_parameter_mapping(graph, MixEffectId{5}, "threshold"));
+    REQUIRE(replace_mix_effect(graph, MixEffectId{5}, MixReverb{}, true));
 }

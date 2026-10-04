@@ -780,7 +780,20 @@ This allows the system to distinguish, for example, early Beethoven (op. 1–20,
 
 ### 3.14 Signature Patterns
 
-**Definition 3.14.1**. A *SignaturePattern* is a distinctive musical fingerprint — a pattern so characteristic of this composer that its presence is a strong stylistic signal. These are extracted by comparing the composer's patterns against the corpus average and identifying statistically significant deviations.
+**Definition 3.14.1**. A detected *SignaturePattern* is an observed harmonic bigram whose
+proportion is greater in this composer's analysed works than in analysed works owned by other
+composers. Unassigned works and the target composer are excluded from the baseline. Each work
+is counted once. Only length-two progression inventories are currently admitted; longer sparse
+patterns do not supply a complete opportunity denominator.
+
+For counts `x/n` and `y/m`, let `p=(x+y)/(n+m)`. The descriptive contrast is
+`z=(x/n-y/m)/sqrt(p*(1-p)*(1/n+1/m))`. Detection retains positive contrasts at least 1.5 when
+both populations have observations and the variance is positive. Identical rates produce no
+signature. Missing target or comparison observations produce explicit unavailability. The
+selection threshold is a heuristic: overlapping harmonic windows are not independent trials,
+and this statistic supplies neither a calibrated significance level nor a prediction of style.
+The MCP result exposes the observation denominators and contributing work identities; each
+pattern retains its target occurrences and a description of both counts.
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -788,7 +801,7 @@ This allows the system to distinguish, for example, early Beethoven (op. 1–20,
 | `description` | `String` | Human-readable description |
 | `domain` | `PatternDomain` | Closed analytical domain enum |
 | `pattern_data` | `PatternData` | The pattern itself |
-| `distinctiveness` | `f32` | How much more frequent this pattern is for this composer than for others (ratio or z-score) |
+| `distinctiveness` | `f32` | Descriptive pooled-proportion z for newly detected harmonic bigrams; historical supplied values retain their original provenance |
 | `examples` | `Vec<(Id<IngestedWork>, ScoreTime)>` | Specific instances |
 
 **PatternData** is the current four-alternative C++ sum type. `PatternDomain` supplies the musical
@@ -937,7 +950,9 @@ These queries are designed for use during active composition, when the agent nee
 
 ### 5.2 The HowWouldXHandle Query
 
-**Definition 5.2.1**. The *HowWouldXHandle* query is the highest-level query in the Corpus IR. It accepts a natural-language description of a compositional situation and returns the most relevant insights from the composer's profile and corpus.
+**Definition 5.2.1**. The currently supported *HowWouldXHandle* query retrieves annotated
+sections by lexical criteria and aggregates observations from those passages. It does not
+predict a composer's decisions from arbitrary natural-language situations.
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -953,7 +968,19 @@ These queries are designed for use during active composition, when the agent nee
 - "Handling the retransition back to the tonic before the recapitulation"
 - "Writing a coda that references the opening material"
 
-The query matches the situation description against the formal, harmonic, textural, and motivic analysis records to find relevant passages in the corpus. It returns:
+Every significant case-insensitive alphanumeric query token must occur in the section label or
+character annotation. Articles, the prepositions `in`, `of`, `at`, and the words `section`,
+`sections`, `passage` are ignored. Substring fragments do not match words. An empty significant
+query or an absent annotated context returns no contextual evidence, rather than substituting
+global style averages. The complex example situations above require matching annotations; they
+are not claims of semantic inference.
+
+The current tendencies are recognised harmonic changes and symbolic attack counts per bar.
+Only passages with complete per-bar observations contribute; overlapping passage annotations
+count each `(work, bar)` once. Missing observations are unavailable, whereas measured zero
+counts remain valid. Signatures are returned only when their supporting occurrences fall inside
+a matching passage. Global style information remains separately available from
+`query_style_profile`. The query returns:
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -967,7 +994,7 @@ The query matches the situation description against the formal, harmonic, textur
 |-------|------|-------------|
 | `work_id` | `Id<IngestedWork>` | Which work |
 | `region` | `(ScoreTime, ScoreTime)` | Which passage |
-| `relevance_score` | `f32` | How closely this example matches the query (0.0–1.0) |
+| `relevance_score` | `f32` | Lexical token coverage (currently 1 for a complete match), not calibrated semantic relevance |
 | `analysis_summary` | `String` | Concise analytical description of what happens in this passage |
 | `harmonic_reduction` | `Vec<String>` | Roman numeral analysis of the passage |
 | `formal_context` | `String` | Where in the formal structure this passage occurs |
@@ -978,8 +1005,13 @@ The query matches the situation description against the formal, harmonic, textur
 |-------|------|-------------|
 | `domain` | `String` | Analytical domain |
 | `observation` | `String` | e.g., "In development sections, this composer increases harmonic rhythm by 40% relative to exposition" |
-| `confidence` | `f32` | Based on sample size |
-| `supporting_examples_count` | `u32` | How many examples support this tendency |
+| `confidence` | `f32` | 1 for exact aggregation of supplied observations; not calibrated analytical or statistical confidence |
+| `supporting_examples_count` | `u32` | Number of fully observed matching annotated passages |
+
+MCP passage responses expose `region_start` and `region_end` in exact ScoreTime coordinates.
+Context responses additionally report `available`, `statistics_available`, a declared `method`
+and an actionable unavailable reason. These fields distinguish a matching annotation, measured
+local statistics and unavailable evidence.
 
 ### 5.3 Corpus-Level Queries
 
@@ -1048,7 +1080,7 @@ The query matches the situation description against the formal, harmonic, textur
 5. **Assign periods** (optional): `assign_work_to_period(work_id, composer_id, "Early")`, etc.
 6. **Analyse**: `analyze_work(work_id)` for each work. This runs the full analytical decomposition (§2) using the theory engine and synchronously refreshes affected composer and period aggregates.
 7. **Verify/rebuild profile** (optional): `rebuild_style_profile(composer_id)` deterministically recomputes the composer and period StyleProfiles from their analysed work memberships. Normal lifecycle workflows already perform this refresh; the explicit operation is useful after assembling or migrating a value outside those workflows.
-8. **Detect signatures**: `detect_signature_patterns(composer_id)`. This identifies statistically distinctive patterns by comparing against the corpus mean.
+8. **Detect signatures**: `detect_signature_patterns(composer_id)`. This reports descriptive harmonic-bigram contrasts against other composers, with explicit observation denominators and unavailable comparison evidence.
 9. **Query**: The profile is now available for composition-time queries.
 
 ### 6.3 Composition Workflow Integration
@@ -1192,12 +1224,12 @@ The full MCP tool set across the IR specifications and aggregate project model:
 |--------------------|------:|----------|
 | Core and Ableton | 11 | `analyze_harmony`, `voice_lead`, `get_ableton_session_state`, `get_ableton_remote_log` |
 | Score IR | 31 | `score_create`, `score_insert_chord_symbol`, `score_compile_to_musicxml` |
-| Timbre IR | 22 | `set_sound_source`, `map_timbre_parameter`, `validate_timbre` |
-| Mix IR | 27 | `set_channel_relative_level`, `resolve_mix_fader_levels`, `validate_mix` |
+| Timbre IR | 28 | `set_sound_source`, `map_timbre_parameter`, `validate_timbre` |
+| Mix IR | 33 | `set_channel_relative_level`, `resolve_mix_fader_levels`, `validate_mix` |
 | Corpus IR | 22 | `ingest_midi`, `remove_ingested_work`, `query_how_would_x_handle` |
 | Project | 4 | `project_validate`, `project_plan_to_ableton`, `project_apply_ableton_plan`, `project_compile_to_ableton` |
 
-Total: 117 MCP tools. `tools/list` is the runtime authority.
+Total: 129 MCP tools. `tools/list` is the runtime authority.
 
 ---
 

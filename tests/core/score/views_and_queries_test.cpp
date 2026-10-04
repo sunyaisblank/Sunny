@@ -14,7 +14,11 @@
 
 #include <catch2/catch_test_macros.hpp>
 #include <limits>
+#include <sunny/core/form/motif.hpp>
+#include <sunny/core/score/harmony_analysis.hpp>
+#include <sunny/core/score/midi_compiler.hpp>
 #include <sunny/core/score/mutations.hpp>
+#include <sunny/core/score/projection.hpp>
 #include <sunny/core/score/queries.hpp>
 #include <sunny/core/score/views.hpp>
 
@@ -25,6 +29,11 @@ using namespace sunny::core;
 // =============================================================================
 
 namespace {
+
+Score require_reduction(Result<Score> reduction) {
+    REQUIRE(reduction.has_value());
+    return std::move(*reduction);
+}
 
 Score make_valid_score(std::uint32_t total_bars = 4) {
     Score score;
@@ -145,7 +154,7 @@ TEST_CASE("piano_reduction collapses to one part", "[score-ir][view]") {
     auto score = make_two_part_score();
     CHECK(score.parts.size() == 2);
 
-    auto reduced = piano_reduction(score, ScoreId{2});
+    auto reduced = require_reduction(piano_reduction(score, ScoreId{2}));
     CHECK(reduced.id == ScoreId{2});
     CHECK(reduced.parts.size() == 1);
 
@@ -159,8 +168,8 @@ TEST_CASE("piano_reduction collapses to one part", "[score-ir][view]") {
 TEST_CASE("derived score event identifiers are deterministic per output document",
           "[score-ir][view][identity]") {
     const auto score = make_two_part_score();
-    const auto first = piano_reduction(score, ScoreId{2});
-    const auto second = piano_reduction(score, ScoreId{2});
+    const auto first = require_reduction(piano_reduction(score, ScoreId{2}));
+    const auto second = require_reduction(piano_reduction(score, ScoreId{2}));
     REQUIRE(first.parts.size() == 1);
     REQUIRE(second.parts.size() == 1);
     REQUIRE(first.parts[0].measures.size() == second.parts[0].measures.size());
@@ -422,7 +431,7 @@ TEST_CASE("views do not modify source score", "[score-ir][view]") {
 
     // Generate views
     auto extracted = part_extract(score, ScoreId{2}, PartId{100}).value();
-    auto reduced = piano_reduction(score, ScoreId{2});
+    auto reduced = require_reduction(piano_reduction(score, ScoreId{2}));
 
     ScoreRegion region;
     region.start = SCORE_START;
@@ -783,7 +792,7 @@ TEST_CASE("short_score groups three families into three parts", "[score-ir][view
     }
 
     // Piano part has no notes — Keyboard family should be omitted
-    auto result = short_score(score, ScoreId{2});
+    auto result = require_reduction(short_score(score, ScoreId{2}));
 
     // Should have 3 parts: Strings, Woodwinds, Brass
     CHECK(result.parts.size() == 3);
@@ -831,7 +840,7 @@ TEST_CASE("short_score merges two instruments in same family", "[score-ir][view]
     ng2.duration = Beat{1, 1};
     vla_voice.events[0].payload = ng2;
 
-    auto result = short_score(score, ScoreId{2});
+    auto result = require_reduction(short_score(score, ScoreId{2}));
 
     // Should merge into a single "Strings" part
     REQUIRE(result.parts.size() == 1);
@@ -855,7 +864,7 @@ TEST_CASE("short_score splits notes at C4 boundary", "[score-ir][view]") {
     ng.duration = Beat{1, 1};
     voice.events.push_back(Event{EventId{9001}, Beat::zero(), ng});
 
-    auto result = short_score(score, ScoreId{2});
+    auto result = require_reduction(short_score(score, ScoreId{2}));
 
     REQUIRE(result.parts.size() == 1);
     auto& treble = result.parts[0].measures[0].voices[0];
@@ -896,7 +905,7 @@ TEST_CASE("short_score omits families with only rests", "[score-ir][view]") {
     ng.duration = Beat{1, 1};
     voice.events[0].payload = ng;
 
-    auto result = short_score(score, ScoreId{2});
+    auto result = require_reduction(short_score(score, ScoreId{2}));
 
     // Only the Keyboard family should appear; Brass family omitted
     REQUIRE(result.parts.size() == 1);
@@ -927,7 +936,7 @@ TEST_CASE("short_score 3-note chord marks middle as Cue", "[score-ir][view][shor
     ng.duration = Beat{1, 1};
     voice.events.push_back(Event{EventId{12001}, Beat::zero(), ng});
 
-    auto result = short_score(score, ScoreId{2});
+    auto result = require_reduction(short_score(score, ScoreId{2}));
     REQUIRE(result.parts.size() == 1);
 
     // Treble voice should have the 3 notes; middle one (E5) should be Cue
@@ -967,7 +976,7 @@ TEST_CASE("short_score inner note has NoteHeadType::Cue", "[score-ir][view][shor
     ng.duration = Beat{1, 1};
     voice.events.push_back(Event{EventId{12010}, Beat::zero(), ng});
 
-    auto result = short_score(score, ScoreId{2});
+    auto result = require_reduction(short_score(score, ScoreId{2}));
     auto& treble = result.parts[0].measures[0].voices[0];
     for (const auto& ev : treble.events) {
         const auto* ng_ptr = ev.as_note_group();
@@ -998,7 +1007,7 @@ TEST_CASE("short_score single note retains Normal notehead", "[score-ir][view][s
     ng.duration = Beat{1, 1};
     voice.events.push_back(Event{EventId{12020}, Beat::zero(), ng});
 
-    auto result = short_score(score, ScoreId{2});
+    auto result = require_reduction(short_score(score, ScoreId{2}));
     auto& treble = result.parts[0].measures[0].voices[0];
     for (const auto& ev : treble.events) {
         const auto* ng_ptr = ev.as_note_group();
@@ -1027,7 +1036,7 @@ TEST_CASE("short_score two notes at offset both Normal", "[score-ir][view][short
     ng.duration = Beat{1, 1};
     voice.events.push_back(Event{EventId{12030}, Beat::zero(), ng});
 
-    auto result = short_score(score, ScoreId{2});
+    auto result = require_reduction(short_score(score, ScoreId{2}));
     auto& treble = result.parts[0].measures[0].voices[0];
     for (const auto& ev : treble.events) {
         const auto* ng_ptr = ev.as_note_group();
@@ -1054,7 +1063,7 @@ TEST_CASE("piano_reduction melody note preserved as top voice with orchestration
     oa.role = TexturalRole::Melody;
     score.orchestration_annotations.push_back(oa);
 
-    auto reduced = piano_reduction(score, ScoreId{2});
+    auto reduced = require_reduction(piano_reduction(score, ScoreId{2}));
     REQUIRE(reduced.parts.size() == 1);
 
     // Bar 1 treble voice should contain the violin's E5 melody note
@@ -1103,7 +1112,7 @@ TEST_CASE("piano_reduction removes octave doublings", "[score-ir][view][reductio
     oa.role = TexturalRole::Melody;
     score.orchestration_annotations.push_back(oa);
 
-    auto reduced = piano_reduction(score, ScoreId{2});
+    auto reduced = require_reduction(piano_reduction(score, ScoreId{2}));
 
     // Treble voice: C4 and C5 are same PC. After dedup, only one should remain.
     auto& treble = reduced.parts[0].measures[0].voices[0];
@@ -1142,7 +1151,7 @@ TEST_CASE("piano_reduction limits to 4 voices per staff", "[score-ir][view][redu
     oa.role = TexturalRole::HarmonicFill;
     score.orchestration_annotations.push_back(oa);
 
-    auto reduced = piano_reduction(score, ScoreId{2});
+    auto reduced = require_reduction(piano_reduction(score, ScoreId{2}));
 
     // Count notes in treble voice at offset 0
     auto& treble = reduced.parts[0].measures[0].voices[0];
@@ -1172,7 +1181,7 @@ TEST_CASE("piano_reduction bass line preserved as bottom voice", "[score-ir][vie
     ng.duration = Beat{1, 1};
     piano_voice.events[0].payload = ng;
 
-    auto reduced = piano_reduction(score, ScoreId{2});
+    auto reduced = require_reduction(piano_reduction(score, ScoreId{2}));
 
     // Bass voice should contain C3
     auto& bass = reduced.parts[0].measures[0].voices[1];
@@ -1192,7 +1201,7 @@ TEST_CASE("piano_reduction fallback without orchestration retains all notes",
     auto score = make_two_part_score();
 
     // No orchestration annotations — should behave as before (no filtering)
-    auto reduced = piano_reduction(score, ScoreId{2});
+    auto reduced = require_reduction(piano_reduction(score, ScoreId{2}));
     REQUIRE(reduced.parts.size() == 1);
 
     // Both C4 (Piano) and E5 (Violin) should appear
@@ -1501,4 +1510,373 @@ TEST_CASE("query_find_motif locates pitch class pattern", "[score-ir][query]") {
     std::vector<PitchClass> absent = {0, 1, 2};
     auto none = query_find_motif(score, absent, region);
     CHECK(none.empty());
+}
+
+TEST_CASE("exact projection separates held notes, releases and attacks", "[score-ir][projection]") {
+    auto score = make_valid_score(1);
+    auto& measure = score.parts[0].measures[0];
+    Note held;
+    held.pitch = SpelledPitch{0, 0, 5};
+    Note e;
+    e.pitch = SpelledPitch{2, 0, 5};
+    Note g;
+    g.pitch = SpelledPitch{4, 0, 5};
+    measure.voices = {Voice{0,
+                            {{EventId{10}, Beat::zero(), NoteGroup{{held}, Beat{1, 2}}},
+                             {EventId{11}, Beat{1, 2}, RestEvent{Beat{1, 2}, true}}},
+                            {}},
+                      Voice{1,
+                            {{EventId{12}, Beat::zero(), RestEvent{Beat{1, 4}, true}},
+                             {EventId{13}, Beat{1, 4}, NoteGroup{{e, g}, Beat{1, 4}}},
+                             {EventId{14}, Beat{1, 2}, RestEvent{Beat{1, 2}, true}}},
+                            {}}};
+    auto notes = project_symbolic_notes(score);
+    REQUIRE(notes.has_value());
+    REQUIRE(notes->size() == 3);
+    CHECK((*notes)[0].part_id == score.parts[0].id);
+    CHECK((*notes)[0].voice_index == 0);
+    CHECK((*notes)[0].event_id == EventId{10});
+    CHECK((*notes)[0].end == Beat{1, 2});
+    const std::array<Beat, 2> bounds{Beat::zero(), Beat::one()};
+    auto slices = partition_symbolic_notes(*notes, bounds);
+    REQUIRE(slices.has_value());
+    REQUIRE(slices->size() == 3);
+    CHECK((*slices)[0].sounding_indices == std::vector<std::size_t>{0});
+    CHECK((*slices)[1].start == Beat{1, 4});
+    CHECK((*slices)[1].end == Beat{1, 2});
+    CHECK((*slices)[1].sounding_indices == std::vector<std::size_t>{0, 1, 2});
+    CHECK((*slices)[1].attack_indices == std::vector<std::size_t>{1, 2});
+    CHECK((*slices)[2].sounding_indices.empty());
+
+    for (const std::string view : {"piano", "short"}) {
+        auto reduced =
+            view == "piano" ? piano_reduction(score, ScoreId{2}) : short_score(score, ScoreId{2});
+        REQUIRE(reduced.has_value());
+        auto compilation = compile_to_midi(*reduced, 960);
+        REQUIRE(compilation.has_value());
+        REQUIRE(compilation->midi.notes.size() == 3);
+        for (const auto& note : compilation->midi.notes) {
+            if (note.note == 72) {
+                CHECK(note.tick == 0);
+                CHECK(note.duration_ticks == 1920);
+            } else {
+                CHECK((note.note == 76 || note.note == 79));
+                CHECK(note.tick == 960);
+                CHECK(note.duration_ticks == 960);
+            }
+        }
+        const auto diagnostics = validate_score(*reduced);
+        std::string errors;
+        for (const auto& diagnostic : diagnostics)
+            if (diagnostic.severity == ValidationSeverity::Error)
+                errors += diagnostic.rule + ": " + diagnostic.message + "\n";
+        CAPTURE(view, errors);
+        CHECK(std::none_of(diagnostics.begin(), diagnostics.end(), [](const Diagnostic& d) {
+            return d.severity == ValidationSeverity::Error;
+        }));
+    }
+}
+
+TEST_CASE("projection folds individual ties across changing chord membership",
+          "[score-ir][projection][tie]") {
+    auto score = make_valid_score(1);
+    Note c;
+    c.pitch = SpelledPitch{0, 0, 4};
+    c.tie_forward = true;
+    Note tail = c;
+    tail.tie_forward = false;
+    Note e;
+    e.pitch = SpelledPitch{2, 0, 4};
+    auto& events = score.parts[0].measures[0].voices[0].events;
+    events = {{EventId{10}, Beat::zero(), NoteGroup{{c}, Beat{1, 2}}},
+              {EventId{11}, Beat{1, 2}, NoteGroup{{tail, e}, Beat{1, 4}}},
+              {EventId{12}, Beat{3, 4}, RestEvent{Beat{1, 4}, true}}};
+    auto notes = project_symbolic_notes(score);
+    REQUIRE(notes.has_value());
+    REQUIRE(notes->size() == 3);
+    CHECK_FALSE((*notes)[1].attack);
+    CHECK((*notes)[2].attack);
+    auto folded = fold_symbolic_ties(*notes);
+    REQUIRE(folded.has_value());
+    REQUIRE(folded->size() == 2);
+    CHECK((*folded)[0].event_id == EventId{10});
+    CHECK((*folded)[0].start == Beat::zero());
+    CHECK((*folded)[0].end == Beat{3, 4});
+    ScoreRegion region;
+    region.start = SCORE_START;
+    region.end = {2, Beat::zero()};
+    auto melody = query_melody_for(score, score.parts[0].id, region);
+    REQUIRE(melody.size() == 2);
+    CHECK(melody[0].duration == Beat{3, 4});
+    CHECK(melody[1].pitch == e.pitch);
+    CHECK(melody[1].position.beat == Beat{1, 2});
+
+    SECTION("broken ties return an error") {
+        std::get<NoteGroup>(events[1].payload)
+            .notes.erase(std::get<NoteGroup>(events[1].payload).notes.begin());
+        CHECK_FALSE(project_symbolic_notes(score).has_value());
+    }
+}
+
+TEST_CASE("symbolic grace allocation remains distinct from MIDI performance timing",
+          "[score-ir][projection][grace]") {
+    auto score = make_valid_score(1);
+    Note c;
+    c.pitch = SpelledPitch{0, 0, 5};
+    Note grace;
+    grace.pitch = SpelledPitch{1, 0, 5};
+    grace.grace = GraceType::Acciaccatura;
+    score.parts[0].measures[0].voices = {
+        Voice{0, {{EventId{10}, Beat::zero(), NoteGroup{{c}, Beat::one()}}}, {}},
+        Voice{1,
+              {{EventId{11}, Beat::zero(), NoteGroup{{grace}, Beat{1, 4}}},
+               {EventId{12}, Beat{1, 4}, RestEvent{Beat{3, 4}, true}}},
+              {}}};
+    auto spans = project_symbolic_notes(score);
+    REQUIRE(spans.has_value());
+    REQUIRE(spans->size() == 2);
+    CHECK((*spans)[1].grace);
+    CHECK((*spans)[1].start == Beat::zero());
+    CHECK((*spans)[1].end == Beat{1, 4});
+    auto reduced = piano_reduction(score, ScoreId{2});
+    REQUIRE(reduced.has_value());
+    auto projected = project_symbolic_notes(*reduced);
+    REQUIRE(projected.has_value());
+    REQUIRE(projected->size() == 2);
+    auto compilation = compile_to_midi(*reduced, 960);
+    REQUIRE(compilation.has_value());
+    REQUIRE(compilation->midi.notes.size() == 2);
+    CHECK(compilation->midi.notes[1].tick == 840);
+    CHECK(compilation->midi.notes[1].duration_ticks == 120);
+}
+
+TEST_CASE("reduction voice assignments preserve cross-bar independent unison ties",
+          "[score-ir][projection][tie]") {
+    auto score = make_valid_score(2);
+    Note c;
+    c.pitch = SpelledPitch{0, 0, 5};
+    auto first = score.parts[0];
+    first.id = PartId{200};
+    first.measures[0].voices[0].events = {{EventId{20}, Beat::zero(), NoteGroup{{c}, Beat::one()}}};
+    auto second = score.parts[0];
+    second.id = PartId{201};
+    c.tie_forward = true;
+    second.measures[0].voices[0].events = {
+        {EventId{21}, Beat::zero(), NoteGroup{{c}, Beat::one()}}};
+    c.tie_forward = false;
+    second.measures[1].voices[0].events = {
+        {EventId{22}, Beat::zero(), NoteGroup{{c}, Beat::one()}}};
+    first.measures[1].voices[0].events[0].id = EventId{23};
+    score.parts = {first, second};
+    auto reduced = piano_reduction(score, ScoreId{2});
+    REQUIRE(reduced.has_value());
+    auto spans = project_symbolic_notes(*reduced);
+    REQUIRE(spans.has_value());
+    auto folded = fold_symbolic_ties(*spans);
+    REQUIRE(folded.has_value());
+    REQUIRE(folded->size() == 2);
+    CHECK((*folded)[0].end == Beat::one());
+    CHECK((*folded)[1].end == Beat{2, 1});
+}
+
+TEST_CASE("harmony interval queries cross meter changes and expire exactly",
+          "[score-ir][projection][query]") {
+    auto score = make_valid_score(4);
+    score.time_map.push_back({2, *make_time_signature(3, 4)});
+    HarmonicAnnotation annotation;
+    annotation.position = SCORE_START;
+    annotation.duration = Beat{5, 2}; // 4/4 + 3/4 + 3/4
+    score.harmonic_annotations = {annotation};
+    CHECK(query_harmony_range(score, {2, Beat::zero()}, {3, Beat::zero()}).size() == 1);
+    CHECK(query_harmony_at(score, {3, Beat{1, 2}}).has_value());
+    CHECK_FALSE(query_harmony_at(score, {4, Beat::zero()}).has_value());
+    CHECK(query_harmony_range(score, {4, Beat::zero()}, {5, Beat::zero()}).empty());
+}
+
+TEST_CASE("harmony derives off-grid chords and same-root in-bar mode changes",
+          "[score-ir][projection][harmony]") {
+    auto score = make_valid_score(1);
+    const auto chord = [](std::initializer_list<SpelledPitch> pitches, Beat duration) {
+        NoteGroup group;
+        group.duration = duration;
+        for (const auto pitch : pitches) {
+            Note note;
+            note.pitch = pitch;
+            group.notes.push_back(note);
+        }
+        return group;
+    };
+    auto& events = score.parts[0].measures[0].voices[0].events;
+    events = {{EventId{10}, Beat::zero(), chord({{0, 0, 4}, {2, 0, 4}, {4, 0, 4}}, Beat{1, 8})},
+              {EventId{11}, Beat{1, 8}, chord({{1, 0, 4}, {3, 0, 4}, {5, 0, 4}}, Beat{1, 8})},
+              {EventId{12}, Beat{1, 4}, RestEvent{Beat{3, 4}, true}}};
+    auto layer = derive_harmonic_layer(score);
+    REQUIRE(layer.has_value());
+    REQUIRE(layer->size() == 2);
+    CHECK((*layer)[0].duration == Beat{1, 8});
+    CHECK((*layer)[1].position.beat == Beat{1, 8});
+    CHECK((*layer)[1].chord.root == 2);
+    CHECK((*layer)[1].duration == Beat{1, 8});
+
+    events = {{EventId{10}, Beat::zero(), chord({{0, 0, 4}, {2, 0, 4}, {4, 0, 4}}, Beat::one())}};
+    auto minor = score.key_map[0];
+    minor.position.beat = Beat{1, 8};
+    minor.key.mode = *find_scale("minor");
+    minor.key.accidentals = -3;
+    score.key_map.push_back(minor);
+    layer = derive_harmonic_layer(score);
+    REQUIRE(layer.has_value());
+    REQUIRE(layer->size() == 2);
+    CHECK((*layer)[0].duration == Beat{1, 8});
+    CHECK((*layer)[1].key_context.mode.name == "minor");
+    CHECK((*layer)[1].position.beat == Beat{1, 8});
+    CHECK((*layer)[1].duration == Beat{7, 8});
+}
+
+TEST_CASE("reduction reports its finite voice domain instead of truncating",
+          "[score-ir][projection][boundary]") {
+    auto score = make_valid_score(1);
+    const auto prototype = score.parts[0];
+    score.parts.clear();
+    for (std::uint32_t index = 0; index < 256; ++index) {
+        auto part = prototype;
+        part.id = PartId{index + 1};
+        Note c;
+        c.pitch = SpelledPitch{0, 0, 5};
+        part.measures[0].voices[0].events = {
+            {EventId{index + 1}, Beat::zero(), NoteGroup{{c}, Beat::one()}}};
+        score.parts.push_back(part);
+    }
+    auto reduced = piano_reduction(score, ScoreId{2});
+    REQUIRE_FALSE(reduced.has_value());
+    CHECK(reduced.error() == ErrorCode::ExcessiveVoices);
+    score.parts.pop_back();
+    reduced = piano_reduction(score, ScoreId{2});
+    REQUIRE(reduced.has_value());
+    CHECK(reduced->parts[0].measures[0].voices.size() == 256);
+}
+
+TEST_CASE("stale harmony refresh clips exact overlaps and commits only on success",
+          "[score-ir][projection][harmony]") {
+    auto score = make_valid_score(1);
+    Note c;
+    c.pitch = SpelledPitch{0, 0, 4};
+    Note e;
+    e.pitch = SpelledPitch{2, 0, 4};
+    Note g;
+    g.pitch = SpelledPitch{4, 0, 4};
+    score.parts[0].measures[0].voices[0].events = {
+        {EventId{10}, Beat::zero(), NoteGroup{{c, e, g}, Beat::one()}}};
+    HarmonicAnnotation old;
+    old.position = SCORE_START;
+    old.duration = Beat::one();
+    old.roman_numeral = "manual";
+    score.harmonic_annotations = {old};
+    ScoreRegion stale;
+    stale.start = {1, Beat{1, 4}};
+    stale.end = {1, Beat{1, 2}};
+    score.stale_harmonic_regions = {stale, stale};
+    REQUIRE(refresh_stale_regions(score).has_value());
+    REQUIRE(score.harmonic_annotations.size() == 3);
+    CHECK(score.harmonic_annotations[0].roman_numeral == "manual");
+    CHECK(score.harmonic_annotations[0].duration == Beat{1, 4});
+    CHECK(score.harmonic_annotations[1].position.beat == Beat{1, 4});
+    CHECK(score.harmonic_annotations[1].roman_numeral == "I");
+    CHECK(score.harmonic_annotations[1].duration == Beat{1, 4});
+    CHECK(score.harmonic_annotations[2].position.beat == Beat{1, 2});
+    CHECK(score.harmonic_annotations[2].duration == Beat{1, 2});
+    CHECK(score.harmonic_annotations[2].roman_numeral == "manual");
+    CHECK(score.stale_harmonic_regions.empty());
+    score.stale_harmonic_regions = {stale};
+    std::get<NoteGroup>(score.parts[0].measures[0].voices[0].events[0].payload)
+        .notes[0]
+        .tie_forward = true;
+    REQUIRE_FALSE(refresh_stale_regions(score).has_value());
+    CHECK(score.harmonic_annotations.size() == 3);
+    CHECK(score.harmonic_annotations[0].roman_numeral == "manual");
+    CHECK(score.stale_harmonic_regions.size() == 1);
+}
+
+TEST_CASE("validated duplicate-pitch notes preserve independent tie origins",
+          "[score-ir][projection][tie]") {
+    auto score = make_valid_score(1);
+    Note tied;
+    tied.pitch = SpelledPitch{0, 0, 5};
+    tied.tie_forward = true;
+    Note tail = tied;
+    tail.tie_forward = false;
+    Note untied = tail;
+    auto& events = score.parts[0].measures[0].voices[0].events;
+    SECTION("two independently tied unisons") {
+        events = {{EventId{10}, Beat::zero(), NoteGroup{{tied, tied}, Beat{1, 4}}},
+                  {EventId{11}, Beat{1, 4}, NoteGroup{{tail, tail}, Beat{1, 4}}},
+                  {EventId{12}, Beat{1, 2}, RestEvent{Beat{1, 2}, true}}};
+    }
+    SECTION("an untied unison precedes the tied unison in its group") {
+        events = {{EventId{10}, Beat::zero(), NoteGroup{{untied, tied}, Beat{1, 4}}},
+                  {EventId{11}, Beat{1, 4}, NoteGroup{{tail}, Beat{1, 4}}},
+                  {EventId{12}, Beat{1, 2}, RestEvent{Beat{1, 2}, true}}};
+    }
+    const auto diagnostics = validate_score(score);
+    for (const auto& diagnostic : diagnostics) {
+        INFO(diagnostic.rule + ": " + diagnostic.message);
+        REQUIRE(diagnostic.severity != ValidationSeverity::Error);
+    }
+    auto projected = project_symbolic_notes(score);
+    REQUIRE(projected.has_value());
+    REQUIRE(projected->size() >= 3);
+    REQUIRE((*projected)[0].attack_event_id == EventId{10});
+    REQUIRE((*projected)[0].attack_note_index == 0);
+    REQUIRE((*projected)[1].attack_event_id == EventId{10});
+    REQUIRE((*projected)[1].attack_note_index == 1);
+    REQUIRE_FALSE((*projected)[2].attack);
+    REQUIRE((*projected)[2].attack_event_id == EventId{10});
+    auto folded = fold_symbolic_ties(*projected);
+    REQUIRE(folded.has_value());
+    REQUIRE(folded->size() == 2);
+    REQUIRE((*folded)[0].note_index == 0);
+    REQUIRE((*folded)[1].note_index == 1);
+    if (projected->size() == 4) {
+        REQUIRE((*projected)[2].attack_note_index == 0);
+        REQUIRE((*projected)[3].attack_note_index == 1);
+        REQUIRE((*folded)[0].end == Beat{1, 2});
+        REQUIRE((*folded)[1].end == Beat{1, 2});
+    } else {
+        REQUIRE((*projected)[2].attack_note_index == 1);
+        REQUIRE((*folded)[0].end == Beat{1, 4});
+        REQUIRE((*folded)[1].end == Beat{1, 2});
+    }
+}
+
+TEST_CASE("S7 consumes tie continuations and checks exact adjacency",
+          "[score-ir][projection][tie]") {
+    auto score = make_valid_score(1);
+    Note tied;
+    tied.pitch = SpelledPitch{0, 0, 5};
+    tied.tie_forward = true;
+    Note tail = tied;
+    tail.tie_forward = false;
+    auto& events = score.parts[0].measures[0].voices[0].events;
+    events = {{EventId{10}, Beat::zero(), NoteGroup{{tied, tied}, Beat{1, 4}}},
+              {EventId{11}, Beat{1, 4}, NoteGroup{{tail}, Beat{1, 4}}},
+              {EventId{12}, Beat{1, 2}, RestEvent{Beat{1, 2}, true}}};
+    SECTION("two tie heads cannot consume one continuation") {}
+    SECTION("a gap prevents continuation") {
+        std::get<NoteGroup>(events[0].payload).notes.resize(1);
+        events[1].offset = Beat{3, 8};
+    }
+    SECTION("an enharmonic spelling cannot continue a tie") {
+        std::get<NoteGroup>(events[0].payload).notes.resize(1);
+        std::get<NoteGroup>(events[1].payload).notes[0].pitch = SpelledPitch{6, 1, 4};
+    }
+    SECTION("a grace cannot continue a duration tie") {
+        std::get<NoteGroup>(events[0].payload).notes.resize(1);
+        std::get<NoteGroup>(events[1].payload).notes[0].grace = GraceType::Acciaccatura;
+    }
+    const auto diagnostics = validate_score(score);
+    REQUIRE(std::count_if(diagnostics.begin(), diagnostics.end(), [](const Diagnostic& d) {
+                return d.rule == "S7" && d.error_code == ErrorCode::TieMismatch &&
+                       d.severity == ValidationSeverity::Error;
+            }) == 1);
+    REQUIRE_FALSE(project_symbolic_notes(score).has_value());
 }

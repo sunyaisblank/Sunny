@@ -4,7 +4,9 @@
  *
  */
 
+#include <algorithm>
 #include <catch2/catch_test_macros.hpp>
+#include <set>
 #include <sunny/core/pitch/pitch_class.hpp>
 #include <sunny/core/transform/neo_riemannian.hpp>
 
@@ -105,29 +107,68 @@ TEST_CASE("common tones P/R/L each preserve 2", "[neo-riemannian][core]") {
     REQUIRE(common_tone_count(c_maj, apply_plr(c_maj, NROperation::L)) == 2);
 }
 
+TEST_CASE("all 24 PLR triads match independent pitch-class tables and move sizes",
+          "[neo-riemannian][core][evidence]") {
+    // Base C chords from the common-tone definitions, not the production root
+    // transformation. Translation modulo12 enumerates every admitted triad.
+    const std::array<std::array<int, 3>, 2> bases = {{{0, 4, 7}, {0, 3, 7}}};
+    const std::array<std::array<std::array<int, 3>, 3>, 2> references = {
+        {{{{0, 3, 7}, {9, 0, 4}, {4, 7, 11}}}, {{{0, 4, 7}, {3, 7, 10}, {8, 0, 3}}}}};
+    const std::array operations = {NROperation::P, NROperation::R, NROperation::L};
+    for (int root = 0; root < 12; ++root) {
+        for (std::size_t mode = 0; mode < 2; ++mode) {
+            const Triad original{PitchClass::wrapped(root),
+                                 mode == 0 ? TriadQuality::Major : TriadQuality::Minor};
+            std::set<int> before;
+            for (const auto value : bases[mode])
+                before.insert((root + value) % 12);
+            for (std::size_t op = 0; op < operations.size(); ++op) {
+                CAPTURE(root, mode, op);
+                std::set<int> expected;
+                for (const auto value : references[mode][op])
+                    expected.insert((root + value) % 12);
+                const auto transformed = apply_plr(original, operations[op]);
+                std::set<int> actual;
+                for (const auto value : triad_pitch_classes(transformed))
+                    actual.insert(static_cast<int>(value));
+                CHECK(actual == expected);
+                CHECK(transformed.quality != original.quality);
+                CHECK(apply_plr(transformed, operations[op]) == original);
+                std::vector<int> released;
+                std::vector<int> added;
+                std::set_difference(before.begin(),
+                                    before.end(),
+                                    actual.begin(),
+                                    actual.end(),
+                                    std::back_inserter(released));
+                std::set_difference(actual.begin(),
+                                    actual.end(),
+                                    before.begin(),
+                                    before.end(),
+                                    std::back_inserter(added));
+                REQUIRE(released.size() == 1);
+                REQUIRE(added.size() == 1);
+                const int displacement = std::abs(released[0] - added[0]);
+                CHECK(std::min(displacement, 12 - displacement) == (op == 1 ? 2 : 1));
+            }
+        }
+    }
+}
+
 // =============================================================================
 // Compound Operations
 // =============================================================================
 
-TEST_CASE("LP (slide) C major -> C# minor", "[neo-riemannian][core]") {
+TEST_CASE("L then P maps C major to E major", "[neo-riemannian][core]") {
     Triad c_maj{0, TriadQuality::Major};
     std::array<NROperation, 2> ops = {NROperation::L, NROperation::P};
     auto result = apply_plr_sequence(c_maj, ops);
-    REQUIRE(result.root == 4); // L: C maj -> E min, P: E min -> E maj... no
-    // L(C maj) = (0+4, Minor) = E minor
-    // P(E minor) = (4, Major) = E major
-    // Actually LP is L then P. Let me recalculate.
-    // Per the plan: LP (slide): C maj -> C# min
-    // L(C maj) = {4, Minor} = E minor
-    // P(E minor) = {4, Major} = E major — that's not C# min.
-    // The slide is actually PL: P(C maj) = C min, L(C min) = (0+8, Maj) = Ab maj... no.
-    // Let me just verify the actual result rather than the label.
     // L then P: C maj -> E min -> E maj.
     REQUIRE(result.root == 4);
     REQUIRE(result.quality == TriadQuality::Major);
 }
 
-TEST_CASE("PLP (hexatonic pole) C major -> Ab major", "[neo-riemannian][core]") {
+TEST_CASE("P then L then P maps C major to its Ab minor hexatonic pole", "[neo-riemannian][core]") {
     Triad c_maj{0, TriadQuality::Major};
     // P: C maj -> C min
     // L: C min -> (0+8, Major) = Ab major
@@ -138,7 +179,7 @@ TEST_CASE("PLP (hexatonic pole) C major -> Ab major", "[neo-riemannian][core]") 
     REQUIRE(result.quality == TriadQuality::Minor);
 }
 
-TEST_CASE("RP (nebenverwandt) C major ->...", "[neo-riemannian][core]") {
+TEST_CASE("R then P maps C major to A major", "[neo-riemannian][core]") {
     Triad c_maj{0, TriadQuality::Major};
     // R: C maj -> (9, Minor) = A min
     // P: A min -> (9, Major) = A maj
@@ -146,6 +187,16 @@ TEST_CASE("RP (nebenverwandt) C major ->...", "[neo-riemannian][core]") {
     auto result = apply_plr_sequence(c_maj, ops);
     REQUIRE(result.root == 9);
     REQUIRE(result.quality == TriadQuality::Major);
+}
+
+TEST_CASE("compound PLR sequences use the declared left-to-right order", "[neo-riemannian][core]") {
+    const Triad c_major{0, TriadQuality::Major};
+    const std::array slide = {NROperation::L, NROperation::P, NROperation::R};
+    const std::array pole = {NROperation::L, NROperation::P, NROperation::L};
+    const std::array tritone = {NROperation::R, NROperation::P, NROperation::R};
+    CHECK(apply_plr_sequence(c_major, slide) == Triad{1, TriadQuality::Minor});
+    CHECK(apply_plr_sequence(c_major, pole) == Triad{8, TriadQuality::Minor});
+    CHECK(apply_plr_sequence(c_major, tritone) == Triad{6, TriadQuality::Minor});
 }
 
 // =============================================================================

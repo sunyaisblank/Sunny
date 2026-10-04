@@ -2,14 +2,15 @@
 
 A Remote Script runs against Live's embedded Python API, not the Max-side LOM
 dictionaries. This module reproduces the Python-side types and documented
-semantics for exactly the objects, properties and functions the handler uses,
-so that tests judge the handler against Live's contract rather than against
-fakes shaped by the handler's own assumptions.
+semantics for the objects, properties and functions the handler uses. Source
+observations and the public Max LOM guide the modeled contract; an offline
+model cannot establish the behavior of every embedded Python host version.
 
 Sources:
-    * Ableton Live 12 MIDI Remote Scripts, ``_MxDCore/MxDCore.py`` (Ableton's own
-      Max translation layer): notes are built as ``Live.Clip.MidiNoteSpecification``;
-      ``get_notes_by_id`` and ``get_all_notes_extended`` return ``MidiNote`` objects;
+    * The Live 12 Remote Scripts source mirror ``gluon/AbletonLive12_MIDIRemoteScripts``
+      at ``e83d5192f321b24eb9daab843ac49a2d95d862b1``, ``_MxDCore/MxDCore.py``:
+      the Max translation layer builds ``Live.Clip.MidiNoteSpecification``;
+      note readback returns ``MidiNote`` objects and ranged queries use keyword arguments;
       enum properties are ``int`` subclasses set with plain ``int`` values; Boolean
       properties accept ``int`` 0/1.
     * ``_MxDCore/LomTypes.py``: routing values are ``RoutingType``/``RoutingChannel``
@@ -41,6 +42,7 @@ property read on one object without disturbing the model's own semantics.
 from __future__ import annotations
 
 import enum
+import math
 import sys
 import types
 from collections.abc import Callable, Iterable, Iterator
@@ -681,8 +683,9 @@ class Groove:
 class Clip:
     """``Live.Clip.Clip`` in a Session clip slot of a MIDI track."""
 
-    def __init__(self, length: float, live_major_version: int = 12) -> None:
-        self._live_major_version = live_major_version
+    def __init__(self, length: float, live_version: tuple[int, int, int] = (12, 3, 5)) -> None:
+        self._live_version = live_version
+        self._live_major_version = live_version[0]
         self._name = ""
         self._notes: dict[int, MidiNote] = {}
         self._next_note_id = 1
@@ -703,6 +706,15 @@ class Clip:
         self._envelopes: set[str] = set()
 
     # --- notes --------------------------------------------------------------
+
+    def __getattribute__(self, name: str) -> Any:
+        version = object.__getattribute__(self, "_live_version")
+        if name in {"add_new_notes", "get_notes_by_id", "get_notes_extended", "remove_notes_by_id"}:
+            if version < (11, 0):
+                raise AttributeError(f"{name} requires Live 11.0")
+        if name == "get_all_notes_extended" and version < (11, 1):
+            raise AttributeError("get_all_notes_extended requires Live 11.1")
+        return object.__getattribute__(self, name)
 
     def add_new_notes(self, specifications: Any) -> IntVector:
         try:
@@ -734,6 +746,29 @@ class Clip:
 
     def get_all_notes_extended(self) -> MidiNoteVector:
         return MidiNoteVector(sorted(self._notes.values(), key=lambda n: (n.start_time, n.pitch)))
+
+    def get_notes_extended(
+        self, from_pitch: int, pitch_span: int, from_time: float, time_span: float
+    ) -> MidiNoteVector:
+        # The public LOM defines selection by note start, not by overlap with
+        # the interval or by the clip's markers. Python keyword invocation is
+        # source-observed in MxDCore; final-host range qualification remains #22.
+        if any(
+            isinstance(value, bool) or not isinstance(value, int)
+            for value in (from_pitch, pitch_span)
+        ):
+            raise ArgumentError("pitch range requires integers")
+        from_time = _float(from_time)
+        time_span = _float(time_span)
+        if not (math.isfinite(from_time) and math.isfinite(time_span) and time_span > 0.0):
+            raise ArgumentError("time range requires finite values and a positive span")
+        notes = (
+            note
+            for note in self._notes.values()
+            if from_pitch <= note.pitch < from_pitch + pitch_span
+            and from_time <= note.start_time < from_time + time_span
+        )
+        return MidiNoteVector(sorted(notes, key=lambda n: (n.start_time, n.pitch)))
 
     def remove_notes_by_id(self, note_ids: Iterable[int]) -> None:
         for note_id in list(note_ids):
@@ -767,7 +802,8 @@ class Clip:
 
     @live_property
     def is_take_lane_clip(self) -> bool:
-        # Take lanes, and with them this property, arrived with Live 12.
+        # The adapter only qualifies this Python property on Live 12+. Take
+        # lanes themselves already exist in Live 11 (Live 11 Comping manual).
         if self._live_major_version < 12:
             raise AttributeError("is_take_lane_clip")
         return False
@@ -960,7 +996,7 @@ class ClipSlot:
             raise RuntimeError("Can only create MIDI clips in MIDI tracks")
         if not length > 0.0:
             raise RuntimeError("Clip length must be greater than 0")
-        self._clip = Clip(length, self._track._song._application.get_major_version())
+        self._clip = Clip(length, self._track._song._application.version_tuple())
 
     def delete_clip(self) -> None:
         if self._clip is None:
@@ -1195,7 +1231,8 @@ class Track:
 
     @live_property
     def take_lanes(self) -> Vector:
-        # Take lanes arrived with Live 12; the container type is unsettled (#22).
+        # API exposure, not Live's take-lane content, is gated here. Live 11
+        # already has take lanes; this container's runtime type is unsettled (#22).
         if self._song._application.get_major_version() < 12:
             raise AttributeError("take_lanes")
         return Vector()

@@ -1128,6 +1128,14 @@ remain mapping facts:
 | Stereo | width `[0,4]`; mid/side balance `[0,1]`; optional mono-below `[20,20000]` Hz |
 | Delay/Reverb | exact envelopes in §3.7 |
 
+All effect and nested processing enums must identify defined values. Effect additions on Channel,
+Group, Aux and Master owners validate the candidate graph before publication and return an error
+without changing the graph on invalid parameters, identities or references. Replacement changes
+an effect's source parameters and enablement while retaining its stable identity and target
+mappings. Incompatible retained automation/mapping paths reject the replacement. Removal refuses
+automation or processing-rationale references to the removed effect. Exact reordering and removal
+relocate position-addressed automation to preserve the identities of retained effects.
+
 ### 11.2 Audio Quality Validation [E]
 
 | Rule | Severity | Description |
@@ -1179,6 +1187,11 @@ remain mapping facts:
 | `add_aux_effect` | Add processing to an aux bus |
 | `add_master_effect` | Add processing to the master bus chain |
 | `map_mix_effect_parameter` | Declare and preflight an effect-relative source-to-DeviceParameter mapping |
+| `inspect_mix_effect` | Read one effect's numeric parameters and non-scalar path inventory by stable ID |
+| `replace_mix_effect` | Replace source configuration/enablement using a complete construction configuration; retain identity, mappings and compatible automation |
+| `remove_mix_effect` | Remove an unreferenced effect and relocate later effect lanes atomically |
+| `reorder_mix_effects` | Apply an exact effect-ID permutation to a canonical owner chain; lanes follow effect identities |
+| `remove_mix_parameter_mapping` | Remove one mapping by effect identity and source path |
 | `set_channel_level` | Set an absolute fader value and clear prior relative intent |
 | `set_channel_relative_level` | Set and transactionally preflight a channel relation |
 | `resolve_mix_fader_levels` | Return the complete static solution and measured residuals without contacting Ableton |
@@ -1191,6 +1204,7 @@ remain mapping facts:
 | Tool | Description |
 |------|-------------|
 | `add_mix_automation` | Add parameter automation |
+| `remove_mix_automation` | Remove one lane by its zero-based position in `get_mix_json` |
 
 **Analysis and reference tools**:
 
@@ -1313,12 +1327,12 @@ The deployed MCP server exposes the following registration groups:
 |--------------------|-----------:|----------|
 | Core and Ableton | 11 | `analyze_harmony`, `create_progression_clip`, `get_ableton_session_state`, `get_ableton_remote_log` |
 | Score IR | 31 | `score_create`, `score_insert_chord_symbol`, `score_compile_to_musicxml` |
-| Timbre IR | 22 | `set_sound_source`, `map_timbre_parameter`, `validate_timbre` |
-| Mix IR | 27 | `set_channel_relative_level`, `resolve_mix_fader_levels`, `validate_mix` |
+| Timbre IR | 28 | `set_sound_source`, `map_timbre_parameter`, `validate_timbre` |
+| Mix IR | 33 | `set_channel_relative_level`, `resolve_mix_fader_levels`, `validate_mix` |
 | Corpus IR | 22 | `ingest_midi`, `remove_ingested_work`, `query_style_profile` |
 | Project | 4 | `project_validate`, `project_plan_to_ableton`, `project_apply_ableton_plan`, `project_compile_to_ableton` |
 
-Total: 117 tools. `tools/list` is the runtime authority.
+Total: 129 tools. `tools/list` is the runtime authority.
 
 ---
 

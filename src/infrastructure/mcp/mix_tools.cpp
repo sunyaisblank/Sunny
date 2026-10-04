@@ -726,7 +726,10 @@ void register_mix_tools(McpServer& server, std::shared_ptr<MixSession> session) 
                                         ChannelStripId{detail::checked_integer<std::uint64_t>(
                                             params.at("channel_id"), "channel id")},
                                         std::move(*effect));
-            if (!r) return error_response("Channel not found");
+            if (!r) {
+                if (r.error() == ErrorCode::MixNotFound) return error_response("Channel not found");
+                return error_response("The effect configuration/references are invalid");
+            }
             ++session->next_effect_id;
             return {{"effect_id", eid}, {"success", true}};
         });
@@ -791,7 +794,11 @@ void register_mix_tools(McpServer& server, std::shared_ptr<MixSession> session) 
                                     GroupBusId{detail::checked_integer<std::uint64_t>(
                                         params.at("group_id"), "group id")},
                                     std::move(*effect));
-            if (!r) return error_response("Group bus not found");
+            if (!r) {
+                if (r.error() == ErrorCode::MixNotFound)
+                    return error_response("Group bus not found");
+                return error_response("The effect configuration/references are invalid");
+            }
             ++session->next_effect_id;
             return {{"effect_id", eid}, {"success", true}};
         });
@@ -856,7 +863,10 @@ void register_mix_tools(McpServer& server, std::shared_ptr<MixSession> session) 
                 *g,
                 AuxBusId{detail::checked_integer<std::uint64_t>(params.at("aux_id"), "aux bus id")},
                 std::move(*effect));
-            if (!r) return error_response("Aux bus not found");
+            if (!r) {
+                if (r.error() == ErrorCode::MixNotFound) return error_response("Aux bus not found");
+                return error_response("The effect configuration/references are invalid");
+            }
             ++session->next_effect_id;
             return {{"effect_id", eid}, {"success", true}};
         });
@@ -917,7 +927,8 @@ void register_mix_tools(McpServer& server, std::shared_ptr<MixSession> session) 
             auto eid = session->next_effect_id;
             auto effect = build_effect(params, eid);
             if (!effect) return error_response("Unknown or invalid mix effect configuration");
-            add_master_effect(*g, std::move(*effect));
+            if (!add_master_effect(*g, std::move(*effect)))
+                return error_response("Effect configuration or references are invalid");
             ++session->next_effect_id;
             return {{"effect_id", eid}, {"success", true}};
         });
@@ -1472,6 +1483,131 @@ void register_mix_tools(McpServer& server, std::shared_ptr<MixSession> session) 
                                           params.at("group_id"), "group id")},
                                       std::move(intent));
             if (!r) return error_response("Group bus not found");
+            return {{"success", true}};
+        });
+
+    server.register_tool(
+        "inspect_mix_effect",
+        "Inspect an effect's stable ID, current numeric parameter paths and values, and "
+        "source-owned configuration in get_mix_json",
+        {{"graph_id", "integer"}, {"effect_id", "integer"}},
+        [session](const json& params) -> json {
+            const auto id =
+                detail::checked_integer<std::uint64_t>(params.at("graph_id"), "graph id");
+            const auto* graph = session->find(id);
+            if (!graph) return graph_not_found(id);
+            const auto effect_id = MixEffectId{
+                detail::checked_integer<std::uint64_t>(params.at("effect_id"), "effect id")};
+            const auto* effect = find_effect(*graph, effect_id);
+            if (!effect) return error_response("Effect identity does not exist or is not unique");
+            json values = json::object();
+            for (const auto& path : mix_effect_parameter_paths(*effect)) {
+                if (auto value = get_mix_effect_parameter(*effect, path)) values[path] = *value;
+            }
+            return {{"effect_id", effect_id.value},
+                    {"enabled", effect->enabled},
+                    {"parameters", std::move(values)},
+                    {"non_scalar_paths", mix_effect_non_scalar_paths(*effect)}};
+        });
+
+    server.register_tool(
+        "replace_mix_effect",
+        "Replace an effect using a complete add_channel_effect configuration; omitted fields use "
+        "construction defaults; preserve existing target mappings and validate all references",
+        {{"type", "object"},
+         {"properties",
+          {{"graph_id", {{"type", "integer"}}},
+           {"effect_id", {{"type", "integer"}}},
+           {"configuration",
+            {{"type", "object"},
+             {"properties", {{"effect_type", {{"type", "string"}}}}},
+             {"required", {"effect_type"}}}}}},
+         {"required", {"graph_id", "effect_id", "configuration"}}},
+        [session](const json& params) -> json {
+            const auto id =
+                detail::checked_integer<std::uint64_t>(params.at("graph_id"), "graph id");
+            auto* graph = session->find(id);
+            if (!graph) return graph_not_found(id);
+            const auto effect_id =
+                detail::checked_integer<std::uint64_t>(params.at("effect_id"), "effect id");
+            const auto* previous = find_effect(*graph, MixEffectId{effect_id});
+            if (!previous) return error_response("Effect identity does not exist or is not unique");
+            auto effect = build_effect(params.at("configuration"), effect_id);
+            if (!effect) return error_response("Invalid effect configuration");
+            if (!replace_mix_effect(
+                    *graph, MixEffectId{effect_id}, std::move(effect->parameters), effect->enabled))
+                return error_response("Effect parameters or retained references are invalid; "
+                                      "remove incompatible lanes/mappings first");
+            return {{"success", true}};
+        });
+
+    server.register_tool(
+        "remove_mix_effect",
+        "Remove an effect by stable ID; refuse automation or processing-rationale references and "
+        "relocate lanes targeting later effects",
+        {{"graph_id", "integer"}, {"effect_id", "integer"}},
+        [session](const json& params) -> json {
+            const auto id =
+                detail::checked_integer<std::uint64_t>(params.at("graph_id"), "graph id");
+            auto* graph = session->find(id);
+            if (!graph) return graph_not_found(id);
+            if (!remove_mix_effect(*graph,
+                                   MixEffectId{detail::checked_integer<std::uint64_t>(
+                                       params.at("effect_id"), "effect id")}))
+                return error_response("Effect does not exist or has references; remove lanes or "
+                                      "revise processing rationale first");
+            return {{"success", true}};
+        });
+
+    server.register_tool(
+        "reorder_mix_effects",
+        "Reorder an exact effect-ID permutation in channels[PartId].insert_chain, "
+        "group_buses[ID].insert_chain, aux_buses[ID].effect_chain or master_bus.insert_chain; "
+        "automation follows effect identity",
+        {{"graph_id", "integer"}, {"chain_path", "string"}, {"effect_ids", "array of integers"}},
+        [session](const json& params) -> json {
+            const auto id =
+                detail::checked_integer<std::uint64_t>(params.at("graph_id"), "graph id");
+            auto* graph = session->find(id);
+            if (!graph) return graph_not_found(id);
+            std::vector<MixEffectId> order;
+            for (const auto& value : params.at("effect_ids"))
+                order.push_back(
+                    MixEffectId{detail::checked_integer<std::uint64_t>(value, "effect id")});
+            if (!reorder_mix_effects(*graph, params.at("chain_path").get<std::string>(), order))
+                return error_response("Unknown chain or invalid effect permutation/references");
+            return {{"success", true}};
+        });
+
+    server.register_tool(
+        "remove_mix_automation",
+        "Remove a mix automation lane by its zero-based index from get_mix_json",
+        {{"graph_id", "integer"}, {"index", "integer"}},
+        [session](const json& params) -> json {
+            const auto id =
+                detail::checked_integer<std::uint64_t>(params.at("graph_id"), "graph id");
+            auto* graph = session->find(id);
+            if (!graph) return graph_not_found(id);
+            if (!remove_mix_automation(
+                    *graph, detail::checked_integer<std::size_t>(params.at("index"), "lane index")))
+                return error_response("Automation lane does not exist");
+            return {{"success", true}};
+        });
+
+    server.register_tool(
+        "remove_mix_parameter_mapping",
+        "Remove one effect's explicit target mapping by stable effect ID and source parameter path",
+        {{"graph_id", "integer"}, {"effect_id", "integer"}, {"source_path", "string"}},
+        [session](const json& params) -> json {
+            const auto id =
+                detail::checked_integer<std::uint64_t>(params.at("graph_id"), "graph id");
+            auto* graph = session->find(id);
+            if (!graph) return graph_not_found(id);
+            if (!remove_mix_parameter_mapping(*graph,
+                                              MixEffectId{detail::checked_integer<std::uint64_t>(
+                                                  params.at("effect_id"), "effect id")},
+                                              params.at("source_path").get<std::string>()))
+                return error_response("Effect or mapping does not exist");
             return {{"success", true}};
         });
 

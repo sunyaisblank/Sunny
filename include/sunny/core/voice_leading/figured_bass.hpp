@@ -25,6 +25,7 @@
 
 #include <string_view>
 #include <sunny/core/pitch/pitch_class.hpp>
+#include <sunny/core/pitch/spelled_pitch.hpp>
 #include <sunny/core/scale/definitions.hpp>
 #include <sunny/core/types/music_types.hpp>
 #include <vector>
@@ -48,9 +49,11 @@ enum class FigureAccidental : std::uint8_t {
  * @brief A single figure (number + optional accidental)
  */
 struct Figure {
-    int interval;                ///< Generic interval above bass (2, 3, 4, 5, 6, 7)
+    int interval;                ///< Generic interval above bass [1,9]
     FigureAccidental accidental; ///< Modification
 };
+
+inline constexpr std::size_t MAX_FIGURED_BASS_VOICES = 12;
 
 /**
  * @brief Complete figured bass symbol for one bass note
@@ -107,21 +110,38 @@ struct FiguredBassRealisation {
 /**
  * @brief Realise a figured bass symbol above a given bass note
  *
- * Computes pitch classes for each figure by counting diatonic steps
- * above the bass within the given key, then places them in the
- * specified octave range.
+ * Counts generic intervals in a seven-note key. The MIDI-only overload
+ * requires a bass in the key scale; chromatic bass spelling is ambiguous
+ * and returns InvalidSpelledPitch. Use the spelled overload for chromatic
+ * basses or enharmonic distinctions. Empty/invalid figures, more than 12
+ * upper voices, or malformed scales return an error.
+ * Every upper voice is strictly above the bass and satisfies the indicated
+ * compound interval's minimum register. Output remains MIDI bounded.
  *
  * @param bass_note MIDI note for the bass
  * @param symbol Figured bass symbol
  * @param key_root Root pitch class of the key
  * @param key_scale Scale intervals (e.g., major scale)
- * @param upper_octave Octave for upper voices (default: same as bass or +1)
+ * @param upper_octave Preferred MIDI octave [0,9]; -1 chooses bass octave+1,
+ * clamped to [0,9]. Notes may shift upward to satisfy their interval.
  * @return Realisation or error
  */
 [[nodiscard]] Result<FiguredBassRealisation>
 realise_figured_bass(MidiNote bass_note,
                      const FiguredBassSymbol& symbol,
                      PitchClass key_root,
+                     std::span<const Interval> key_scale,
+                     int upper_octave = -1);
+
+/** Count letter intervals above the spelled bass, using key-relative tones.
+ * The tonic's octave is ignored; its letter and accidental define the key.
+ * Figure Sharp/Flat raise/lower the key-relative target by one semitone;
+ * Figure Natural retains its historical meaning of no alteration.
+ */
+[[nodiscard]] Result<FiguredBassRealisation>
+realise_figured_bass(SpelledPitch bass_note,
+                     const FiguredBassSymbol& symbol,
+                     SpelledPitch key_root,
                      std::span<const Interval> key_scale,
                      int upper_octave = -1);
 
@@ -137,6 +157,11 @@ struct FiguredBassEvent {
     FiguredBassSymbol symbol;
 };
 
+struct SpelledFiguredBassEvent {
+    SpelledPitch bass_note;
+    FiguredBassSymbol symbol;
+};
+
 /**
  * @brief Result of figured bass sequence realisation
  */
@@ -148,8 +173,11 @@ struct FiguredBassSequenceResult {
  * @brief Realise a sequence of figured bass events with voice-leading
  *
  * Each event is realised to produce the correct intervals above the bass.
- * Successive upper voices are connected via optimal voice leading
- * to minimise total voice motion across the progression.
+ * Equal-cardinality successive upper voices minimise summed absolute
+ * semitone motion between sorted voices, subject to the target figures,
+ * their compound-interval register, MIDI bounds, and all upper voices
+ * remaining above the current bass. Other contrapuntal constraints are
+ * not applied. A cardinality change uses direct realisation.
  *
  * @param events Sequence of bass notes with figured bass symbols
  * @param key_root Root pitch class of the key
@@ -159,6 +187,11 @@ struct FiguredBassSequenceResult {
 [[nodiscard]] Result<FiguredBassSequenceResult>
 realise_figured_bass_sequence(std::span<const FiguredBassEvent> events,
                               PitchClass key_root,
+                              std::span<const Interval> key_scale);
+
+[[nodiscard]] Result<FiguredBassSequenceResult>
+realise_figured_bass_sequence(std::span<const SpelledFiguredBassEvent> events,
+                              SpelledPitch key_root,
                               std::span<const Interval> key_scale);
 
 } // namespace sunny::core
