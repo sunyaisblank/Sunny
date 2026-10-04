@@ -161,6 +161,10 @@ def test_cmake_exports_exact_bundle_and_reconfigures_for_late_modules(
         "managed_device_modes.py",
         "managed_recovery.py",
         "managed_song_settings.py",
+        "managed_mixer.py",
+        "managed_routing.py",
+        "native_mixer_units.py",
+        "native_mixer_preview.py",
     ],
 )
 def test_cmake_rejects_an_incomplete_bundle(tmp_path: Path, missing: str) -> None:
@@ -200,6 +204,10 @@ def test_cmake_rejects_an_incomplete_bundle(tmp_path: Path, missing: str) -> Non
         "managed_device_modes.py",
         "managed_recovery.py",
         "managed_song_settings.py",
+        "managed_mixer.py",
+        "managed_routing.py",
+        "native_mixer_units.py",
+        "native_mixer_preview.py",
     ],
 )
 def test_identity_rejects_missing_managed_dependencies(

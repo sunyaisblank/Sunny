@@ -34,6 +34,13 @@ from .managed_capacity import (
 MANAGED_SCHEMA_VERSION = 1
 MANAGED_CALLS = frozenset(
     {
+        "sunny_managed_routing_candidates",
+        "sunny_managed_preview_routing",
+        "sunny_managed_preview_group",
+        "sunny_managed_apply_routing",
+        "sunny_managed_preview_static_mixer",
+        "sunny_managed_adopt_static_mixer",
+        "sunny_managed_update_static_mixer",
         "sunny_managed_context",
         "sunny_managed_operation",
         "sunny_managed_observe",
@@ -60,6 +67,10 @@ MANAGED_CALLS = frozenset(
 )
 MANAGED_READS = frozenset(
     {
+        "sunny_managed_routing_candidates",
+        "sunny_managed_preview_routing",
+        "sunny_managed_preview_group",
+        "sunny_managed_preview_static_mixer",
         "sunny_managed_context",
         "sunny_managed_operation",
         "sunny_managed_observe",
@@ -408,6 +419,15 @@ def valid_managed_request(name: str, args: list[Any]) -> bool:
     if name not in MANAGED_CALLS or len(args) != 1 or type(args[0]) is not dict:
         return False
     value = args[0]
+    if name in (
+        "sunny_managed_routing_candidates",
+        "sunny_managed_preview_routing",
+        "sunny_managed_preview_group",
+        "sunny_managed_apply_routing",
+    ):
+        from .managed_routing import valid_request
+
+        return valid_request(name, value)
     if name in ("sunny_managed_preview_envelope_replacement", "sunny_managed_replace_envelope"):
         from .managed_envelope_revision import valid_revision_request
 
@@ -418,6 +438,14 @@ def valid_managed_request(name: str, args: list[Any]) -> bool:
 
         geometry_accepted: bool = valid_managed_geometry_request(name, args)
         return geometry_accepted
+    if name in (
+        "sunny_managed_preview_static_mixer",
+        "sunny_managed_adopt_static_mixer",
+        "sunny_managed_update_static_mixer",
+    ):
+        from .managed_mixer import valid_request
+
+        return len(args) == 1 and valid_request(name, value)
     if name in ("sunny_managed_preview_song_settings", "sunny_managed_apply_song_settings"):
         from .managed_song_settings import valid_request
 
@@ -533,10 +561,14 @@ class ManagedRegistry:
         from .managed_devices import ManagedDevices
         from .managed_envelope_revision import ManagedEnvelopeRevision
         from .managed_geometry import ManagedGeometry
+        from .managed_mixer import ManagedMixer
         from .managed_recovery import ManagedRecovery
+        from .managed_routing import ManagedRouting
         from .managed_song_settings import ManagedSongSettings
 
         self._devices = ManagedDevices(self)
+        self._routing = ManagedRouting(self)
+        self._mixer = ManagedMixer(self)
         self._recovery = ManagedRecovery(self, self._devices)
         self._geometry = ManagedGeometry(self)
         self._song_settings = ManagedSongSettings(self)
@@ -810,7 +842,38 @@ class ManagedRegistry:
             ],
         }
         result.update(self._devices.capture(record))
+        result.update(self._group_authority(record))
         return result
+
+    def _group_authority(self, record: dict[str, Any]) -> dict[str, Any]:
+        """Emit only the exact private current Group grant for these handles."""
+        if record["track"].is_grouped is not True:
+            return {}
+        binding = record.get("_logical_binding")
+        if binding is None:
+            matching = [
+                key
+                for key, retained in self._bindings.items()
+                if all(
+                    self._same(retained.get(name), record.get(name))
+                    for name in ("track", "slot", "clip")
+                )
+                and self._tags(*key) == (record["track_tag"], record["clip_tag"])
+            ]
+            if len(matching) != 1:
+                return {}
+            binding = matching[0]
+        if self._tags(*binding) != (record["track_tag"], record["clip_tag"]):
+            return {}
+        return self._routing.capture_group_authority(*binding, record["track"])
+
+    def _require_current_group(self, record: dict[str, Any]) -> None:
+        """Grouped writes require a separate exact current hierarchy approval."""
+        grouped = record["track"].is_grouped
+        if type(grouped) is not bool:
+            raise RuntimeError("Managed Track returned invalid grouped state")
+        if grouped and not self._group_authority(record):
+            raise RuntimeError("Managed Track requires an exact current Group grant")
 
     def _parameter_manifest(self, parameter: Any) -> dict[str, Any]:
         import Live
@@ -849,7 +912,9 @@ class ManagedRegistry:
     def _require_guard(
         self, record: dict[str, Any], fingerprint: str, *, destructive: bool = True
     ) -> dict[str, Any]:
+        self._require_current_group(record)
         self._devices.verify_retained_chain(record)
+        self._mixer.verify_retained_mixer(record)
         observation = self._capture(record)
         boundary = "content_boundary_complete" if destructive else "structural_boundary_complete"
         if not observation[boundary]:
@@ -883,6 +948,7 @@ class ManagedRegistry:
                 path, clip, context["selector"]
             )
             observed = self._capture(record)
+            self._require_current_group(record)
             self._devices.verify_retained_chain(record)
             actual_manifest = copy.deepcopy(observed["manifest"])
             # Creating only this absent lane may change the presence bit.
@@ -899,7 +965,6 @@ class ManagedRegistry:
                 or record["track"].arm is not False
                 or record["track"].implicit_arm is not False
                 or record["track"].is_frozen is not False
-                or record["track"].is_grouped is not False
                 or _digest(actual_manifest) != context["before"]["content_fingerprint"]
                 or observed["note_identity_fingerprint"]
                 != context["before"]["note_identity_fingerprint"]
@@ -928,7 +993,9 @@ class ManagedRegistry:
         return True
 
     def _require_in_place_guard(self, record: dict[str, Any], fingerprint: str) -> dict[str, Any]:
+        self._require_current_group(record)
         self._devices.verify_retained_chain(record)
+        self._mixer.verify_retained_mixer(record)
         observation = self._capture(record)
         if (
             fingerprint != record.get("content_fingerprint")
@@ -941,9 +1008,9 @@ class ManagedRegistry:
         self._handler._step_clip_interval(record["clip"], idle=True)
         if any(
             getattr(record["track"], name) is not False
-            for name in ("arm", "implicit_arm", "is_frozen", "is_grouped")
+            for name in ("arm", "implicit_arm", "is_frozen")
         ):
-            raise RuntimeError("Managed Track must be unarmed, unfrozen and ungrouped")
+            raise RuntimeError("Managed Track must be unarmed and unfrozen")
         return observation
 
     def dispatch(self, name: str, args: list[Any]) -> dict[str, Any]:
@@ -956,6 +1023,12 @@ class ManagedRegistry:
                 "document_token": self._document_token,
             }
         request = args[0]
+        if name == "sunny_managed_routing_candidates":
+            return self._routing.candidates(request)
+        if name == "sunny_managed_preview_routing":
+            return self._routing.preview(request)
+        if name == "sunny_managed_preview_group":
+            return self._routing.preview_group(request)
         if name == "sunny_managed_observe":
             return self._observe(song, request)
         if name == "sunny_managed_sample_envelope":
@@ -969,6 +1042,8 @@ class ManagedRegistry:
                 raise RuntimeError("RecoveryUnavailable: managed native handles were not retained")
             device_preview: dict[str, Any] = self._devices.preview(record, request)
             return device_preview
+        if name == "sunny_managed_preview_static_mixer":
+            return self._mixer.preview(request)
         if name == "sunny_managed_preview_song_settings":
             song_preview: dict[str, Any] = self._song_settings.preview(request)
             return song_preview
@@ -1019,6 +1094,17 @@ class ManagedRegistry:
         try:
             if name == "sunny_managed_adopt_clip":
                 result = self._recovery.adopt(binding, request, operation)
+            elif name == "sunny_managed_apply_routing":
+                result = self._routing.apply(binding, request, operation)
+            elif name in ("sunny_managed_adopt_static_mixer", "sunny_managed_update_static_mixer"):
+                record = self._bindings.get(binding)
+                if record is None:
+                    raise RuntimeError("StaticMixerUnavailable: retained Part binding required")
+                result = (
+                    self._mixer.adopt(record, request, operation)
+                    if name == "sunny_managed_adopt_static_mixer"
+                    else self._mixer.apply(record, request, operation)
+                )
             elif name == "sunny_managed_apply_song_settings":
                 result = self._song_settings.apply(binding, request, operation)
             elif name == "sunny_managed_update_clip_geometry":
@@ -1206,7 +1292,9 @@ class ManagedRegistry:
         record = self._bindings.get(binding)
         if record is None:
             raise RuntimeError("RecoveryUnavailable: managed native handles were not retained")
+        self._require_current_group(record)
         self._devices.verify_retained_chain(record)
+        self._mixer.verify_retained_mixer(record)
         before = self._capture(record)
         if (
             request["expected_content_fingerprint"] != record.get("content_fingerprint")
@@ -1219,9 +1307,8 @@ class ManagedRegistry:
             record["track"].arm is not False
             or record["track"].implicit_arm is not False
             or record["track"].is_frozen is not False
-            or record["track"].is_grouped is not False
         ):
-            raise RuntimeError("Managed Track must be unarmed, unfrozen and ungrouped")
+            raise RuntimeError("Managed Track must be unarmed and unfrozen")
         proposed = _proposed_notes(
             before["note_identity"], request["changes"], float(record["clip"].end_marker)
         )
@@ -1502,6 +1589,7 @@ class ManagedRegistry:
         record["slot"] = record["track"].clip_slots[0]
         self._fill_clip(record, request, operation)
         self._devices.retain_created_track_authority(record)
+        self._mixer.retain_created_track_authority(record)
         return self._seal(record)
 
     def _fill_clip(
@@ -1551,6 +1639,7 @@ class ManagedRegistry:
         self, record: dict[str, Any], authorized_device_change: bool = False
     ) -> dict[str, Any]:
         result = self._capture(record)
+        self._mixer.seal(record, result)
         self._devices.seal(record, result, authorized_device_change=authorized_device_change)
         record["content_fingerprint"] = result["content_fingerprint"]
         record["note_identity_fingerprint"] = result["note_identity_fingerprint"]

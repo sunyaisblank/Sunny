@@ -1193,6 +1193,7 @@ relocate position-addressed automation to preserve the identities of retained ef
 | `reorder_mix_effects` | Apply an exact effect-ID permutation to a canonical owner chain; lanes follow effect identities |
 | `remove_mix_parameter_mapping` | Remove one mapping by effect identity and source path |
 | `set_channel_level` | Set an absolute fader value and clear prior relative intent |
+| `set_channel_flags` | Set selected authored mute/solo booleans atomically; preserve other flags and Channels |
 | `set_channel_relative_level` | Set and transactionally preflight a channel relation |
 | `resolve_mix_fader_levels` | Return the complete static solution and measured residuals without contacting Ableton |
 | `set_channel_pan` | Set spatial position |

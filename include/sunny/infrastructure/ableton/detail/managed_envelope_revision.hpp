@@ -113,7 +113,7 @@ inline bool observation_valid(const json& metadata, const json& observation) {
         clip.at("end_marker").get<double>() != metadata.at("lane").at("clip_end").get<double>() ||
         manifest.at("mixer").at("panning_mode") != 0)
         return false;
-    for (const auto* state : {"arm", "implicit_arm", "is_frozen", "is_grouped"})
+    for (const auto* state : {"arm", "implicit_arm", "is_frozen"})
         if (track.at(state) != false) return false;
     for (const auto* state :
          {"is_playing", "is_recording", "is_overdubbing", "is_triggered", "will_record_on_start"})

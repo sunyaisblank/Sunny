@@ -13,8 +13,8 @@ inline const ManagedOperationReceipt& last_receipt(const RealizationStoredAttemp
 // A workspace transition has no transport: any independently verified later
 // approval clears earlier uncertainty, while an unresolved later token blocks.
 inline const RealizationStoredAttempt*
-set_wide_settings_blocker(const RealizationStore& store,
-                          const ManagedBridgeContext* current_context = nullptr) {
+set_wide_song_settings_blocker(const RealizationStore& store,
+                               const ManagedBridgeContext* current_context = nullptr) {
     std::uint64_t approved_ordinal = 0;
     for (const auto& [id, attempt] : store.attempts()) {
         (void)id;
@@ -45,5 +45,53 @@ set_wide_settings_blocker(const RealizationStore& store,
         if (!blocked || attempt.dispatch_ordinal > blocked->dispatch_ordinal) blocked = &attempt;
     }
     return blocked;
+}
+
+inline const RealizationStoredAttempt*
+return_creation_blocker(const RealizationStore& store,
+                        const ManagedBridgeContext* current_context = nullptr) {
+    std::uint64_t approved_ordinal = 0;
+    for (const auto& [id, attempt] : store.attempts()) {
+        (void)id;
+        const auto& receipt = last_receipt(attempt);
+        if (receipt.request.property_or_method != "sunny_managed_apply_routing" ||
+            receipt.outcome != ManagedOperationOutcome::Acknowledged || !receipt.journal ||
+            (current_context &&
+             (receipt.context.bridge_instance != current_context->bridge_instance ||
+              receipt.context.document_token != current_context->document_token)))
+            continue;
+        const auto& request = std::get<nlohmann::json>(receipt.request.args.at(0));
+        const auto& kind = request.at("intent").at("kind");
+        if (kind != "create_return" && kind != "adopt_return") continue;
+        const auto& routing = receipt.journal->at("result").at("routing");
+        if (routing.at("desired_match") == true &&
+            routing.at("untouched_observed_state_preserved") == true)
+            approved_ordinal = std::max(approved_ordinal, attempt.dispatch_ordinal);
+    }
+    const RealizationStoredAttempt* blocked = nullptr;
+    for (const auto& [id, attempt] : store.attempts()) {
+        (void)id;
+        const auto& receipt = last_receipt(attempt);
+        if (receipt.request.property_or_method != "sunny_managed_apply_routing" ||
+            attempt.dispatch_ordinal <= approved_ordinal ||
+            std::get<nlohmann::json>(receipt.request.args.at(0)).at("intent").at("kind") !=
+                "create_return" ||
+            receipt.outcome == ManagedOperationOutcome::Declined ||
+            (receipt.outcome == ManagedOperationOutcome::NotSent &&
+             receipt.delivery == LomDeliveryState::NotSent && !receipt.journal))
+            continue;
+        if (!blocked || attempt.dispatch_ordinal > blocked->dispatch_ordinal) blocked = &attempt;
+    }
+    return blocked;
+}
+
+inline const RealizationStoredAttempt*
+set_wide_settings_blocker(const RealizationStore& store,
+                          const ManagedBridgeContext* current_context = nullptr) {
+    const auto* song = set_wide_song_settings_blocker(store, current_context);
+    const auto* routing = return_creation_blocker(store, current_context);
+    return !song                                                            ? routing
+           : !routing || song->dispatch_ordinal > routing->dispatch_ordinal ? song
+                                                                            : routing;
 }
 } // namespace sunny::infrastructure::realization_detail

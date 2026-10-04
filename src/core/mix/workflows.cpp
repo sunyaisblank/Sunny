@@ -872,6 +872,18 @@ Result<void> set_channel_level(MixGraph& graph, ChannelStripId channel_id, float
     return {};
 }
 
+Result<void> set_channel_flags(MixGraph& graph,
+                               ChannelStripId channel_id,
+                               std::optional<bool> mute,
+                               std::optional<bool> solo) {
+    if (!mute && !solo) return std::unexpected(invalid_param());
+    auto* channel = find_channel(graph, channel_id);
+    if (!channel) return std::unexpected(not_found());
+    if (mute) channel->mute = *mute;
+    if (solo) channel->solo = *solo;
+    return {};
+}
+
 Result<void> set_channel_relative_level(MixGraph& graph,
                                         ChannelStripId channel_id,
                                         const RelativeLevel& relative) {

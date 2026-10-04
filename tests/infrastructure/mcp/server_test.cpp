@@ -740,7 +740,7 @@ TEST_CASE("all public tools advertise object-shaped JSON Schemas", "[mcp][tools]
     auto response =
         server.process_request({{"jsonrpc", "2.0"}, {"method", "tools/list"}, {"id", 30}});
     const auto& tools = response["result"]["tools"];
-    REQUIRE(tools.size() == 178);
+    REQUIRE(tools.size() == 188);
     for (const auto& tool : tools) {
         CAPTURE(tool["name"]);
         const auto& schema = tool["inputSchema"];
@@ -844,6 +844,50 @@ TEST_CASE("tool registration rejects duplicate and malformed definitions", "[mcp
                                          {{"type", "array"}},
                                          [](const json&) -> json { return json::object(); }),
                     std::invalid_argument);
+}
+
+TEST_CASE("Explicitly closed tool inputs reject unknown fields before handler execution",
+          "[mcp][tools][schema]") {
+    McpServer server;
+    int invocations = 0;
+    const json child{{"type", "object"},
+                     {"additionalProperties", false},
+                     {"properties", {{"approved", {{"type", "boolean"}}}}},
+                     {"required", {"approved"}}};
+    server.register_tool("closed",
+                         "closed input",
+                         {{"type", "object"},
+                          {"additionalProperties", false},
+                          {"properties", {{"selection", child}}},
+                          {"required", {"selection"}}},
+                         [&invocations](const json&) -> json {
+                             ++invocations;
+                             return {{"success", true}};
+                         });
+    const json valid{{"selection", {{"approved", true}}}};
+    for (const auto& field : {"desired_projection", "unadvertised"}) {
+        auto outer = valid;
+        outer[field] = json::object();
+        const auto declined = call_tool(server, "closed", outer, 1);
+        CHECK(declined.contains("error"));
+        CHECK(invocations == 0);
+        auto nested = valid;
+        nested["selection"][field] = json::object();
+        CHECK(call_tool(server, "closed", nested, 2).contains("error"));
+        CHECK(invocations == 0);
+    }
+    CHECK(call_tool(server, "closed", valid, 3).at("success") == true);
+    CHECK(invocations == 1);
+    // Schemas that omit closure continue accepting useful undeclared fields.
+    server.register_tool("open",
+                         "open input",
+                         {{"type", "object"}, {"properties", json::object()}},
+                         [&invocations](const json&) -> json {
+                             ++invocations;
+                             return {{"success", true}};
+                         });
+    CHECK(call_tool(server, "open", {{"extra", 1}}, 4).at("success") == true);
+    CHECK(invocations == 2);
 }
 
 TEST_CASE("tools/call unknown tool", "[mcp][tools]") {

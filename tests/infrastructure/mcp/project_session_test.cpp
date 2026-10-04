@@ -106,6 +106,68 @@ struct ProjectFixture {
 
 } // namespace
 
+TEST_CASE("Owning Channel flags return exact booleans and follow project undo redo",
+          "[mcp][project][channel-flags]") {
+    ProjectFixture fixture(2);
+    const auto original = fixture.state();
+    const auto revision = original.at("project").at("revision").get<std::uint64_t>();
+    auto solo =
+        fixture.call("set_channel_flags", {{"graph_id", 1}, {"channel_id", 1}, {"solo", true}});
+    REQUIRE_FALSE(solo.contains("error"));
+    CHECK(solo.at("mute") == false);
+    CHECK(solo.at("solo") == true);
+    CHECK(solo.at("project").at("revision") == revision + 1);
+    auto mute =
+        fixture.call("set_channel_flags", {{"graph_id", 1}, {"channel_id", 1}, {"mute", true}});
+    REQUIRE_FALSE(mute.contains("error"));
+    CHECK(mute.at("mute") == true);
+    CHECK(mute.at("solo") == true);
+    auto released =
+        fixture.call("set_channel_flags", {{"graph_id", 1}, {"channel_id", 1}, {"mute", false}});
+    REQUIRE_FALSE(released.contains("error"));
+    CHECK(released.at("mute") == false);
+    CHECK(released.at("solo") == true);
+    auto documents = original.at("documents");
+    documents["mix"]["channels"][0]["solo"] = true;
+    CHECK(fixture.state().at("documents") == documents);
+    CHECK(fixture.session.project->projects.at(1).undo_entries.size() == 3);
+    REQUIRE_FALSE(fixture.call("score_undo", {{"score_id", 1}}).contains("error"));
+    CHECK(fixture.session.mix->find(1)->channels[0].mute);
+    CHECK(fixture.session.mix->find(1)->channels[0].solo);
+    REQUIRE_FALSE(fixture.call("score_redo", {{"score_id", 1}}).contains("error"));
+    CHECK_FALSE(fixture.session.mix->find(1)->channels[0].mute);
+    CHECK(fixture.session.mix->find(1)->channels[0].solo);
+    CHECK_FALSE(fixture.session.mix->find(1)->channels[1].mute);
+    CHECK_FALSE(fixture.session.mix->find(1)->channels[1].solo);
+}
+
+TEST_CASE("Owning Channel flags reject absent numeric null and missing "
+          "identities without history",
+          "[mcp][project][channel-flags][atomicity]") {
+    ProjectFixture fixture;
+    const auto before = fixture.state();
+    const auto histories = fixture.session.project->projects.at(1).undo_entries.size();
+    for (const json& flags : {json::object(),
+                              json{{"mute", 1}},
+                              json{{"solo", 0}},
+                              json{{"mute", nullptr}},
+                              json{{"solo", nullptr}},
+                              json{{"mute", true}, {"solo", 1}}}) {
+        auto request = flags;
+        request["graph_id"] = 1;
+        request["channel_id"] = 1;
+        CHECK(fixture.call("set_channel_flags", request).contains("error"));
+        CHECK(fixture.state() == before);
+        CHECK(fixture.session.project->projects.at(1).undo_entries.size() == histories);
+    }
+    for (const json& request : {json{{"graph_id", 1}, {"channel_id", 900}, {"mute", true}},
+                                json{{"graph_id", 900}, {"channel_id", 1}, {"solo", true}}}) {
+        CHECK(fixture.call("set_channel_flags", request).contains("error"));
+        CHECK(fixture.state() == before);
+        CHECK(fixture.session.project->projects.at(1).undo_entries.size() == histories);
+    }
+}
+
 TEST_CASE("Project binding retains inactive revision and Channel namespaces",
           "[mcp][project][identity][workspace]") {
     ProjectFixture fixture;

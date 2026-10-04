@@ -92,6 +92,8 @@ def guard_envelope_author_response_capacity(
             "unavailable_reasons",
             "device_identity",
             "device_identity_fingerprint",
+            "group_authority",
+            "group_authority_fingerprint",
         )
     }
     count = len(before["note_identity"]["notes"])

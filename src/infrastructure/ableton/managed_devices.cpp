@@ -6,6 +6,7 @@
 #include <sunny/infrastructure/ableton/detail/managed_capacity.hpp>
 #include <sunny/infrastructure/ableton/detail/managed_devices.hpp>
 #include <sunny/infrastructure/ableton/detail/managed_fingerprint.hpp>
+#include <sunny/infrastructure/ableton/detail/managed_group.hpp>
 #include <sunny/infrastructure/ableton/detail/managed_notes.hpp>
 #include <sunny/infrastructure/ableton/detail/native_unit_numeric.hpp>
 #include <sunny/infrastructure/ableton/managed_devices.hpp>
@@ -178,9 +179,36 @@ bool close(double left, double right) {
                                          std::max({1.0, std::abs(left), std::abs(right)});
 }
 
+bool group_candidate(const json& observation) {
+    try {
+        if (!managed_detail::group_supplement_valid(observation)) return false;
+        const auto& grouped = observation.at("manifest").at("track").at("is_grouped");
+        return grouped.is_boolean() &&
+               (grouped == false || managed_detail::group_current_proof(observation));
+    } catch (const json::exception&) {
+        return false;
+    }
+}
+bool group_payload_closes(const json& observation, const json& payload) {
+    if (!group_candidate(observation)) return false;
+    if (!observation.contains("group_authority")) return true;
+    const auto& proof = observation.at("group_authority");
+    return proof.at("context").at("document_token") == payload.at("document_token") &&
+           proof.at("project_key") == payload.at("project_key") &&
+           proof.at("selected_binding_key") == payload.at("binding_key");
+}
+bool same_group_context(const json& before, const json& after) {
+    if (before.contains("group_authority") != after.contains("group_authority")) return false;
+    if (!before.contains("group_authority")) return true;
+    // A Device setter authorizes no Group or Track-index transition within
+    // this operation. A permitted pre-dispatch reindex is captured in both
+    // before/after observations. Routing Return rebases use their own proof.
+    return before.at("group_authority") == after.at("group_authority");
+}
 bool observation_digest(const json& observation) {
-    if (!observation.is_object() || !observation.contains("manifest") ||
-        !observation.contains("content_fingerprint") || !observation.contains("note_identity") ||
+    if (!observation.is_object() || !group_candidate(observation) ||
+        !observation.contains("manifest") || !observation.contains("content_fingerprint") ||
+        !observation.contains("note_identity") ||
         !observation.contains("note_identity_fingerprint") ||
         !managed_detail::note_identity_valid(observation.at("note_identity")))
         return false;
@@ -315,6 +343,8 @@ Result<LomRequest> make_request(std::string_view method,
         context.bridge_instance != binding.context.bridge_instance ||
         context.document_token != binding.context.document_token ||
         !observation_digest(binding.observation) ||
+        !managed_detail::group_touched_boundary(
+            binding.observation, context, binding.project_key, binding.binding_key) ||
         !binding.observation.contains("device_identity") ||
         !managed_device_detail::device_supplement_valid(binding.observation))
         return std::unexpected(ErrorCode::ProtocolError);
@@ -693,7 +723,8 @@ bool device_preview_valid(const json& preview) {
 bool device_adoption_result_matches_request(const json& payload, const json& result) {
     try {
         if (!device_request_valid(adopt_method, payload) || !observation_digest(result) ||
-            !device_supplement_valid(result) || !result.contains("device_adoption"))
+            !group_payload_closes(result, payload) || !device_supplement_valid(result) ||
+            !result.contains("device_adoption"))
             return false;
         const auto& supplement = result.at("device_adoption");
         if (!fields(supplement,
@@ -714,7 +745,9 @@ bool device_adoption_result_matches_request(const json& payload, const json& res
             return false;
         const auto digest = managed_detail::managed_digest(payload.at("approved_preview"));
         const auto& before = payload.at("approved_preview").at("binding_observation");
-        return digest && supplement.at("preview_fingerprint") == *digest &&
+        return digest && group_payload_closes(before, payload) &&
+               same_group_context(before, result) &&
+               supplement.at("preview_fingerprint") == *digest &&
                result.at("manifest") == before.at("manifest") &&
                result.at("note_identity") == before.at("note_identity") &&
                result.at("device_identity") == before.at("device_identity");
@@ -725,7 +758,8 @@ bool device_adoption_result_matches_request(const json& payload, const json& res
 bool device_mode_result_matches_request(const json& payload, const json& result) {
     try {
         if (!device_request_valid(mode_method, payload) || !device_supplement_valid(result) ||
-            !observation_digest(result) || !result.contains("device_mode_update"))
+            !observation_digest(result) || !group_payload_closes(result, payload) ||
+            !result.contains("device_mode_update"))
             return false;
         const auto& update = result.at("device_mode_update");
         if (!fields(update,
@@ -747,7 +781,8 @@ bool device_mode_result_matches_request(const json& payload, const json& result)
             update.at("opaque_state_observed") != false)
             return false;
         const auto& before = update.at("before_observation");
-        if (!observation_digest(before) || !device_supplement_valid(before) ||
+        if (!observation_digest(before) || !group_payload_closes(before, payload) ||
+            !same_group_context(before, result) || !device_supplement_valid(before) ||
             before.at("content_fingerprint") != payload.at("expected_content_fingerprint") ||
             before.at("device_identity_fingerprint") !=
                 payload.at("expected_device_identity_fingerprint") ||
@@ -862,7 +897,7 @@ bool device_result_matches_request(std::string_view method,
             !device_request_valid(method, payload) || !device_supplement_valid(result) ||
             !result.contains("device_identity") || !result.contains("track_index") ||
             !integer(result.at("track_index"), INT32_MAX) || !observation_digest(result) ||
-            !result.contains("device_update"))
+            !group_payload_closes(result, payload) || !result.contains("device_update"))
             return false;
         const auto& update = result.at("device_update");
         if (!fields(update,
@@ -885,7 +920,8 @@ bool device_result_matches_request(std::string_view method,
             update.at("opaque_state_observed") != false)
             return false;
         const auto& before = update.at("before_observation");
-        if (!observation_digest(before) || !device_supplement_valid(before) ||
+        if (!observation_digest(before) || !group_payload_closes(before, payload) ||
+            !same_group_context(before, result) || !device_supplement_valid(before) ||
             before.at("content_fingerprint") != payload.at("expected_content_fingerprint") ||
             before.at("device_identity_fingerprint") !=
                 payload.at("expected_device_identity_fingerprint") ||
@@ -1023,7 +1059,9 @@ make_managed_device_preview_request(const ManagedBridgeContext& context,
     if (!key(context.bridge_instance) ||
         context.bridge_instance != binding.context.bridge_instance ||
         context.document_token != binding.context.document_token ||
-        !observation_digest(binding.observation))
+        !observation_digest(binding.observation) ||
+        !managed_detail::group_touched_boundary(
+            binding.observation, context, binding.project_key, binding.binding_key))
         return std::unexpected(ErrorCode::ProtocolError);
     json devices = json::array();
     for (const auto& selection : selections) {
@@ -1085,7 +1123,12 @@ Result<ManagedDeviceAdoptionPreview> parse_managed_device_preview(
         for (const auto* field : {"document_token", "project_key", "binding_key"})
             if (response.at(field) != payload.at(field))
                 return std::unexpected(ErrorCode::ProtocolError);
-        if (response.at("preview").at("devices") != payload.at("devices") ||
+        if (!managed_detail::group_touched_boundary(
+                response.at("preview").at("binding_observation"),
+                context,
+                payload.at("project_key"),
+                payload.at("binding_key")) ||
+            response.at("preview").at("devices") != payload.at("devices") ||
             response.at("preview").at("binding_observation").at("content_fingerprint") !=
                 payload.at("expected_content_fingerprint"))
             return std::unexpected(ErrorCode::ProtocolError);
@@ -1143,6 +1186,12 @@ make_managed_device_adoption_request(const ManagedBridgeContext& context,
                                      const ManagedDeviceAdoptionPreview& preview) {
     if (context.bridge_instance != preview.context.bridge_instance ||
         context.document_token != preview.context.document_token || !key(context.bridge_instance) ||
+        !preview.approved_preview.is_object() ||
+        !preview.approved_preview.contains("binding_observation") ||
+        !managed_detail::group_touched_boundary(preview.approved_preview.at("binding_observation"),
+                                                context,
+                                                preview.project_key,
+                                                preview.binding_key) ||
         managed_detail::managed_digest(preview.approved_preview) !=
             std::optional{preview.preview_fingerprint})
         return std::unexpected(ErrorCode::ProtocolError);

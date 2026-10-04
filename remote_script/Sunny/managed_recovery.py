@@ -154,10 +154,12 @@ class ManagedRecovery:
             "clip": slot.clip,
             "track_tag": track_tag,
             "clip_tag": clip_tag,
+            "_logical_binding": (request["project_key"], request["binding_key"]),
         }
 
     def _capture(self, song: Any, record: dict[str, Any]) -> dict[str, Any]:
         registry = self._registry
+        registry._require_current_group(record)
         if not registry._same(record["track"].canonical_parent, song):
             raise RuntimeError("AdoptionUnavailable: current Track parent differs")
         observed: dict[str, Any] = registry._capture(record)
@@ -170,9 +172,9 @@ class ManagedRecovery:
         registry._handler._step_clip_interval(record["clip"], idle=True)
         if any(
             getattr(record["track"], name) is not False
-            for name in ("arm", "implicit_arm", "is_frozen", "is_grouped")
+            for name in ("arm", "implicit_arm", "is_frozen")
         ):
-            raise RuntimeError("AdoptionUnavailable: Track must be unarmed, unfrozen and ungrouped")
+            raise RuntimeError("AdoptionUnavailable: Track must be unarmed and unfrozen")
         if record["track"].name != record["track_tag"] or record["clip"].name != record["clip_tag"]:
             raise RuntimeError("AdoptionUnavailable: selected current names changed")
         return observed
@@ -211,7 +213,11 @@ class ManagedRecovery:
 
     @staticmethod
     def _candidate_record(
-        record: dict[str, Any], devices: tuple[Any, ...], previous: Any, device_authority: bool
+        record: dict[str, Any],
+        devices: tuple[Any, ...],
+        previous: Any,
+        device_authority: bool,
+        mixer_authority: Any = None,
     ) -> dict[str, Any]:
         candidate = {**record, "adopted_device_cohort": devices}
         if device_authority:
@@ -221,7 +227,25 @@ class ManagedRecovery:
                 **state,
                 "entries": [dict(entry) for entry in state["entries"]],
             }
+        candidate.pop("_managed_mixer", None)
+        if mixer_authority is not None:
+            candidate["_managed_mixer"] = {
+                **mixer_authority,
+                "domains": list(mixer_authority["domains"]),
+                "guard": copy.deepcopy(mixer_authority["guard"]),
+            }
         return candidate
+
+    def _mixer_authority(self, previous: Any, candidate: Any) -> Any:
+        if previous is None:
+            return None
+        return self._registry._mixer.authority_for_refresh(previous, candidate)
+
+    @staticmethod
+    def _mixer_disposition(authority: Any) -> Any:
+        if authority is None:
+            return None
+        return _digest({name: authority[name] for name in ("domains", "origin", "guard")})
 
     def preview(self, request: dict[str, Any]) -> dict[str, Any]:
         """Retain current objects/settings for explicit review; execute no setters."""
@@ -235,7 +259,10 @@ class ManagedRecovery:
         devices = tuple(self._registry._handler._device_chain(record["track"]))
         previous = self._previous(request, record)
         device_authority = self._device_authority(previous)
-        record = self._candidate_record(record, devices, previous, device_authority)
+        mixer_authority = self._mixer_authority(previous, record)
+        record = self._candidate_record(
+            record, devices, previous, device_authority, mixer_authority
+        )
         observation = self._capture(song, record)
         if not self._same_devices(record, devices):
             raise RuntimeError("AdoptionUnavailable: device cohort changed during capture")
@@ -277,6 +304,7 @@ class ManagedRecovery:
             "used": False,
             "previous": previous,
             "device_authority": device_authority,
+            "mixer_disposition": self._mixer_disposition(mixer_authority),
         }
         return result
 
@@ -314,7 +342,14 @@ class ManagedRecovery:
             raise RuntimeError(
                 "AdoptionUnavailable: device authority disposition changed after preview"
             )
-        record = self._candidate_record(record, preview["devices"], previous, device_authority)
+        mixer_authority = self._mixer_authority(previous, record)
+        if self._mixer_disposition(mixer_authority) != preview["mixer_disposition"]:
+            raise RuntimeError(
+                "AdoptionUnavailable: Mixer authority disposition changed after preview"
+            )
+        record = self._candidate_record(
+            record, preview["devices"], previous, device_authority, mixer_authority
+        )
         for key, retained in registry._bindings.items():
             if key == binding:
                 continue

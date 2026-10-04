@@ -25,7 +25,9 @@ Result<LomRequest> make_managed_envelope_replacement_preview_request(
     const ManagedBridgeContext& context, const ManagedBindingReceipt& binding, const json& lane) {
     if (context.bridge_instance != binding.context.bridge_instance ||
         context.document_token != binding.context.document_token ||
-        !managed_binding_from_json(managed_binding_to_json(binding)))
+        !managed_binding_from_json(managed_binding_to_json(binding)) ||
+        !managed_detail::group_touched_boundary(
+            binding.observation, context, binding.project_key, binding.binding_key))
         return std::unexpected(ErrorCode::ProtocolError);
     auto request = LomProtocol::call_method(
         LomPaths::song(),

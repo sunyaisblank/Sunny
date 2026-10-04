@@ -33,7 +33,9 @@ inline bool envelope_author_response_fits(const nlohmann::json& request,
                             "content_boundary_complete",
                             "unavailable_reasons",
                             "device_identity",
-                            "device_identity_fingerprint"})
+                            "device_identity_fingerprint",
+                            "group_authority",
+                            "group_authority_fingerprint"})
         if (before.contains(key)) after[key] = before.at(key);
     const auto count = after.at("note_identity").at("notes").size();
     after["manifest"]["notes"] = json::array();

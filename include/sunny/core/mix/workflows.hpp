@@ -176,6 +176,14 @@ add_channel_effect(MixGraph& graph, ChannelStripId channel_id, MixEffect effect)
 [[nodiscard]] Result<void>
 set_channel_level(MixGraph& graph, ChannelStripId channel_id, float level_db);
 
+/** Set at least one authored Channel mute/solo flag; other flags and Channels
+ * are preserved. This edits Mix intent and performs no native audio operation.
+ */
+[[nodiscard]] Result<void> set_channel_flags(MixGraph& graph,
+                                             ChannelStripId channel_id,
+                                             std::optional<bool> mute = std::nullopt,
+                                             std::optional<bool> solo = std::nullopt);
+
 /**
  * @brief Set a channel's fader level relative to another channel.
  */

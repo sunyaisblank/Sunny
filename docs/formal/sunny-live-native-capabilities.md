@@ -200,6 +200,15 @@ are checked after each changed setter. Inactive loop-end state may remain indepe
 or reflect the actual unlooped Clip end; unexpected coupling stops the operation.
 Fresh Clip adoption grants geometry as a fourth touched domain. Saved historical
 two- or three-domain grants retain their exact scope until fresh explicit adoption.
+Combined musical revision derives at most three intermediate projections under one final
+owning revision: expand with old notes/meter, revise notes within the admitted extent, then
+finish the extent/meter. It preserves attack-key associations and uses the existing native
+note/geometry guards. Each stage durably records its own complete projection and actual receipt;
+an uncertain or mismatching phase stops later writers. After original-token reconciliation,
+replanning from the verified intermediate projection skips completed phases. No temporary
+Score edit or caller-supplied desired projection is used, and outside-Clip requests remain
+explicitly unapplied. Existing automation playback extent may follow Clip geometry; complete
+envelope population is unavailable.
 
 Set settings support a single exact origin tempo converted through effective
 quarter-note BPM and a single initial global meter. Transport is idle at origin;
@@ -222,3 +231,71 @@ reply capacity is checked before its dispatch fence and before native creation. 
 incomplete breakpoint evidence; other parameter envelopes remain untouched. Native
 Set save/reopen, exact Python API behavior and audible response remain final-host
 qualification obligations.
+
+Static Part mixing selects owning Channel volume, native Stereo pan coordinate, mute and solo.
+Effective fader dB comes from the core relative-level solution; unresolved programme loudness
+never substitutes the stored fader. Actual [MixerDevice](https://docs.cycling74.com/apiref/lom/mixerdevice/)
+volume formatter observations determine candidates without a normalized fader formula. Utility
+input trim and effects remain separate. Stereo pan admits the actual continuous [-1,+1] domain
+and observed mode0; pan law and non-pan spatial/audio equivalence remain residuals.
+
+Original managed Track creation retains four finite Mixer domains on exact current handles.
+Clip/device adoption and ordinary inspection grant none. Separate explicit Mixer adoption grants
+only the reviewed selected domains. Clean same-object Clip adoption may preserve existing Mixer
+authority, while control or concrete handle drift revokes it. Every apply phase protects the
+whole finite Mixer/send/Device cohort, native note identities, unselected values and other
+Tracks' stored mute/solo flags. The [Track reference](https://docs.cycling74.com/apiref/lom/track/)
+defines the direct solo setter separately from exclusive-Solo behavior; it requires explicit
+Set-wide audible approval. Mute must agree with actual Track Activator readback. No-op and
+adoption acknowledgements start no native mutation, while clamps/throws retain uncertainty
+without correcting or replaying a setter. Initial static writes preserve selected existing
+envelopes and admit only parameters with no active/overridden automation.
+
+Removed owning Parts can be explicitly retired by native mute on their retained Track. The
+operation uses the last verified historical Clip projection and attack keys at the current owning
+project revision; it preserves all native objects and history. After an epoch change, explicit Clip
+adoption compares full current notes/geometry to the verified historical musical projection,
+without recreating a Score Part or restoring historical native identity. Separate Mixer adoption
+grants only mute retirement for removed Parts. Native Save/reopen remains a final host obligation.
+Active Parts edited offline can explicitly select `retained_verified_realization` for Clip
+recovery. The source is the latest retained acknowledged musical projection with complete
+native note/geometry agreement and unique attack associations. Preview reports its immutable
+source attempt, source revision and projection identity; adoption requires the same explicit
+selection and source attempt under the current owning revision. It performs no native setters,
+restores no historical object identity and grants no Device/Mixer authority. Subsequent musical
+revision applies the current Score without temporary edits. Current physical Device adoption
+remains a separate matching-intent prerequisite.
+
+The finite routing family appends one actual Return, adopts a selected current Return, assigns
+advertised output type/channel objects, and controls selected owning enabled send levels in dB.
+The [Song reference](https://docs.cycling74.com/apiref/lom/song/) documents Return creation;
+the [Track reference](https://docs.cycling74.com/apiref/lom/track/) exposes current routing and
+read-only Group topology. Exact Python routing-object attachment and native hash/layout behavior
+are pinned-source candidates, not a public Max/Python equivalence or host result. Output type and
+channel require separate fresh previews; a type mismatch stops the later channel operation.
+Read-only routing inspection returns actual current identifiers and attached destinations,
+checked against the retained Part guard and finite native frame. It creates no preview, changes
+no retained baseline and grants no authority. Identifiers are valid only in the observed epoch.
+
+Every routing phase retains the actual Song/Track/Return/mixer/parameter/route cohort. An exact
+Return append preserves old identities, notes, geometry, devices, routes and existing sends;
+validated affected-Part receipts derive later binding guards without a second Store or foreign
+evidence append. It revokes existing static Mixer grants, requiring explicit current adoption.
+Unknown Return creation blocks managed writers across projects and workspace transitions until
+the original token is reconciled or fresh current Return authority is explicitly approved.
+Song approval, local route changes and Group adoption cannot settle that uncertainty.
+
+Existing flat native Groups can be adopted only against complete declared owning direct members
+and current native parent handles. The zero-setter Group receipt grants hierarchy only, with no
+Part/Clip, Device or Mixer authority. Grouped touched operations additionally require the exact
+retained current Group proof; generic inspection grants none and destructive completeness stays
+false. Reassociation after a user edit requires explicit current hierarchy approval and retires
+conflicting private grants while preserving historical receipts. Native Group creation,
+regrouping, nested Group authoring and Return processing remain unavailable in this family.
+
+The [Live mixing manual](https://www.ableton.com/en/live-manual/12/mixing/) assigns one Pre/Post
+policy per Return. Owning enabled per-Aux conflicts are rejected across Channels and Groups
+before any routing fence. No reviewed Python tap-policy getter/setter is available, so a selected
+send operation controls its measured native dB knob and reports logical AuxSend completion false.
+Actual native defaults, advertised routing objects, send formatter behavior and Save/reopen are
+separate scratch-host probes for Live 12.4.

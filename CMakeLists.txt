@@ -233,6 +233,11 @@ target_sources(
         src/infrastructure/ableton/managed_recovery.cpp
         src/infrastructure/ableton/managed_song_settings.cpp
         src/infrastructure/ableton/managed_envelope_revision.cpp
+        src/infrastructure/ableton/managed_mixer.cpp
+        src/infrastructure/ableton/managed_routing.cpp
+        src/infrastructure/ableton/managed_clip_revision.cpp
+        src/infrastructure/ableton/native_mixer_units.cpp
+        src/infrastructure/ableton/native_mix_plan.cpp
         src/infrastructure/ableton/native_effect_plan.cpp
         src/infrastructure/ableton/native_units.cpp
         src/infrastructure/ableton/native_timbre_plan.cpp

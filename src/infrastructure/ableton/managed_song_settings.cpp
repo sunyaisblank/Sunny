@@ -86,7 +86,10 @@ bool binding_closes(const json& preview, const json& observation) {
                                         preview.at("project_key"),
                                         preview.at("binding_key"),
                                         observation};
-    if (!managed_binding_from_json(managed_binding_to_json(binding))) return false;
+    if (!managed_binding_from_json(managed_binding_to_json(binding)) ||
+        !group_touched_boundary(
+            observation, binding.context, binding.project_key, binding.binding_key))
+        return false;
     const auto& guard = preview.at("binding_guard");
     const auto device = observation.value("device_identity_fingerprint", json{});
     return observation.at("track_tag") == "Sunny|" + preview.at("project_key").get<std::string>() +
@@ -335,7 +338,10 @@ bool result_matches_request(const json& payload, const json& result) {
                                             preview.at("project_key"),
                                             preview.at("binding_key"),
                                             actual};
-        if (!managed_binding_from_json(managed_binding_to_json(binding))) return false;
+        if (!managed_binding_from_json(managed_binding_to_json(binding)) ||
+            !group_touched_boundary(
+                actual, binding.context, binding.project_key, binding.binding_key))
+            return false;
         return supplement.at("started_fields") == fields &&
                supplement.at("returned_fields") == fields &&
                supplement.at("desired_settings_match") ==
@@ -452,7 +458,9 @@ Result<LomRequest> make_managed_song_settings_preview_request(const ManagedBridg
                                                               const ManagedSongSettings& desired) {
     if (!managed_binding_from_json(managed_binding_to_json(binding)) ||
         context.bridge_instance != binding.context.bridge_instance ||
-        context.document_token != binding.context.document_token)
+        context.document_token != binding.context.document_token ||
+        !managed_detail::group_touched_boundary(
+            binding.observation, context, binding.project_key, binding.binding_key))
         return std::unexpected(ErrorCode::ProtocolError);
     json payload{
         {"document_token", context.document_token},

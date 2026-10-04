@@ -12,7 +12,7 @@ from __future__ import annotations
 import math
 import re
 from decimal import ROUND_HALF_EVEN, Decimal, localcontext
-from typing import Any
+from typing import Any, NoReturn
 
 FORMATTER_BUDGET = 64
 SOURCE_COMMIT = "e83d5192f321b24eb9daab843ac49a2d95d862b1"
@@ -29,7 +29,7 @@ class NativeUnitError(RuntimeError):
         self.formatter_calls = formatter_calls
 
 
-def _fail(reason: str, diagnostic: str) -> None:
+def _fail(reason: str, diagnostic: str) -> NoReturn:
     raise NativeUnitError(reason, diagnostic)
 
 
@@ -73,7 +73,7 @@ def _descriptor(parameter: Any, *, quantized: bool, eligible: bool) -> dict[str,
         )
     if eligible and automation != 0:
         _fail("ExistingAutomation", "Initial native value admission requires automation_state=0")
-    result = {
+    result: dict[str, Any] = {
         "minimum": minimum,
         "maximum": maximum,
         "value": value,
@@ -86,7 +86,7 @@ def _descriptor(parameter: Any, *, quantized: bool, eligible: bool) -> dict[str,
         raw = parameter.value_items
         if isinstance(raw, (str, bytes, dict)):
             _fail("InvalidDomain", "Mode labels must be a native string collection")
-        items = []
+        items: list[str] = []
         for item in raw:
             if len(items) >= 64:
                 _fail("InvalidDomain", "Mode label population exceeds the finite limit")
@@ -330,7 +330,7 @@ class _Observation:
         if isinstance(raw, (str, bytes, dict)):
             _fail("InvalidObservation", "Device.parameters is not a native object collection")
         # Iteration is bounded even for a malformed or infinite host collection.
-        population = []
+        population: list[Any] = []
         for member in raw:
             if len(population) >= _MAX_PARAMETERS:
                 _fail("InvalidObservation", "Device parameter population exceeds the finite limit")
@@ -375,14 +375,14 @@ class _Observation:
         if not callable(parameter.str_for_value):
             _fail("ObservationUnavailable", "The native str_for_value method is unavailable")
         descriptor = _descriptor(parameter, quantized=False, eligible=True)
-        modes = {}
+        modes: dict[str, Any] = {}
         for name, expected in self.policy.items():
             if self.device_class == "Drift" and name in ("voice_mode", "voice_count"):
                 index = getattr(device, name + "_index")
                 raw_items = getattr(device, name + "_list")
                 if isinstance(raw_items, (str, bytes, dict)):
                     _fail("InvalidObservation", "Native voice property needs a label collection")
-                items = []
+                items: list[str] = []
                 for item in raw_items:
                     if len(items) >= 64:
                         _fail("InvalidDomain", "Native voice property exceeds the finite limit")
@@ -504,7 +504,10 @@ def _parse(text: Any, unit: str, *, gain_infinity: bool = False) -> tuple[Decima
         )
     token = match.group(1)
     numeric = Decimal(token)
-    increment = Decimal(1).scaleb(numeric.as_tuple().exponent)
+    exponent = numeric.as_tuple().exponent
+    if not isinstance(exponent, int):
+        _fail("UnsupportedDisplay", "Display number requires a finite decimal exponent")
+    increment = Decimal(1).scaleb(exponent)
     if unit == "Hertz" and match.group(2) == "kHz":
         numeric *= 1000
         increment *= 1000
@@ -519,46 +522,28 @@ def _parse(text: Any, unit: str, *, gain_infinity: bool = False) -> tuple[Decima
     return numeric, increment
 
 
-def resolve_native_display_value(
+def _search_parameter_display(
     parameter: Any,
     *,
-    device: Any,
-    device_class_name: str,
-    parameter_original_name: str,
+    observation: Any,
     unit: str,
     target: float,
     tolerance: float,
-    expected_modes: dict[str, Any],
+    gain_infinity: bool = False,
+    supplemental_observation: Any = None,
 ) -> dict[str, Any]:
-    """Return one read-only native-display candidate, or raise ``NativeUnitError``.
-
-    ``expected_modes`` must exactly equal the finite identity's required policy;
-    it cannot disable gates. Balance targets use -1..1 relative to observed L/R
-    endpoint magnitudes. Tolerance compares the parsed *displayed* number with
-    the target; nominal decimal precision is reported separately, with no
-    inferred rounding-error bound. Callers must verify native display readback
-    after any separately authorized write. This function performs no writes.
-    """
+    """Sole bounded search; adapters own actual-object context and unit policy."""
     calls = 0
     try:
-        if any(
-            type(value) is not str for value in (device_class_name, parameter_original_name, unit)
+        if unit not in (
+            "Decibels",
+            "Hertz",
+            "QualityFactor",
+            "Percent",
+            "Milliseconds",
+            "StereoBalance",
         ):
-            _fail("InvalidIntent", "Registered class, original name and unit must be strings")
-        policy = _policy(device_class_name, parameter_original_name, unit)
-        if (
-            type(expected_modes) is not dict
-            or set(expected_modes) != set(policy)
-            or any(
-                type(expected_modes[key]) is not type(policy[key])
-                or expected_modes[key] != policy[key]
-                for key in policy
-            )
-        ):
-            _fail(
-                "InvalidIntent",
-                "Expected modes must equal the registered policy; gates cannot be omitted",
-            )
+            _fail("InvalidIntent", "Unit is outside the finite display grammar")
         desired = _number(target, "Display target")
         admitted_tolerance = _number(tolerance, "Display tolerance")
         if (
@@ -568,13 +553,10 @@ def resolve_native_display_value(
             or (unit == "StereoBalance" and not -1 <= desired <= 1)
         ):
             _fail("InvalidIntent", "Physical target/tolerance violates its declared unit domain")
-        observation = _Observation(
-            parameter, device, device_class_name, parameter_original_name, policy
-        )
         domain = observation.initial["descriptor"]
         samples = []
-        readings = []
-        scale_display = None
+        readings: list[tuple[float, str, Decimal, Any]] = []
+        supplemental = None
 
         def format_value(native_parameter: Any, value: float) -> str:
             nonlocal calls
@@ -583,7 +565,7 @@ def resolve_native_display_value(
             observation.check()
             calls += 1
             try:
-                text = native_parameter.str_for_value(value)
+                text: str = native_parameter.str_for_value(value)
             except Exception as error:
                 _fail("ObservationUnavailable", "Native str_for_value failed: " + str(error))
             observation.check()
@@ -594,15 +576,8 @@ def resolve_native_display_value(
             decimal_context.rounding = ROUND_HALF_EVEN
             desired_decimal = Decimal(str(desired))
             tolerance_decimal = Decimal(str(admitted_tolerance))
-            if device_class_name == "Eq8":
-                scale = observation.named_parameter("Scale")
-                raw_scale = format_value(scale, observation.initial["modes"]["Scale"]["value"])
-                amount, increment = _parse(raw_scale, "Percent")
-                scale_display = {
-                    "display": raw_scale,
-                    "display_value": float(amount),
-                    "display_increment": float(increment),
-                }
+            if supplemental_observation is not None:
+                supplemental = supplemental_observation(format_value)
 
             def sample(value: float, phase: str) -> tuple[float, str, Decimal, Any]:
                 if not math.isfinite(value) or not domain["minimum"] <= value <= domain["maximum"]:
@@ -611,8 +586,7 @@ def resolve_native_display_value(
                 physical, increment = _parse(
                     raw,
                     unit,
-                    gain_infinity=device_class_name == "StereoGain"
-                    and parameter_original_name == "Gain",
+                    gain_infinity=gain_infinity,
                 )
                 if unit in ("Hertz", "QualityFactor") and physical <= 0:
                     _fail("UnsupportedDisplay", "Native display violates its positive unit domain")
@@ -717,9 +691,6 @@ def resolve_native_display_value(
                 encoded["negative_infinity"] = not physical.is_finite()
             return {
                 "schema_version": 1,
-                "device_class_name": device_class_name,
-                "parameter_original_name": parameter_original_name,
-                "parameter_index": observation.initial["parameter_index"],
                 "unit": unit,
                 "target": desired,
                 "display_tolerance": admitted_tolerance,
@@ -730,24 +701,9 @@ def resolve_native_display_value(
                 "absolute_display_error": float(abs(normalized(candidate) - desired_decimal)),
                 "balance_full_scale": float(full_scale) if full_scale is not None else None,
                 "descriptor": dict(domain),
-                "modes": observation.initial["modes"],
-                "eq8_scale_display": scale_display,
-                "population": observation.initial["population"],
                 "formatter_calls": calls,
                 "samples": samples,
-                "qualification": "ObservedNativeDisplayCandidate",
-                "source_commit": SOURCE_COMMIT,
-                "host_qualified": False,
-                "native_knob_only": True,
-                "coverage_limits": [
-                    "Tolerance compares displayed numbers; no hidden physical rounding-error bound is inferred.",
-                    "Sampled monotonicity does not prove a global transfer function or search completeness.",
-                    "Balance is a native displayed coordinate, not an arbitrary pan law or physical angle.",
-                    "EQ Eight Scale and Adaptive Q are observed couplings, not a literal DSP response claim.",
-                    "Drift voice and LP Type modes do not qualify envelope shape, routing or modulation.",
-                    "Native readback after an authorized write and reopen must be independently verified.",
-                    "Version, edition, operating system, envelope and persistence qualification remain separate.",
-                ],
+                "_supplemental_observation": supplemental,
             }
     except NativeUnitError as error:
         error.formatter_calls = calls
@@ -755,4 +711,94 @@ def resolve_native_display_value(
     except Exception as error:
         raise NativeUnitError(
             "ObservationUnavailable", "Native observation failed: " + str(error), calls
+        ) from error
+
+
+def resolve_native_display_value(
+    parameter: Any,
+    *,
+    device: Any,
+    device_class_name: str,
+    parameter_original_name: str,
+    unit: str,
+    target: float,
+    tolerance: float,
+    expected_modes: dict[str, Any],
+) -> dict[str, Any]:
+    """Observe one finite native Device control; no setters or mapping formula.
+
+    Expected modes must equal the registered policy. The shared search compares
+    actual displayed values with the explicit tolerance; subsequent authorized
+    write/readback and host qualification remain separate.
+    """
+    try:
+        if any(
+            type(value) is not str for value in (device_class_name, parameter_original_name, unit)
+        ):
+            _fail("InvalidIntent", "Registered class, original name and unit must be strings")
+        policy = _policy(device_class_name, parameter_original_name, unit)
+        if (
+            type(expected_modes) is not dict
+            or set(expected_modes) != set(policy)
+            or any(
+                type(expected_modes[key]) is not type(policy[key])
+                or expected_modes[key] != policy[key]
+                for key in policy
+            )
+        ):
+            _fail(
+                "InvalidIntent",
+                "Expected modes must equal the registered policy; gates cannot be omitted",
+            )
+        observation = _Observation(
+            parameter, device, device_class_name, parameter_original_name, policy
+        )
+
+        def observe_scale(format_value: Any) -> dict[str, Any]:
+            scale = observation.named_parameter("Scale")
+            raw = format_value(scale, observation.initial["modes"]["Scale"]["value"])
+            amount, increment = _parse(raw, "Percent")
+            return {
+                "display": raw,
+                "display_value": float(amount),
+                "display_increment": float(increment),
+            }
+
+        result = _search_parameter_display(
+            parameter,
+            observation=observation,
+            unit=unit,
+            target=target,
+            tolerance=tolerance,
+            gain_infinity=device_class_name == "StereoGain" and parameter_original_name == "Gain",
+            supplemental_observation=observe_scale if device_class_name == "Eq8" else None,
+        )
+        scale_display = result.pop("_supplemental_observation")
+        result.update(
+            device_class_name=device_class_name,
+            parameter_original_name=parameter_original_name,
+            parameter_index=observation.initial["parameter_index"],
+            modes=observation.initial["modes"],
+            eq8_scale_display=scale_display,
+            population=observation.initial["population"],
+            qualification="ObservedNativeDisplayCandidate",
+            source_commit=SOURCE_COMMIT,
+            host_qualified=False,
+            native_knob_only=True,
+            coverage_limits=[
+                "Tolerance compares displayed numbers; no hidden physical rounding-error bound is inferred.",
+                "Sampled monotonicity does not prove a global transfer function or search completeness.",
+                "Balance is a native displayed coordinate, not an arbitrary pan law or physical angle.",
+                "EQ Eight Scale and Adaptive Q are observed couplings, not a literal DSP response claim.",
+                "Drift voice and LP Type modes do not qualify envelope shape, routing or modulation.",
+                "Native readback after an authorized write and reopen must be independently verified.",
+                "Version, edition, operating system, envelope and persistence qualification remain separate.",
+            ],
+        )
+        return result
+    except NativeUnitError:
+        raise
+    except Exception as error:
+        raise NativeUnitError(
+            "ObservationUnavailable", "Native observation failed: " + str(error)
         ) from error

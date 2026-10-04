@@ -863,6 +863,7 @@ class ManagedDevices:
         ]
         state = {"handles": chain, "entries": entries, "baseline": None}
         candidate = {**record, "_managed_devices": state}
+        self.registry._require_current_group(candidate)
         observed = self.registry._capture(candidate)
         if observed["content_fingerprint"] != request["expected_content_fingerprint"] or observed[
             "note_identity_fingerprint"
@@ -873,7 +874,7 @@ class ManagedDevices:
         self.registry._handler._step_clip_interval(record["clip"], idle=True)
         if any(
             getattr(record["track"], name) is not False
-            for name in ("arm", "implicit_arm", "is_frozen", "is_grouped")
+            for name in ("arm", "implicit_arm", "is_frozen")
         ):
             raise RuntimeError("Current-device adoption requires idle unarmed native context")
         resolutions = []
@@ -974,15 +975,16 @@ class ManagedDevices:
             raise RuntimeError("Explicit device approval differs from the retained current preview")
         self._context(request, retained["version"])
         candidate = {**record, "_managed_devices": retained["state"]}
+        self.registry._require_current_group(candidate)
         observed = self.registry._capture(candidate)
         if observed != retained["value"]["binding_observation"]:
             raise RuntimeError("Current device/Clip identities or state changed after approval")
         self.registry._handler._step_clip_interval(record["clip"], idle=True)
         if any(
             getattr(record["track"], name) is not False
-            for name in ("arm", "implicit_arm", "is_frozen", "is_grouped")
+            for name in ("arm", "implicit_arm", "is_frozen")
         ):
-            raise RuntimeError("Current-device context became armed/frozen/grouped")
+            raise RuntimeError("Current-device context became armed or frozen")
         # Repeat actual formatter evidence at approval time. A mode/formatter
         # drift with unchanged internal values cannot inherit the old preview.
         for item in retained["value"]["resolutions"]:

@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <limits>
 #include <sunny/infrastructure/ableton/detail/managed_devices.hpp>
+#include <sunny/infrastructure/ableton/detail/managed_group.hpp>
 #include <sunny/infrastructure/ableton/detail/managed_notes.hpp>
 #include <sunny/infrastructure/ableton/managed_recovery.hpp>
 
@@ -107,6 +108,8 @@ inline bool recovery_observation(const nlohmann::json& metadata,
     auto base = observation;
     base.erase("device_identity");
     base.erase("device_identity_fingerprint");
+    base.erase("group_authority");
+    base.erase("group_authority_fingerprint");
     if (!recovery_fields(base,
                          {"track_index",
                           "slot_index",
@@ -127,7 +130,12 @@ inline bool recovery_observation(const nlohmann::json& metadata,
                                    {"project_key", metadata.at("project_key")},
                                    {"binding_key", metadata.at("binding_key")},
                                    {"observation", observation}});
-    if (!checked) return false;
+    if (!checked || !group_touched_boundary(observation,
+                                            {metadata.at("context").at("bridge_instance"),
+                                             metadata.at("context").at("document_token")},
+                                            metadata.at("project_key"),
+                                            metadata.at("binding_key")))
+        return false;
     const auto& identity = observation.at("note_identity");
     if (identity.at("entire_clip_population_observed") != true ||
         identity.at("notes").size() > 65536 || observation.at("content_boundary_complete") != false)
@@ -143,10 +151,10 @@ inline bool recovery_observation(const nlohmann::json& metadata,
         manifest.at("mpe_note_expression_state_observed") != false ||
         manifest.at("follow_actions_state_observed") != false || track.at("arm") != false ||
         track.at("implicit_arm") != false || track.at("is_frozen") != false ||
-        track.at("is_grouped") != false || clip.at("is_session_clip") != true ||
-        clip.at("is_arrangement_clip") != false || clip.at("is_midi_clip") != true ||
-        clip.at("is_audio_clip") != false || clip.at("looping") != false ||
-        clip.at("start_marker").get<double>() != 0.0 || clip.at("end_marker").get<double>() <= 0.0)
+        clip.at("is_session_clip") != true || clip.at("is_arrangement_clip") != false ||
+        clip.at("is_midi_clip") != true || clip.at("is_audio_clip") != false ||
+        clip.at("looping") != false || clip.at("start_marker").get<double>() != 0.0 ||
+        clip.at("end_marker").get<double>() <= 0.0)
         return false;
     for (const auto* name :
          {"is_playing", "is_recording", "is_overdubbing", "is_triggered", "will_record_on_start"})

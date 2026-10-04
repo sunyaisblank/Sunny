@@ -169,6 +169,20 @@ bool validate_schema_value(nlohmann::json& value,
     }
 
     if (value.is_object()) {
+        // Explicitly closed public contracts reject unadvertised input before
+        // any handler or owning/native state transition.
+        if (schema.contains("additionalProperties") &&
+            schema["additionalProperties"].is_boolean() &&
+            !schema["additionalProperties"].get<bool>()) {
+            const auto properties = schema.value("properties", nlohmann::json::object());
+            for (const auto& [name, child] : value.items()) {
+                static_cast<void>(child);
+                if (!properties.contains(name)) {
+                    error = path + "." + name + " is not an advertised property";
+                    return false;
+                }
+            }
+        }
         if (schema.contains("required") && schema["required"].is_array()) {
             for (const auto& required : schema["required"]) {
                 if (!required.is_string()) continue;

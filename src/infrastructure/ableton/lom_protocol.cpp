@@ -21,7 +21,9 @@
 #include <sunny/infrastructure/ableton/detail/managed_devices.hpp>
 #include <sunny/infrastructure/ableton/detail/managed_envelope_revision.hpp>
 #include <sunny/infrastructure/ableton/detail/managed_geometry.hpp>
+#include <sunny/infrastructure/ableton/detail/managed_mixer.hpp>
 #include <sunny/infrastructure/ableton/detail/managed_notes.hpp>
+#include <sunny/infrastructure/ableton/detail/managed_routing.hpp>
 #include <sunny/infrastructure/ableton/lom_protocol.hpp>
 #include <sunny/infrastructure/ableton/managed_recovery.hpp>
 #include <sunny/infrastructure/ableton/managed_song_settings.hpp>
@@ -421,6 +423,17 @@ bool valid_managed_request(std::string_view name, const std::vector<json>& args)
     if (args.size() != 1 || !args[0].is_object()) return false;
     const auto& value = args[0];
     if (is_one_of(name,
+                  {"sunny_managed_routing_candidates",
+                   "sunny_managed_preview_routing",
+                   "sunny_managed_preview_group",
+                   "sunny_managed_apply_routing"}))
+        return managed_routing_detail::request_valid(name, value);
+    if (is_one_of(name,
+                  {"sunny_managed_preview_static_mixer",
+                   "sunny_managed_adopt_static_mixer",
+                   "sunny_managed_update_static_mixer"}))
+        return managed_mixer_detail::request_valid(name, value);
+    if (is_one_of(name,
                   {"sunny_managed_preview_envelope_replacement", "sunny_managed_replace_envelope"}))
         return managed_envelope_detail::request_valid(name, value);
     if (is_one_of(name,
@@ -549,6 +562,13 @@ sunny::core::Result<void> LomProtocol::validate_request(const LomRequest& reques
                         "sunny_managed_apply_song_settings",
                         "sunny_managed_preview_envelope_replacement",
                         "sunny_managed_replace_envelope",
+                        "sunny_managed_preview_static_mixer",
+                        "sunny_managed_adopt_static_mixer",
+                        "sunny_managed_update_static_mixer",
+                        "sunny_managed_routing_candidates",
+                        "sunny_managed_preview_routing",
+                        "sunny_managed_preview_group",
+                        "sunny_managed_apply_routing",
                         "create_scene",
                         "create_midi_track",
                         "create_return_track"}));

@@ -1172,6 +1172,48 @@ void register_mix_tools(McpServer& server, std::shared_ptr<MixSession> session) 
         });
 
     // =========================================================================
+    // set_channel_flags
+    // =========================================================================
+    server.register_tool(
+        "set_channel_flags",
+        "Set selected authored Channel mute/solo booleans; preserve unselected flags and other "
+        "Channels. Native solo needs separate Set-wide audible approval during realization",
+        {{"type", "object"},
+         {"additionalProperties", false},
+         {"properties",
+          {{"graph_id", {{"type", "integer"}}},
+           {"channel_id", {{"type", "integer"}}},
+           {"mute", {{"type", "boolean"}}},
+           {"solo", {{"type", "boolean"}}}}},
+         {"required", {"graph_id", "channel_id"}},
+         {"anyOf", {{{"required", {"mute"}}}, {{"required", {"solo"}}}}}},
+        [session](const json& params) -> json {
+            std::optional<bool> mute, solo;
+            for (const auto* flag : {"mute", "solo"})
+                if (params.contains(flag) && !params.at(flag).is_boolean())
+                    return error_response("mute and solo must be genuine booleans");
+            if (params.contains("mute")) mute = params.at("mute").get<bool>();
+            if (params.contains("solo")) solo = params.at("solo").get<bool>();
+            if (!mute && !solo) return error_response("Select at least one of mute or solo");
+            const auto graph_id =
+                detail::checked_integer<std::uint64_t>(params.at("graph_id"), "mix graph id");
+            auto* graph = session->find(graph_id);
+            if (!graph) return graph_not_found(graph_id);
+            const auto channel_id = ChannelStripId{
+                detail::checked_integer<std::uint64_t>(params.at("channel_id"), "channel id")};
+            if (!set_channel_flags(*graph, channel_id, mute, solo))
+                return error_response("Channel not found");
+            const auto channel =
+                std::find_if(graph->channels.begin(),
+                             graph->channels.end(),
+                             [&](const auto& value) { return value.id == channel_id; });
+            return {{"success", true},
+                    {"channel_id", channel_id.value},
+                    {"mute", channel->mute},
+                    {"solo", channel->solo}};
+        });
+
+    // =========================================================================
     // set_channel_relative_level
     // =========================================================================
     server.register_tool(

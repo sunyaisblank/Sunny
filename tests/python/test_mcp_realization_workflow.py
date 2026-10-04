@@ -120,6 +120,9 @@ class NativeWorkflow:
                 "sunny_managed_apply_song_settings",
                 "sunny_managed_replace_envelope",
                 "sunny_managed_update_device_modes",
+                "sunny_managed_adopt_static_mixer",
+                "sunny_managed_update_static_mixer",
+                "sunny_managed_apply_routing",
             }:
                 records = json.loads(self.history_ledger().read_text())["attempts"]
                 retained = [

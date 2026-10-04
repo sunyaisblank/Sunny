@@ -57,7 +57,10 @@ state on that parameter; other parameter envelopes are preserved. Initial author
 replacement support up to 64 Step points and report actual samples, without claiming complete
 breakpoint capture.
 `project_realization_update_geometry` changes the Clip extent and flat meter while retaining
-unchanged attacks. Extend before adding later notes; delete notes before shrinking the Clip.
+unchanged attacks. `project_realization_update` combines note, length and meter changes under
+the final owning revision: it extends before adding later notes and removes tails before
+shrinking. Each intermediate projection is fenced and read back separately. Reconcile a lost
+reply using its original attempt identifier; the next update resumes from the verified stage.
 `project_realization_preview_song_settings` and `project_realization_apply_song_settings`
 apply explicitly approved constant tempo and initial meter to the whole Set. Uncertain Set-setting
 replies block subsequent managed setters in the active history namespace until reconciliation or
@@ -70,11 +73,32 @@ native formatter and parameter readback. Unselected sound fields remain reported
 selected native EQ Eight bands and Utility gain/width stages after Drift. Mix input trim uses
 a separate Utility, and `set_channel_input_trim` edits its authored dB value. Each native mode
 and physical phase is separately fenced and read back; unsupported effects remain unapplied.
+`set_channel_flags` edits authored mute/solo values. The static Mixer plan, preview and apply
+tools read selected fader, Stereo pan, mute and solo intent from the owning Channel. Fader dB
+uses the actual native formatter; programme loudness needs supplied measurement evidence.
+Solo requires explicit approval of its Set-wide audible effect. Existing selected automation
+is preserved, so apply static pan before authoring its lane. A reopened Mixer needs separate
+current-object adoption. `project_realization_retire_part` explicitly mutes a removed Part's
+retained Track while preserving its Clip, notes, devices and historical receipts.
+The routing plan, preview and apply tools join owning Aux sends to actual Returns and select
+currently advertised output targets. `project_realization_inspect_routing` reads their current
+identifiers and attached destinations; inspect again after changing the output type to select
+a channel from the newly advertised list. Return Pre/Post policy remains unavailable; conflicting
+enabled per-Aux requests decline before any write. A new Return updates all affected Part guards
+and requires fresh Mixer approval. Existing flat native Groups can be explicitly adopted against
+their complete owning membership; grouped Parts then need their own current Clip approval.
 After a Live or bridge restart, `project_realization_preview_adoption` and
 `project_realization_adopt` establish explicitly approved current Clip/note authority.
 Device authority requires its separate preview/adoption pair. Saved receipts identify history;
 fresh native observations and approval establish the current objects. Each result identifies
 project domains that have not been applied.
+If the Score changed offline before reopening Live, select
+`projection_source: "retained_verified_realization"` for the Clip preview and adoption, and
+repeat the returned `historical_projection_attempt` when approving adoption. This establishes
+the current objects against their last verified musical baseline; the next update applies the
+current Score. Device adoption still requires separately matching physical intent.
+For removed Parts, Clip recovery uses the last verified historical note/geometry projection;
+separate mute-only Mixer adoption permits retirement without recreating the Score Part.
 
 A few quick tools (`create_progression_clip`, `apply_euclidean_rhythm`, `apply_arpeggio`) write a
 single clip into an empty clip slot without a project. They record only changes Live
@@ -336,7 +360,8 @@ Max externals on macOS and Windows.
   note revision, whole Event addition/deletion, separate Clip extent/meter changes and explicit
   selected pan-envelope replacement. Reopened objects require fresh explicit adoption.
   Managed device authoring covers selected Drift controls and finite EQ Eight/Utility stages;
-  unsupported device intent, static mixer controls and routing remain reported as unapplied.
+  unsupported device intent, unselected Mixer controls, Return processing and Pre/Post policy
+  remain reported as unapplied. Native Group creation and regrouping are unavailable.
 - Audio is never rendered or analysed, so nothing Sunny reports is a claim about how the result
   sounds. Loudness targets and reference comparisons are intentions, not measurements.
 - Live's current-scale setting is readable but not written.

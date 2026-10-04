@@ -9,7 +9,10 @@
 #include <sunny/infrastructure/ableton/detail/managed_envelope_revision.hpp>
 #include <sunny/infrastructure/ableton/detail/managed_fingerprint.hpp>
 #include <sunny/infrastructure/ableton/detail/managed_geometry.hpp>
+#include <sunny/infrastructure/ableton/detail/managed_group.hpp>
+#include <sunny/infrastructure/ableton/detail/managed_mixer.hpp>
 #include <sunny/infrastructure/ableton/detail/managed_notes.hpp>
+#include <sunny/infrastructure/ableton/detail/managed_routing.hpp>
 #include <sunny/infrastructure/ableton/managed_realization.hpp>
 #include <sunny/infrastructure/ableton/managed_recovery.hpp>
 #include <sunny/infrastructure/ableton/managed_song_settings.hpp>
@@ -60,6 +63,9 @@ bool mutation(const LomRequest& request) {
             request.property_or_method == "sunny_managed_update_device_modes" ||
             request.property_or_method == "sunny_managed_replace_envelope" ||
             request.property_or_method == "sunny_managed_adopt_devices" ||
+            request.property_or_method == "sunny_managed_adopt_static_mixer" ||
+            request.property_or_method == "sunny_managed_update_static_mixer" ||
+            request.property_or_method == "sunny_managed_apply_routing" ||
             request.property_or_method == "sunny_managed_apply_song_settings");
 }
 
@@ -285,7 +291,7 @@ bool manifest_valid(const json& manifest, bool& structural, bool& complete_cover
 }
 
 bool notes_match(const json& actual, const json& requested);
-bool note_update_boundary(const json& manifest);
+bool note_update_boundary(const json& manifest, const json& observation);
 
 bool identity_evidence_valid(const json& identity, const json& digest) {
     if (!managed_detail::note_identity_valid(identity) || !fingerprint(digest)) return false;
@@ -331,7 +337,9 @@ bool observation_valid(const json& value) {
             notes.push_back(managed_detail::semantic_note(note));
         if (!notes_match(notes, value.at("manifest").at("notes"))) return false;
     }
-    if (!managed_device_detail::device_supplement_valid(value)) return false;
+    if (!managed_device_detail::device_supplement_valid(value) ||
+        !managed_detail::group_supplement_valid(value))
+        return false;
     if (value.contains("device_identity") && value.at("manifest").at("devices_empty") !=
                                                  value.at("device_identity").at("cohort").empty())
         return false;
@@ -353,6 +361,8 @@ bool notes_match(const json& actual, const json& requested) {
 }
 
 bool result_matches_intent(const json& observation, const json& intent, std::string_view name) {
+    if (name == managed_routing_detail::apply_method)
+        return managed_routing_detail::result_matches_request(intent, observation);
     const auto project = intent.at("project_key").get<std::string>();
     const auto binding = intent.at("binding_key").get<std::string>();
     if (observation.at("track_tag") != "Sunny|" + project + "|" + binding + "|track" ||
@@ -362,6 +372,8 @@ bool result_matches_intent(const json& observation, const json& intent, std::str
         return managed_detail::adoption_acknowledgement_valid(intent, observation);
     if (name == "sunny_managed_apply_song_settings")
         return managed_song_detail::result_matches_request(intent, observation);
+    if (name == managed_mixer_detail::adopt_method || name == managed_mixer_detail::update_method)
+        return managed_mixer_detail::result_matches_request(name, intent, observation);
     if (name == "sunny_managed_replace_envelope")
         return observation.contains("envelope_replacement") &&
                observation.at("envelope_replacement").contains("before_observation") &&
@@ -423,7 +435,7 @@ bool result_matches_intent(const json& observation, const json& intent, std::str
             return false;
         bool structural = false, complete = false;
         if (!manifest_valid(update.at("before_manifest"), structural, complete) ||
-            !note_update_boundary(update.at("before_manifest")) ||
+            !note_update_boundary(update.at("before_manifest"), observation) ||
             managed_detail::managed_digest(update.at("before_manifest")) !=
                 std::optional<std::string>{
                     intent.at("expected_content_fingerprint").get<std::string>()} ||
@@ -489,7 +501,7 @@ bool result_matches_intent(const json& observation, const json& intent, std::str
             if (!update.at(flag).is_boolean()) return false;
         bool structural = false, complete = false;
         if (!manifest_valid(update.at("before_manifest"), structural, complete) ||
-            !note_update_boundary(update.at("before_manifest")) ||
+            !note_update_boundary(update.at("before_manifest"), observation) ||
             managed_detail::managed_digest(update.at("before_manifest")) !=
                 std::optional<std::string>{
                     intent.at("expected_content_fingerprint").get<std::string>()} ||
@@ -599,7 +611,7 @@ bool result_matches_intent(const json& observation, const json& intent, std::str
             if (!update.at(flag).is_boolean()) return false;
         bool before_structural = false, before_complete = false;
         if (!manifest_valid(update.at("before_manifest"), before_structural, before_complete) ||
-            !note_update_boundary(update.at("before_manifest")) ||
+            !note_update_boundary(update.at("before_manifest"), observation) ||
             managed_detail::managed_digest(update.at("before_manifest")) !=
                 std::optional<std::string>{
                     intent.at("expected_content_fingerprint").get<std::string>()} ||
@@ -733,23 +745,58 @@ Result<ManagedOperationReceipt> observe_journal(ManagedOperationReceipt result,
     if (!request_digest || journal.at("request_fingerprint") != *request_digest) return malformed();
     const bool song_settings =
         result.request.property_or_method == "sunny_managed_apply_song_settings";
+    const bool routing = result.request.property_or_method == managed_routing_detail::apply_method;
+    if (routing && !managed_routing_detail::partial_valid(*intent, journal)) return malformed();
     if (song_settings && !managed_song_detail::partial_valid(*intent, journal)) return malformed();
+    const bool static_mixer =
+        result.request.property_or_method == managed_mixer_detail::adopt_method ||
+        result.request.property_or_method == managed_mixer_detail::update_method;
+    if (result.request.property_or_method == managed_mixer_detail::update_method &&
+        outcome != "acknowledged" &&
+        (journal.contains("mixer_progress") || journal.at("native_mutation_started") == true) &&
+        !managed_mixer_detail::partial_valid(*intent, journal))
+        return malformed();
     if (outcome == "acknowledged") {
         const bool native_mutation =
             result.request.property_or_method != "sunny_managed_rebind" &&
             result.request.property_or_method != "sunny_managed_adopt_clip" &&
             result.request.property_or_method != "sunny_managed_adopt_devices";
         const bool native_start_valid =
-            song_settings && journal.contains("result")
+            routing && journal.contains("result")
+                ? managed_routing_detail::acknowledged_native_start_valid(
+                      *intent,
+                      journal.at("result"),
+                      journal.at("native_mutation_started").get<bool>())
+            : static_mixer && journal.contains("result")
+                ? managed_mixer_detail::acknowledged_native_start_valid(
+                      result.request.property_or_method,
+                      *intent,
+                      journal.at("result"),
+                      journal.at("native_mutation_started").get<bool>())
+            : song_settings && journal.contains("result")
                 ? managed_song_detail::acknowledged_native_start_valid(
                       *intent,
                       journal.at("result"),
                       journal.at("native_mutation_started").get<bool>())
                 : journal.at("native_mutation_started").get<bool>() == native_mutation;
+        const bool group_only = routing && intent->at("intent").at("kind") == "adopt_group";
         if (!native_start_valid || !journal.contains("result") ||
-            !observation_valid(journal.at("result")) ||
+            (!group_only && (!observation_valid(journal.at("result")) ||
+                             !managed_detail::group_context_matches(
+                                 journal.at("result"),
+                                 result.context,
+                                 intent->at("project_key").get<std::string>(),
+                                 intent->at("binding_key").get<std::string>()))) ||
             !result_matches_intent(
                 journal.at("result"), *intent, result.request.property_or_method))
+            return malformed();
+        if (result.request.property_or_method == managed_mixer_detail::update_method &&
+            (!journal.contains("mixer_progress") ||
+             !fields(journal.at("mixer_progress"), {"started_fields", "returned_fields"}) ||
+             journal.at("mixer_progress").at("started_fields") !=
+                 journal.at("result").at("mixer_update").at("started_fields") ||
+             journal.at("mixer_progress").at("returned_fields") !=
+                 journal.at("result").at("mixer_update").at("returned_fields")))
             return malformed();
         if (song_settings && (!journal.contains("song_settings_progress") ||
                               journal.at("song_settings_progress").at("started_fields") !=
@@ -939,6 +986,9 @@ Result<ManagedOperationReceipt> prepare_managed_operation(const ManagedBridgeCon
     const auto* value = payload(request);
     if (!value || value->at("document_token") != context.document_token)
         return std::unexpected(ErrorCode::ProtocolError);
+    if (request.property_or_method == managed_routing_detail::apply_method &&
+        value->at("approved_preview").at("context") != context_json(context))
+        return std::unexpected(ErrorCode::ProtocolError);
     return ManagedOperationReceipt{context,
                                    request,
                                    LomDeliveryState::NotSent,
@@ -1085,6 +1135,9 @@ managed_binding_receipt(const ManagedOperationReceipt& acknowledgement) {
     if (!checked || checked->outcome != ManagedOperationOutcome::Acknowledged)
         return std::unexpected(ErrorCode::ProtocolError);
     const auto& request = *payload(acknowledgement.request);
+    if (acknowledgement.request.property_or_method == managed_routing_detail::apply_method &&
+        request.at("intent").at("kind") == "adopt_group")
+        return std::unexpected(ErrorCode::ProtocolError);
     ManagedBindingReceipt binding{acknowledgement.context,
                                   request.at("project_key").get<std::string>(),
                                   request.at("binding_key").get<std::string>(),
@@ -1112,7 +1165,9 @@ Result<ManagedBindingReceipt> managed_binding_from_json(const json& value) {
     if (!context) return std::unexpected(ErrorCode::ProtocolError);
     const auto project = value.at("project_key").get<std::string>(),
                binding = value.at("binding_key").get<std::string>();
-    if (value.at("observation").at("track_tag") != "Sunny|" + project + "|" + binding + "|track" ||
+    if (!managed_detail::group_context_matches(
+            value.at("observation"), *context, project, binding) ||
+        value.at("observation").at("track_tag") != "Sunny|" + project + "|" + binding + "|track" ||
         value.at("observation").at("clip_tag") != "Sunny|" + project + "|" + binding + "|clip")
         return std::unexpected(ErrorCode::ProtocolError);
     return ManagedBindingReceipt{*context, project, binding, value.at("observation")};
@@ -1154,7 +1209,9 @@ Result<LomRequest> make_managed_envelope_request(const ManagedBridgeContext& con
         context.document_token != binding.context.document_token ||
         context.bridge_instance != binding.context.bridge_instance ||
         !binding.observation.contains("note_identity") ||
-        !note_update_boundary(binding.observation.at("manifest")))
+        !managed_detail::group_touched_boundary(
+            binding.observation, context, binding.project_key, binding.binding_key) ||
+        !note_update_boundary(binding.observation.at("manifest"), binding.observation))
         return std::unexpected(ErrorCode::ProtocolError);
     auto request = LomProtocol::call_method(
         LomPaths::song(),
@@ -1249,6 +1306,8 @@ Result<ManagedBindingObservation> parse_observation(const ManagedBridgeContext& 
                      "ownership_retained",
                      "observation"}) ||
             raw.at("ownership_retained") != true || !observation_valid(raw.at("observation")) ||
+            !managed_detail::group_context_matches(
+                raw.at("observation"), *actual, project, binding) ||
             !raw.at("observation").contains("note_identity") ||
             raw.at("observation").at("track_tag") !=
                 "Sunny|" + project + "|" + binding + "|track" ||
@@ -1260,15 +1319,17 @@ Result<ManagedBindingObservation> parse_observation(const ManagedBridgeContext& 
     return ManagedBindingObservation{*actual, project, binding, outcome, raw};
 }
 
-bool note_update_boundary(const json& manifest) {
+bool note_update_boundary(const json& manifest, const json& observation) {
     const auto& track = manifest.at("track");
     const auto& clip = manifest.at("clip");
     if (manifest.at("entire_clip_population_observed") != true || track.at("arm") != false ||
         track.at("implicit_arm") != false || track.at("is_frozen") != false ||
-        track.at("is_grouped") != false || clip.at("is_session_clip") != true ||
-        clip.at("is_arrangement_clip") != false || clip.at("is_midi_clip") != true ||
-        clip.at("is_audio_clip") != false || clip.at("looping") != false ||
-        clip.at("start_marker").get<double>() != 0.0 || clip.at("end_marker").get<double>() <= 0.0)
+        track.at("is_grouped") != observation.at("manifest").at("track").at("is_grouped") ||
+        (track.at("is_grouped") != false && !managed_detail::group_current_proof(observation)) ||
+        clip.at("is_session_clip") != true || clip.at("is_arrangement_clip") != false ||
+        clip.at("is_midi_clip") != true || clip.at("is_audio_clip") != false ||
+        clip.at("looping") != false || clip.at("start_marker").get<double>() != 0.0 ||
+        clip.at("end_marker").get<double>() <= 0.0)
         return false;
     for (const auto* state :
          {"is_playing", "is_recording", "is_overdubbing", "is_triggered", "will_record_on_start"})
@@ -1406,7 +1467,9 @@ Result<LomRequest> make_managed_note_update_request(const ManagedBridgeContext& 
         context.document_token != binding.context.document_token ||
         context.bridge_instance != binding.context.bridge_instance ||
         !binding.observation.contains("note_identity") ||
-        !note_update_boundary(binding.observation.at("manifest")) ||
+        !managed_detail::group_touched_boundary(
+            binding.observation, context, binding.project_key, binding.binding_key) ||
+        !note_update_boundary(binding.observation.at("manifest"), binding.observation) ||
         !managed_detail::proposed_notes(
             binding.observation.at("note_identity"),
             changes,
@@ -1441,7 +1504,9 @@ Result<LomRequest> make_managed_note_population_request(const ManagedBridgeConte
         context.document_token != binding.context.document_token ||
         context.bridge_instance != binding.context.bridge_instance ||
         !binding.observation.contains("note_identity") ||
-        !note_update_boundary(binding.observation.at("manifest")))
+        !managed_detail::group_touched_boundary(
+            binding.observation, context, binding.project_key, binding.binding_key) ||
+        !note_update_boundary(binding.observation.at("manifest"), binding.observation))
         return std::unexpected(ErrorCode::ProtocolError);
     auto request = LomProtocol::call_method(
         LomPaths::song(),
@@ -1481,7 +1546,9 @@ Result<LomRequest> make_managed_clip_geometry_request(const ManagedBridgeContext
         context.document_token != binding.context.document_token ||
         context.bridge_instance != binding.context.bridge_instance ||
         !binding.observation.contains("note_identity") ||
-        !note_update_boundary(binding.observation.at("manifest")) ||
+        !managed_detail::group_touched_boundary(
+            binding.observation, context, binding.project_key, binding.binding_key) ||
+        !note_update_boundary(binding.observation.at("manifest"), binding.observation) ||
         !managed_detail::clip_geometry_note_admission(binding.observation.at("note_identity"),
                                                       geometry) ||
         managed_detail::changed_geometry_properties(binding.observation.at("manifest").at("clip"),

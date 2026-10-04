@@ -13,6 +13,7 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <cmath>
+#include <sunny/core/mix/serialization.hpp>
 #include <sunny/core/mix/validation.hpp>
 #include <sunny/core/mix/workflows.hpp>
 
@@ -403,6 +404,35 @@ TEST_CASE("set_channel_level updates fader", "[mix-ir][workflow]") {
     auto result = set_channel_level(graph, graph.channels[0].id, -6.0f);
     REQUIRE(result.has_value());
     CHECK(graph.channels[0].fader.level_db == Catch::Approx(-6.0f));
+}
+
+TEST_CASE("set_channel_flags edits only selected authored booleans atomically",
+          "[mix-ir][workflow][channel-flags]") {
+    auto graph = create_mix_graph(MixGraphId{1}, {PartId{1}, PartId{2}});
+    graph.channels[0].solo = true;
+    graph.channels[0].fader.level_db = -6.0f;
+    graph.channels[0].input_trim = -7.5f;
+    const auto original = mix_to_json(graph);
+    REQUIRE(set_channel_flags(graph, graph.channels[0].id, true));
+    auto expected = original;
+    expected["channels"][0]["mute"] = true;
+    CHECK(mix_to_json(graph) == expected);
+    REQUIRE(set_channel_flags(graph, graph.channels[0].id, false, false));
+    expected["channels"][0]["mute"] = false;
+    expected["channels"][0]["solo"] = false;
+    CHECK(mix_to_json(graph) == expected);
+    REQUIRE(set_channel_flags(graph, graph.channels[1].id, std::nullopt, true));
+    expected["channels"][1]["solo"] = true;
+    CHECK(mix_to_json(graph) == expected);
+    const auto before_failure = mix_to_json(graph);
+    auto missing = set_channel_flags(graph, ChannelStripId{900}, true, true);
+    REQUIRE_FALSE(missing);
+    CHECK(missing.error() == ErrorCode::MixNotFound);
+    CHECK(mix_to_json(graph) == before_failure);
+    auto empty = set_channel_flags(graph, graph.channels[0].id);
+    REQUIRE_FALSE(empty);
+    CHECK(empty.error() == ErrorCode::MixInvalidParameter);
+    CHECK(mix_to_json(graph) == before_failure);
 }
 
 TEST_CASE("set_channel_relative_level sets relative fader", "[mix-ir][workflow]") {

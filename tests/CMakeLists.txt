@@ -129,6 +129,13 @@ target_sources(
         infrastructure/ableton/managed_clip_geometry_test.cpp
         infrastructure/ableton/managed_song_settings_test.cpp
         infrastructure/ableton/managed_envelope_revision_test.cpp
+        infrastructure/ableton/managed_mixer_test.cpp
+        infrastructure/ableton/managed_group_test.cpp
+        infrastructure/ableton/managed_group_device_song_test.cpp
+        infrastructure/ableton/managed_routing_test.cpp
+        infrastructure/ableton/managed_clip_revision_test.cpp
+        infrastructure/ableton/native_mixer_units_test.cpp
+        infrastructure/ableton/native_mix_plan_test.cpp
         infrastructure/ableton/managed_device_modes_test.cpp
         infrastructure/ableton/native_effect_plan_test.cpp
         infrastructure/ableton/native_units_test.cpp

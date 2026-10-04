@@ -87,6 +87,13 @@ _SONG_CALLS = frozenset(
         "sunny_managed_preview_envelope_replacement",
         "sunny_managed_replace_envelope",
         "sunny_managed_update_device_modes",
+        "sunny_managed_preview_static_mixer",
+        "sunny_managed_adopt_static_mixer",
+        "sunny_managed_update_static_mixer",
+        "sunny_managed_routing_candidates",
+        "sunny_managed_preview_routing",
+        "sunny_managed_preview_group",
+        "sunny_managed_apply_routing",
     }
 )
 
