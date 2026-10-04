@@ -31,7 +31,7 @@ json intent() {
         {"binding_key", "part_a"},
         {"operation_id", "adopt_a"},
         {"preview_token", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
-        {"preview_fingerprint", "075133e8c2da6c6a9d3cc983d000e479ab3b1e39c791e03db9127d9892fdecc3"},
+        {"preview_fingerprint", "1a5530ee906da455fc5d019a7b6d96c36910dfd773e534a159ba08de166ba56c"},
         {"explicit_adoption", true}};
 }
 
@@ -58,7 +58,7 @@ TEST_CASE("Current native adoption preview has a literal typed fingerprint and "
     REQUIRE(parsed);
     CHECK(parsed->preview_token == "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
     CHECK(parsed->preview_fingerprint ==
-          "075133e8c2da6c6a9d3cc983d000e479ab3b1e39c791e03db9127d9892fdecc3");
+          "1a5530ee906da455fc5d019a7b6d96c36910dfd773e534a159ba08de166ba56c");
     CHECK(parsed->evidence.at("authority_origin") == "none");
     CHECK(parsed->evidence.at("historical_identity_proven") == false);
     CHECK(parsed->evidence.at("set_info").at("file_path").is_null());
@@ -158,9 +158,10 @@ TEST_CASE("Preserved foreign devices and envelopes do not confer destructive "
     CHECK(make_managed_adoption_request(context, "adopt_a", *parsed));
     CHECK_FALSE(make_managed_rebind_request(
         context, "rebind_a", {context, "project_a", "part_a", value.at("observation")}));
-    CHECK(parsed->evidence.at("allowed_domains") ==
-          json::array(
-              {"existing_note_updates", "note_population_updates", "absent_mixer_step_lanes"}));
+    CHECK(parsed->evidence.at("allowed_domains") == json::array({"existing_note_updates",
+                                                                 "note_population_updates",
+                                                                 "clip_geometry_updates",
+                                                                 "absent_mixer_step_lanes"}));
 }
 
 TEST_CASE("Adoption acknowledgement must reconstruct exact approved content "
@@ -234,15 +235,16 @@ TEST_CASE("Explicit Clip refresh seals a present owned-device supplement "
     const auto parsed = managed_adoption_preview_from_json(value);
     REQUIRE(parsed);
     CHECK(parsed->preview_fingerprint ==
-          "314813954dac7716a3f62ebddc077cdcbdd16d98217e79120cb7dbe5c5587918");
+          "d50e1b9ead28f3bc83e8e8fa1c9a4f6668d80eb950422dfc8a0e5a3c4b7405cd");
     CHECK(parsed->evidence.at("observation")
               .at("device_identity")
               .at("cohort")
               .at(0)
               .at("device_key") == "source");
-    CHECK(parsed->evidence.at("allowed_domains") ==
-          json::array(
-              {"existing_note_updates", "note_population_updates", "absent_mixer_step_lanes"}));
+    CHECK(parsed->evidence.at("allowed_domains") == json::array({"existing_note_updates",
+                                                                 "note_population_updates",
+                                                                 "clip_geometry_updates",
+                                                                 "absent_mixer_step_lanes"}));
     const auto request = make_managed_adoption_request(context, "adopt_a", *parsed);
     REQUIRE(request);
     const auto payload = std::get<json>(request->args.at(0));
@@ -305,4 +307,56 @@ TEST_CASE("Current Clip adoption refuses a complete known reply above the "
     const auto request = make_managed_adoption_request(context, "adopt_a", *preview);
     REQUIRE_FALSE(request);
     CHECK(request.error() == sunny::core::ErrorCode::ManagedReplyCapacityExceeded);
+}
+
+TEST_CASE("Historical Clip grants retain literal approval without new domains",
+          "[infrastructure][ableton][managed-recovery]") {
+    const std::vector<std::pair<json, std::string>> historical{
+        {json::array({"existing_note_updates", "absent_mixer_step_lanes"}),
+         "18b377a5af2a6b3839e58003363177d2217925b444c1faaccf0e6dc4aefa4273"},
+        {json::array(
+             {"existing_note_updates", "note_population_updates", "absent_mixer_step_lanes"}),
+         "075133e8c2da6c6a9d3cc983d000e479ab3b1e39c791e03db9127d9892fdecc3"},
+        {json::array({"existing_note_updates",
+                      "note_population_updates",
+                      "clip_geometry_updates",
+                      "absent_mixer_step_lanes"}),
+         "1a5530ee906da455fc5d019a7b6d96c36910dfd773e534a159ba08de166ba56c"}};
+    for (const auto& [domains, fingerprint] : historical) {
+        auto value = recovery_test_fixture::preview();
+        value["allowed_domains"] = domains;
+        value["preview_fingerprint"] = fingerprint;
+        const auto parsed = managed_adoption_preview_from_json(value);
+        REQUIRE(parsed);
+        CHECK(parsed->preview_fingerprint == fingerprint);
+        CHECK(parsed->evidence.at("allowed_domains") == domains);
+        const auto request = make_managed_adoption_request(context, "adopt_a", *parsed);
+        REQUIRE(request);
+        const auto payload = std::get<json>(request->args.at(0));
+        CHECK(payload.at("preview_fingerprint") == fingerprint);
+        auto ack = recovery_test_fixture::acknowledgement();
+        ack["adoption"]["allowed_domains"] = domains;
+        ack["adoption"]["preview_fingerprint"] = fingerprint;
+        ack["adoption"]["preview_metadata"]["allowed_domains"] = domains;
+        CHECK(managed_detail::adoption_acknowledgement_valid(payload, ack));
+        for (const auto& foreign : historical) {
+            if (foreign.first == domains) continue;
+            ack["adoption"]["allowed_domains"] = foreign.first;
+            CHECK_FALSE(managed_detail::adoption_acknowledgement_valid(payload, ack));
+        }
+    }
+    for (const auto& invalid : std::vector<json>{
+             json::array({"existing_note_updates"}),
+             json::array(
+                 {"existing_note_updates", "clip_geometry_updates", "absent_mixer_step_lanes"}),
+             json::array({"absent_mixer_step_lanes", "existing_note_updates"}),
+             json::array({"existing_note_updates",
+                          "note_population_updates",
+                          "note_population_updates",
+                          "absent_mixer_step_lanes"})}) {
+        auto value = recovery_test_fixture::preview();
+        value["allowed_domains"] = invalid;
+        sign_preview(value);
+        CHECK_FALSE(managed_adoption_preview_from_json(value));
+    }
 }

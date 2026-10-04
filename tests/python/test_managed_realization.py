@@ -1956,3 +1956,178 @@ def test_population_hash_bucket_collision_still_requires_exact_typed_note_values
         {"note_key": "e11_n0", "note_id": 4},
     ]
     assert result["result"]["note_population_update"]["observed_additions_match_request"] is True
+
+
+@pytest.mark.parametrize("count", [64, 65])
+def test_initial_lane_native_step_budget_admits_64_and_rejects_65_before_creation(
+    target: Any, count: int
+) -> None:
+    """The finite native-call budget is independent of the tiny request's byte size."""
+    created = call(target, "sunny_managed_create_clip", intent(target))
+    clip = target.live.song.tracks[1].clip_slots[0].clip
+    payload = {
+        "document_token": target.context["document_token"],
+        "operation_id": "step_budget",
+        "project_key": "project_a",
+        "binding_key": "part_a",
+        "expected_content_fingerprint": created["result"]["content_fingerprint"],
+        "lane": {
+            "parameter": {"kind": "panning"},
+            "clip_end": 4.0,
+            "interpolation": "step",
+            "points": [{"time": i / 32.0, "value": 0.25} for i in range(count)],
+        },
+    }
+    response = target.handler.handle(
+        {
+            "bridge_protocol_version": BRIDGE_PROTOCOL_VERSION,
+            "type": "call",
+            "path": "song",
+            "name": "sunny_managed_author_envelope",
+            "args": [payload],
+        }
+    )
+    if count == 64:
+        assert response["success"] and response["value"]["outcome"] == "acknowledged", response
+        assert response["value"]["result"]["acknowledgement"]["steps_inserted"] == 64
+    else:
+        assert not response["success"], response
+        assert not clip.has_envelopes
+        assert "step_budget" not in target.registry._operations
+
+
+def test_initial_lane_known_complete_response_capacity_precedes_native_creation(
+    target: Any,
+) -> None:
+    """A finite actual full population cannot produce an unreportable initial-lane ACK."""
+    from Sunny.managed_capacity import guard_envelope_author_response_capacity
+
+    created = call(target, "sunny_managed_create_clip", intent(target))
+    before = copy.deepcopy(created["result"])
+    actual_note = before["manifest"]["notes"][0]
+    before["manifest"]["notes"] = [copy.deepcopy(actual_note) for _ in range(26000)]
+    before["note_identity"]["notes"] = [{**actual_note, "note_id": i + 1} for i in range(26000)]
+    operation = {
+        "name": "sunny_managed_author_envelope",
+        "request": {
+            "document_token": target.context["document_token"],
+            "operation_id": "large_initial_lane",
+            "project_key": "project_a",
+            "binding_key": "part_a",
+            "expected_content_fingerprint": before["content_fingerprint"],
+            "lane": {
+                "parameter": {"kind": "panning"},
+                "clip_end": 4.0,
+                "interpolation": "step",
+                "points": [{"time": 0.0, "value": 0.25}],
+            },
+        },
+        "operation_id": "large_initial_lane",
+        "document_token": target.context["document_token"],
+        "request_fingerprint": "f" * 64,
+        "outcome": "pending",
+        "native_mutation_started": False,
+    }
+    domain = {
+        "matched_name": "Track Panning",
+        "original_name": "Track Panning",
+        "minimum": -1.0,
+        "maximum": 1.0,
+        "unit": "internal",
+        "state": 0,
+        "automation_state": 0,
+    }
+    with pytest.raises(RuntimeError, match="ReplyCapacityUnavailable"):
+        guard_envelope_author_response_capacity(operation, before, domain)
+    assert not target.live.song.tracks[1].clip_slots[0].clip.has_envelopes
+    assert "large_initial_lane" not in target.registry._operations
+
+
+def test_initial_lane_capacity_decline_starts_no_native_envelope_call(
+    target: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A reduced wire ceiling isolates preflight against actual retained full notes."""
+    from Sunny import managed_capacity
+
+    creation = intent(target)
+    note = creation["notes"][0]
+    creation["notes"] = [{**note, "start_time": i / 128.0, "duration": 0.001} for i in range(400)]
+    created = call(target, "sunny_managed_create_clip", creation)
+    assert created["outcome"] == "acknowledged"
+    clip = target.live.song.tracks[1].clip_slots[0].clip
+    calls = []
+    original = clip.create_automation_envelope
+
+    def create(parameter: Any) -> Any:
+        calls.append(parameter)
+        return original(parameter)
+
+    monkeypatch.setattr(clip, "create_automation_envelope", create)
+    monkeypatch.setattr(managed_capacity, "MAX_MANAGED_RESPONSE_BYTES", 64 * 1024)
+    payload = {
+        "document_token": target.context["document_token"],
+        "operation_id": "capacity_before_creation",
+        "project_key": "project_a",
+        "binding_key": "part_a",
+        "expected_content_fingerprint": created["result"]["content_fingerprint"],
+        "lane": {
+            "parameter": {"kind": "panning"},
+            "clip_end": 4.0,
+            "interpolation": "step",
+            "points": [{"time": 0.0, "value": 0.25}],
+        },
+    }
+    result = call(target, "sunny_managed_author_envelope", payload)
+    assert result["outcome"] == "declined", result
+    assert "ReplyCapacityUnavailable" in result["error"]
+    assert result["native_mutation_started"] is False
+    assert calls == [] and not clip.has_envelopes
+    assert len(clip._notes) == 400
+
+
+def test_initial_lane_last_native_phase_preserves_external_note_edit_without_sealing(
+    target: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Unexpected last-call drift remains partial evidence rather than a refreshed guard."""
+    created = call(target, "sunny_managed_create_clip", intent(target))
+    clip = target.live.song.tracks[1].clip_slots[0].clip
+    track = target.live.song.tracks[1]
+    original_create = clip.create_automation_envelope
+    inserted = []
+
+    def create(parameter: Any) -> Any:
+        envelope = original_create(parameter)
+        original_insert = envelope.insert_step
+
+        def insert(start: float, duration: float, value: float) -> None:
+            original_insert(start, duration, value)
+            inserted.append(start)
+            if start == 2.0:
+                clip._notes[1].velocity = 17.0  # External native edit after the last insertion.
+
+        monkeypatch.setattr(envelope, "insert_step", insert)
+        return envelope
+
+    monkeypatch.setattr(clip, "create_automation_envelope", create)
+    payload = {
+        "document_token": target.context["document_token"],
+        "operation_id": "last_phase_drift",
+        "project_key": "project_a",
+        "binding_key": "part_a",
+        "expected_content_fingerprint": created["result"]["content_fingerprint"],
+        "lane": {
+            "parameter": {"kind": "panning"},
+            "clip_end": 4.0,
+            "interpolation": "step",
+            "points": [{"time": 0.0, "value": -0.5}, {"time": 2.0, "value": 0.5}],
+        },
+    }
+    result = call(target, "sunny_managed_author_envelope", payload)
+    assert result["outcome"] == "indeterminate", result
+    assert result["native_mutation_started"] is True and inserted == [0.0, 2.0]
+    assert clip._notes[1].velocity == 17.0
+    assert track.clip_slots[0].clip is clip
+    record = target.registry._bindings[("project_a", "part_a")]
+    assert record["content_fingerprint"] == created["result"]["content_fingerprint"]
+    assert call(target, "sunny_managed_author_envelope", payload) == result
+    assert inserted == [0.0, 2.0]

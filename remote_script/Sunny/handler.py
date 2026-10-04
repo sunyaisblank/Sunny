@@ -1,5 +1,4 @@
-"""
-LOM request handler — translates Sunny requests to Ableton API calls.
+"""LOM request handler — translates Sunny requests to Ableton API calls.
 
 Each request has a type (get/set/call), a path into
 the LOM object hierarchy, and a property or method name with arguments.
@@ -82,6 +81,12 @@ _SONG_CALLS = frozenset(
         "sunny_managed_update_device_parameters",
         "sunny_managed_preview_devices",
         "sunny_managed_adopt_devices",
+        "sunny_managed_update_clip_geometry",
+        "sunny_managed_preview_song_settings",
+        "sunny_managed_apply_song_settings",
+        "sunny_managed_preview_envelope_replacement",
+        "sunny_managed_replace_envelope",
+        "sunny_managed_update_device_modes",
     }
 )
 
@@ -379,6 +384,8 @@ def _valid_envelope_parameter(value: Any) -> bool:
 
 
 def _valid_step_envelope_author(value: Any) -> bool:
+    from .managed_envelope_revision import MAX_STEP_POINTS
+
     if (
         not isinstance(value, dict)
         or set(value) != {"parameter", "interpolation", "clip_end", "points"}
@@ -388,6 +395,7 @@ def _valid_step_envelope_author(value: Any) -> bool:
         or value["clip_end"] <= 0.0
         or not isinstance(value["points"], list)
         or not value["points"]
+        or len(value["points"]) > MAX_STEP_POINTS
     ):
         return False
     previous = -1.0

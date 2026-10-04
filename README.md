@@ -51,9 +51,25 @@ restart and authored undo, detect user drift, and refuse duplicate creation. A l
 `project_realization_reconcile`, which queries the original token without replaying the mutation.
 `project_realization_author_mix_lane` also authors a selected Part's Step panning lane when
 the native envelope is absent, then checks sampled values. Existing envelopes are preserved.
+To revise the whole selected envelope, use `project_realization_preview_mix_lane_replacement`
+and `project_realization_replace_mix_lane`. Approval explicitly includes overwriting unsampled
+state on that parameter; other parameter envelopes are preserved. Initial authoring and
+replacement support up to 64 Step points and report actual samples, without claiming complete
+breakpoint capture.
+`project_realization_update_geometry` changes the Clip extent and flat meter while retaining
+unchanged attacks. Extend before adding later notes; delete notes before shrinking the Clip.
+`project_realization_preview_song_settings` and `project_realization_apply_song_settings`
+apply explicitly approved constant tempo and initial meter to the whole Set. Uncertain Set-setting
+replies block subsequent managed setters in the active history namespace until reconciliation or
+fresh current Set approval. Opening another workspace or applying its backup is refused while
+that uncertainty remains; original attempt history remains queryable.
 `project_realization_plan_timbre` reads explicitly selected Drift cutoff and ADSR durations in Hz
 and milliseconds. `project_realization_author_timbre` inserts or revises that source using actual
 native formatter and parameter readback. Unselected sound fields remain reported as unapplied.
+`project_realization_plan_effects` and `project_realization_author_effects` cover explicitly
+selected native EQ Eight bands and Utility gain/width stages after Drift. Mix input trim uses
+a separate Utility, and `set_channel_input_trim` edits its authored dB value. Each native mode
+and physical phase is separately fenced and read back; unsupported effects remain unapplied.
 After a Live or bridge restart, `project_realization_preview_adoption` and
 `project_realization_adopt` establish explicitly approved current Clip/note authority.
 Device authority requires its separate preview/adoption pair. Saved receipts identify history;
@@ -241,7 +257,8 @@ real-host qualification.
 Each deployment result reports capability and mapping gaps, including unsupported source
 configurations, third-party plug-ins, Group creation, and general automation-envelope authoring.
 The managed Step panning lane has a separate guarded workflow and sampled readback. Static
-native parameter mapping currently requires explicit bindings. Temporary parameter control with
+legacy native parameter mapping uses explicit bindings; the finite managed source/effect tools
+resolve physical values from actual native formatter observations. Temporary parameter control with
 [live.remote~](https://docs.cycling74.com/reference/live.remote~/) disables automation and does
 not author saved envelopes.
 
@@ -316,10 +333,10 @@ Max externals on macOS and Windows.
   documents can be exported separately. `workspace_save` persists their complete owning workspace;
   startup restore and `workspace_open` reopen it. Unsaved changes are lost when the process ends.
 - The one-shot project deployment tools create a fresh realization. Managed Part tools support
-  note revision and whole Event addition/deletion; chord cardinality and Clip length/meter changes
-  still require further supported operations. Reopened objects require fresh explicit adoption.
-  Current managed device authoring covers selected Drift source controls, with remaining effects
-  and routing reported as unapplied.
+  note revision, whole Event addition/deletion, separate Clip extent/meter changes and explicit
+  selected pan-envelope replacement. Reopened objects require fresh explicit adoption.
+  Managed device authoring covers selected Drift controls and finite EQ Eight/Utility stages;
+  unsupported device intent, static mixer controls and routing remain reported as unapplied.
 - Audio is never rendered or analysed, so nothing Sunny reports is a claim about how the result
   sounds. Loudness targets and reference comparisons are intentions, not measurements.
 - Live's current-scale setting is readable but not written.

@@ -170,7 +170,7 @@ jobs:
           SUNNY_TEST_BRIDGE_HOST=host.docker.internal \
           SUNNY_NATIVE_MCP_COMMAND="docker run -i --rm --user $(id -u):$(id -g) --add-host host.docker.internal:host-gateway --mount type=bind,source={workspace_dir},target=/data -e SUNNY_WORKSPACE_PATH -e SUNNY_ABLETON_HOST -e SUNNY_TCP_PORT sunny-mcp:ci" \
           PYTHONPATH=remote_script:python \
-          python -m pytest tests/python/test_mcp_realization_workflow.py tests/python/test_mcp_realization_mismatch.py tests/python/test_mcp_note_population_workflow.py tests/python/test_mcp_native_device_workflow.py tests/python/test_mcp_native_recovery_workflow.py tests/python/test_mcp_mix_realization_workflow.py -v --tb=short
+          python -m pytest tests/python/test_mcp_realization_workflow.py tests/python/test_mcp_realization_mismatch.py tests/python/test_mcp_note_population_workflow.py tests/python/test_mcp_native_device_workflow.py tests/python/test_mcp_native_recovery_workflow.py tests/python/test_mcp_mix_realization_workflow.py tests/python/test_mcp_native_geometry_workflow.py tests/python/test_mcp_native_song_settings_workflow.py tests/python/test_mcp_native_envelope_revision_workflow.py tests/python/test_mcp_native_effect_workflow.py -v --tb=short
 
       - name: Authoring and recovery across container restarts
         run: |

@@ -738,6 +738,13 @@ std::optional<std::string> gate_parameter_reason(const MixGate& value) {
 }
 
 void check_effect_parameters(const MixGraph& graph, std::vector<Diagnostic>& out) {
+    for (const auto& channel : graph.channels)
+        if (!finite_range(channel.input_trim, -24.0f, 24.0f))
+            add_diagnostic(out,
+                           ValidationSeverity::Error,
+                           "X7",
+                           "Channel input trim must be finite and in [-24, +24] dB",
+                           ErrorCode::MixInvalidParameter);
     auto unit_interval = [](float value) {
         return std::isfinite(value) && value >= 0.0f && value <= 1.0f;
     };

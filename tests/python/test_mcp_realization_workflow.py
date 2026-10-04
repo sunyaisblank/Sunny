@@ -116,6 +116,10 @@ class NativeWorkflow:
                 "sunny_managed_insert_device",
                 "sunny_managed_update_device_parameters",
                 "sunny_managed_adopt_devices",
+                "sunny_managed_update_clip_geometry",
+                "sunny_managed_apply_song_settings",
+                "sunny_managed_replace_envelope",
+                "sunny_managed_update_device_modes",
             }:
                 records = json.loads(self.history_ledger().read_text())["attempts"]
                 retained = [

@@ -231,6 +231,9 @@ target_sources(
         src/infrastructure/ableton/managed_realization.cpp
         src/infrastructure/ableton/managed_devices.cpp
         src/infrastructure/ableton/managed_recovery.cpp
+        src/infrastructure/ableton/managed_song_settings.cpp
+        src/infrastructure/ableton/managed_envelope_revision.cpp
+        src/infrastructure/ableton/native_effect_plan.cpp
         src/infrastructure/ableton/native_units.cpp
         src/infrastructure/ableton/native_timbre_plan.cpp
         src/infrastructure/ableton/realization_store.cpp

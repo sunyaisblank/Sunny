@@ -1,3 +1,4 @@
+#include "managed_device_decimal_fixture.hpp"
 #include "managed_device_fixture.hpp"
 
 #include <array>
@@ -21,7 +22,8 @@ ManagedBindingReceipt binding(const json& observation) {
 }
 } // namespace
 
-TEST_CASE("Managed device literal native ACK preserves notes while creating audio output",
+TEST_CASE("Managed device literal native ACK preserves notes while creating "
+          "audio output",
           "[ableton][managed-device][join]") {
     const auto fixture = managed_device_fixture();
     const auto& result = fixture.at("source_result");
@@ -40,7 +42,30 @@ TEST_CASE("Managed device literal native ACK preserves notes while creating audi
         fixture.at("update_result")));
 }
 
-TEST_CASE("Managed device typed request preserves exact finite targets and independent guards",
+TEST_CASE("Managed native readback keeps exact decimal tolerance without "
+          "accepting rounded outside text",
+          "[ableton][managed-device][decimal]") {
+    const auto fixture = managed_device_decimal_fixture();
+    const auto& request = fixture.at("request");
+    auto result = fixture.at("result");
+    const auto method = "sunny_managed_update_device_parameters";
+    REQUIRE(result.at("device_update").at("readbacks")[1].at("display") == "100.01 %");
+    REQUIRE(managed_device_detail::device_result_matches_request(method, request, result));
+    auto& readback = result["device_update"]["readbacks"][1];
+    readback["display"] = "100.0100000000000000001 %";
+    readback["display_increment"] = 1e-19;
+    // Producer flags and binary display/error values cannot prove this scope.
+    CHECK(readback.at("display_value") == 100.01);
+    CHECK(readback.at("absolute_display_error") == .01);
+    CHECK(readback.at("matches_intent") == true);
+    CHECK_FALSE(managed_device_detail::device_result_matches_request(method, request, result));
+    result = fixture.at("result");
+    result["device_update"]["readbacks"][1]["absolute_display_error"] = 0.0;
+    CHECK_FALSE(managed_device_detail::device_result_matches_request(method, request, result));
+}
+
+TEST_CASE("Managed device typed request preserves exact finite targets and "
+          "independent guards",
           "[ableton][managed-device][request]") {
     const auto fixture = managed_device_fixture();
     const std::array intents{ManagedDevicePhysicalIntent{"drift.lp.frequency", 1200.0, 0.0}};
@@ -76,7 +101,8 @@ TEST_CASE("Managed device typed request preserves exact finite targets and indep
                                                    utility));
 }
 
-TEST_CASE("Managed device result independently proves formatted readback instead of trusting flags",
+TEST_CASE("Managed device result independently proves formatted readback "
+          "instead of trusting flags",
           "[ableton][managed-device][decline]") {
     const auto fixture = managed_device_fixture();
     for (const auto& field : {"display_value", "absolute_display_error", "internal_value"}) {
@@ -93,7 +119,8 @@ TEST_CASE("Managed device result independently proves formatted readback instead
     }
 }
 
-TEST_CASE("Managed device join detects unselected native values and note identity changes with "
+TEST_CASE("Managed device join detects unselected native values and note "
+          "identity changes with "
           "valid digests",
           "[ableton][managed-device][decline]") {
     const auto fixture = managed_device_fixture();
@@ -112,7 +139,8 @@ TEST_CASE("Managed device join detects unselected native values and note identit
         "sunny_managed_insert_device", fixture.at("source_request"), result));
 }
 
-TEST_CASE("Managed device closed schema declines descriptors duplicate targets and unknown roles",
+TEST_CASE("Managed device closed schema declines descriptors duplicate targets "
+          "and unknown roles",
           "[ableton][managed-device][decline]") {
     const auto fixture = managed_device_fixture();
     auto request = fixture.at("source_request");
@@ -136,9 +164,9 @@ TEST_CASE("Managed device closed schema declines descriptors duplicate targets a
     CHECK_FALSE(managed_device_detail::device_supplement_valid(result));
 }
 
-TEST_CASE(
-    "Managed device current preview and adoption retain literal formatted intent without writes",
-    "[ableton][managed-device][adoption]") {
+TEST_CASE("Managed device current preview and adoption retain literal "
+          "formatted intent without writes",
+          "[ableton][managed-device][adoption]") {
     const auto fixture = managed_device_fixture();
     const std::array selections{
         ManagedDeviceAdoptionSelection{
@@ -170,7 +198,8 @@ TEST_CASE(
         "sunny_managed_adopt_devices", fixture.at("adopt_request"), fixture.at("adopt_result")));
 }
 
-TEST_CASE("Managed device adoption rejects mismatched current formatter and rewritten after state",
+TEST_CASE("Managed device adoption rejects mismatched current formatter and "
+          "rewritten after state",
           "[ableton][managed-device][adoption][decline]") {
     const auto fixture = managed_device_fixture();
     for (const auto& display : {"1200", "1,2 kHz", "1.3 kHz", "1200 ms"}) {
@@ -195,7 +224,8 @@ TEST_CASE("Managed device adoption rejects mismatched current formatter and rewr
     CHECK_FALSE(managed_device_detail::device_adoption_result_matches_request(nullptr, nullptr));
 }
 
-TEST_CASE("Managed device supplement cannot claim an empty manifest against an owned chain",
+TEST_CASE("Managed device supplement cannot claim an empty manifest against an "
+          "owned chain",
           "[ableton][managed-device][decline]") {
     const auto fixture = managed_device_fixture();
     auto result = fixture.at("source_result");
@@ -214,7 +244,8 @@ TEST_CASE("Managed device supplement cannot claim an empty manifest against an o
         managed_device_detail::device_request_valid("sunny_managed_preview_devices", request));
 }
 
-TEST_CASE("Managed device adoption capacity declines before a durable operation fence",
+TEST_CASE("Managed device adoption capacity declines before a durable "
+          "operation fence",
           "[ableton][managed-device][capacity]") {
     const auto fixture = managed_device_fixture();
     auto response = fixture.at("preview_response");
@@ -248,7 +279,8 @@ TEST_CASE("Managed device adoption capacity declines before a durable operation 
     CHECK(request.error() == sunny::core::ErrorCode::ManagedReplyCapacityExceeded);
 }
 
-TEST_CASE("Managed device explicitly empty current chain permits prospective append authority",
+TEST_CASE("Managed device explicitly empty current chain permits prospective "
+          "append authority",
           "[ableton][managed-device][adoption][empty]") {
     const auto fixture = managed_device_fixture();
     const ManagedBridgeContext context{"bridge_a", "document_a"};
@@ -312,7 +344,8 @@ TEST_CASE("Managed native descriptor types remain exact after a valid SM1 rehash
     CHECK_FALSE(managed_device_detail::device_supplement_valid(result));
 }
 
-TEST_CASE("Managed native quantized default is explicitly unavailable while continuous default is "
+TEST_CASE("Managed native quantized default is explicitly unavailable while "
+          "continuous default is "
           "observed",
           "[ableton][managed-device][conditional-domain]") {
     const auto fixture = managed_device_fixture();

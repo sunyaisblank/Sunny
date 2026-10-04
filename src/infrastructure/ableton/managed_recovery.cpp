@@ -29,7 +29,7 @@ bool adoption_response_fits(const json& request, const json& preview) {
                           {"preview_fingerprint", request.at("preview_fingerprint")},
                           {"authority_origin", "explicit_adoption"},
                           {"historical_identity_proven", false},
-                          {"allowed_domains", recovery_domains()},
+                          {"allowed_domains", preview.at("allowed_domains")},
                           {"preserved_unknown_domains", recovery_preserved_domains()},
                           {"approved_note_ids", ids},
                           {"devices_preserved", true},
@@ -88,12 +88,13 @@ bool adoption_acknowledgement_valid(const json& intent, const json& result) {
         adoption.at("preview_fingerprint") != intent.at("preview_fingerprint") ||
         adoption.at("authority_origin") != "explicit_adoption" ||
         adoption.at("historical_identity_proven") != false ||
-        adoption.at("allowed_domains") != recovery_domains() ||
+        !recovery_domains_valid(adoption.at("allowed_domains")) ||
         adoption.at("preserved_unknown_domains") != recovery_preserved_domains() ||
         adoption.at("devices_preserved") != true)
         return false;
     const auto& metadata = adoption.at("preview_metadata");
     if (!recovery_metadata(metadata) ||
+        adoption.at("allowed_domains") != metadata.at("allowed_domains") ||
         metadata.at("preview_token") != intent.at("preview_token") ||
         metadata.at("context").at("document_token") != intent.at("document_token") ||
         metadata.at("project_key") != intent.at("project_key") ||

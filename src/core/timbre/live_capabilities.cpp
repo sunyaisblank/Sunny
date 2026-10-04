@@ -109,6 +109,7 @@ Disposition require_enum_mode(const LiveNativeDeviceProbe& device,
 
 Disposition validate_modes(const LiveNativeParameterCapability& capability,
                            const LiveNativeDeviceProbe& device) {
+    if (capability.mode == Mode::OwnedEffectSetup) return Disposition::CandidateReady;
     if (capability.mode == Mode::DriftVoice || capability.mode == Mode::DriftFilter) {
         for (const auto* name : {"voice_mode", "voice_count"}) {
             const auto index = device.integer_properties.find(std::string{name} + "_index");
@@ -187,7 +188,7 @@ const LiveNativeRegistryProvenance& live_native_registry_provenance() {
 std::span<const LiveNativeParameterCapability> live_native_parameter_registry() {
     static const auto entries = [] {
         std::vector<LiveNativeParameterCapability> result;
-        result.reserve(48);
+        result.reserve(59);
         for (const auto& [id, parameter, unit] :
              std::array{std::tuple{"utility.gain", "Gain", Unit::Decibels},
                         std::tuple{"utility.balance", "Balance", Unit::StereoBalance},
@@ -203,6 +204,48 @@ std::span<const LiveNativeParameterCapability> live_native_parameter_registry() 
                  Mode::UtilityStereo,
                  0,
                  "_Generic/Devices.py:560-565;Push2/custom_bank_definitions.py:2619-2640"});
+        for (const auto& [id, name, count] :
+             std::array{std::tuple{"utility.enabled", "Device On", 2u},
+                        std::tuple{"utility.channel_mode", "Channel Mode", 4u},
+                        std::tuple{"utility.mono", "Mono", 2u},
+                        std::tuple{"utility.mute", "Mute", 2u},
+                        std::tuple{"utility.left_invert", "Left Inv", 2u},
+                        std::tuple{"utility.right_invert", "Right Inv", 2u},
+                        std::tuple{"utility.bass_mono", "Bass Mono", 2u},
+                        std::tuple{"utility.dc_filter", "DC Filter", 2u}})
+            result.push_back(
+                {id,
+                 "Utility",
+                 "StereoGain",
+                 name,
+                 Kind::Quantized,
+                 count,
+                 std::nullopt,
+                 Mode::OwnedEffectSetup,
+                 0,
+                 "_Generic/Devices.py:560-565;Push2/custom_bank_definitions.py:2619-2640"});
+        for (const auto& [id, name] : std::array{std::pair{"eq8.enabled", "Device On"},
+                                                 std::pair{"eq8.adaptive_q", "Adaptive Q"}})
+            result.push_back({id,
+                              "EQ Eight",
+                              "Eq8",
+                              name,
+                              Kind::Quantized,
+                              2,
+                              std::nullopt,
+                              Mode::OwnedEffectSetup,
+                              0,
+                              "_Generic/Devices.py:394-404;Push2/device_options.py:84-98"});
+        result.push_back({"eq8.scale",
+                          "EQ Eight",
+                          "Eq8",
+                          "Scale",
+                          Kind::Continuous,
+                          std::nullopt,
+                          Unit::Percent,
+                          Mode::Eq8Stereo,
+                          0,
+                          "_Generic/Devices.py:404;Push2/custom_bank_definitions.py:1956"});
         struct BandControl {
             const char* id;
             const char* suffix;

@@ -126,6 +126,11 @@ target_sources(
         infrastructure/ableton/managed_realization_test.cpp
         infrastructure/ableton/managed_devices_test.cpp
         infrastructure/ableton/managed_recovery_test.cpp
+        infrastructure/ableton/managed_clip_geometry_test.cpp
+        infrastructure/ableton/managed_song_settings_test.cpp
+        infrastructure/ableton/managed_envelope_revision_test.cpp
+        infrastructure/ableton/managed_device_modes_test.cpp
+        infrastructure/ableton/native_effect_plan_test.cpp
         infrastructure/ableton/native_units_test.cpp
         infrastructure/ableton/native_timbre_plan_test.cpp
         infrastructure/ableton/realization_store_test.cpp

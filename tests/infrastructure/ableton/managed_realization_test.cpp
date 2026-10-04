@@ -1617,3 +1617,41 @@ TEST_CASE("Creation admits known reply bytes before a durable native dispatch fe
     REQUIRE_FALSE(native);
     CHECK(native.error() == sunny::core::ErrorCode::ManagedReplyCapacityExceeded);
 }
+
+TEST_CASE("Initial managed lanes reject native call and complete response "
+          "excess before preparation",
+          "[managed][envelope][capacity]") {
+    auto actual = observation();
+    attach_note_identity(actual);
+    ManagedBindingReceipt binding{context, "project_a", "part_a", actual};
+    json points = json::array();
+    for (int i = 0; i < 64; ++i)
+        points.push_back({{"time", i / 32.0}, {"value", 0.25}});
+    json lane{{"parameter", {{"kind", "panning"}}},
+              {"clip_end", 4.0},
+              {"interpolation", "step"},
+              {"points", points}};
+    REQUIRE(make_managed_envelope_request(context, "lane_64", binding, lane));
+    lane["points"].push_back({{"time", 2.0}, {"value", 0.25}});
+    const auto oversized_calls = make_managed_envelope_request(context, "lane_65", binding, lane);
+    REQUIRE_FALSE(oversized_calls);
+    CHECK(oversized_calls.error() == sunny::core::ErrorCode::ProtocolError);
+    // Actual finite observation arrays, not a tiny request-count substitute.
+    const auto note = actual.at("manifest").at("notes").at(0);
+    actual["manifest"]["notes"] = json::array();
+    actual["note_identity"]["notes"] = json::array();
+    for (int id = 1; id <= 26000; ++id) {
+        actual["manifest"]["notes"].push_back(note);
+        auto identified = note;
+        identified["note_id"] = id;
+        actual["note_identity"]["notes"].push_back(std::move(identified));
+    }
+    actual["content_fingerprint"] = *managed_detail::managed_digest(actual["manifest"]);
+    actual["note_identity_fingerprint"] = *managed_detail::managed_digest(actual["note_identity"]);
+    binding.observation = std::move(actual);
+    lane["points"] = {{{"time", 0.0}, {"value", 0.25}}};
+    const auto oversized_reply =
+        make_managed_envelope_request(context, "lane_reply", binding, lane);
+    REQUIRE_FALSE(oversized_reply);
+    CHECK(oversized_reply.error() == sunny::core::ErrorCode::ManagedReplyCapacityExceeded);
+}

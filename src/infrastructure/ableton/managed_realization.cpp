@@ -5,10 +5,14 @@
 #include <set>
 #include <sunny/infrastructure/ableton/detail/managed_capacity.hpp>
 #include <sunny/infrastructure/ableton/detail/managed_devices.hpp>
+#include <sunny/infrastructure/ableton/detail/managed_envelope_author.hpp>
+#include <sunny/infrastructure/ableton/detail/managed_envelope_revision.hpp>
 #include <sunny/infrastructure/ableton/detail/managed_fingerprint.hpp>
+#include <sunny/infrastructure/ableton/detail/managed_geometry.hpp>
 #include <sunny/infrastructure/ableton/detail/managed_notes.hpp>
 #include <sunny/infrastructure/ableton/managed_realization.hpp>
 #include <sunny/infrastructure/ableton/managed_recovery.hpp>
+#include <sunny/infrastructure/ableton/managed_song_settings.hpp>
 
 namespace sunny::infrastructure {
 namespace {
@@ -49,10 +53,14 @@ bool mutation(const LomRequest& request) {
             request.property_or_method == "sunny_managed_author_envelope" ||
             request.property_or_method == "sunny_managed_update_notes" ||
             request.property_or_method == "sunny_managed_revise_note_population" ||
+            request.property_or_method == "sunny_managed_update_clip_geometry" ||
             request.property_or_method == "sunny_managed_adopt_clip" ||
             request.property_or_method == "sunny_managed_insert_device" ||
             request.property_or_method == "sunny_managed_update_device_parameters" ||
-            request.property_or_method == "sunny_managed_adopt_devices");
+            request.property_or_method == "sunny_managed_update_device_modes" ||
+            request.property_or_method == "sunny_managed_replace_envelope" ||
+            request.property_or_method == "sunny_managed_adopt_devices" ||
+            request.property_or_method == "sunny_managed_apply_song_settings");
 }
 
 json context_json(const ManagedBridgeContext& context) {
@@ -352,6 +360,18 @@ bool result_matches_intent(const json& observation, const json& intent, std::str
         return false;
     if (name == "sunny_managed_adopt_clip")
         return managed_detail::adoption_acknowledgement_valid(intent, observation);
+    if (name == "sunny_managed_apply_song_settings")
+        return managed_song_detail::result_matches_request(intent, observation);
+    if (name == "sunny_managed_replace_envelope")
+        return observation.contains("envelope_replacement") &&
+               observation.at("envelope_replacement").contains("before_observation") &&
+               observation_valid(observation.at("envelope_replacement").at("before_observation")) &&
+               managed_envelope_detail::result_matches_request(intent, observation);
+    if (name == "sunny_managed_update_device_modes")
+        return observation.contains("device_mode_update") &&
+               observation.at("device_mode_update").contains("before_observation") &&
+               observation_valid(observation.at("device_mode_update").at("before_observation")) &&
+               managed_device_detail::device_mode_result_matches_request(intent, observation);
     if (name == "sunny_managed_adopt_devices")
         return managed_device_detail::device_adoption_result_matches_request(intent, observation);
     if (name == "sunny_managed_insert_device" || name == "sunny_managed_update_device_parameters") {
@@ -376,6 +396,61 @@ bool result_matches_intent(const json& observation, const json& intent, std::str
     }
     if (name == "sunny_managed_rebind")
         return observation.at("manifest") == intent.at("expected_manifest");
+    if (name == "sunny_managed_update_clip_geometry") {
+        if (!observation.contains("note_identity") || !observation.contains("clip_geometry_update"))
+            return false;
+        const auto& update = observation.at("clip_geometry_update");
+        if (!fields(update,
+                    {"before_manifest",
+                     "before_note_identity",
+                     "before_note_identity_fingerprint",
+                     "before_device_identity_fingerprint",
+                     "requested_geometry",
+                     "submitted_properties",
+                     "returned_properties",
+                     "observed_geometry_matches_request",
+                     "note_values_preserved",
+                     "note_ids_preserved",
+                     "note_cardinality_preserved",
+                     "other_finite_properties_preserved",
+                     "device_identity_preserved",
+                     "loop_end_relationship"}) ||
+            !identity_evidence_valid(update.at("before_note_identity"),
+                                     update.at("before_note_identity_fingerprint")) ||
+            (!update.at("before_device_identity_fingerprint").is_null() &&
+             !fingerprint(update.at("before_device_identity_fingerprint"))) ||
+            update.at("requested_geometry") != intent.at("geometry"))
+            return false;
+        bool structural = false, complete = false;
+        if (!manifest_valid(update.at("before_manifest"), structural, complete) ||
+            !note_update_boundary(update.at("before_manifest")) ||
+            managed_detail::managed_digest(update.at("before_manifest")) !=
+                std::optional<std::string>{
+                    intent.at("expected_content_fingerprint").get<std::string>()} ||
+            !managed_detail::clip_geometry_note_admission(update.at("before_note_identity"),
+                                                          intent.at("geometry")) ||
+            observation.at("note_identity").at("entire_clip_population_observed") != true)
+            return false;
+        json before_notes = json::array();
+        for (const auto& note : update.at("before_note_identity").at("notes"))
+            before_notes.push_back(managed_detail::semantic_note(note));
+        if (!notes_match(before_notes, update.at("before_manifest").at("notes"))) return false;
+        const auto properties = managed_detail::changed_geometry_properties(
+            update.at("before_manifest").at("clip"), intent.at("geometry"));
+        if (properties.empty() || update.at("submitted_properties") != properties ||
+            update.at("returned_properties") != properties)
+            return false;
+        const auto flags = managed_detail::clip_geometry_flags(
+            update.at("before_manifest"),
+            update.at("before_note_identity"),
+            update.at("before_device_identity_fingerprint"),
+            observation,
+            intent.at("geometry"),
+            std::ranges::find(properties, json("end_marker")) != properties.end());
+        for (const auto& [name, expected] : flags.items())
+            if (update.at(name) != expected) return false;
+        return true;
+    }
     if (name == "sunny_managed_revise_note_population") {
         if (!observation.contains("note_identity") ||
             !observation.contains("note_population_update"))
@@ -656,15 +731,35 @@ Result<ManagedOperationReceipt> observe_journal(ManagedOperationReceipt result,
     const auto request_digest = managed_detail::managed_digest(
         json{{"name", result.request.property_or_method}, {"request", *intent}});
     if (!request_digest || journal.at("request_fingerprint") != *request_digest) return malformed();
+    const bool song_settings =
+        result.request.property_or_method == "sunny_managed_apply_song_settings";
+    if (song_settings && !managed_song_detail::partial_valid(*intent, journal)) return malformed();
     if (outcome == "acknowledged") {
         const bool native_mutation =
             result.request.property_or_method != "sunny_managed_rebind" &&
             result.request.property_or_method != "sunny_managed_adopt_clip" &&
             result.request.property_or_method != "sunny_managed_adopt_devices";
-        if (journal.at("native_mutation_started").get<bool>() != native_mutation ||
-            !journal.contains("result") || !observation_valid(journal.at("result")) ||
+        const bool native_start_valid =
+            song_settings && journal.contains("result")
+                ? managed_song_detail::acknowledged_native_start_valid(
+                      *intent,
+                      journal.at("result"),
+                      journal.at("native_mutation_started").get<bool>())
+                : journal.at("native_mutation_started").get<bool>() == native_mutation;
+        if (!native_start_valid || !journal.contains("result") ||
+            !observation_valid(journal.at("result")) ||
             !result_matches_intent(
                 journal.at("result"), *intent, result.request.property_or_method))
+            return malformed();
+        if (song_settings && (!journal.contains("song_settings_progress") ||
+                              journal.at("song_settings_progress").at("started_fields") !=
+                                  journal.at("result").at("song_settings").at("started_fields") ||
+                              journal.at("song_settings_progress").at("returned_fields") !=
+                                  journal.at("result").at("song_settings").at("returned_fields")))
+            return malformed();
+        if (result.request.property_or_method == "sunny_managed_replace_envelope" &&
+            (!journal.contains("progress") || !managed_envelope_detail::progress_valid(
+                                                  journal.at("result"), journal.at("progress"))))
             return malformed();
         if (result.request.property_or_method == "sunny_managed_revise_note_population") {
             json calls = json::array();
@@ -678,6 +773,15 @@ Result<ManagedOperationReceipt> observe_journal(ManagedOperationReceipt result,
                 journal.at("progress").at("returned_calls") != calls ||
                 journal.at("progress").at("returned_added_note_ids") !=
                     journal.at("result").at("note_population_update").at("returned_added_note_ids"))
+                return malformed();
+        }
+        if (result.request.property_or_method == "sunny_managed_update_clip_geometry") {
+            const auto& properties =
+                journal.at("result").at("clip_geometry_update").at("submitted_properties");
+            if (!journal.contains("progress") ||
+                !fields(journal.at("progress"), {"started_properties", "returned_properties"}) ||
+                journal.at("progress").at("started_properties") != properties ||
+                journal.at("progress").at("returned_properties") != properties)
                 return malformed();
         }
         result.outcome = ManagedOperationOutcome::Acknowledged;
@@ -868,8 +972,11 @@ Result<ManagedOperationReceipt> execute_managed_operation(const ManagedOperation
     }
 }
 
-Result<ManagedOperationReceipt> reconcile_managed_operation(const ManagedOperationReceipt& receipt,
-                                                            LomTransport& transport) {
+Result<ManagedOperationReceipt>
+reconcile_managed_operation(const ManagedOperationReceipt& receipt,
+                            LomTransport& transport,
+                            std::optional<ManagedOperationReceipt>* query_evidence) {
+    if (query_evidence) query_evidence->reset();
     if (!prepare_managed_operation(receipt.context, receipt.request) ||
         transport.records_without_execution())
         return std::unexpected(ErrorCode::ProtocolError);
@@ -888,6 +995,9 @@ Result<ManagedOperationReceipt> reconcile_managed_operation(const ManagedOperati
             return result;
         }
         auto observed = observe_journal(receipt, response);
+        // A retained terminal receipt can differ from the successful current
+        // query. A failed query supplies no newly observed native evidence.
+        if (observed && query_evidence) *query_evidence = *observed;
         if (observed &&
             (receipt.outcome == ManagedOperationOutcome::Acknowledged ||
              receipt.outcome == ManagedOperationOutcome::Declined) &&
@@ -1059,6 +1169,13 @@ Result<LomRequest> make_managed_envelope_request(const ManagedBridgeContext& con
         lane.at("clip_end").get<double>() !=
             binding.observation.at("manifest").at("clip").at("end_marker").get<double>())
         return std::unexpected(ErrorCode::ProtocolError);
+    try {
+        if (!managed_detail::envelope_author_response_fits(std::get<json>(request.args[0]),
+                                                           binding.observation))
+            return std::unexpected(ErrorCode::ManagedReplyCapacityExceeded);
+    } catch (const json::exception&) {
+        return std::unexpected(ErrorCode::ProtocolError);
+    }
     return request;
 }
 
@@ -1348,6 +1465,40 @@ Result<LomRequest> make_managed_note_population_request(const ManagedBridgeConte
                                             binding.observation,
                                             proposed->size() + additions.size(),
                                             true))
+        return std::unexpected(ErrorCode::ManagedReplyCapacityExceeded);
+    return request;
+}
+Result<LomRequest> make_managed_clip_geometry_request(const ManagedBridgeContext& context,
+                                                      const std::string& operation_id,
+                                                      const ManagedBindingReceipt& binding,
+                                                      double end_marker,
+                                                      int signature_numerator,
+                                                      int signature_denominator) {
+    const json geometry{{"end_marker", end_marker},
+                        {"signature_numerator", signature_numerator},
+                        {"signature_denominator", signature_denominator}};
+    if (!context_valid(context) || !managed_binding_from_json(managed_binding_to_json(binding)) ||
+        context.document_token != binding.context.document_token ||
+        context.bridge_instance != binding.context.bridge_instance ||
+        !binding.observation.contains("note_identity") ||
+        !note_update_boundary(binding.observation.at("manifest")) ||
+        !managed_detail::clip_geometry_note_admission(binding.observation.at("note_identity"),
+                                                      geometry) ||
+        managed_detail::changed_geometry_properties(binding.observation.at("manifest").at("clip"),
+                                                    geometry)
+            .empty())
+        return std::unexpected(ErrorCode::ProtocolError);
+    auto request = LomProtocol::call_method(
+        LomPaths::song(),
+        "sunny_managed_update_clip_geometry",
+        {json{{"document_token", context.document_token},
+              {"operation_id", operation_id},
+              {"project_key", binding.project_key},
+              {"binding_key", binding.binding_key},
+              {"expected_content_fingerprint", binding.observation.at("content_fingerprint")},
+              {"geometry", geometry}}});
+    if (!LomProtocol::validate_request(request)) return std::unexpected(ErrorCode::ProtocolError);
+    if (!managed_detail::clip_geometry_response_fits(*payload(request), binding.observation))
         return std::unexpected(ErrorCode::ManagedReplyCapacityExceeded);
     return request;
 }

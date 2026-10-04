@@ -3,7 +3,9 @@
 function(sunny_prepare_bridge_bundle source_root bundle_root identity_output)
     foreach(_required IN ITEMS
             __init__.py build_identity.py diagnostics.py handler.py managed.py
-            managed_capacity.py managed_devices.py managed_recovery.py
+            managed_capacity.py managed_devices.py managed_device_modes.py
+            managed_geometry.py managed_envelope_revision.py managed_recovery.py
+            managed_song_settings.py
             native_units.py server.py surface.py
             bridge_contract.json)
         if(NOT EXISTS "${source_root}/${_required}" OR IS_DIRECTORY "${source_root}/${_required}")

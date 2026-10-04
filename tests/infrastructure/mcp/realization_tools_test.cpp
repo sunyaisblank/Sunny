@@ -274,3 +274,165 @@ TEST_CASE("Legacy backup recovery retains the migrated native namespace and disp
     CHECK(transport.mutations == 1);
 #endif
 }
+
+namespace {
+class QueryTransport final : public LomTransport {
+  public:
+    LostReplyTransport creation;
+    std::vector<LomRequest> requests;
+    LomResponse query_response{
+        true,
+        json{{"outcome", "unknown_epoch"}, {"document_token", "new_document_fixture"}},
+        std::nullopt,
+        LomDeliveryState::ResponseReceived};
+    bool is_connected() const override { return true; }
+    Result<std::optional<AbletonTargetProfile>> target_profile() override {
+        return creation.target_profile();
+    }
+    LomResponse send_notes(const LomPath& path, const std::vector<LomNoteData>& notes) override {
+        return creation.send_notes(path, notes);
+    }
+    LomResponse send(const LomRequest& request) override {
+        requests.push_back(request);
+        if (request.property_or_method == "sunny_managed_operation") {
+            const auto query = std::get<json>(request.args.at(0));
+            REQUIRE(query.size() == 2);
+            CHECK(query.at("document_token") == "document_fixture");
+            REQUIRE(creation.session);
+            REQUIRE(creation.session->realization->store);
+            REQUIRE(creation.session->realization->store->find(query.at("operation_id")));
+            return query_response;
+        }
+        return creation.send(request);
+    }
+};
+
+std::string ledger_bytes(const RealizationStore& store) {
+    std::ifstream input(store.directory() / "ledger.json", std::ios::binary);
+    REQUIRE(input);
+    return {std::istreambuf_iterator<char>{input}, std::istreambuf_iterator<char>{}};
+}
+} // namespace
+
+TEST_CASE("Original native token remains queryable without current workspace durability",
+          "[mcp][realization][reconcile][readonly]") {
+#ifdef _WIN32
+    SKIP("Native fences use qualified POSIX durability");
+#else
+    Directory directory;
+    QueryTransport transport;
+    Fixture fixture(&transport);
+    transport.creation.session = &fixture.session;
+    REQUIRE(fixture.call("workspace_save", {{"path", (directory.path / "workspace.json").string()}})
+                .at("success") == true);
+    const auto uncertain = fixture.call("project_realization_create", fixture.revision_arguments());
+    const std::string token = uncertain.at("attempt_id");
+    auto store = fixture.session.realization->store;
+    const auto original_intent = managed_receipt_to_json(store->find(token)->intent.prepared);
+    const auto before_requests = transport.requests.size();
+    fixture.session.realization->namespace_saved_durably = false;
+    const auto reconciled = fixture.call("project_realization_reconcile", {{"attempt_id", token}});
+    CHECK(reconciled.at("query_succeeded") == true);
+    CHECK(reconciled.at("history_saved") == true);
+    CHECK(reconciled.at("success") == true);
+    CHECK(reconciled.at("actual_receipt").at("outcome") == "unknown_epoch");
+    CHECK(reconciled.at("actual_receipt").at("journal").at("document_token") ==
+          "new_document_fixture");
+    CHECK(reconciled.at("mutation_retried") == false);
+    REQUIRE(transport.requests.size() == before_requests + 1);
+    CHECK(transport.requests.back().property_or_method == "sunny_managed_operation");
+    CHECK(transport.creation.mutations == 1);
+    CHECK(managed_receipt_to_json(store->find(token)->intent.prepared) == original_intent);
+    CHECK_FALSE(fixture.session.realization->namespace_saved_durably);
+    const auto after_query = transport.requests.size();
+    const auto denied = fixture.call("project_realization_create", fixture.revision_arguments());
+    CHECK(denied.at("success") == false);
+    CHECK(denied.at("state") == "reconciliation_required");
+    CHECK(denied.at("attempt_id") == token);
+    CHECK(transport.requests.size() == after_query);
+    CHECK(transport.creation.mutations == 1);
+#endif
+}
+
+TEST_CASE("Actual token query evidence remains visible when native history cannot publish",
+          "[mcp][realization][reconcile][readonly][durability]") {
+#ifdef _WIN32
+    SKIP("Native fences use qualified POSIX durability");
+#else
+    Directory directory;
+    QueryTransport transport;
+    Fixture fixture(&transport);
+    transport.creation.session = &fixture.session;
+    REQUIRE(fixture.call("workspace_save", {{"path", (directory.path / "workspace.json").string()}})
+                .at("success") == true);
+    const auto uncertain = fixture.call("project_realization_create", fixture.revision_arguments());
+    const std::string token = uncertain.at("attempt_id");
+    auto store = fixture.session.realization->store;
+    const auto original_receipt = store->find(token)->evidence.back();
+    const auto original_encoded = managed_receipt_to_json(original_receipt);
+    const auto original_bytes = ledger_bytes(*store);
+    auto different_evidence = original_receipt;
+    different_evidence.error = "Independent injected evidence-write failure";
+    const auto blocked =
+        store->append_evidence(token, different_evidence, std::nullopt, [](auto phase) {
+            return phase == RealizationStoreIoPhase::FileSync;
+        });
+    REQUIRE_FALSE(blocked);
+    REQUIRE_FALSE(store->native_writes_available());
+    REQUIRE(ledger_bytes(*store) == original_bytes);
+    const auto before_requests = transport.requests.size();
+    const auto reconciled = fixture.call("project_realization_reconcile", {{"attempt_id", token}});
+    CHECK(reconciled.at("query_succeeded") == true);
+    CHECK(reconciled.at("success") == false);
+    CHECK(reconciled.at("history_saved") == false);
+    CHECK(reconciled.at("actual_receipt").at("outcome") == "unknown_epoch");
+    CHECK(reconciled.at("actual_receipt").at("journal").at("document_token") ==
+          "new_document_fixture");
+    CHECK(reconciled.at("mutation_retried") == false);
+    CHECK(reconciled.contains("error"));
+    REQUIRE(transport.requests.size() == before_requests + 1);
+    CHECK(transport.requests.back().property_or_method == "sunny_managed_operation");
+    CHECK(transport.creation.mutations == 1);
+    CHECK(managed_receipt_to_json(store->find(token)->evidence.back()) == original_encoded);
+    CHECK(store->find(token)->evidence.size() == 1);
+    CHECK(ledger_bytes(*store) == original_bytes);
+    CHECK_FALSE(store->native_writes_available());
+    const auto after_query = transport.requests.size();
+    const auto denied = fixture.call("project_realization_create", fixture.revision_arguments());
+    CHECK(denied.at("success") == false);
+    CHECK(denied.at("state") == "reconciliation_required");
+    CHECK(transport.requests.size() == after_query);
+    CHECK(transport.creation.mutations == 1);
+#endif
+}
+
+TEST_CASE("Failed token query is not reported as freshly observed native evidence",
+          "[mcp][realization][reconcile][readonly][truthful]") {
+#ifdef _WIN32
+    SKIP("Native fences use qualified POSIX durability");
+#else
+    Directory directory;
+    QueryTransport transport;
+    Fixture fixture(&transport);
+    transport.creation.session = &fixture.session;
+    REQUIRE(fixture.call("workspace_save", {{"path", (directory.path / "workspace.json").string()}})
+                .at("success") == true);
+    const auto uncertain = fixture.call("project_realization_create", fixture.revision_arguments());
+    const std::string token = uncertain.at("attempt_id");
+    const auto original =
+        managed_receipt_to_json(fixture.session.realization->store->find(token)->evidence.back());
+    transport.query_response = {
+        false, std::nullopt, "Query disconnected before reply", LomDeliveryState::NotSent};
+    const auto reconciled = fixture.call("project_realization_reconcile", {{"attempt_id", token}});
+    CHECK(reconciled.at("query_succeeded") == false);
+    CHECK(reconciled.at("success") == false);
+    CHECK(reconciled.at("mutation_retried") == false);
+    CHECK_FALSE(reconciled.contains("actual_receipt"));
+    CHECK(reconciled.at("receipt").at("outcome") == original.at("outcome"));
+    CHECK(reconciled.at("receipt").at("delivery") == original.at("delivery"));
+    CHECK(reconciled.at("receipt").at("request") == original.at("request"));
+    CHECK(reconciled.at("retry_authorized") == false);
+    CHECK(transport.requests.back().property_or_method == "sunny_managed_operation");
+    CHECK(transport.creation.mutations == 1);
+#endif
+}

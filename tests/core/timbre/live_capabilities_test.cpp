@@ -114,14 +114,14 @@ void expect_decline(const LiveNativeMappingPreflight& result, Disposition dispos
 TEST_CASE("native registry is finite versioned provenance without host qualification",
           "[timbre][live-capabilities]") {
     const auto& provenance = live_native_registry_provenance();
-    CHECK(provenance.registry_version == 2);
+    CHECK(provenance.registry_version == 3);
     CHECK(provenance.public_lom_reference_version == LiveNativeVersion{12, 4, 5});
     CHECK(provenance.first_candidate_version == LiveNativeVersion{12, 3, 0});
     CHECK(provenance.last_candidate_version == LiveNativeVersion{12, 4, 65535});
     CHECK(provenance.python_source_commit == "e83d5192f321b24eb9daab843ac49a2d95d862b1");
     CHECK_FALSE(provenance.host_qualified);
     const auto entries = live_native_parameter_registry();
-    REQUIRE(entries.size() == 48);
+    REQUIRE(entries.size() == 59);
     std::set<std::string> ids;
     for (const auto& entry : entries) {
         CHECK(ids.insert(entry.id).second);

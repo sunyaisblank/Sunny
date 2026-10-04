@@ -51,8 +51,20 @@ inline bool recovery_selector(const nlohmann::json& value) {
 }
 
 inline nlohmann::json recovery_domains() {
-    return nlohmann::json::array(
-        {"existing_note_updates", "note_population_updates", "absent_mixer_step_lanes"});
+    return nlohmann::json::array({"existing_note_updates",
+                                  "note_population_updates",
+                                  "clip_geometry_updates",
+                                  "absent_mixer_step_lanes"});
+}
+
+// Exact historical grants remain readable; accepting an earlier grant never
+// adds a domain to the approved immutable preview or its acknowledgement.
+inline bool recovery_domains_valid(const nlohmann::json& value) {
+    return value == nlohmann::json::array({"existing_note_updates", "absent_mixer_step_lanes"}) ||
+           value == nlohmann::json::array({"existing_note_updates",
+                                           "note_population_updates",
+                                           "absent_mixer_step_lanes"}) ||
+           value == recovery_domains();
 }
 
 inline nlohmann::json recovery_preserved_domains() {
@@ -80,7 +92,7 @@ inline bool recovery_metadata(const nlohmann::json& value) {
         !recovery_key(value.at("project_key")) || !recovery_key(value.at("binding_key")) ||
         !recovery_hex(value.at("preview_token"), 32) || !recovery_selector(value.at("selector")) ||
         value.at("authority_origin") != "none" || value.at("historical_identity_proven") != false ||
-        value.at("allowed_domains") != recovery_domains() ||
+        !recovery_domains_valid(value.at("allowed_domains")) ||
         value.at("preserved_unknown_domains") != recovery_preserved_domains())
         return false;
     const auto& set = value.at("set_info");

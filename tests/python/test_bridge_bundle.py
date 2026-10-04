@@ -151,7 +151,17 @@ def test_cmake_exports_exact_bundle_and_reconfigures_for_late_modules(
 
 
 @pytest.mark.parametrize(
-    "missing", ["managed.py", "managed_capacity.py", "managed_devices.py", "managed_recovery.py"]
+    "missing",
+    [
+        "managed.py",
+        "managed_capacity.py",
+        "managed_devices.py",
+        "managed_geometry.py",
+        "managed_envelope_revision.py",
+        "managed_device_modes.py",
+        "managed_recovery.py",
+        "managed_song_settings.py",
+    ],
 )
 def test_cmake_rejects_an_incomplete_bundle(tmp_path: Path, missing: str) -> None:
     """Configuration must name the missing source rather than stage partial delivery."""
@@ -181,7 +191,16 @@ def test_cmake_rejects_an_incomplete_bundle(tmp_path: Path, missing: str) -> Non
 
 
 @pytest.mark.parametrize(
-    "missing", ["managed_capacity.py", "managed_devices.py", "managed_recovery.py"]
+    "missing",
+    [
+        "managed_capacity.py",
+        "managed_devices.py",
+        "managed_geometry.py",
+        "managed_envelope_revision.py",
+        "managed_device_modes.py",
+        "managed_recovery.py",
+        "managed_song_settings.py",
+    ],
 )
 def test_identity_rejects_missing_managed_dependencies(
     identity_module: ModuleType, tmp_path: Path, missing: str

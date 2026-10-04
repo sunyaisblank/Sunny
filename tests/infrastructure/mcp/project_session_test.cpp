@@ -557,3 +557,26 @@ TEST_CASE("Project history preserves finite quiet Mix levels and rejects infinit
     REQUIRE(!fixture.call("score_redo", {{"score_id", 1}}).contains("error"));
     CHECK(fixture.session.mix->find(1)->channels[0].fader.level_db == Catch::Approx(-120));
 }
+
+TEST_CASE("Owning input trim edits retain the fader and reject out-of-domain values atomically",
+          "[mcp][project][authoring][input-trim]") {
+    ProjectFixture fixture;
+    const auto before = fixture.state();
+    for (const auto value : {-24.0000001, 24.0000001, std::numeric_limits<double>::infinity()}) {
+        CHECK(fixture
+                  .call("set_channel_input_trim",
+                        {{"graph_id", 1}, {"channel_id", 1}, {"input_trim_db", value}})
+                  .contains("error"));
+        CHECK(fixture.state() == before);
+    }
+    const auto original_fader = fixture.session.mix->find(1)->channels[0].fader.level_db;
+    REQUIRE(!fixture
+                 .call("set_channel_input_trim",
+                       {{"graph_id", 1}, {"channel_id", 1}, {"input_trim_db", -7.5}})
+                 .contains("error"));
+    CHECK(fixture.session.mix->find(1)->channels[0].input_trim == -7.5f);
+    CHECK(fixture.session.mix->find(1)->channels[0].fader.level_db == original_fader);
+    REQUIRE(!fixture.call("score_undo", {{"score_id", 1}}).contains("error"));
+    CHECK(fixture.session.mix->find(1)->channels[0].input_trim == 0.0f);
+    CHECK(fixture.session.mix->find(1)->channels[0].fader.level_db == original_fader);
+}

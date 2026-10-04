@@ -19,9 +19,12 @@
 #include <string_view>
 #include <sunny/core/timbre/live_capabilities.hpp>
 #include <sunny/infrastructure/ableton/detail/managed_devices.hpp>
+#include <sunny/infrastructure/ableton/detail/managed_envelope_revision.hpp>
+#include <sunny/infrastructure/ableton/detail/managed_geometry.hpp>
 #include <sunny/infrastructure/ableton/detail/managed_notes.hpp>
 #include <sunny/infrastructure/ableton/lom_protocol.hpp>
 #include <sunny/infrastructure/ableton/managed_recovery.hpp>
+#include <sunny/infrastructure/ableton/managed_song_settings.hpp>
 #include <sunny/infrastructure/ableton/target_profile.hpp>
 
 namespace sunny::infrastructure {
@@ -363,7 +366,8 @@ bool valid_step_envelope_author(const json& value) {
         !valid_envelope_parameter(value.at("parameter")) || !value.contains("interpolation") ||
         value.at("interpolation") != "step" || !value.contains("clip_end") ||
         !finite_number(value.at("clip_end")) || value.at("clip_end").get<double>() <= 0.0 ||
-        !value.contains("points") || !value.at("points").is_array() || value.at("points").empty())
+        !value.contains("points") || !value.at("points").is_array() || value.at("points").empty() ||
+        value.at("points").size() > SUNNY_MANAGED_ENVELOPE_MAX_STEPS)
         return false;
     const auto& points = value.at("points");
     const double end = value.at("clip_end").get<double>();
@@ -417,8 +421,15 @@ bool valid_managed_request(std::string_view name, const std::vector<json>& args)
     if (args.size() != 1 || !args[0].is_object()) return false;
     const auto& value = args[0];
     if (is_one_of(name,
+                  {"sunny_managed_preview_envelope_replacement", "sunny_managed_replace_envelope"}))
+        return managed_envelope_detail::request_valid(name, value);
+    if (is_one_of(name,
+                  {"sunny_managed_preview_song_settings", "sunny_managed_apply_song_settings"}))
+        return managed_song_detail::request_valid(name, value);
+    if (is_one_of(name,
                   {"sunny_managed_insert_device",
                    "sunny_managed_update_device_parameters",
+                   "sunny_managed_update_device_modes",
                    "sunny_managed_preview_devices",
                    "sunny_managed_adopt_devices"}))
         return managed_device_detail::device_request_valid(name, value);
@@ -446,7 +457,8 @@ bool valid_managed_request(std::string_view name, const std::vector<json>& args)
                json_to_int(value.at("expected_manifest").at("schema_version")) == 1;
     const bool guarded =
         name == "sunny_managed_replace_clip" || name == "sunny_managed_author_envelope" ||
-        name == "sunny_managed_update_notes" || name == "sunny_managed_revise_note_population";
+        name == "sunny_managed_update_notes" || name == "sunny_managed_revise_note_population" ||
+        name == "sunny_managed_update_clip_geometry";
     if (guarded && (!value.contains("expected_content_fingerprint") ||
                     !managed_fingerprint(value.at("expected_content_fingerprint"))))
         return false;
@@ -456,6 +468,9 @@ bool valid_managed_request(std::string_view name, const std::vector<json>& args)
                value.at("lane").at("parameter").at("kind") != "device";
     if (name == "sunny_managed_revise_note_population")
         return value.size() == 8 && managed_detail::population_request_valid(value);
+    if (name == "sunny_managed_update_clip_geometry")
+        return value.size() == 6 && value.contains("geometry") &&
+               managed_detail::clip_geometry_valid(value.at("geometry"));
     if (name == "sunny_managed_update_notes")
         return value.size() == 6 && value.contains("changes") &&
                managed_detail::note_changes_valid(value.at("changes"));
@@ -526,8 +541,14 @@ sunny::core::Result<void> LomProtocol::validate_request(const LomRequest& reques
                         "sunny_managed_adopt_clip",
                         "sunny_managed_insert_device",
                         "sunny_managed_update_device_parameters",
+                        "sunny_managed_update_device_modes",
                         "sunny_managed_preview_devices",
                         "sunny_managed_adopt_devices",
+                        "sunny_managed_update_clip_geometry",
+                        "sunny_managed_preview_song_settings",
+                        "sunny_managed_apply_song_settings",
+                        "sunny_managed_preview_envelope_replacement",
+                        "sunny_managed_replace_envelope",
                         "create_scene",
                         "create_midi_track",
                         "create_return_track"}));

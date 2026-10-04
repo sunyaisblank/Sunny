@@ -1105,7 +1105,7 @@ caller-supplied.
 | X4 | Warning | Channel has no insert processing (intentional?) |
 | X5 | Warning | Channel fader is at −∞ (silence) but not muted |
 | X6 | Error | Sidechain source references a non-existent channel or bus |
-| X7 | Error | Any effect variant violates its documented finite numeric/cardinality domain |
+| X7 | Error | Any effect variant violates its documented finite numeric/cardinality domain, or Channel input trim is non-finite/outside [-24,+24] dB |
 | X8 | Error | An effect target mapping has an unresolved path, invalid domain/curve, empty target, or same-effect target alias |
 | X9 | Error | Relative faders contain a missing reference, dependency cycle, non-finite value, invalid loudness target, or derived value above +12 dB |
 | X10 | Error | Channel/group assignments or child/parent group routing do not exactly mirror the corresponding member list, including dangling or duplicate members |
@@ -1323,16 +1323,17 @@ The MCP server exposes tools from all four layers in a unified namespace. An age
 
 The deployed MCP server exposes the following registration groups:
 
-| Registration group | Tool count | Examples |
-|--------------------|-----------:|----------|
-| Core and Ableton | 11 | `analyze_harmony`, `create_progression_clip`, `get_ableton_session_state`, `get_ableton_remote_log` |
-| Score IR | 52 | `score_create`, `score_remove_part`, `score_reorder_parts`, `score_compile_to_musicxml` |
-| Timbre IR | 28 | `set_sound_source`, `map_timbre_parameter`, `validate_timbre` |
-| Mix IR | 33 | `set_channel_relative_level`, `resolve_mix_fader_levels`, `validate_mix` |
-| Corpus IR | 23 | `ingest_midi`, `get_work_analysis`, `query_style_profile` |
-| Project and workspace | 11 | `create_project`, `bind_project`, `get_project_json`, `project_plan_to_ableton`, `project_apply_ableton_plan` |
+| Registration group | Examples |
+|--------------------|----------|
+| Core and Ableton | `analyze_harmony`, `create_progression_clip`, `get_ableton_session_state`, `get_ableton_remote_log` |
+| Score IR | `score_create`, `score_remove_part`, `score_reorder_parts`, `score_compile_to_musicxml` |
+| Timbre IR | `set_sound_source`, `map_timbre_parameter`, `validate_timbre` |
+| Mix IR | `set_channel_input_trim`, `set_channel_relative_level`, `resolve_mix_fader_levels`, `validate_mix` |
+| Corpus IR | `ingest_midi`, `get_work_analysis`, `query_style_profile` |
+| Project and workspace | `create_project`, `bind_project`, `get_project_json`, `project_plan_to_ableton`, `project_apply_ableton_plan` |
+| Managed native realization | `project_realization_create`, `project_realization_update_geometry`, `project_realization_apply_song_settings`, `project_realization_author_effects`, `project_realization_replace_mix_lane`, `project_realization_reconcile` |
 
-Total: 158 tools. `tools/list` is the runtime authority.
+`tools/list` is the runtime authority for the complete tool inventory.
 
 ---
 

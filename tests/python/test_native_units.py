@@ -8,6 +8,7 @@ import os
 import shlex
 import sys
 import threading
+from decimal import ROUND_UP, localcontext
 from types import SimpleNamespace
 from typing import Any
 
@@ -475,6 +476,20 @@ def test_explicit_tolerance_is_not_enlarged_to_hide_a_display_gap() -> None:
     assert fixture.parameter.value == 0.0
     assert fixture.parameter.writes == 0
     assert len(fixture.parameter.calls) <= 64
+
+
+def test_native_search_pins_half_even_without_changing_ambient_context() -> None:
+    """A literal near-tie has the producer's fixed110-digit half-even outcome."""
+    fixture = _target("Gain", "Decibels", lambda value: "-0.5 dB" if value < 0.5 else "0.5 dB")
+    with localcontext() as context:
+        context.prec = 3
+        context.rounding = ROUND_UP
+        result = _resolve(fixture, 5e-324, 0.5)
+        assert result["internal_value"] == 0.0
+        assert result["display"] == "-0.5 dB"
+        assert result["absolute_display_error"] == 0.5
+        assert context.prec == 3
+        assert context.rounding == ROUND_UP
 
 
 @pytest.mark.parametrize("raw", ["1,20 kHz", "1.20 KHz", "1200", "1e3 Hz", "1.20\u00a0kHz", 1200.0])

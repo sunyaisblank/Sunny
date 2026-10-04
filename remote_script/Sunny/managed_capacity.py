@@ -8,6 +8,7 @@ This is a wire-space bound, independent of typed SM1 hashing or musical limits.
 
 from __future__ import annotations
 
+import copy
 import json
 import math
 from typing import Any
@@ -53,7 +54,7 @@ def json_wire_bound(value: Any, array_bounds: dict[int, int] | None = None) -> i
 
 
 def require_response_capacity(value: Any, array_bounds: dict[int, int] | None = None) -> int:
-    """value is the complete framed object, including success/value envelope."""
+    """Value is the complete framed object, including success/value envelope."""
     size = json_wire_bound(value, array_bounds)
     if size > MAX_MANAGED_RESPONSE_BYTES:
         raise RuntimeError("ReplyCapacityUnavailable: complete managed response exceeds 16 MiB")
@@ -63,6 +64,58 @@ def require_response_capacity(value: Any, array_bounds: dict[int, int] | None = 
 def guard_managed_response_capacity(operation: dict[str, Any], prospective_result: Any) -> int:
     future = {**operation, "outcome": "acknowledged", "result": prospective_result}
     return require_response_capacity({"success": True, "value": future})
+
+
+def guard_envelope_author_response_capacity(
+    operation: dict[str, Any], before: dict[str, Any], domain: dict[str, Any]
+) -> int:
+    """Bound the complete known initial-lane ACK before envelope creation."""
+    from .managed_envelope_revision import MAX_STEP_POINTS
+
+    if len(operation["request"]["lane"]["points"]) > MAX_STEP_POINTS:
+        raise RuntimeError("EnvelopeAuthoringUnavailable: lane exceeds 64 native Step-call budget")
+    after = {
+        key: copy.deepcopy(value)
+        for key, value in before.items()
+        if key
+        in (
+            "track_index",
+            "slot_index",
+            "manifest",
+            "content_fingerprint",
+            "note_identity",
+            "note_identity_fingerprint",
+            "track_tag",
+            "clip_tag",
+            "structural_boundary_complete",
+            "content_boundary_complete",
+            "unavailable_reasons",
+            "device_identity",
+            "device_identity_fingerprint",
+        )
+    }
+    count = len(before["note_identity"]["notes"])
+    after["manifest"]["notes"] = []
+    after["note_identity"]["notes"] = []
+    after["track_index"] = after["slot_index"] = 2147483647
+    after["manifest"]["clip"]["has_envelopes"] = True
+    after["structural_boundary_complete"] = False
+    after["observed_notes_match_request"] = False
+    after["observed_clip_properties_match_request"] = False
+    after["unavailable_reasons"].append(
+        "Complete native envelope breakpoint population is unavailable"
+    )
+    after["acknowledgement"] = {
+        "action": "created",
+        "steps_inserted": len(operation["request"]["lane"]["points"]),
+        "parameter": domain,
+    }
+    future = {**operation, "outcome": "acknowledged", "result": after}
+    overrides = {
+        id(after["manifest"]["notes"]): note_array_bound(count, False),
+        id(after["note_identity"]["notes"]): note_array_bound(count, True),
+    }
+    return require_response_capacity({"success": True, "value": future}, overrides)
 
 
 def guard_operation_reservation_capacity(operation: dict[str, Any]) -> int:

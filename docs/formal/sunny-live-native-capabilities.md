@@ -1,8 +1,8 @@
 # Sunny Native Live Parameter Capabilities
 
-**Registry version:** 2\
-**Status:** Pure source-candidate preflight; host qualification remains open  
-**Scope:** finite descriptor preflight, read-only unit resolution and explicit owning Timbre planning
+**Registry version:** 3\
+**Status:** Source-candidate contracts; host qualification remains open\
+**Scope:** finite native parameters, owning source/effect planning and managed revisions
 
 ## 1. Evidence and version boundary
 
@@ -37,7 +37,8 @@ Source observations are distinct from public Max API and empirical host evidence
 
 ## 2. Finite entries
 
-There are **48** entries. Registry identifiers are distinct from semantic IR paths,
+There are **59** entries: 33 continuous and 26 quantized. The historical 48 identifiers
+retain their semantics. Registry identifiers are distinct from semantic IR paths,
 native object identities and chain indices. Band numbers in identifiers are native
 EQ Eight numbers1..8.
 
@@ -55,6 +56,9 @@ EQ Eight numbers1..8.
 | `eq8.band.N.q` | `Eq8` | `N Resonance A` | Q | Same |
 | `eq8.band.N.enabled` | `Eq8` | `N Filter On A` | Exact advertised two-choice enum | Native global mode0 |
 | `eq8.band.N.type` | `Eq8` | `N Filter Type A` | Exact advertised eight-choice enum | Native global mode0, band on |
+| `utility.enabled/channel_mode/mono/mute/left_invert/right_invert/bass_mono/dc_filter` | `StereoGain` | Actual named Device On/channel/mono/polarity/bass/DC controls | Exact native enum labels | Full unchanged current cohort |
+| `eq8.enabled/adaptive_q` | `Eq8` | `Device On` / `Adaptive Q` | Exact native two-choice labels | Full observed native EQ modes |
+| `eq8.scale` | `Eq8` | `Scale` | Percent | Native Stereo mode, actual unchanged EQ properties |
 | `eq8.output_gain` | `Eq8` | `Output Gain` | dB | Native global mode0 |
 
 The [official effect manual](https://www.ableton.com/en/live-manual/12/live-audio-effect-reference/)
@@ -110,7 +114,7 @@ The registry does not normalize internal domains to0..1 or silently apply GUI
 scales, interpolate physical mappings, clamp values or supply missing modes.
 
 The read-only `sunny_resolve_native_display_value` Device operation accepts only
-`{capability_id,target,tolerance}` and selects one of the 32 continuous entries.
+`{capability_id,target,tolerance}` and selects one of the 33 continuous entries.
 Callers cannot supply names, descriptors or modes to bypass the registered policy.
 The handler observes the actual application version before and after resolution.
 The Python `native_units.resolve_registered_native_display_value` helper queries
@@ -167,3 +171,54 @@ qualification must record exact version/edition/OS and source/bridge identity,
 observe actual native descriptors and units/modes, and independently verify writes.
 Envelope persistence additionally requires Save As, close/reopen, reconnect and
 read-only sampling without reauthoring or temporary remote control.
+
+
+## Managed finite revisions
+
+The owning effect planner reads selected whole Timbre EQ and Mix EQ/Utility stages
+in authored order, including separate input trim. Peak, Low Shelf and High Shelf
+map to actual native labels; unused bands are explicitly Off. Cut slopes, dynamic
+EQ, linear phase, automatic gain and fractional wet intent are unavailable.
+Input trim is a dedicated Utility before Mix effects; it never changes the output
+fader. Utility setup observes Stereo/mono/mute/polarity/bass/DC controls and neutral
+Gain/Balance/Width. EQ setup observes actual `global_mode`, `edit_mode` and
+`oversample`, requests Stereo and Adaptive Q Off, and sets Scale100%/Output Gain0dB
+before band resolution. These are native knob intentions, without DSP equivalence.
+
+Each insertion, enabling, setup, physical and bypass phase receives a separate
+durable dispatch fence and actual ACK. Missing response, mismatch or partial state
+stops later phases. Current concrete Device/parameter cohorts and complete native
+Clip/note evidence remain guarded. Reopened chains require separate explicit
+whole-current-chain adoption. Authored bypass adopts only the actual Off control
+and current handles; physical value agreement remains residual until explicitly
+enabled and resolved. Native order conflicts are refused, without automatic
+removal or reorder.
+
+Geometry revision changes only Clip end and flat meter with unchanged attack keys,
+full note values and native IDs; all tails must fit. End, numerator and denominator
+are checked after each changed setter. Inactive loop-end state may remain independent
+or reflect the actual unlooped Clip end; unexpected coupling stops the operation.
+Fresh Clip adoption grants geometry as a fourth touched domain. Saved historical
+two- or three-domain grants retain their exact scope until fresh explicit adoption.
+
+Set settings support a single exact origin tempo converted through effective
+quarter-note BPM and a single initial global meter. Transport is idle at origin;
+Main tempo parameter eligibility, native Song/Track/Scene/cue and retained Part/Device
+cohorts are checked before and after each changed scalar. Explicit approval affects
+all Tracks. Arrangement tempo/meter populations remain unobserved, and notation
+beat groups are reported as unapplied. A verified current no-op has no native setter.
+Unknown Set-setting outcomes block later managed setters in the active history namespace;
+zero-setter current-object adoption remains available to permit fresh explicit Set approval.
+Workspace open and backup application cannot switch away from unresolved active history.
+Earlier uncertainty remains retained and queryable. Startup on a different workspace does not
+discover unrelated history directories, and legacy native tools do not use this managed barrier.
+
+Selected Step pan replacement requires approval of the exact current preview and
+whole selected parameter envelope, including unsampled state and same-parameter
+modulation. It clears only that parameter, then creates/inserts once with actual
+phase readback. Initial absent-envelope authoring shares the 64-Step bound and guards native
+identity, notes and Device state before every phase and before sealing the result. Complete known
+reply capacity is checked before its dispatch fence and before native creation. Interior samples are
+incomplete breakpoint evidence; other parameter envelopes remain untouched. Native
+Set save/reopen, exact Python API behavior and audible response remain final-host
+qualification obligations.

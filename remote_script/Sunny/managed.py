@@ -25,6 +25,7 @@ from .handler import (
 )
 from .managed_capacity import (
     guard_creation_response_capacity,
+    guard_envelope_author_response_capacity,
     guard_managed_response_capacity,
     guard_note_response_capacity,
     guard_operation_reservation_capacity,
@@ -49,6 +50,12 @@ MANAGED_CALLS = frozenset(
         "sunny_managed_update_device_parameters",
         "sunny_managed_preview_devices",
         "sunny_managed_adopt_devices",
+        "sunny_managed_update_clip_geometry",
+        "sunny_managed_preview_song_settings",
+        "sunny_managed_apply_song_settings",
+        "sunny_managed_preview_envelope_replacement",
+        "sunny_managed_replace_envelope",
+        "sunny_managed_update_device_modes",
     }
 )
 MANAGED_READS = frozenset(
@@ -59,6 +66,8 @@ MANAGED_READS = frozenset(
         "sunny_managed_sample_envelope",
         "sunny_managed_preview_adoption",
         "sunny_managed_preview_devices",
+        "sunny_managed_preview_song_settings",
+        "sunny_managed_preview_envelope_replacement",
     }
 )
 
@@ -399,9 +408,25 @@ def valid_managed_request(name: str, args: list[Any]) -> bool:
     if name not in MANAGED_CALLS or len(args) != 1 or type(args[0]) is not dict:
         return False
     value = args[0]
+    if name in ("sunny_managed_preview_envelope_replacement", "sunny_managed_replace_envelope"):
+        from .managed_envelope_revision import valid_revision_request
+
+        envelope_accepted: bool = valid_revision_request(name, args)
+        return envelope_accepted
+    if name == "sunny_managed_update_clip_geometry":
+        from .managed_geometry import valid_managed_geometry_request
+
+        geometry_accepted: bool = valid_managed_geometry_request(name, args)
+        return geometry_accepted
+    if name in ("sunny_managed_preview_song_settings", "sunny_managed_apply_song_settings"):
+        from .managed_song_settings import valid_request
+
+        song_accepted: bool = valid_request(name, value)
+        return song_accepted
     if name in (
         "sunny_managed_insert_device",
         "sunny_managed_update_device_parameters",
+        "sunny_managed_update_device_modes",
         "sunny_managed_preview_devices",
         "sunny_managed_adopt_devices",
     ):
@@ -506,10 +531,16 @@ class ManagedRegistry:
 
     def _reset_helpers(self) -> None:
         from .managed_devices import ManagedDevices
+        from .managed_envelope_revision import ManagedEnvelopeRevision
+        from .managed_geometry import ManagedGeometry
         from .managed_recovery import ManagedRecovery
+        from .managed_song_settings import ManagedSongSettings
 
         self._devices = ManagedDevices(self)
         self._recovery = ManagedRecovery(self, self._devices)
+        self._geometry = ManagedGeometry(self)
+        self._song_settings = ManagedSongSettings(self)
+        self._envelope_revision = ManagedEnvelopeRevision(self)
 
     def attach_handler(self, handler: Any) -> None:
         """Supply the existing adapter; all callbacks still run on its Live dispatch."""
@@ -852,6 +883,7 @@ class ManagedRegistry:
                 path, clip, context["selector"]
             )
             observed = self._capture(record)
+            self._devices.verify_retained_chain(record)
             actual_manifest = copy.deepcopy(observed["manifest"])
             # Creating only this absent lane may change the presence bit.
             # Existing breakpoint populations remain unobserved and untouched.
@@ -937,6 +969,15 @@ class ManagedRegistry:
                 raise RuntimeError("RecoveryUnavailable: managed native handles were not retained")
             device_preview: dict[str, Any] = self._devices.preview(record, request)
             return device_preview
+        if name == "sunny_managed_preview_song_settings":
+            song_preview: dict[str, Any] = self._song_settings.preview(request)
+            return song_preview
+        if name == "sunny_managed_preview_envelope_replacement":
+            record = self._bindings.get((request["project_key"], request["binding_key"]))
+            if record is None:
+                raise RuntimeError("RecoveryUnavailable: managed native handles were not retained")
+            envelope_preview: dict[str, Any] = self._envelope_revision.preview(record, request)
+            return envelope_preview
         if request["document_token"] != self._document_token:
             return {"outcome": "unknown_epoch", "document_token": self._document_token}
         if name == "sunny_managed_operation":
@@ -978,9 +1019,26 @@ class ManagedRegistry:
         try:
             if name == "sunny_managed_adopt_clip":
                 result = self._recovery.adopt(binding, request, operation)
+            elif name == "sunny_managed_apply_song_settings":
+                result = self._song_settings.apply(binding, request, operation)
+            elif name == "sunny_managed_update_clip_geometry":
+                record = self._bindings.get(binding)
+                if record is None:
+                    raise RuntimeError(
+                        "RecoveryUnavailable: managed native handles were not retained"
+                    )
+                result = self._geometry.apply(record, request, operation)
+            elif name == "sunny_managed_replace_envelope":
+                record = self._bindings.get(binding)
+                if record is None:
+                    raise RuntimeError(
+                        "RecoveryUnavailable: managed native handles were not retained"
+                    )
+                result = self._envelope_revision.apply(record, request, operation)
             elif name in (
                 "sunny_managed_insert_device",
                 "sunny_managed_update_device_parameters",
+                "sunny_managed_update_device_modes",
                 "sunny_managed_adopt_devices",
             ):
                 record = self._bindings.get(binding)
@@ -1049,6 +1107,7 @@ class ManagedRegistry:
                     raise RuntimeError(
                         "EnvelopeRevisionUnavailable: an existing target lane is preserved"
                     )
+                guard_envelope_author_response_capacity(operation, before, domain)
                 self._author_context = {
                     "record": record,
                     "parameter": parameter,
@@ -1061,6 +1120,8 @@ class ManagedRegistry:
                 acknowledgement = self._handler._author_step_envelope(
                     path, record["clip"], request["lane"]
                 )
+                if not self.authorize_envelope(record["track"], record["clip"], parameter):
+                    raise RuntimeError("Managed lane final identity/content guard changed")
                 result = {"acknowledgement": acknowledgement, **self._seal(record)}
             guard_managed_response_capacity(operation, result)
             operation.update({"outcome": "acknowledged", "result": result})

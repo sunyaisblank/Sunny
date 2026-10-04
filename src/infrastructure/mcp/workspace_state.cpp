@@ -20,6 +20,7 @@
 #include <sunny/core/timbre/serialization.hpp>
 #include <sunny/core/timbre/validation.hpp>
 #include <sunny/core/timbre/workflows.hpp>
+#include <sunny/infrastructure/ableton/detail/realization_history.hpp>
 #include <sunny/infrastructure/mcp/workspace_state.hpp>
 #include <system_error>
 #include <type_traits>
@@ -753,6 +754,31 @@ void retain_observed_local_identities(WorkspaceState& state,
     validate(view(state));
 }
 
+void guard_native_namespace_transition(const McpSession& session, const WorkspaceState& state) {
+    const auto& runtime = *session.realization;
+    if (runtime.metadata.workspace_namespace == state.native_realization.workspace_namespace)
+        return;
+    auto retained = runtime.store;
+    if (!retained && runtime.metadata.history_base_directory) {
+        auto opened = RealizationStore::open(*runtime.metadata.history_base_directory,
+                                             runtime.metadata.workspace_namespace,
+                                             RealizationStoreMode::OpenExisting);
+        if (!opened)
+            deny("Native namespace switch refused: active history is unavailable: " +
+                 opened.error().message);
+        retained = std::move(*opened);
+    }
+    if (retained) {
+        if (const auto* blocked = realization_detail::set_wide_settings_blocker(*retained))
+            deny("Native namespace switch refused: Set-wide reconciliation required "
+                 "for original "
+                 "attempt_id=" +
+                 blocked->intent.attempt_id +
+                 "; query that token or approve fresh current Set settings before "
+                 "switching");
+    }
+}
+
 void publish(const McpSession& session, WorkspaceState& state) noexcept {
     const bool same_native_namespace = session.realization->metadata.workspace_namespace ==
                                        state.native_realization.workspace_namespace;
@@ -1170,6 +1196,7 @@ WorkspaceResult<json> open_workspace(const McpSession& session, const std::files
         response["native_namespace_durability_confirmed"] = !native_error;
         if (native_error) response["native_history_error"] = *native_error;
         static_cast<void>(response.dump());
+        guard_native_namespace_transition(session, *state);
         publish(session, *state);
         session.realization->namespace_saved_durably = !native_error;
         if (native_error) session.realization->history_error.swap(native_error);
@@ -1274,6 +1301,7 @@ recover_workspace_backup(const McpSession& session, const std::filesystem::path&
         }
         static_cast<void>(response.dump());
         if (apply) {
+            guard_native_namespace_transition(session, *state);
             publish(session, *state);
             session.realization->namespace_saved_durably = !native_error;
             if (native_error) session.realization->history_error.swap(native_error);

@@ -1112,6 +1112,37 @@ void register_mix_tools(McpServer& server, std::shared_ptr<MixSession> session) 
         });
 
     // =========================================================================
+    // set_channel_input_trim
+    // =========================================================================
+    server.register_tool(
+        "set_channel_input_trim",
+        "Set the owning channel's input gain trim in dB, separately from its output fader",
+        {{"type", "object"},
+         {"additionalProperties", false},
+         {"properties",
+          {{"graph_id", {{"type", "integer"}}},
+           {"channel_id", {{"type", "integer"}}},
+           {"input_trim_db", {{"type", "number"}, {"minimum", -24.0}, {"maximum", 24.0}}}}},
+         {"required", {"graph_id", "channel_id", "input_trim_db"}}},
+        [session](const json& params) -> json {
+            const auto graph_id =
+                detail::checked_integer<std::uint64_t>(params.at("graph_id"), "mix graph id");
+            auto* graph = session->find(graph_id);
+            if (!graph) return graph_not_found(graph_id);
+            const auto value = params.at("input_trim_db").get<double>();
+            if (!std::isfinite(value) || value < -24.0 || value > 24.0)
+                return error_response("Input trim must be finite and in [-24, +24] dB");
+            const auto channel = ChannelStripId{
+                detail::checked_integer<std::uint64_t>(params.at("channel_id"), "channel id")};
+            const auto found = std::find_if(graph->channels.begin(),
+                                            graph->channels.end(),
+                                            [&](const auto& strip) { return strip.id == channel; });
+            if (found == graph->channels.end()) return error_response("Channel not found");
+            found->input_trim = static_cast<float>(value);
+            return {{"success", true}};
+        });
+
+    // =========================================================================
     // set_channel_level
     // =========================================================================
     server.register_tool(

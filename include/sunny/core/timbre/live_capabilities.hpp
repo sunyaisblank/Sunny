@@ -20,7 +20,7 @@
 
 namespace sunny::core {
 
-inline constexpr std::uint32_t LIVE_NATIVE_CAPABILITY_REGISTRY_VERSION = 2;
+inline constexpr std::uint32_t LIVE_NATIVE_CAPABILITY_REGISTRY_VERSION = 3;
 
 struct LiveNativeVersion {
     std::uint16_t major = 0;
@@ -61,6 +61,7 @@ enum class LiveNativeModeRequirement : std::uint8_t {
     Eq8StereoBandOn,
     DriftVoice,
     DriftFilter,
+    OwnedEffectSetup,
 };
 
 struct LiveNativeParameterCapability {

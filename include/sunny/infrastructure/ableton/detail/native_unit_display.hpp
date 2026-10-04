@@ -3,6 +3,7 @@
 #include <charconv>
 #include <cmath>
 #include <optional>
+#include <string>
 #include <string_view>
 #include <sunny/core/timbre/live_capabilities.hpp>
 
@@ -12,6 +13,11 @@ struct DisplayReading {
     double value = 0.0;
     std::optional<double> increment;
     bool negative_infinity = false;
+    std::string decimal_token = "0";
+    int decimal_shift = 0;
+    bool decimal_negate = false;
+    int fractional_digits = 0;
+    bool balance = false;
 };
 
 inline std::optional<DisplayReading>
@@ -22,7 +28,11 @@ display_reading(std::string_view raw, Unit unit, bool gain_infinity) {
     raw = raw.substr(first, raw.find_last_not_of(" \t") - first + 1);
     if (gain_infinity && (raw == "-inf dB" || raw == "-∞ dB" || raw == "−inf dB" || raw == "−∞ dB"))
         return DisplayReading{0.0, std::nullopt, true};
-    if (unit == Unit::StereoBalance && raw == "C") return DisplayReading{};
+    if (unit == Unit::StereoBalance && raw == "C") {
+        DisplayReading result;
+        result.balance = true;
+        return result;
+    }
     std::size_t position = 0;
     if (raw[position] == '+' || raw[position] == '-') ++position;
     const auto begin = position;
@@ -85,7 +95,14 @@ display_reading(std::string_view raw, Unit unit, bool gain_infinity) {
         (unit == Unit::Milliseconds && physical < 0.0) ||
         (unit == Unit::StereoBalance && amount <= 0.0))
         return std::nullopt;
-    return DisplayReading{physical, increment, false};
+    return DisplayReading{physical,
+                          increment,
+                          false,
+                          std::string{token},
+                          std::abs(multiplier) == 1000.0 ? 3 : 0,
+                          multiplier < 0.0,
+                          static_cast<int>(fractional_digits),
+                          unit == Unit::StereoBalance};
 }
 
 } // namespace sunny::infrastructure::native_unit_detail

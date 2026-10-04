@@ -1,5 +1,6 @@
 /** Owning project projections, durable dispatch fencing and read-only recovery. */
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <map>
 #include <set>
@@ -7,10 +8,15 @@
 #include <stdexcept>
 #include <sunny/core/detail/serialization_integer.hpp>
 #include <sunny/core/project/validation.hpp>
+#include <sunny/core/rhythm/meter.hpp>
 #include <sunny/core/score/midi_compiler.hpp>
 #include <sunny/core/score/time.hpp>
+#include <sunny/infrastructure/ableton/detail/realization_history.hpp>
 #include <sunny/infrastructure/ableton/managed_devices.hpp>
+#include <sunny/infrastructure/ableton/managed_envelope_revision.hpp>
 #include <sunny/infrastructure/ableton/managed_recovery.hpp>
+#include <sunny/infrastructure/ableton/managed_song_settings.hpp>
+#include <sunny/infrastructure/ableton/native_effect_plan.hpp>
 #include <sunny/infrastructure/ableton/native_timbre_plan.hpp>
 #include <sunny/infrastructure/ableton/realization_store.hpp>
 #include <sunny/infrastructure/formats/ableton_score.hpp>
@@ -77,7 +83,7 @@ latest(const RealizationStore& store, std::uint64_t score, std::uint64_t part) {
 }
 
 const ManagedOperationReceipt& last_receipt(const RealizationStoredAttempt& attempt) {
-    return attempt.evidence.empty() ? attempt.intent.prepared : attempt.evidence.back();
+    return realization_detail::last_receipt(attempt);
 }
 
 struct BindingHistory {
@@ -112,7 +118,9 @@ binding_history(const RealizationStore& store, std::uint64_t score, std::uint64_
             if (!result.acknowledged ||
                 attempt.dispatch_ordinal > result.acknowledged->dispatch_ordinal)
                 result.acknowledged = &attempt;
-        } else if (attempt.dispatch_ordinal > adoption_ordinal &&
+        } else if (attempt.intent.prepared.request.property_or_method !=
+                       "sunny_managed_apply_song_settings" &&
+                   attempt.dispatch_ordinal > adoption_ordinal &&
                    (!result.unresolved ||
                     attempt.dispatch_ordinal > result.unresolved->dispatch_ordinal))
             result.unresolved = &attempt;
@@ -133,6 +141,24 @@ json attempt_summary(const RealizationStoredAttempt& attempt) {
     if (!attempt.bindings.empty())
         output["binding"] = managed_binding_to_json(attempt.bindings.back());
     return output;
+}
+
+class ReconciliationRequired final : public std::runtime_error {
+  public:
+    json response;
+    explicit ReconciliationRequired(const RealizationStoredAttempt& attempt)
+        : std::runtime_error("Reconcile original Part operation " + attempt.intent.attempt_id),
+          response(attempt_summary(attempt)) {
+        response["success"] = false;
+        response["state"] = "reconciliation_required";
+        response["mutation_dispatched"] = false;
+    }
+};
+
+json workflow_failure(const std::exception& failure) {
+    if (const auto* pending = dynamic_cast<const ReconciliationRequired*>(&failure))
+        return pending->response;
+    return decline(failure.what());
 }
 
 struct DesiredPart {
@@ -235,11 +261,42 @@ bool verified_outcome(const ManagedOperationReceipt& receipt, const DesiredPart&
                    update.at("readbacks").end(),
                    [](const auto& readback) { return readback.at("matches_intent") == true; });
     }
+    if (receipt.request.property_or_method == "sunny_managed_replace_envelope") {
+        const auto& update = actual.at("envelope_replacement");
+        return update.at("observed_step_samples_match_request") == true &&
+               update.at("note_ids_and_values_preserved") == true &&
+               update.at("other_finite_properties_preserved") == true &&
+               update.at("device_identity_preserved") == true;
+    }
+    if (receipt.request.property_or_method == "sunny_managed_update_device_modes")
+        return actual.at("device_mode_update").at("clip_and_note_ids_preserved") == true;
     if (receipt.request.property_or_method == "sunny_managed_adopt_devices")
         return actual.at("device_adoption").at("current_values_match_approved_intent") == true;
     if (receipt.request.property_or_method == "sunny_managed_adopt_clip")
         return actual.at("adoption").at("authority_origin") == "explicit_adoption";
+    if (receipt.request.property_or_method == "sunny_managed_update_clip_geometry") {
+        const auto& update = actual.at("clip_geometry_update");
+        constexpr std::array flags{"observed_geometry_matches_request",
+                                   "note_values_preserved",
+                                   "note_ids_preserved",
+                                   "note_cardinality_preserved",
+                                   "other_finite_properties_preserved",
+                                   "device_identity_preserved"};
+        return std::all_of(
+            flags.begin(), flags.end(), [&](const auto* flag) { return update.at(flag) == true; });
+    }
+    if (receipt.request.property_or_method == "sunny_managed_apply_song_settings") {
+        const auto& update = actual.at("song_settings");
+        return update.at("desired_settings_match") == true &&
+               update.at("observed_untouched_state_preserved") == true &&
+               update.at("clip_and_note_ids_preserved") == true;
+    }
     return false;
+}
+
+const RealizationStoredAttempt* global_settings_blocker(const RealizationStore& store,
+                                                        const ManagedBridgeContext& context) {
+    return realization_detail::set_wide_settings_blocker(store, &context);
 }
 
 DesiredPart owning_part(const McpSession& session, const json& arguments) {
@@ -289,6 +346,10 @@ DesiredPart desired_part(const McpSession& session,
             return value.id.value == desired.part_id;
         });
     const auto ppq = detail::checked_integer_or<int>(arguments, "ppq", 480, "ppq");
+    // This read-only probe reconnects and verifies source identity before any
+    // managed dispatch fence. A lost connection never replays a native setter.
+    if (!transport.ensure_connected())
+        throw std::runtime_error("An actual bridge connection is required");
     auto target = transport.target_profile();
     if (!target || !*target)
         throw std::runtime_error("An actual matching bridge target profile is required");
@@ -332,6 +393,22 @@ json dispatch(const std::shared_ptr<RealizationStore>& store,
               const ManagedBridgeContext& context,
               const LomRequest& request,
               LomTransport& transport) {
+    // Explicit current authority can be recovered without claiming an earlier
+    // global operation absent. Clip/device adoption performs no native setters;
+    // fresh Set-wide approval is the only operation that can renew this boundary.
+    if (request.property_or_method != "sunny_managed_apply_song_settings" &&
+        request.property_or_method != "sunny_managed_adopt_clip" &&
+        request.property_or_method != "sunny_managed_adopt_devices") {
+        if (const auto* blocked = global_settings_blocker(*store, context)) {
+            auto output = attempt_summary(*blocked);
+            output["success"] = false;
+            output["state"] = "set_wide_reconciliation_required";
+            output["error"] = "Reconcile the original Set settings token, or explicitly approve "
+                              "a fresh current Set-wide preview before native setters";
+            output["mutation_dispatched"] = false;
+            return output;
+        }
+    }
     auto prepared = prepare_managed_operation(context, request);
     if (!prepared) return decline("Managed operation intent rejected");
     const auto payload = std::get<json>(request.args.at(0));
@@ -525,12 +602,669 @@ source_adoption_selections(const NativeTimbrePlan& plan, const ManagedBindingRec
     return {{source_device_key(plan), 0, ManagedNativeDevice::Drift, device_intents(plan)}};
 }
 
+NativeEffectPlan
+part_effect_plan(const McpSession& session, const DesiredPart& owner, const json& arguments) {
+    std::vector<NativeEffectSelection> selections;
+    const auto& declared = arguments.at("effect_selections");
+    if (!declared.is_array() || declared.empty() || declared.size() >= SUNNY_MANAGED_MAX_DEVICES)
+        throw std::runtime_error("Select 1..15 whole authored effect stages");
+    for (const auto& item : declared) {
+        if (!item.is_object() || item.size() != 3 || !item.contains("kind") ||
+            !item.contains("authored_id") || !item.contains("tolerance"))
+            throw std::runtime_error("Effect selection requires kind, authored_id and tolerance");
+        const auto kind = item.at("kind").get<std::string>();
+        NativeEffectSelectionKind typed;
+        if (kind == "timbre_effect")
+            typed = NativeEffectSelectionKind::TimbreEffect;
+        else if (kind == "mix_input_trim")
+            typed = NativeEffectSelectionKind::MixInputTrim;
+        else if (kind == "mix_effect")
+            typed = NativeEffectSelectionKind::MixEffect;
+        else
+            throw std::runtime_error("Unsupported authored effect selection kind");
+        const auto& tolerance = item.at("tolerance");
+        if (!tolerance.is_object() || tolerance.size() != 4)
+            throw std::runtime_error("Declare effect tolerances in dB, Hz, Q and percent");
+        selections.push_back(
+            {typed,
+             detail::checked_integer<std::uint64_t>(item.at("authored_id"), "authored_id"),
+             {tolerance.at("decibels").get<double>(),
+              tolerance.at("hertz").get<double>(),
+              tolerance.at("quality_factor").get<double>(),
+              tolerance.at("percent").get<double>()}});
+    }
+    const auto& project = session.project->projects.at(owner.score_id);
+    const auto* mix = session.mix->find(project.mix_graph_id);
+    const auto channel =
+        std::find_if(mix->channels.begin(), mix->channels.end(), [&](const auto& strip) {
+            return strip.part_id.value == owner.part_id;
+        });
+    if (channel == mix->channels.end())
+        throw std::runtime_error("Owning Mix channel is unavailable");
+    for (const auto id : project.profile_ids) {
+        const auto* profile = session.timbre->find(id);
+        if (profile->part_id.value != owner.part_id) continue;
+        auto plan = plan_native_effects(*profile, mix, channel->id, selections);
+        if (!plan) throw std::runtime_error(plan.error().diagnostic);
+        return std::move(*plan);
+    }
+    throw std::runtime_error("This Part has no owning Timbre profile");
+}
+
+json effect_selection_schema() {
+    return {{"type", "array"},
+            {"minItems", 1},
+            {"maxItems", 15},
+            {"items",
+             {{"type", "object"},
+              {"additionalProperties", false},
+              {"properties",
+               {{"kind", {{"enum", {"timbre_effect", "mix_input_trim", "mix_effect"}}}},
+                {"authored_id", {{"type", "integer"}, {"minimum", 1}}},
+                {"tolerance",
+                 {{"type", "object"},
+                  {"additionalProperties", false},
+                  {"properties",
+                   {{"decibels", {{"type", "number"}, {"minimum", 0}}},
+                    {"hertz", {{"type", "number"}, {"minimum", 0}}},
+                    {"quality_factor", {{"type", "number"}, {"minimum", 0}}},
+                    {"percent", {{"type", "number"}, {"minimum", 0}}}}},
+                  {"required", {"decibels", "hertz", "quality_factor", "percent"}}}}}},
+              {"required", {"kind", "authored_id", "tolerance"}}}}};
+}
+
+std::vector<ManagedDeviceAdoptionSelection>
+chain_adoption_selections(const McpSession& session,
+                          const DesiredPart& owner,
+                          const json& arguments,
+                          const NativeTimbrePlan& source,
+                          const ManagedBindingReceipt& binding) {
+    auto selections = source_adoption_selections(source, binding);
+    if (!arguments.contains("effect_selections")) return selections;
+    const auto effects = part_effect_plan(session, owner, arguments);
+    if (selections.empty()) return selections;
+    for (const auto& entry : effects.entries) {
+        ManagedDeviceAdoptionSelection selected{
+            entry.device_key, entry.desired_chain_index, entry.device, {}};
+        selected.authored_bypass = !entry.final_modes.empty();
+        if (selected.authored_bypass)
+            selected.enum_intents = entry.final_modes;
+        else {
+            selected.enum_intents = entry.enable_modes;
+            selected.enum_intents.insert(
+                selected.enum_intents.end(), entry.setup_modes.begin(), entry.setup_modes.end());
+            selected.property_intents = entry.setup_properties;
+            selected.physical_intents = entry.setup_physical_intents;
+            for (const auto& intent : entry.physical_intents) {
+                const auto existing = std::find_if(
+                    selected.physical_intents.begin(),
+                    selected.physical_intents.end(),
+                    [&](const auto& item) { return item.capability_id == intent.capability_id; });
+                if (existing != selected.physical_intents.end())
+                    *existing = intent;
+                else
+                    selected.physical_intents.push_back(intent);
+            }
+        }
+        selections.push_back(std::move(selected));
+    }
+    return selections;
+}
+
+json owning_step_pan_lane(const McpSession& session,
+                          const DesiredPart& desired,
+                          const ManagedBindingReceipt& binding,
+                          const json& arguments) {
+    const auto* score = session.score->find(desired.score_id);
+    const auto& owner = session.project->projects.at(desired.score_id);
+    const auto* mix = session.mix->find(owner.mix_graph_id);
+    const auto lane_index =
+        detail::checked_integer<std::uint64_t>(arguments.at("lane_index"), "lane_index");
+    if (lane_index >= mix->automation.size()) throw std::runtime_error("Mix lane does not exist");
+    const auto& authored = mix->automation.at(static_cast<std::size_t>(lane_index));
+    if (authored.target != "channels[" + std::to_string(desired.part_id) + "].spatial.pan" ||
+        authored.interpolation != InterpolationMode::Step)
+        throw std::runtime_error("This operation supports the selected Part's Step panning lane");
+    const auto& mixer = binding.observation.at("manifest").at("mixer");
+    const auto& parameter = mixer.at("panning");
+    if (mixer.at("panning_mode") != 0 || parameter.at("min") != -1.0 || parameter.at("max") != 1.0)
+        throw std::runtime_error("Native stereo panning requires the observed [-1,+1] domain");
+    json points = json::array();
+    double previous = -1.0;
+    for (const auto& point : authored.breakpoints) {
+        auto absolute = score_time_to_absolute_beat(point.time, score->time_map);
+        if (!absolute) throw std::runtime_error("Mix breakpoint has invalid Score time");
+        const double time = absolute->to_float() * 4.0;
+        const double value = static_cast<double>(point.value);
+        if (!std::isfinite(time) || time <= previous || time >= desired.projection.clip_end ||
+            !std::isfinite(value) || value < -1.0 || value > 1.0)
+            throw std::runtime_error("Mix lane times or values exceed the native panning interval");
+        if (points.empty() && time != 0.0)
+            throw std::runtime_error("The finite Step lane must start at Score origin");
+        points.push_back({{"time", time}, {"value", value}});
+        previous = time;
+    }
+    if (points.empty()) throw std::runtime_error("Mix lane has no breakpoints");
+    const json selector = {{"kind", "panning"}};
+    const json lane = {{"parameter", selector},
+                       {"interpolation", "step"},
+                       {"clip_end", desired.projection.clip_end},
+                       {"points", points}};
+    return lane;
+}
+
+struct OwningSongSettings {
+    DesiredPart desired;
+    std::shared_ptr<RealizationStore> store;
+    const RealizationStoredAttempt* prior;
+    ManagedSongSettings settings;
+};
+
+struct OwningLane {
+    DesiredPart desired;
+    std::shared_ptr<RealizationStore> store;
+    ManagedBindingReceipt binding;
+    json lane;
+};
+
+OwningLane owning_lane(const McpSession& session, const json& arguments, LomTransport* transport) {
+    auto owner = owning_part(session, arguments);
+    auto store = history(session, false);
+    const auto retained = binding_history(*store, owner.score_id, owner.part_id);
+    if (retained.unresolved) throw ReconciliationRequired(*retained.unresolved);
+    if (!retained.acknowledged)
+        throw std::runtime_error("Create or explicitly adopt the current native Part first");
+    if (!transport || transport->records_without_execution())
+        throw std::runtime_error("An actual bridge connection is required");
+    auto desired = desired_part(session, arguments, std::move(owner), *transport);
+    auto binding = retained.acknowledged->bindings.back();
+    if (!projection_matches(desired.encoded, binding.observation))
+        throw std::runtime_error(
+            "Revise native Score notes and geometry before Mix lane replacement");
+    static_cast<void>(native_note_associations(desired.keys, desired.encoded, binding.observation));
+    auto lane = owning_step_pan_lane(session, desired, binding, arguments);
+    if (lane.at("points").size() > SUNNY_MANAGED_ENVELOPE_REPLACEMENT_MAX_STEPS)
+        throw std::runtime_error("EnvelopeReplacementUnavailable: selected lane exceeds the "
+                                 "64 native Step-call budget; no dispatch fence was created");
+    return {std::move(desired), std::move(store), std::move(binding), std::move(lane)};
+}
+
+OwningSongSettings
+owning_song_settings(const McpSession& session, const json& arguments, LomTransport* transport) {
+    auto owner = owning_part(session, arguments);
+    auto settings = plan_managed_song_settings(*session.score->find(owner.score_id));
+    if (!settings) throw std::runtime_error(settings.error());
+    auto store = history(session, false);
+    const auto retained = binding_history(*store, owner.score_id, owner.part_id);
+    if (retained.unresolved) throw ReconciliationRequired(*retained.unresolved);
+    if (!retained.acknowledged)
+        throw std::runtime_error("Create or explicitly adopt the current native Part first");
+    if (!transport || transport->records_without_execution())
+        throw std::runtime_error("An actual bridge connection is required");
+    auto desired = desired_part(session, arguments, std::move(owner), *transport);
+    const auto& binding = retained.acknowledged->bindings.back();
+    if (!note_changes(*retained.acknowledged, desired, binding).empty())
+        throw std::runtime_error("Revise native Score notes before Set settings");
+    static_cast<void>(native_note_associations(desired.keys, desired.encoded, binding.observation));
+    return {std::move(desired), std::move(store), retained.acknowledged, *settings};
+}
+
 } // namespace
 
 void register_project_realization_tools(McpServer& server,
                                         const McpSession& session,
                                         LomTransport* transport) {
     auto domain = server.registration_scope(McpDocumentDomain::None);
+    auto effect_schema = revision_schema();
+    effect_schema["additionalProperties"] = false;
+    effect_schema["properties"]["effect_selections"] = effect_selection_schema();
+    effect_schema["required"].push_back("effect_selections");
+    server.register_tool(
+        "project_realization_plan_effects",
+        "Plan explicitly selected owning Timbre EQ and Mix EQ/Utility stages in native order, "
+        "including separate input trim; retain residual intent and physical units",
+        effect_schema,
+        [session](const json& arguments) -> json {
+            try {
+                const auto owner = owning_part(session, arguments);
+                const auto plan = part_effect_plan(session, owner, arguments);
+                return {{"success", true},
+                        {"project_revision", owner.revision},
+                        {"plan", native_effect_plan_to_json(plan)},
+                        {"mutation_dispatched", false},
+                        {"complete_project_realization", false}};
+            } catch (const std::exception& failure) {
+                return workflow_failure(failure);
+            }
+        });
+    server.register_tool(
+        "project_realization_author_effects",
+        "Insert or revise the finite owning EQ/Utility chain after retained Drift; each mode "
+        "and physical phase has its own durable fence and actual readback, stopping on uncertainty",
+        std::move(effect_schema),
+        [session, transport](const json& arguments) -> json {
+            try {
+                auto owner = owning_part(session, arguments);
+                const auto plan = part_effect_plan(session, owner, arguments);
+                auto store = history(session, false);
+                const auto retained = binding_history(*store, owner.score_id, owner.part_id);
+                if (retained.unresolved) {
+                    auto output = attempt_summary(*retained.unresolved);
+                    output["success"] = false;
+                    output["state"] = "reconciliation_required";
+                    output["mutation_dispatched"] = false;
+                    return output;
+                }
+                if (!retained.acknowledged)
+                    return decline("Create or adopt the current native Part first");
+                if (!transport || transport->records_without_execution())
+                    return decline("An actual bridge connection is required");
+                auto desired = desired_part(session, arguments, std::move(owner), *transport);
+                auto binding = retained.acknowledged->bindings.back();
+                if (!projection_matches(desired.encoded, binding.observation))
+                    return decline("Revise native Score notes and geometry before effect phases");
+                static_cast<void>(
+                    native_note_associations(desired.keys, desired.encoded, binding.observation));
+                if (!binding.observation.contains("device_identity"))
+                    return decline("Author or explicitly adopt the current Drift source first");
+                const auto& cohort = binding.observation.at("device_identity").at("cohort");
+                if (cohort.empty() ||
+                    cohort[0].at("device_key") != "source_" + hexadecimal(plan.profile_id.value) ||
+                    cohort[0].at("class_name") != "Drift" || cohort[0].at("role") != "source")
+                    return decline("Author or explicitly adopt the owning Drift source first");
+                if (cohort.size() > plan.entries.size() + 1)
+                    return decline("Native chain has additional stages; select its complete "
+                                   "current finite order");
+                for (std::size_t index = 1; index < cohort.size(); ++index) {
+                    const auto& entry = plan.entries.at(index - 1);
+                    if (entry.desired_chain_index != index ||
+                        cohort[index].at("device_key") != entry.device_key ||
+                        cohort[index].at("class_name") !=
+                            (entry.device == ManagedNativeDevice::Utility ? "StereoGain" : "Eq8"))
+                        return decline("Native effect order conflicts with owning intent; "
+                                       "append-only authoring cannot reorder existing stages");
+                }
+                auto context = managed_bridge_context(*transport);
+                if (!context) return decline("Current native context is unavailable");
+                store = history(session, true);
+                json attempts = json::array();
+                json output;
+                const auto run =
+                    [&](const NativeEffectPlanEntry& entry,
+                        std::string_view phase,
+                        std::span<const ManagedDeviceModeIntent> modes,
+                        std::span<const ManagedDevicePropertyIntent> properties,
+                        std::span<const ManagedDevicePhysicalIntent> physical) -> bool {
+                    auto token = store->new_attempt_id();
+                    if (!token) {
+                        output = decline("New native effect phase identity is unavailable");
+                        return false;
+                    }
+                    Result<LomRequest> request = std::unexpected(ErrorCode::ProtocolError);
+                    if (phase == "insert")
+                        request = make_managed_device_insert_request(
+                            *context, *token, binding, entry.device_key, entry.device, {});
+                    else if (!modes.empty() || !properties.empty())
+                        request = make_managed_device_mode_request(*context,
+                                                                   *token,
+                                                                   binding,
+                                                                   entry.device_key,
+                                                                   entry.device,
+                                                                   modes,
+                                                                   properties);
+                    else
+                        request = make_managed_device_update_request(
+                            *context, *token, binding, entry.device_key, entry.device, physical);
+                    if (!request) {
+                        output =
+                            decline(request.error() == ErrorCode::ManagedReplyCapacityExceeded
+                                        ? "ReplyCapacityUnavailable: effect phase evidence exceeds "
+                                          "the finite bridge limit; no new fence was created"
+                                        : "Current native effect phase admission is unavailable");
+                        return false;
+                    }
+                    output = dispatch(store, desired, *context, *request, *transport);
+                    output["effect_phase"] = phase;
+                    output["device_key"] = entry.device_key;
+                    if (output.contains("attempt_id") && output.at("attempt_id") == *token &&
+                        store->find(*token))
+                        attempts.push_back(*token);
+                    if (output.at("success") != true) return false;
+                    const auto* actual = store->find(*token);
+                    if (!actual || actual->bindings.empty()) {
+                        output["success"] = false;
+                        output["error"] = "Native phase ACK did not retain its binding; later "
+                                          "phases were stopped";
+                        return false;
+                    }
+                    binding = actual->bindings.back();
+                    return true;
+                };
+                bool complete = true;
+                for (const auto& entry : plan.entries) {
+                    const auto current_size =
+                        binding.observation.at("device_identity").at("cohort").size();
+                    if (entry.desired_chain_index == current_size &&
+                        !run(entry, "insert", {}, {}, {})) {
+                        complete = false;
+                        break;
+                    }
+                    if ((!entry.enable_modes.empty() &&
+                         !run(entry, "enable", entry.enable_modes, {}, {})) ||
+                        ((!entry.setup_modes.empty() || !entry.setup_properties.empty()) &&
+                         !run(entry,
+                              "setup_modes",
+                              entry.setup_modes,
+                              entry.setup_properties,
+                              {})) ||
+                        (!entry.setup_physical_intents.empty() &&
+                         !run(entry, "setup_physical", {}, {}, entry.setup_physical_intents)) ||
+                        (!entry.physical_intents.empty() &&
+                         !run(entry, "authored_physical", {}, {}, entry.physical_intents)) ||
+                        (!entry.final_modes.empty() &&
+                         !run(entry, "authored_bypass", entry.final_modes, {}, {}))) {
+                        complete = false;
+                        break;
+                    }
+                }
+                if (output.is_null())
+                    output = {{"success", complete}, {"mutation_dispatched", false}};
+                output["selected_effect_phases_completed"] = complete;
+                output["phase_attempt_ids"] = std::move(attempts);
+                output["scope"] = "selected_part_ordered_native_effect_knobs";
+                output["plan"] = native_effect_plan_to_json(plan);
+                output["native_knob_only"] = true;
+                output["dsp_equivalence_qualified"] = false;
+                output["host_qualified"] = false;
+                output["complete_project_realization"] = false;
+                return output;
+            } catch (const std::exception& failure) {
+                return workflow_failure(failure);
+            }
+        });
+    auto replacement_preview_schema = revision_schema();
+    replacement_preview_schema["additionalProperties"] = false;
+    replacement_preview_schema["properties"]["lane_index"] = {{"type", "integer"}, {"minimum", 0}};
+    replacement_preview_schema["required"].push_back("lane_index");
+    auto replacement_schema = replacement_preview_schema;
+    replacement_schema["properties"]["preview"] = {{"type", "object"}};
+    for (const auto* approval :
+         {"explicit_selected_envelope_replacement", "allow_unsampled_selected_state_overwrite"}) {
+        replacement_schema["properties"][approval] = {{"type", "boolean"}, {"const", true}};
+        replacement_schema["required"].push_back(approval);
+    }
+    replacement_schema["required"].push_back("preview");
+    server.register_tool(
+        "project_realization_preview_mix_lane_replacement",
+        "Preview the selected owning Mix Step pan lane and actual native interior samples; "
+        "samples do not reveal all breakpoints or grant write authority",
+        std::move(replacement_preview_schema),
+        [session, transport](const json& arguments) -> json {
+            try {
+                auto candidate = owning_lane(session, arguments, transport);
+                auto context = managed_bridge_context(*transport);
+                if (!context) return decline("Current native context is unavailable");
+                auto preview = preview_managed_envelope_replacement(
+                    *context, candidate.binding, candidate.lane, *transport);
+                if (!preview || !projection_matches(candidate.desired.encoded,
+                                                    preview->evidence.at("observation")))
+                    return decline("Current selected lane preview is unavailable or differs from "
+                                   "owning Score intent");
+                return {{"success", true},
+                        {"preview", preview->evidence},
+                        {"project_revision", candidate.desired.revision},
+                        {"lane_index", arguments.at("lane_index")},
+                        {"authority_granted", false},
+                        {"mutation_dispatched", false},
+                        {"scope", preview->evidence.at("scope")},
+                        {"complete_project_realization", false}};
+            } catch (const std::exception& failure) {
+                return workflow_failure(failure);
+            }
+        });
+    server.register_tool(
+        "project_realization_replace_mix_lane",
+        "Replace the explicitly approved entire selected native pan envelope from owning Step "
+        "intent, including unsampled state; preserve other lanes and report actual samples",
+        std::move(replacement_schema),
+        [session, transport](const json& arguments) -> json {
+            try {
+                for (const auto* approval : {"explicit_selected_envelope_replacement",
+                                             "allow_unsampled_selected_state_overwrite"})
+                    if (!arguments.at(approval).is_boolean() || arguments.at(approval) != true)
+                        return decline("Explicit approval of the whole selected envelope and "
+                                       "its unsampled state overwrite is required");
+                auto candidate = owning_lane(session, arguments, transport);
+                auto context = managed_bridge_context(*transport);
+                auto preview =
+                    managed_envelope_replacement_preview_from_json(arguments.at("preview"));
+                if (!context || !preview || preview->project_key != candidate.binding.project_key ||
+                    preview->binding_key != candidate.binding.binding_key ||
+                    preview->evidence.at("lane") != candidate.lane ||
+                    !projection_matches(candidate.desired.encoded,
+                                        preview->evidence.at("observation")))
+                    return decline("Approved lane preview differs from current owning intent");
+                const auto& observed = preview->evidence.at("observation");
+                for (const auto* name : {"content_fingerprint",
+                                         "note_identity_fingerprint",
+                                         "device_identity_fingerprint"})
+                    if (observed.value(name, json(nullptr)) !=
+                        candidate.binding.observation.value(name, json(nullptr)))
+                        return decline(
+                            "Retained Part/device state changed; preview the lane again");
+                candidate.store = history(session, true);
+                auto token = candidate.store->new_attempt_id();
+                if (!token) return decline("New lane replacement identity is unavailable");
+                auto request =
+                    make_managed_envelope_replacement_request(*context, *token, *preview);
+                if (!request)
+                    return decline(request.error() == ErrorCode::ManagedReplyCapacityExceeded
+                                       ? "ReplyCapacityUnavailable: selected lane evidence exceeds "
+                                         "the finite bridge limit; no dispatch fence was created"
+                                       : "Approved current lane replacement is unavailable");
+                auto output =
+                    dispatch(candidate.store, candidate.desired, *context, *request, *transport);
+                output["scope"] = preview->evidence.at("scope");
+                output["lane_index"] = arguments.at("lane_index");
+                output["complete_envelope_population_observed"] = false;
+                output["complete_project_realization"] = false;
+                return output;
+            } catch (const std::exception& failure) {
+                return workflow_failure(failure);
+            }
+        });
+    auto song_preview_schema = revision_schema();
+    song_preview_schema["additionalProperties"] = false;
+    server.register_tool(
+        "project_realization_preview_song_settings",
+        "Preview owning constant quarter-note tempo and initial flat meter against the current "
+        "Set and Part; disclose effects on all tracks and grant no authority",
+        std::move(song_preview_schema),
+        [session, transport](const json& arguments) -> json {
+            try {
+                auto candidate = owning_song_settings(session, arguments, transport);
+                const auto& binding = candidate.prior->bindings.back();
+                auto context = managed_bridge_context(*transport);
+                if (!context) return decline("Current native context is unavailable");
+                auto request = make_managed_song_settings_preview_request(
+                    *context, binding, candidate.settings);
+                if (!request)
+                    return decline("Current Set settings preview is unavailable; explicitly "
+                                   "adopt a reopened Part before previewing global changes");
+                const auto response = transport->send(*request);
+                if (!response.success || !response.value ||
+                    !std::holds_alternative<json>(*response.value))
+                    return decline(response.error.value_or("Current Set preview is unavailable"));
+                const auto& raw = std::get<json>(*response.value);
+                auto preview = parse_managed_song_settings_preview(*request, *context, raw);
+                if (!preview ||
+                    !projection_matches(candidate.desired.encoded, preview->observation))
+                    return decline("Current Set preview contradicts the owning Score/Part");
+                const auto* score = session.score->find(candidate.desired.score_id);
+                return {{"success", true},
+                        {"preview", raw},
+                        {"project_revision", candidate.desired.revision},
+                        {"desired_settings", managed_song_settings_to_json(candidate.settings)},
+                        {"scope", "explicit_current_set_settings"},
+                        {"all_tracks_affected", true},
+                        {"authority_granted", false},
+                        {"mutation_dispatched", false},
+                        {"authored_beat_groups_unapplied",
+                         has_distinct_meter_grouping(score->time_map.front().time_signature)},
+                        {"complete_project_realization", false}};
+            } catch (const std::exception& failure) {
+                return workflow_failure(failure);
+            }
+        });
+    auto song_apply_schema = revision_schema();
+    song_apply_schema["additionalProperties"] = false;
+    song_apply_schema["properties"]["preview"] = {{"type", "object"}};
+    song_apply_schema["properties"]["explicit_set_wide_approval"] = {{"type", "boolean"},
+                                                                     {"const", true}};
+    song_apply_schema["required"].push_back("preview");
+    song_apply_schema["required"].push_back("explicit_set_wide_approval");
+    server.register_tool(
+        "project_realization_apply_song_settings",
+        "Apply the exact explicitly approved current Set preview from owning constant tempo and "
+        "initial meter; preserve other observed Set properties and fence once-only scalar writes",
+        std::move(song_apply_schema),
+        [session, transport](const json& arguments) -> json {
+            try {
+                if (!arguments.at("explicit_set_wide_approval").is_boolean() ||
+                    arguments.at("explicit_set_wide_approval") != true)
+                    return decline("Explicit approval of the exact Set-wide preview is required");
+                auto candidate = owning_song_settings(session, arguments, transport);
+                const auto& binding = candidate.prior->bindings.back();
+                auto context = managed_bridge_context(*transport);
+                if (!context) return decline("Current native context is unavailable");
+                auto expected = make_managed_song_settings_preview_request(
+                    *context, binding, candidate.settings);
+                if (!expected) return decline("Current Set settings context is unavailable");
+                auto preview = parse_managed_song_settings_preview(
+                    *expected, *context, arguments.at("preview"));
+                if (!preview ||
+                    !projection_matches(candidate.desired.encoded, preview->observation) ||
+                    binding.observation.value("device_identity_fingerprint", json(nullptr)) !=
+                        preview->approved_preview.at("binding_guard")
+                            .at("device_identity_fingerprint"))
+                    return decline("Approved Set preview differs from current owning intent or "
+                                   "retained Part/device state; preview the current Set again");
+                static_cast<void>(native_note_associations(
+                    candidate.desired.keys, candidate.desired.encoded, preview->observation));
+                candidate.store = history(session, true);
+                auto token = candidate.store->new_attempt_id();
+                if (!token) return decline("New Set settings operation identity is unavailable");
+                auto request = make_managed_song_settings_request(*context, *token, *preview);
+                if (!request)
+                    return decline(
+                        request.error() == ErrorCode::ManagedReplyCapacityExceeded
+                            ? "ReplyCapacityUnavailable: Set evidence exceeds the finite bridge "
+                              "limit; no dispatch fence was created"
+                            : "Approved Set settings intent is unavailable");
+                auto output =
+                    dispatch(candidate.store, candidate.desired, *context, *request, *transport);
+                output["scope"] = "explicit_current_set_settings";
+                output["all_tracks_affected"] = true;
+                output["historical_song_identity_proven"] = false;
+                output["earlier_attempt_history_retained"] = true;
+                const auto* score = session.score->find(candidate.desired.score_id);
+                output["authored_beat_groups_unapplied"] =
+                    has_distinct_meter_grouping(score->time_map.front().time_signature);
+                output["unapplied_domains"] = {"Arrangement tempo/meter populations",
+                                               "other Parts",
+                                               "Timbre devices and parameters",
+                                               "Mix routing and automation"};
+                output["complete_project_realization"] = false;
+                return output;
+            } catch (const std::exception& failure) {
+                return workflow_failure(failure);
+            }
+        });
+    auto geometry_schema = revision_schema();
+    geometry_schema["additionalProperties"] = false;
+    server.register_tool(
+        "project_realization_update_geometry",
+        "Revise only the owning Clip length and flat meter while retaining unchanged attack "
+        "keys, native IDs and values; revise notes separately before shrinking or after extending",
+        std::move(geometry_schema),
+        [session, transport](const json& arguments) -> json {
+            try {
+                auto owner = owning_part(session, arguments);
+                auto store = history(session, false);
+                const auto retained = binding_history(*store, owner.score_id, owner.part_id);
+                if (retained.unresolved) {
+                    auto output = attempt_summary(*retained.unresolved);
+                    output["success"] = false;
+                    output["state"] = "reconciliation_required";
+                    output["mutation_dispatched"] = false;
+                    return output;
+                }
+                if (!retained.acknowledged)
+                    return decline("This Part has no current native binding");
+                if (!transport || transport->records_without_execution())
+                    return decline("An actual bridge connection is required");
+                auto desired = desired_part(session, arguments, std::move(owner), *transport);
+                const auto* prior = retained.acknowledged;
+                const auto& binding = prior->bindings.back();
+                if (!projection_matches(prior->intent.desired_projection, binding.observation) ||
+                    desired.keys != prior->intent.desired_note_keys ||
+                    desired.encoded.at("notes") != prior->intent.desired_projection.at("notes"))
+                    return decline("GeometryOnlyRevisionRequired: keep attack keys and values "
+                                   "unchanged; revise note content in a separate authored phase");
+                static_cast<void>(native_note_associations(prior->intent.desired_note_keys,
+                                                           prior->intent.desired_projection,
+                                                           binding.observation));
+                if (projection_matches(desired.encoded, binding.observation)) {
+                    auto observed = observe_managed_binding(
+                        binding.context, binding.project_key, binding.binding_key, *transport);
+                    auto actual = observed ? managed_observed_binding(*observed)
+                                           : Result<ManagedBindingReceipt>{
+                                                 std::unexpected(ErrorCode::ProtocolError)};
+                    const bool unchanged =
+                        actual && projection_matches(desired.encoded, actual->observation) &&
+                        actual->observation.at("content_fingerprint") ==
+                            binding.observation.at("content_fingerprint") &&
+                        actual->observation.at("note_identity_fingerprint") ==
+                            binding.observation.at("note_identity_fingerprint");
+                    json output = {{"success", unchanged},
+                                   {"state",
+                                    unchanged ? "unchanged_desired_geometry"
+                                              : "native_drift_or_observation_unavailable"},
+                                   {"mutation_dispatched", false},
+                                   {"current_native_state_observed", actual.has_value()},
+                                   {"complete_project_realization", false}};
+                    if (observed) output["native_observation"] = observed->evidence;
+                    return output;
+                }
+                auto context = managed_bridge_context(*transport);
+                store = history(session, true);
+                auto token = store->new_attempt_id();
+                if (!context || !token)
+                    return decline("Native context or operation identity unavailable");
+                auto request =
+                    make_managed_clip_geometry_request(*context,
+                                                       *token,
+                                                       binding,
+                                                       desired.projection.clip_end,
+                                                       desired.projection.signature_numerator,
+                                                       desired.projection.signature_denominator);
+                if (!request)
+                    return decline(
+                        request.error() == ErrorCode::ManagedReplyCapacityExceeded
+                            ? "ReplyCapacityUnavailable: Clip geometry evidence exceeds the "
+                              "finite bridge limit; no dispatch fence was created"
+                            : "Native Clip geometry intent is unsupported; all retained note "
+                              "tails must fit within the desired end");
+                auto output = dispatch(store, desired, *context, *request, *transport);
+                output["scope"] = "selected_part_clip_extent_and_flat_meter";
+                output["complete_envelope_population_observed"] = false;
+                output["linked_envelope_playback_extent_may_follow_clip"] = true;
+                output["complete_project_realization"] = false;
+                return output;
+            } catch (const std::exception& failure) {
+                return workflow_failure(failure);
+            }
+        });
     auto selections_schema = revision_schema();
     selections_schema["additionalProperties"] = false;
     selections_schema["properties"]["selections"] = {
@@ -548,6 +1282,8 @@ void register_project_realization_tools(McpServer& server,
     auto author_timbre_schema = selections_schema;
     auto device_preview_schema = selections_schema;
     auto device_adopt_schema = selections_schema;
+    device_preview_schema["properties"]["effect_selections"] = effect_selection_schema();
+    device_adopt_schema["properties"]["effect_selections"] = effect_selection_schema();
     server.register_tool(
         "project_realization_plan_timbre",
         "Plan explicitly selected Drift physical controls from owning Timbre content without "
@@ -566,7 +1302,7 @@ void register_project_realization_tools(McpServer& server,
                         {"native_observation_available", false},
                         {"complete_project_realization", false}};
             } catch (const std::exception& failure) {
-                return decline(failure.what());
+                return workflow_failure(failure);
             }
         });
     server.register_tool(
@@ -587,8 +1323,7 @@ void register_project_realization_tools(McpServer& server,
                     return output;
                 }
                 const auto plan = part_timbre_plan(session, owner, arguments);
-                if (!transport || transport->records_without_execution() ||
-                    !transport->is_connected())
+                if (!transport || transport->records_without_execution())
                     return decline("An actual bridge connection is required");
                 auto desired = desired_part(session, arguments, std::move(owner), *transport);
                 const auto* prior = retained.acknowledged;
@@ -648,13 +1383,13 @@ void register_project_realization_tools(McpServer& server,
                                                "Mix routing and automation"};
                 return output;
             } catch (const std::exception& failure) {
-                return decline(failure.what());
+                return workflow_failure(failure);
             }
         });
     server.register_tool(
         "project_realization_preview_device_adoption",
-        "Preview explicit current Drift source ownership against owning physical Timbre values; "
-        "this finite subset requires an empty or source-only native chain and grants no authority",
+        "Preview explicit current Drift and selected finite effect ownership against owning "
+        "physical intent; require whole current chain agreement and grant no authority",
         std::move(device_preview_schema),
         [session, transport](const json& arguments) -> json {
             try {
@@ -669,8 +1404,7 @@ void register_project_realization_tools(McpServer& server,
                     return output;
                 }
                 const auto plan = part_timbre_plan(session, owner, arguments);
-                if (!transport || transport->records_without_execution() ||
-                    !transport->is_connected())
+                if (!transport || transport->records_without_execution())
                     return decline("An actual bridge connection is required");
                 auto desired = desired_part(session, arguments, std::move(owner), *transport);
                 const auto* prior = retained.acknowledged;
@@ -681,7 +1415,8 @@ void register_project_realization_tools(McpServer& server,
                     return decline("Revise native Score notes before previewing device ownership");
                 auto context = managed_bridge_context(*transport);
                 if (!context) return decline("Current native context is unavailable");
-                const auto selections = source_adoption_selections(plan, binding);
+                const auto selections =
+                    chain_adoption_selections(session, desired, arguments, plan, binding);
                 auto request = make_managed_device_preview_request(*context, binding, selections);
                 if (!request) return decline("Current source device preview intent is unsupported");
                 const auto response = transport->send(*request);
@@ -703,9 +1438,9 @@ void register_project_realization_tools(McpServer& server,
                         {"authority_granted", false},
                         {"mutation_dispatched", false},
                         {"historical_native_identity_restored", false},
-                        {"scope", "empty_or_source_only_current_device_preview"}};
+                        {"scope", "empty_or_whole_current_finite_device_preview"}};
             } catch (const std::exception& failure) {
-                return decline(failure.what());
+                return workflow_failure(failure);
             }
         });
     device_adopt_schema["properties"]["preview"] = {{"type", "object"}};
@@ -714,8 +1449,8 @@ void register_project_realization_tools(McpServer& server,
     device_adopt_schema["required"].push_back("explicit_adoption");
     server.register_tool(
         "project_realization_adopt_devices",
-        "Explicitly adopt the exact approved current Drift source preview after matching current "
-        "owning Score and physical Timbre selections; grant fresh current-object authority",
+        "Explicitly adopt the exact approved current finite device chain after matching owning "
+        "Score, Timbre and selected effects; grant fresh current-object authority",
         std::move(device_adopt_schema),
         [session, transport](const json& arguments) -> json {
             try {
@@ -734,8 +1469,7 @@ void register_project_realization_tools(McpServer& server,
                     return output;
                 }
                 const auto plan = part_timbre_plan(session, owner, arguments);
-                if (!transport || transport->records_without_execution() ||
-                    !transport->is_connected())
+                if (!transport || transport->records_without_execution())
                     return decline("An actual bridge connection is required");
                 auto desired = desired_part(session, arguments, std::move(owner), *transport);
                 const auto* prior = retained.acknowledged;
@@ -746,7 +1480,8 @@ void register_project_realization_tools(McpServer& server,
                     return decline("Revise native Score notes before adopting device ownership");
                 auto context = managed_bridge_context(*transport);
                 if (!context) return decline("Current native context is unavailable");
-                const auto selections = source_adoption_selections(plan, binding);
+                const auto selections =
+                    chain_adoption_selections(session, desired, arguments, plan, binding);
                 auto preview_request =
                     make_managed_device_preview_request(*context, binding, selections);
                 if (!preview_request)
@@ -769,7 +1504,7 @@ void register_project_realization_tools(McpServer& server,
                               "the finite bridge limit; no dispatch fence was created"
                             : "Approved current native device adoption is unsupported");
                 auto output = dispatch(store, desired, *context, *request, *transport);
-                output["scope"] = "explicit_empty_or_current_drift_device_ownership";
+                output["scope"] = "explicit_empty_or_whole_current_finite_device_ownership";
                 output["plan"] = native_timbre_plan_to_json(plan);
                 output["historical_native_identity_restored"] = false;
                 output["native_knob_only"] = true;
@@ -777,7 +1512,7 @@ void register_project_realization_tools(McpServer& server,
                 output["complete_project_realization"] = false;
                 return output;
             } catch (const std::exception& failure) {
-                return decline(failure.what());
+                return workflow_failure(failure);
             }
         });
     auto preview_schema = revision_schema();
@@ -804,8 +1539,7 @@ void register_project_realization_tools(McpServer& server,
         [session, transport](const json& arguments) -> json {
             try {
                 auto owner = owning_part(session, arguments);
-                if (!transport || transport->records_without_execution() ||
-                    !transport->is_connected())
+                if (!transport || transport->records_without_execution())
                     return decline("An actual bridge connection is required");
                 auto desired = desired_part(session, arguments, std::move(owner), *transport);
                 auto context = managed_bridge_context(*transport);
@@ -844,7 +1578,7 @@ void register_project_realization_tools(McpServer& server,
                 if (association_error) output["association_error"] = *association_error;
                 return output;
             } catch (const std::exception& failure) {
-                return decline(failure.what());
+                return workflow_failure(failure);
             }
         });
     auto adopt_schema = revision_schema();
@@ -864,8 +1598,7 @@ void register_project_realization_tools(McpServer& server,
                 if (!arguments.at("explicit_adoption").is_boolean() ||
                     arguments.at("explicit_adoption") != true)
                     return decline("Explicit approval of the exact current preview is required");
-                if (!transport || transport->records_without_execution() ||
-                    !transport->is_connected())
+                if (!transport || transport->records_without_execution())
                     return decline("An actual bridge connection is required");
                 auto desired = desired_part(session, arguments, std::move(owner), *transport);
                 auto preview = managed_adoption_preview_from_json(arguments.at("preview"));
@@ -897,7 +1630,7 @@ void register_project_realization_tools(McpServer& server,
                 output["complete_project_realization"] = false;
                 return output;
             } catch (const std::exception& failure) {
-                return decline(failure.what());
+                return workflow_failure(failure);
             }
         });
     server.register_tool(
@@ -917,8 +1650,7 @@ void register_project_realization_tools(McpServer& server,
                     output["mutation_dispatched"] = false;
                     return output;
                 }
-                if (!transport || transport->records_without_execution() ||
-                    !transport->is_connected()) {
+                if (!transport || transport->records_without_execution()) {
                     if (const auto* prior = retained.acknowledged) {
                         auto output = attempt_summary(*prior);
                         output["success"] = false;
@@ -960,7 +1692,7 @@ void register_project_realization_tools(McpServer& server,
                             : "Native clip intent rejected");
                 return dispatch(store, desired, *context, *request, *transport);
             } catch (const std::exception& failure) {
-                return decline(failure.what());
+                return workflow_failure(failure);
             }
         });
     server.register_tool(
@@ -980,8 +1712,7 @@ void register_project_realization_tools(McpServer& server,
                     output["mutation_dispatched"] = false;
                     return output;
                 }
-                if (!transport || transport->records_without_execution() ||
-                    !transport->is_connected())
+                if (!transport || transport->records_without_execution())
                     return decline("An actual bridge connection is required");
                 store = history(session, true);
                 auto desired =
@@ -1037,7 +1768,7 @@ void register_project_realization_tools(McpServer& server,
                             : "Native note revision is unsupported for this binding");
                 return dispatch(store, desired, *context, *request, *transport);
             } catch (const std::exception& failure) {
-                return decline(failure.what());
+                return workflow_failure(failure);
             }
         });
     auto lane_schema = revision_schema();
@@ -1061,8 +1792,7 @@ void register_project_realization_tools(McpServer& server,
                     output["mutation_dispatched"] = false;
                     return output;
                 }
-                if (!transport || transport->records_without_execution() ||
-                    !transport->is_connected())
+                if (!transport || transport->records_without_execution())
                     return decline("An actual bridge connection is required");
                 store = history(session, true);
                 auto desired =
@@ -1073,45 +1803,13 @@ void register_project_realization_tools(McpServer& server,
                 const auto binding = prior->bindings.back();
                 if (!note_changes(*prior, desired, binding).empty())
                     return decline("Revise the native notes before authoring the current Mix lane");
-                const auto* score = session.score->find(desired.score_id);
-                const auto& owner = session.project->projects.at(desired.score_id);
-                const auto* mix = session.mix->find(owner.mix_graph_id);
-                const auto lane_index = detail::checked_integer<std::uint64_t>(
-                    arguments.at("lane_index"), "lane_index");
-                if (lane_index >= mix->automation.size()) return decline("Mix lane does not exist");
-                const auto& authored = mix->automation.at(static_cast<std::size_t>(lane_index));
-                if (authored.target !=
-                        "channels[" + std::to_string(desired.part_id) + "].spatial.pan" ||
-                    authored.interpolation != InterpolationMode::Step)
-                    return decline("This operation supports the selected Part's Step panning lane");
-                const auto& mixer = binding.observation.at("manifest").at("mixer");
-                const auto& parameter = mixer.at("panning");
-                if (mixer.at("panning_mode") != 0 || parameter.at("min") != -1.0 ||
-                    parameter.at("max") != 1.0)
-                    return decline("Native stereo panning requires the observed [-1,+1] domain");
-                json points = json::array();
-                double previous = -1.0;
-                for (const auto& point : authored.breakpoints) {
-                    auto absolute = score_time_to_absolute_beat(point.time, score->time_map);
-                    if (!absolute) return decline("Mix breakpoint has invalid Score time");
-                    const double time = absolute->to_float() * 4.0;
-                    const double value = static_cast<double>(point.value);
-                    if (!std::isfinite(time) || time <= previous ||
-                        time >= desired.projection.clip_end || !std::isfinite(value) ||
-                        value < -1.0 || value > 1.0)
-                        return decline(
-                            "Mix lane times or values exceed the native panning interval");
-                    if (points.empty() && time != 0.0)
-                        return decline("The finite Step lane must start at Score origin");
-                    points.push_back({{"time", time}, {"value", value}});
-                    previous = time;
-                }
-                if (points.empty()) return decline("Mix lane has no breakpoints");
-                const json selector = {{"kind", "panning"}};
-                const json lane = {{"parameter", selector},
-                                   {"interpolation", "step"},
-                                   {"clip_end", desired.projection.clip_end},
-                                   {"points", points}};
+                const auto lane = owning_step_pan_lane(session, desired, binding, arguments);
+                if (lane.at("points").size() > SUNNY_MANAGED_ENVELOPE_MAX_STEPS)
+                    return decline("EnvelopeAuthoringUnavailable: selected lane exceeds the "
+                                   "64 native Step-call budget; no dispatch fence was created");
+                const auto& selector = lane.at("parameter");
+                const auto& points = lane.at("points");
+                const auto lane_index = arguments.at("lane_index").get<std::uint64_t>();
                 for (const auto& [id, attempt] : store->attempts()) {
                     static_cast<void>(id);
                     if (attempt.intent.score_id != ScoreId{desired.score_id} ||
@@ -1127,8 +1825,9 @@ void register_project_realization_tools(McpServer& server,
                         output["success"] = false;
                         output["state"] = "existing_envelope_preserved";
                         output["message"] =
-                            "The existing native lane is retained; complete envelope "
-                            "revision is not supported by sampled readback";
+                            "The existing native lane is retained; complete selected-envelope "
+                            "replacement requires project_realization_preview_mix_lane_replacement "
+                            "and explicit unsampled-state overwrite approval";
                         return output;
                     }
                 }
@@ -1137,7 +1836,10 @@ void register_project_realization_tools(McpServer& server,
                 if (!context || !token) return decline("Native context or token unavailable");
                 auto request = make_managed_envelope_request(*context, *token, binding, lane);
                 if (!request)
-                    return decline("Native lane admission is unavailable for this binding");
+                    return decline(request.error() == ErrorCode::ManagedReplyCapacityExceeded
+                                       ? "ReplyCapacityUnavailable: initial lane evidence exceeds "
+                                         "the finite bridge limit; no dispatch fence was created"
+                                       : "Native lane admission is unavailable for this binding");
                 auto output = dispatch(store, desired, *context, *request, *transport);
                 output["scope"] = "selected_part_mix_panning_step_lane";
                 output["unapplied_domains"] = {"global Song settings",
@@ -1146,7 +1848,8 @@ void register_project_realization_tools(McpServer& server,
                                                "Mix routing, static mixer values and other lanes"};
                 output["complete_project_realization"] = false;
                 output["lane_index"] = lane_index;
-                output["lane_target"] = authored.target;
+                output["lane_target"] =
+                    "channels[" + std::to_string(desired.part_id) + "].spatial.pan";
                 output["complete_envelope_population_observed"] = false;
                 output["native_lane_samples_verified"] = false;
                 if (!output.contains("actual_receipt")) return output;
@@ -1198,7 +1901,7 @@ void register_project_realization_tools(McpServer& server,
                                              : "verification_mismatch_or_readback_unavailable";
                 return output;
             } catch (const std::exception& failure) {
-                return decline(failure.what());
+                return workflow_failure(failure);
             }
         });
     server.register_tool(
@@ -1232,6 +1935,10 @@ void register_project_realization_tools(McpServer& server,
                 output["success"] = true;
                 output["current_native_state_observed"] = false;
                 if (!transport || transport->records_without_execution()) return output;
+                if (!transport->ensure_connected()) {
+                    output["native_observation_error"] = "Current bridge connection unavailable";
+                    return output;
+                }
                 auto observed =
                     observe_managed_binding(attempt->intent.prepared.context,
                                             project_key(session, attempt->intent.score_id.value),
@@ -1245,7 +1952,7 @@ void register_project_realization_tools(McpServer& server,
                     output["native_observation_error"] = "Current native observation unavailable";
                 return output;
             } catch (const std::exception& failure) {
-                return decline(failure.what());
+                return workflow_failure(failure);
             }
         });
     server.register_tool(
@@ -1256,13 +1963,36 @@ void register_project_realization_tools(McpServer& server,
          {"required", {"attempt_id"}}},
         [session, transport](const json& arguments) -> json {
             try {
-                auto store = history(session, true);
+                auto store = history(session, false);
                 const auto token = arguments.at("attempt_id").get<std::string>();
                 const auto* attempt = store->find(token);
                 if (!attempt) return decline("No retained native attempt exists");
                 if (!transport || transport->records_without_execution())
                     return decline("An actual bridge connection is required");
-                auto observed = reconcile_managed_operation(last_receipt(*attempt), *transport);
+                if (!transport->ensure_connected()) {
+                    auto output = attempt_summary(*attempt);
+                    output["success"] = false;
+                    output["query_succeeded"] = false;
+                    output["history_saved"] = false;
+                    output["mutation_retried"] = false;
+                    output["error"] = "Current bridge connection unavailable";
+                    return output;
+                }
+                std::optional<ManagedOperationReceipt> query_evidence;
+                auto observed = reconcile_managed_operation(
+                    last_receipt(*attempt), *transport, &query_evidence);
+                if (!query_evidence) {
+                    auto output = attempt_summary(*attempt);
+                    output["success"] = false;
+                    output["query_succeeded"] = false;
+                    output["history_saved"] = false;
+                    output["mutation_retried"] = false;
+                    output["error"] = observed
+                                          ? observed->error.value_or("Native query unavailable")
+                                          : "Reconciliation response rejected; retained history "
+                                            "remains unchanged";
+                    return output;
+                }
                 if (!observed)
                     return decline(
                         "Reconciliation response rejected; retained history remains unchanged");
@@ -1272,12 +2002,14 @@ void register_project_realization_tools(McpServer& server,
                 auto saved = store->append_evidence(token, *observed, binding);
                 auto output = attempt_summary(*store->find(token));
                 output["success"] = saved.has_value();
+                output["query_succeeded"] = true;
+                output["actual_receipt"] = managed_receipt_to_json(*query_evidence);
                 output["history_saved"] = saved.has_value();
                 output["mutation_retried"] = false;
                 if (!saved) output["error"] = saved.error().message;
                 return output;
             } catch (const std::exception& failure) {
-                return decline(failure.what());
+                return workflow_failure(failure);
             }
         });
 }

@@ -92,3 +92,31 @@ def test_unsupported_interpolation_declines_before_envelope_or_history_mutation(
         track = workflow.live.song.tracks[1]
         assert track.clip_slots[0].clip.automation_envelope(track.mixer_device.panning) is None
         assert ledger.read_bytes() == before
+
+
+def test_initial_lane_65_steps_declines_before_durable_fence_or_native_calls(mix_workflow):
+    """A tiny but excessive Step lane cannot reserve an authoring attempt."""
+    workflow = mix_workflow
+    with workflow.process() as client:
+        _author(client, workflow)
+        assert _realize(client, "project_realization_create")["success"]
+        _ok(
+            client,
+            "add_mix_automation",
+            graph_id=1,
+            target="channels[1].spatial.pan",
+            interpolation=0,
+            breakpoints=[
+                {"bar": 1, "beat_num": i, "beat_den": 128, "value": 0.25} for i in range(65)
+            ],
+        )
+        ledger = workflow.history_ledger()
+        before = ledger.read_bytes()
+        outcome = _apply(client)
+        assert outcome["success"] is False, outcome
+        assert "64 native Step-call budget" in outcome["error"]
+        assert not outcome.get("dispatch_fenced", False)
+        assert ledger.read_bytes() == before
+        track = workflow.live.song.tracks[1]
+        assert track.clip_slots[0].clip.automation_envelope(track.mixer_device.panning) is None
+        assert "sunny_managed_author_envelope" not in workflow.managed_calls

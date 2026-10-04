@@ -7,7 +7,7 @@
 #include <sunny/infrastructure/ableton/detail/managed_devices.hpp>
 #include <sunny/infrastructure/ableton/detail/managed_fingerprint.hpp>
 #include <sunny/infrastructure/ableton/detail/managed_notes.hpp>
-#include <sunny/infrastructure/ableton/detail/native_unit_display.hpp>
+#include <sunny/infrastructure/ableton/detail/native_unit_numeric.hpp>
 #include <sunny/infrastructure/ableton/managed_devices.hpp>
 
 namespace sunny::infrastructure {
@@ -19,6 +19,7 @@ using Unit = sunny::core::LiveNativePhysicalUnit;
 constexpr std::string_view insert_method = "sunny_managed_insert_device";
 constexpr std::string_view update_method = "sunny_managed_update_device_parameters";
 constexpr std::string_view preview_method = "sunny_managed_preview_devices";
+constexpr std::string_view mode_method = "sunny_managed_update_device_modes";
 constexpr std::string_view adopt_method = "sunny_managed_adopt_devices";
 
 bool fields(const json& value, std::initializer_list<std::string_view> names) {
@@ -117,6 +118,49 @@ bool parameter_descriptor(const json& value) {
     const double low = value.at("minimum"), high = value.at("maximum"), current = value.at("value");
     return low <= current && current <= high &&
            (value.at("is_quantized") == true || value.at("value_items").empty());
+}
+const sunny::core::LiveNativeParameterCapability* mode_capability(const std::string& id) {
+    const auto catalogue = sunny::core::live_native_parameter_registry();
+    const auto found =
+        std::ranges::find(catalogue, id, &sunny::core::LiveNativeParameterCapability::id);
+    return found != catalogue.end() &&
+                   found->kind == sunny::core::LiveNativeParameterKind::Quantized &&
+                   found->device_class_name != "Drift"
+               ? &*found
+               : nullptr;
+}
+bool enum_choice(const json& descriptor, std::uint32_t count, const json& label) {
+    if (!parameter_descriptor(descriptor) || descriptor.at("is_quantized") != true ||
+        descriptor.at("is_enabled") != true || descriptor.at("state").get<int>() > 1 ||
+        descriptor.at("automation_state") != 0 || descriptor.at("minimum") != 0.0 ||
+        descriptor.at("maximum") != static_cast<double>(count - 1) ||
+        std::trunc(descriptor.at("value").get<double>()) != descriptor.at("value").get<double>() ||
+        descriptor.at("value_items").size() != count || !text(label, 256))
+        return false;
+    std::set<std::string> labels;
+    for (const auto& item : descriptor.at("value_items"))
+        if (!labels.insert(item.template get<std::string>()).second) return false;
+    if (!labels.contains(label.get<std::string>())) return false;
+    return count != 2 || labels == std::set<std::string>{"Off", "On"};
+}
+bool proven_effect_bypass(const json& entry) {
+    if (entry.at("role") != "effect") return false;
+    const json* on = nullptr;
+    for (const auto& parameter : entry.at("parameters"))
+        if (parameter.at("name") == "Device On" || parameter.at("original_name") == "Device On") {
+            if (on || parameter.at("original_name") != "Device On") return false;
+            on = &parameter.at("descriptor");
+        }
+    // Bypass capture itself does not require writable/unaudited parameters; it
+    // proves actual Off only. Mode setter admission separately checks
+    // eligibility.
+    if (!on || on->at("is_quantized") != true || on->at("minimum") != 0.0 ||
+        on->at("maximum") != 1.0 || on->at("value_items").size() != 2 ||
+        (on->at("value") != 0.0 && on->at("value") != 1.0))
+        return false;
+    const auto& items = on->at("value_items");
+    return ((items[0] == "Off" && items[1] == "On") || (items[0] == "On" && items[1] == "Off")) &&
+           items[on->at("value").get<std::size_t>()] == "Off";
 }
 bool voice(const json& value) {
     if (!fields(value, {"index", "value_items", "label"}) || !value.at("value_items").is_array() ||
@@ -239,6 +283,9 @@ bool readback_matches(const json& readback,
     const auto display = native_unit_detail::display_reading(
         value.at("display").get_ref<const std::string&>(), candidate.unit, false);
     const double scale = candidate.balance_full_scale.value_or(1.0), target = candidate.target;
+    const auto decimal = display ? native_unit_detail::decimal_display_comparison(
+                                       *display, target, candidate.tolerance, scale, 28)
+                                 : std::nullopt;
     const double physical = value.at("display_value");
     if (((candidate.unit == Unit::Hertz || candidate.unit == Unit::QualityFactor) &&
          physical <= 0.0) ||
@@ -246,13 +293,14 @@ bool readback_matches(const json& readback,
          physical < 0.0) ||
         (candidate.unit == Unit::StereoBalance && (physical < -1.0 || physical > 1.0)))
         return false;
-    return display && close(display->value / scale, value.at("display_value")) &&
+    return display && decimal && decimal->within_tolerance &&
+           close(decimal->display_value, value.at("display_value")) &&
            display->increment.has_value() == !value.at("display_increment").is_null() &&
            (!display->increment ||
             (finite(value.at("display_increment")) &&
-             close(*display->increment / scale, value.at("display_increment")))) &&
-           close(std::abs(display->value / scale - target), value.at("absolute_display_error")) &&
-           std::abs(value.at("display_value").get<double>() - target) <= candidate.tolerance &&
+             close(*decimal->display_increment, value.at("display_increment")))) &&
+           native_unit_detail::arithmetic_equal(decimal->absolute_display_error,
+                                                value.at("absolute_display_error")) &&
            value.at("internal_value").get<double>() >= candidate.descriptor.minimum &&
            value.at("internal_value").get<double>() <= candidate.descriptor.maximum;
 }
@@ -330,7 +378,7 @@ bool device_identity_valid(const json& identity) {
                 !key(entry.at("device_key")) ||
                 !keys.insert(entry.at("device_key").get<std::string>()).second ||
                 !text(entry.at("class_display_name")) || !text(entry.at("name")) ||
-                entry.at("is_active") != true || entry.at("can_have_chains") != false ||
+                !entry.at("is_active").is_boolean() || entry.at("can_have_chains") != false ||
                 !descriptor_valid({{"browser_name", entry.at("browser_name")},
                                    {"class_name", entry.at("class_name")},
                                    {"type", entry.at("type")},
@@ -345,13 +393,18 @@ bool device_identity_valid(const json& identity) {
                     !text(parameter.at("name")) || !text(parameter.at("original_name")) ||
                     !parameter_descriptor(parameter.at("descriptor")))
                     return false;
+            if (entry.at("is_active") == false && !proven_effect_bypass(entry)) return false;
             const auto& modes = entry.at("modes");
             if (entry.at("class_name") == "Drift") {
                 if (!fields(modes, {"voice_mode", "voice_count"}) ||
                     !voice(modes.at("voice_mode")) || !voice(modes.at("voice_count")))
                     return false;
             } else if (entry.at("class_name") == "Eq8") {
-                if (!fields(modes, {"global_mode"}) || !integer(modes.at("global_mode"), 2))
+                if ((!fields(modes, {"global_mode"}) &&
+                     !(fields(modes, {"global_mode", "edit_mode", "oversample"}) &&
+                       modes.at("edit_mode").is_boolean() &&
+                       modes.at("oversample").is_boolean())) ||
+                    !integer(modes.at("global_mode"), 2))
                     return false;
             } else if (!modes.is_object() || !modes.empty())
                 return false;
@@ -386,6 +439,47 @@ bool device_supplement_valid(const json& observation) {
 }
 bool device_request_valid(std::string_view method, const json& payload) {
     try {
+        if (method == mode_method) {
+            if (!fields(payload,
+                        {"document_token",
+                         "operation_id",
+                         "project_key",
+                         "binding_key",
+                         "expected_content_fingerprint",
+                         "expected_device_identity_fingerprint",
+                         "device_key",
+                         "device",
+                         "enum_intents",
+                         "property_intents"}))
+                return false;
+            auto probe = payload;
+            probe.erase("enum_intents");
+            probe.erase("property_intents");
+            probe["physical_intents"] = json::array();
+            if (!device_request_valid(update_method, probe) ||
+                payload.at("device").at("role") != "effect" ||
+                !payload.at("enum_intents").is_array() ||
+                !payload.at("property_intents").is_array() ||
+                payload.at("enum_intents").size() + payload.at("property_intents").size() == 0 ||
+                payload.at("enum_intents").size() + payload.at("property_intents").size() >
+                    SUNNY_MANAGED_MAX_DEVICE_TARGETS)
+                return false;
+            std::set<std::string> ids;
+            for (const auto& intent : payload.at("enum_intents")) {
+                if (!fields(intent, {"capability_id", "label"}) ||
+                    !text(intent.at("capability_id"), 64) || !text(intent.at("label"), 256) ||
+                    !ids.insert(intent.at("capability_id").get<std::string>()).second)
+                    return false;
+                const auto* entry = mode_capability(intent.at("capability_id").get<std::string>());
+                if (!entry || payload.at("device").at("class_name") != entry->device_class_name)
+                    return false;
+            }
+            const auto& properties = payload.at("property_intents");
+            return properties.empty() ||
+                   (payload.at("device").at("class_name") == "Eq8" &&
+                    properties ==
+                        json::array({json{{"property", "global_mode"}, {"label", "Stereo"}}}));
+        }
         if (method == adopt_method) {
             return fields(payload,
                           {"document_token",
@@ -415,7 +509,15 @@ bool device_request_valid(std::string_view method, const json& payload) {
             std::set<std::string> keys;
             for (std::size_t index = 0; index < payload.at("devices").size(); ++index) {
                 const auto& entry = payload.at("devices")[index];
-                if (!fields(entry, {"device_key", "chain_index", "device", "physical_intents"}) ||
+                if ((!fields(entry, {"device_key", "chain_index", "device", "physical_intents"}) &&
+                     !fields(entry,
+                             {"device_key",
+                              "chain_index",
+                              "device",
+                              "physical_intents",
+                              "enum_intents",
+                              "property_intents",
+                              "authored_bypass"})) ||
                     !integer(entry.at("chain_index"), index) || entry.at("chain_index") != index ||
                     !key(entry.at("device_key")) ||
                     !keys.insert(entry.at("device_key").get<std::string>()).second ||
@@ -432,6 +534,25 @@ bool device_request_valid(std::string_view method, const json& payload) {
                     {"device", entry.at("device")},
                     {"physical_intents", entry.at("physical_intents")}};
                 if (!device_request_valid(insert_method, probe)) return false;
+                if (entry.contains("authored_bypass")) {
+                    auto mode_probe = probe;
+                    mode_probe.erase("physical_intents");
+                    mode_probe["enum_intents"] = entry.at("enum_intents");
+                    mode_probe["property_intents"] = entry.at("property_intents");
+                    if (!entry.at("authored_bypass").is_boolean() ||
+                        !device_request_valid(mode_method, mode_probe))
+                        return false;
+                    const auto expected = json::array({json{
+                        {"capability_id",
+                         entry.at("device").at("class_name") == "StereoGain" ? "utility.enabled"
+                                                                             : "eq8.enabled"},
+                        {"label", "Off"}}});
+                    if (entry.at("authored_bypass") == true &&
+                        (!entry.at("physical_intents").empty() ||
+                         !entry.at("property_intents").empty() ||
+                         entry.at("enum_intents") != expected))
+                        return false;
+                }
             }
             return true;
         }
@@ -518,6 +639,36 @@ bool device_preview_valid(const json& preview) {
             if (member.at("device_key") != declared.at("device_key")) return false;
             for (const auto* field : {"browser_name", "class_name", "type", "role"})
                 if (member.at(field) != declared.at("device").at(field)) return false;
+            if (declared.contains("authored_bypass")) {
+                if (declared.at("authored_bypass") != !member.at("is_active").get<bool>())
+                    return false;
+                for (const auto& intent : declared.at("enum_intents")) {
+                    const auto* entry =
+                        mode_capability(intent.at("capability_id").get<std::string>());
+                    if (!entry) return false;
+                    const json* parameter = nullptr;
+                    for (const auto& candidate : member.at("parameters"))
+                        if (candidate.at("name") == entry->parameter_original_name ||
+                            candidate.at("original_name") == entry->parameter_original_name) {
+                            if (parameter ||
+                                candidate.at("original_name") != entry->parameter_original_name)
+                                return false;
+                            parameter = &candidate;
+                        }
+                    if (!parameter || !enum_choice(parameter->at("descriptor"),
+                                                   *entry->expected_enum_items,
+                                                   intent.at("label")))
+                        return false;
+                    const auto& descriptor = parameter->at("descriptor");
+                    if (descriptor.at("value_items")[descriptor.at("value").get<std::size_t>()] !=
+                        intent.at("label"))
+                        return false;
+                }
+                for (const auto& intent : declared.at("property_intents")) {
+                    (void)intent;
+                    if (member.at("modes").at("global_mode") != 0) return false;
+                }
+            }
             for (const auto& intent : declared.at("physical_intents")) {
                 if (resolution_index >= preview.at("resolutions").size()) return false;
                 const auto& evidence = preview.at("resolutions")[resolution_index++];
@@ -571,10 +722,142 @@ bool device_adoption_result_matches_request(const json& payload, const json& res
         return false;
     }
 }
+bool device_mode_result_matches_request(const json& payload, const json& result) {
+    try {
+        if (!device_request_valid(mode_method, payload) || !device_supplement_valid(result) ||
+            !observation_digest(result) || !result.contains("device_mode_update"))
+            return false;
+        const auto& update = result.at("device_mode_update");
+        if (!fields(update,
+                    {"before_observation",
+                     "before_device_identity",
+                     "before_device_identity_fingerprint",
+                     "device_key",
+                     "admitted_modes",
+                     "admitted_properties",
+                     "readbacks",
+                     "property_readbacks",
+                     "clip_and_note_ids_preserved",
+                     "native_knob_only",
+                     "host_qualified",
+                     "opaque_state_observed"}) ||
+            update.at("device_key") != payload.at("device_key") ||
+            update.at("clip_and_note_ids_preserved") != true ||
+            update.at("native_knob_only") != true || update.at("host_qualified") != false ||
+            update.at("opaque_state_observed") != false)
+            return false;
+        const auto& before = update.at("before_observation");
+        if (!observation_digest(before) || !device_supplement_valid(before) ||
+            before.at("content_fingerprint") != payload.at("expected_content_fingerprint") ||
+            before.at("device_identity_fingerprint") !=
+                payload.at("expected_device_identity_fingerprint") ||
+            update.at("before_device_identity") != before.at("device_identity") ||
+            update.at("before_device_identity_fingerprint") !=
+                before.at("device_identity_fingerprint") ||
+            !binding_changes(before, result, false))
+            return false;
+        auto expected = before.at("device_identity");
+        const auto& final = result.at("device_identity");
+        if (expected.at("cohort").size() != final.at("cohort").size()) return false;
+        std::size_t index = expected.at("cohort").size();
+        for (std::size_t i = 0; i < expected.at("cohort").size(); ++i)
+            if (expected.at("cohort")[i].at("device_key") == payload.at("device_key")) index = i;
+        if (index == expected.at("cohort").size()) return false;
+        auto& member = expected["cohort"][index];
+        const auto& actual = final.at("cohort")[index];
+        for (const auto* field : {"browser_name", "class_name", "type", "role"})
+            if (member.at(field) != payload.at("device").at(field)) return false;
+        if (member.at("class_name") == "Eq8" &&
+            !fields(member.at("modes"), {"global_mode", "edit_mode", "oversample"}))
+            return false;
+        const auto& intents = payload.at("enum_intents");
+        const auto& admitted = update.at("admitted_modes");
+        const auto& readbacks = update.at("readbacks");
+        if (!admitted.is_array() || !readbacks.is_array() || admitted.size() != intents.size() ||
+            readbacks.size() != intents.size())
+            return false;
+        std::set<std::size_t> parameters;
+        for (std::size_t i = 0; i < intents.size(); ++i) {
+            const auto& item = admitted[i];
+            const auto& readback = readbacks[i];
+            const auto* entry = mode_capability(intents[i].at("capability_id").get<std::string>());
+            if (!entry ||
+                !fields(item,
+                        {"intent",
+                         "parameter_index",
+                         "parameter_original_name",
+                         "descriptor",
+                         "target_internal"}) ||
+                !fields(readback,
+                        {"capability_id", "parameter_index", "internal_value", "label"}) ||
+                item.at("intent") != intents[i] ||
+                !integer(item.at("parameter_index"), SUNNY_MANAGED_MAX_DEVICE_PARAMETERS - 1) ||
+                !item.at("target_internal").is_number_float() ||
+                !finite(item.at("target_internal")) ||
+                item.at("parameter_original_name") != entry->parameter_original_name ||
+                readback.at("capability_id") != intents[i].at("capability_id") ||
+                readback.at("label") != intents[i].at("label") ||
+                readback.at("parameter_index") != item.at("parameter_index") ||
+                !integer(readback.at("parameter_index"), SUNNY_MANAGED_MAX_DEVICE_PARAMETERS - 1) ||
+                !readback.at("internal_value").is_number_float() ||
+                readback.at("internal_value") != item.at("target_internal"))
+                return false;
+            const auto selected = item.at("parameter_index").get<std::size_t>();
+            if (selected >= member.at("parameters").size() || !parameters.insert(selected).second)
+                return false;
+            auto& parameter = member["parameters"][selected];
+            std::size_t aliases = 0;
+            for (const auto& candidate : member.at("parameters"))
+                aliases += candidate.at("name") == entry->parameter_original_name ||
+                           candidate.at("original_name") == entry->parameter_original_name;
+            if (aliases != 1 || parameter.at("original_name") != entry->parameter_original_name ||
+                parameter.at("descriptor") != item.at("descriptor") ||
+                !enum_choice(
+                    item.at("descriptor"), *entry->expected_enum_items, intents[i].at("label")))
+                return false;
+            const auto& labels = item.at("descriptor").at("value_items");
+            const auto found = std::ranges::find(labels, intents[i].at("label"));
+            if (item.at("target_internal") != static_cast<double>(found - labels.begin()))
+                return false;
+            parameter["descriptor"]["value"] = readback.at("internal_value");
+            if (entry->parameter_original_name == "Device On")
+                member["is_active"] = intents[i].at("label") == "On";
+        }
+        const auto& properties = payload.at("property_intents");
+        const auto& admitted_properties = update.at("admitted_properties");
+        const auto& property_readbacks = update.at("property_readbacks");
+        if (!admitted_properties.is_array() || !property_readbacks.is_array() ||
+            admitted_properties.size() != properties.size() ||
+            property_readbacks.size() != properties.size())
+            return false;
+        for (std::size_t i = 0; i < properties.size(); ++i) {
+            if (!fields(admitted_properties[i], {"intent", "before", "target"}) ||
+                admitted_properties[i].at("intent") != properties[i] ||
+                !integer(admitted_properties[i].at("before"), 2) ||
+                admitted_properties[i].at("before") != member.at("modes").at("global_mode") ||
+                !integer(admitted_properties[i].at("target"), 0) ||
+                !fields(property_readbacks[i], {"property", "value"}) ||
+                property_readbacks[i].at("property") != "global_mode" ||
+                !integer(property_readbacks[i].at("value"), 0))
+                return false;
+            member["modes"]["global_mode"] = 0;
+        }
+        if (member.at("parameters").size() != actual.at("parameters").size()) return false;
+        // Availability can follow the explicit mode phase only on this same Device.
+        for (std::size_t i = 0; i < member.at("parameters").size(); ++i)
+            for (const auto* field : {"is_enabled", "state"})
+                member["parameters"][i]["descriptor"][field] =
+                    actual.at("parameters")[i].at("descriptor").at(field);
+        return expected == final;
+    } catch (const json::exception&) {
+        return false;
+    }
+}
 bool device_result_matches_request(std::string_view method,
                                    const json& payload,
                                    const json& result) {
     try {
+        if (method == mode_method) return device_mode_result_matches_request(payload, result);
         if ((method != insert_method && method != update_method) ||
             !device_request_valid(method, payload) || !device_supplement_valid(result) ||
             !result.contains("device_identity") || !result.contains("track_index") ||
@@ -753,6 +1036,19 @@ make_managed_device_preview_request(const ManagedBridgeContext& context,
                            {"chain_index", selection.chain_index},
                            {"device", device_descriptor(selection.device)},
                            {"physical_intents", std::move(intents)}});
+        if (!selection.enum_intents.empty() || !selection.property_intents.empty() ||
+            selection.authored_bypass) {
+            auto& added = devices.back();
+            added["enum_intents"] = json::array();
+            added["property_intents"] = json::array();
+            for (const auto& intent : selection.enum_intents)
+                added["enum_intents"].push_back(
+                    {{"capability_id", intent.capability_id}, {"label", intent.label}});
+            for (const auto& intent : selection.property_intents)
+                added["property_intents"].push_back(
+                    {{"property", intent.property}, {"label", intent.label}});
+            added["authored_bypass"] = selection.authored_bypass;
+        }
     }
     json payload{{"document_token", context.document_token},
                  {"project_key", binding.project_key},
@@ -805,6 +1101,41 @@ Result<ManagedDeviceAdoptionPreview> parse_managed_device_preview(
     } catch (const json::exception&) {
         return std::unexpected(ErrorCode::ProtocolError);
     }
+}
+Result<LomRequest>
+make_managed_device_mode_request(const ManagedBridgeContext& context,
+                                 const std::string& operation_id,
+                                 const ManagedBindingReceipt& binding,
+                                 const std::string& device_key,
+                                 ManagedNativeDevice device,
+                                 std::span<const ManagedDeviceModeIntent> enum_intents,
+                                 std::span<const ManagedDevicePropertyIntent> property_intents) {
+    const auto base =
+        make_request(update_method, context, operation_id, binding, device_key, device, {});
+    if (!base) return std::unexpected(base.error());
+    auto payload = std::get<json>(base->args[0]);
+    payload.erase("physical_intents");
+    payload["enum_intents"] = json::array();
+    payload["property_intents"] = json::array();
+    for (const auto& intent : enum_intents)
+        payload["enum_intents"].push_back(
+            {{"capability_id", intent.capability_id}, {"label", intent.label}});
+    for (const auto& intent : property_intents)
+        payload["property_intents"].push_back(
+            {{"property", intent.property}, {"label", intent.label}});
+    if (!managed_device_detail::device_request_valid(mode_method, payload))
+        return std::unexpected(ErrorCode::ProtocolError);
+    const auto& cohort = binding.observation.at("device_identity").at("cohort");
+    const auto found = std::ranges::find_if(
+        cohort, [&](const auto& entry) { return entry.at("device_key") == device_key; });
+    if (found == cohort.end() ||
+        (device == ManagedNativeDevice::EqEight &&
+         !fields(found->at("modes"), {"global_mode", "edit_mode", "oversample"})))
+        return std::unexpected(ErrorCode::ProtocolError);
+    if (!managed_detail::operation_reservation_fits(payload, mode_method))
+        return std::unexpected(ErrorCode::ManagedReplyCapacityExceeded);
+    return LomProtocol::call_method(
+        LomPaths::song(), std::string{mode_method}, {std::move(payload)});
 }
 Result<LomRequest>
 make_managed_device_adoption_request(const ManagedBridgeContext& context,

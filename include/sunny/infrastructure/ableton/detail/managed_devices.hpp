@@ -17,6 +17,8 @@ namespace sunny::infrastructure::managed_device_detail {
 [[nodiscard]] bool device_result_matches_request(std::string_view method,
                                                  const nlohmann::json& payload,
                                                  const nlohmann::json& result);
+[[nodiscard]] bool device_mode_result_matches_request(const nlohmann::json& payload,
+                                                      const nlohmann::json& result);
 [[nodiscard]] bool device_preview_valid(const nlohmann::json& preview);
 [[nodiscard]] bool device_adoption_result_matches_request(const nlohmann::json& payload,
                                                           const nlohmann::json& result);

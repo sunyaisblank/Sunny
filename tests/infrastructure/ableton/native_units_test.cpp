@@ -1,6 +1,9 @@
+#include "managed_device_decimal_fixture.hpp"
+
 #include <array>
 #include <catch2/catch_test_macros.hpp>
 #include <limits>
+#include <sunny/infrastructure/ableton/detail/native_unit_decimal.hpp>
 #include <sunny/infrastructure/ableton/native_units.hpp>
 
 using namespace sunny::infrastructure;
@@ -308,7 +311,8 @@ class ObservationTransport final : public LomTransport {
 };
 } // namespace
 
-TEST_CASE("Native unit requests admit the finite continuous catalogue and exact device paths",
+TEST_CASE("Native unit requests admit the finite continuous catalogue and "
+          "exact device paths",
           "[ableton][native-units]") {
     std::size_t admitted = 0, quantized = 0;
     for (const auto& entry : sunny::core::live_native_parameter_registry()) {
@@ -328,8 +332,8 @@ TEST_CASE("Native unit requests admit the finite continuous catalogue and exact 
             ++quantized;
         }
     }
-    CHECK(admitted == 32);
-    CHECK(quantized == 16);
+    CHECK(admitted == 33);
+    CHECK(quantized == 26);
     for (const auto* path : {"song/return_tracks/0/devices/0", "song/master_track/devices/0"})
         CHECK(make_native_display_resolution_request(LomPath::parse(path), "utility.gain", -6, 0));
     for (const auto* path : {"song/tracks/0",
@@ -347,7 +351,8 @@ TEST_CASE("Native unit requests admit the finite continuous catalogue and exact 
         device, "utility.gain", std::numeric_limits<double>::infinity(), 0));
 }
 
-TEST_CASE("Drift display candidates retain exact native voice properties and physical units",
+TEST_CASE("Drift display candidates retain exact native voice properties and "
+          "physical units",
           "[ableton][native-units][drift]") {
     auto frequency = drift_candidate();
     auto parsed = parse_native_display_resolution(request("drift.lp.frequency", 1000),
@@ -381,7 +386,8 @@ TEST_CASE("Drift display candidates retain exact native voice properties and phy
     }
 }
 
-TEST_CASE("Drift candidate parser declines malformed voice domains and unsupported time grammar",
+TEST_CASE("Drift candidate parser declines malformed voice domains and "
+          "unsupported time grammar",
           "[ableton][native-units][drift]") {
     const auto check = [&](auto mutate) {
         auto candidate = drift_candidate(true);
@@ -425,7 +431,8 @@ TEST_CASE("Native display protocol rejects descriptor and policy injection",
     CHECK_FALSE(LomProtocol::validate_request(malformed));
 }
 
-TEST_CASE("Native gain observation retains nonlinear infinity and descriptor provenance",
+TEST_CASE("Native gain observation retains nonlinear infinity and descriptor "
+          "provenance",
           "[ableton][native-units]") {
     const auto wire = envelope("utility.gain", utility_candidate());
     const auto parsed = parse_native_display_resolution(request(), wire);
@@ -448,7 +455,8 @@ TEST_CASE("Native gain observation retains nonlinear infinity and descriptor pro
     CHECK(parsed->evidence == wire);
 }
 
-TEST_CASE("Native EQ frequency and Q retain nonneutral Scale and Adaptive Q as knob evidence",
+TEST_CASE("Native EQ frequency and Q retain nonneutral Scale and Adaptive Q as "
+          "knob evidence",
           "[ableton][native-units]") {
     for (const bool q : {false, true}) {
         const auto id = q ? "eq8.band.7.q" : "eq8.band.7.frequency";
@@ -467,7 +475,8 @@ TEST_CASE("Native EQ frequency and Q retain nonneutral Scale and Adaptive Q as k
     }
 }
 
-TEST_CASE("Native balance normalization uses observed endpoint magnitude and nonstandard bounds",
+TEST_CASE("Native balance normalization uses observed endpoint magnitude and "
+          "nonstandard bounds",
           "[ableton][native-units]") {
     auto candidate = balance_candidate();
     auto parsed = parse_native_display_resolution(request("utility.balance", -.25),
@@ -491,7 +500,8 @@ TEST_CASE("Native balance normalization uses observed endpoint magnitude and non
     CHECK_FALSE(parsed->candidate->display_increment);
 }
 
-TEST_CASE("Native width admits display plateaus and refuses an active Mid Side substitute",
+TEST_CASE("Native width admits display plateaus and refuses an active Mid Side "
+          "substitute",
           "[ableton][native-units]") {
     auto candidate = utility_candidate();
     candidate["parameter_original_name"] = "Stereo Width";
@@ -534,7 +544,8 @@ TEST_CASE("Native width admits display plateaus and refuses an active Mid Side s
                                                 envelope("utility.width", candidate)));
 }
 
-TEST_CASE("Native EQ band and output gain use finite dB evidence without gain infinity",
+TEST_CASE("Native EQ band and output gain use finite dB evidence without gain "
+          "infinity",
           "[ableton][native-units]") {
     auto candidate = eq_candidate();
     const auto gain = utility_candidate();
@@ -606,7 +617,8 @@ TEST_CASE("Native unit domains retain doubles beyond float bounds", "[ableton][n
     CHECK(parsed->candidate->descriptor.maximum == 8e100);
 }
 
-TEST_CASE("Native unit parser rejects malformed closed requests before reading candidate data",
+TEST_CASE("Native unit parser rejects malformed closed requests before reading "
+          "candidate data",
           "[ableton][native-units]") {
     const auto wire = envelope("utility.gain", utility_candidate());
     auto changed = request();
@@ -623,9 +635,9 @@ TEST_CASE("Native unit parser rejects malformed closed requests before reading c
     CHECK_FALSE(parse_native_display_resolution(changed, wire));
 }
 
-TEST_CASE(
-    "Native unit parser declines corrupted identity request domain and qualification evidence",
-    "[ableton][native-units]") {
+TEST_CASE("Native unit parser declines corrupted identity request domain and "
+          "qualification evidence",
+          "[ableton][native-units]") {
     const auto original = envelope("utility.gain", utility_candidate());
     const std::array<std::pair<const char*, json>, 23> corruptions{
         {{"/capability_id", "utility.width"},
@@ -667,7 +679,8 @@ TEST_CASE(
     CHECK_FALSE(parse_native_display_resolution(request(), wire));
 }
 
-TEST_CASE("Native unit parser rejects changed populations ambiguous aliases and mode gates",
+TEST_CASE("Native unit parser rejects changed populations ambiguous aliases "
+          "and mode gates",
           "[ableton][native-units]") {
     auto candidate = utility_candidate();
     candidate["population"].push_back({{"name", "Gain"}, {"original_name", "Other"}});
@@ -691,7 +704,8 @@ TEST_CASE("Native unit parser rejects changed populations ambiguous aliases and 
                                                 envelope("eq8.band.7.frequency", candidate)));
 }
 
-TEST_CASE("Native unit parser rejects unsupported unit text locale and invented decimal precision",
+TEST_CASE("Native unit parser rejects unsupported unit text locale and "
+          "invented decimal precision",
           "[ableton][native-units]") {
     for (const auto* display :
          {"-6,00 dB", "-6.00 Hz", "-6e0 dB", "−6.00 dB", "-6.00\u00a0dB", "-6. dB"}) {
@@ -713,7 +727,8 @@ TEST_CASE("Native unit parser rejects unsupported unit text locale and invented 
                                                 envelope("utility.balance", candidate)));
 }
 
-TEST_CASE("Native unit parser enforces collected monotonicity and three repeated anchors",
+TEST_CASE("Native unit parser enforces collected monotonicity and three "
+          "repeated anchors",
           "[ableton][native-units]") {
     auto candidate = utility_candidate();
     std::swap(candidate["samples"][3]["display"], candidate["samples"][4]["display"]);
@@ -734,7 +749,8 @@ TEST_CASE("Native unit parser enforces collected monotonicity and three repeated
     CHECK_FALSE(parse_native_display_resolution(request(), envelope("utility.gain", candidate)));
 }
 
-TEST_CASE("Native unit parser retains explicit tolerance and rejects fabricated zero error",
+TEST_CASE("Native unit parser retains explicit tolerance and rejects "
+          "fabricated zero error",
           "[ableton][native-units]") {
     auto candidate = utility_candidate();
     candidate["target"] = -5.5;
@@ -749,6 +765,71 @@ TEST_CASE("Native unit parser retains explicit tolerance and rejects fabricated 
     candidate["absolute_display_error"] = .5;
     CHECK_FALSE(parse_native_display_resolution(request("utility.gain", -5.5, .49),
                                                 envelope("utility.gain", candidate)));
+}
+
+TEST_CASE("Native formatter tolerance uses literal decimal coordinates at the "
+          "closed boundary",
+          "[ableton][native-units][decimal]") {
+    using namespace native_unit_detail;
+    using Unit = sunny::core::LiveNativePhysicalUnit;
+    // Expected values are literal Decimal oracles, not binary subtraction.
+    for (const auto precision : {28U, 110U}) {
+        for (const auto* text : {"100.01 %", "99.99 %"}) {
+            const auto display = display_reading(text, Unit::Percent, false);
+            REQUIRE(display);
+            const auto proof = decimal_display_comparison(*display, 100.0, .01, 1.0, precision);
+            REQUIRE(proof);
+            CHECK(proof->within_tolerance);
+            CHECK(proof->absolute_display_error == .01);
+        }
+        for (const auto* text : {"100.0100000000000000001 %", "99.9899999999999999999 %"}) {
+            const auto display = display_reading(text, Unit::Percent, false);
+            REQUIRE(display);
+            const auto proof = decimal_display_comparison(*display, 100.0, .01, 1.0, precision);
+            REQUIRE(proof);
+            // The binary JSON values coincide with the exact-boundary witness.
+            CHECK(proof->absolute_display_error == .01);
+            CHECK_FALSE(proof->within_tolerance);
+        }
+        for (const auto& [text, unit] :
+             {std::pair{"0.10001 kHz", Unit::Hertz}, std::pair{"0.10001 s", Unit::Milliseconds}}) {
+            const auto display = display_reading(text, unit, false);
+            REQUIRE(display);
+            const auto proof = decimal_display_comparison(*display, 100.0, .01, 1.0, precision);
+            REQUIRE(proof);
+            CHECK(proof->within_tolerance);
+            CHECK(proof->display_value == 100.01);
+            CHECK(proof->absolute_display_error == .01);
+        }
+        const auto left = display_reading("25.01 L", Unit::StereoBalance, false);
+        REQUIRE(left);
+        const auto balance = decimal_display_comparison(*left, -.5, .0002, 50.0, precision);
+        REQUIRE(balance);
+        CHECK(balance->within_tolerance);
+        CHECK(balance->display_value == -.5002);
+        CHECK(balance->absolute_display_error == .0002);
+    }
+}
+
+TEST_CASE("Native unit candidate admits the literal Python decimal-boundary ACK",
+          "[ableton][native-units][decimal]") {
+    const auto fixture = managed_device_decimal_fixture();
+    auto candidate = fixture.at("result").at("device_update").at("resolutions")[1].at("candidate");
+    REQUIRE(candidate.at("display") == "100.01 %");
+    REQUIRE(candidate.at("absolute_display_error") == .01);
+    REQUIRE(parse_native_display_resolution(request("utility.width", 100.0, .01),
+                                            envelope("utility.width", candidate)));
+    candidate["absolute_display_error"] = 0.0;
+    CHECK_FALSE(parse_native_display_resolution(request("utility.width", 100.0, .01),
+                                                envelope("utility.width", candidate)));
+    candidate["absolute_display_error"] = .01;
+    candidate["display"] = "100.0100000000000000001 %";
+    candidate["display_increment"] = 1e-19;
+    for (auto& sample : candidate["samples"])
+        if (sample.at("internal_value") == candidate.at("internal_value"))
+            sample["display"] = candidate.at("display");
+    CHECK_FALSE(parse_native_display_resolution(request("utility.width", 100.0, .01),
+                                                envelope("utility.width", candidate)));
 }
 
 TEST_CASE("Native unit formatter accounting includes EQ Scale and the finite budget",
@@ -769,7 +850,8 @@ TEST_CASE("Native unit formatter accounting includes EQ Scale and the finite bud
                                                 envelope("eq8.band.7.frequency", candidate)));
 }
 
-TEST_CASE("Native unit decline evidence remains a decline with its original reason and budget",
+TEST_CASE("Native unit decline evidence remains a decline with its original "
+          "reason and budget",
           "[ableton][native-units]") {
     auto wire = json{{"schema_version", 1},
                      {"capability_id", "utility.gain"},
@@ -790,7 +872,8 @@ TEST_CASE("Native unit decline evidence remains a decline with its original reas
     CHECK_FALSE(parse_native_display_resolution(request(), wire));
 }
 
-TEST_CASE("Native unit transport observes once while recording-only transports stay unavailable",
+TEST_CASE("Native unit transport observes once while recording-only transports "
+          "stay unavailable",
           "[ableton][native-units]") {
     ObservationTransport transport;
     auto parsed = resolve_native_display_value(device, "utility.gain", -6, 0, transport);

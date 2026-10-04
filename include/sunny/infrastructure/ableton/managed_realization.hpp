@@ -16,6 +16,8 @@
 namespace sunny::infrastructure {
 
 inline constexpr int SUNNY_MANAGED_RECEIPT_SCHEMA_VERSION = 1;
+// Bounds native main-thread insert_step calls independently of wire capacity.
+inline constexpr std::size_t SUNNY_MANAGED_ENVELOPE_MAX_STEPS = 64;
 
 struct ManagedBridgeContext {
     std::string bridge_instance;
@@ -88,7 +90,9 @@ execute_managed_operation(const ManagedOperationReceipt& prepared, LomTransport&
 /// Query only, preserving the original request and delivery evidence. A missing
 /// journal or changed epoch is unknown, never evidence that creation did not run.
 [[nodiscard]] sunny::core::Result<ManagedOperationReceipt>
-reconcile_managed_operation(const ManagedOperationReceipt& receipt, LomTransport& transport);
+reconcile_managed_operation(const ManagedOperationReceipt& receipt,
+                            LomTransport& transport,
+                            std::optional<ManagedOperationReceipt>* query_evidence = nullptr);
 
 [[nodiscard]] nlohmann::json managed_receipt_to_json(const ManagedOperationReceipt& receipt);
 [[nodiscard]] sunny::core::Result<ManagedOperationReceipt>
@@ -180,5 +184,16 @@ make_managed_note_population_request(const ManagedBridgeContext& context,
                                      const nlohmann::json& changes,
                                      const nlohmann::json& deletions,
                                      const nlohmann::json& additions);
+
+/// Same native Clip extent/meter, preserving all current note IDs/values.
+/// Full population and contained note endpoints are necessary admission;
+/// actual retained-object authority remains enforced by the bridge.
+[[nodiscard]] sunny::core::Result<LomRequest>
+make_managed_clip_geometry_request(const ManagedBridgeContext& context,
+                                   const std::string& operation_id,
+                                   const ManagedBindingReceipt& binding,
+                                   double end_marker,
+                                   int signature_numerator,
+                                   int signature_denominator);
 
 } // namespace sunny::infrastructure

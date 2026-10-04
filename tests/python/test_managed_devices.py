@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+from decimal import ROUND_DOWN, localcontext
 from types import SimpleNamespace
 from typing import Any
 
@@ -11,6 +12,34 @@ from live_model import Device, DeviceParameter, DeviceType, LiveSet, MidiNoteVec
 from Sunny.handler import BRIDGE_PROTOCOL_VERSION, LomHandler
 from Sunny.managed import ManagedRegistry, _digest
 from Sunny.managed_devices import ManagedDevices, valid_managed_device_request
+
+
+def test_readback_decimal_context_is_fixed_independently_of_live_thread_context() -> None:
+    """Ambient precision/rounding cannot change the closed decimal receipt proof."""
+    helper = ManagedDevices(SimpleNamespace())
+    parameter = SimpleNamespace(value=0.5, str_for_value=lambda _: "0.10001 kHz")
+    candidate = {
+        "unit": "Hertz",
+        "balance_full_scale": None,
+        "target": 100.0,
+        "display_tolerance": 0.01,
+    }
+    with localcontext() as context:
+        context.prec = 3
+        context.rounding = ROUND_DOWN
+        readback = helper._readback(parameter, candidate)
+        assert readback["display_value"] == 100.01
+        assert readback["display_increment"] == 0.01
+        assert readback["absolute_display_error"] == 0.01
+        assert readback["matches_intent"] is True
+        assert context.prec == 3
+        assert context.rounding == ROUND_DOWN
+        parameter.str_for_value = lambda _: "100.0100000000000000001 %"
+        candidate["unit"] = "Percent"
+        readback = helper._readback(parameter, candidate)
+        assert readback["display_value"] == 100.01
+        assert readback["absolute_display_error"] == 0.01
+        assert readback["matches_intent"] is False
 
 
 class Parameter(DeviceParameter):
@@ -850,3 +879,57 @@ def test_continuous_native_default_remains_required(
     assert target.inserted == ["Drift"]
     assert target.registry._operations["source"]["native_mutation_started"] is True
     assert not any(parameter.writes for parameter in target.record["track"]._devices[0].parameters)
+
+
+def test_initial_envelope_creation_device_drift_stops_before_any_step(
+    target: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An actual LP control edit between native phases preserves it and stops insertion."""
+    # This fixture's explicit helper must be the single actual production helper.
+    target.registry._devices = target.registry.devices
+    source = target.registry.dispatch("sunny_managed_insert_device", [request(target, "source")])
+    assert source["outcome"] == "acknowledged", source
+    clip = target.record["clip"]
+    track = target.record["track"]
+    drift = track.devices[0]
+    frequency = drift.parameters[1]
+    original_create = clip.create_automation_envelope
+    inserted = []
+
+    def create(parameter: Any) -> Any:
+        actual = original_create(parameter)
+        original_insert = actual.insert_step
+
+        def insert(start: float, duration: float, value: float) -> None:
+            inserted.append((start, duration, value))
+            original_insert(start, duration, value)
+
+        monkeypatch.setattr(actual, "insert_step", insert)
+        frequency._value = 0.75  # Independent external edit during the creation phase.
+        return actual
+
+    monkeypatch.setattr(clip, "create_automation_envelope", create)
+    payload = {
+        "document_token": target.context["document_token"],
+        "operation_id": "lane_device_drift",
+        "project_key": "project_a",
+        "binding_key": "part_a",
+        "expected_content_fingerprint": source["result"]["content_fingerprint"],
+        "lane": {
+            "parameter": {"kind": "panning"},
+            "clip_end": 4.0,
+            "interpolation": "step",
+            "points": [{"time": 0.0, "value": -0.5}, {"time": 2.0, "value": 0.5}],
+        },
+    }
+    result = target.registry.dispatch("sunny_managed_author_envelope", [payload])
+    assert result["outcome"] == "indeterminate", result
+    assert result["native_mutation_started"] is True
+    assert inserted == []
+    assert target.record["clip"] is clip and track.devices[0] is drift
+    assert frequency.value == 0.75
+    assert clip.automation_envelope(track.mixer_device.panning) is not None
+    query = {"document_token": payload["document_token"], "operation_id": payload["operation_id"]}
+    assert target.registry.dispatch("sunny_managed_operation", [query]) == result
+    assert target.registry.dispatch("sunny_managed_author_envelope", [payload]) == result
+    assert inserted == []

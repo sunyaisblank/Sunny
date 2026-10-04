@@ -44,11 +44,36 @@ make_managed_device_update_request(const ManagedBridgeContext& context,
                                    ManagedNativeDevice device,
                                    std::span<const ManagedDevicePhysicalIntent> physical_intents);
 
+struct ManagedDeviceModeIntent {
+    std::string capability_id;
+    std::string label;
+};
+struct ManagedDevicePropertyIntent {
+    std::string property;
+    std::string label;
+};
+/** A separately fenced finite mode phase on an actual retained native effect.
+ * Exact native enum labels are admitted before setters; EQ Stereo uses the
+ * documented native global_mode property. Complete observed EQ edit/oversample
+ * evidence is required for new mode authority. Physical resolution follows
+ * this actual ACK rather than a speculative future-mode candidate. */
+[[nodiscard]] sunny::core::Result<LomRequest>
+make_managed_device_mode_request(const ManagedBridgeContext& context,
+                                 const std::string& operation_id,
+                                 const ManagedBindingReceipt& binding,
+                                 const std::string& device_key,
+                                 ManagedNativeDevice device,
+                                 std::span<const ManagedDeviceModeIntent> enum_intents,
+                                 std::span<const ManagedDevicePropertyIntent> property_intents);
+
 struct ManagedDeviceAdoptionSelection {
     std::string device_key;
     std::uint32_t chain_index = 0;
     ManagedNativeDevice device = ManagedNativeDevice::Drift;
     std::vector<ManagedDevicePhysicalIntent> physical_intents;
+    std::vector<ManagedDeviceModeIntent> enum_intents{};
+    std::vector<ManagedDevicePropertyIntent> property_intents{};
+    bool authored_bypass = false;
 };
 
 struct ManagedDeviceAdoptionPreview {

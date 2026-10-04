@@ -1,9 +1,11 @@
 /** Actual offline native-provider ACKs; quantized defaults throw, no host qualification. */
 #pragma once
 #include <nlohmann/json.hpp>
+#include <string>
 
 inline nlohmann::json managed_device_fixture() {
-    return nlohmann::json::parse(R"fixture({
+    return nlohmann::json::parse(
+        (std::string{} + R"fixture({
  "source_request": {
   "document_token": "document_a",
   "operation_id": "source",
@@ -1132,7 +1134,8 @@ inline nlohmann::json managed_device_fixture() {
        "descriptor": {
         "minimum": 0.0,
         "maximum": 1.0,
-        "value": 0.5,
+        ")fixture" +
+         R"fixture(value": 0.5,
         "default_value": 0.0,
         "is_quantized": false,
         "is_enabled": true,
@@ -2273,7 +2276,8 @@ inline nlohmann::json managed_device_fixture() {
       },
       "voice_count": {
        "index": 2,
-       "value_items": [
+       ")fixture" +
+         R"fixture(value_items": [
         "1",
         "2",
         "8",
@@ -3427,7 +3431,8 @@ inline nlohmann::json managed_device_fixture() {
     "solo": false,
     "arm": false,
     "implicit_arm": false,
-    "is_frozen": false,
+    "is_frozen": f)fixture" +
+         R"fixture(alse,
     "is_grouped": false,
     "back_to_arranger": false,
     "has_audio_input": false,
@@ -4553,7 +4558,8 @@ inline nlohmann::json managed_device_fixture() {
        },
        {
         "internal_value": 0.625,
-        "display": "3.00 dB",
+        "display": "3.00 dB)fixture" +
+         R"fixture(",
         "phase": "grid",
         "display_value": 3.0,
         "negative_infinity": false
@@ -5652,7 +5658,8 @@ inline nlohmann::json managed_device_fixture() {
       "host_qualified": false,
       "native_knob_only": true,
       "coverage_limits": [
-       "Tolerance compares displayed numbers; no hidden physical rounding-error bound is inferred.",
+       "Tolerance compares di)fixture" +
+         R"fixture(splayed numbers; no hidden physical rounding-error bound is inferred.",
        "Sampled monotonicity does not prove a global transfer function or search completeness.",
        "Balance is a native displayed coordinate, not an arbitrary pan law or physical angle.",
        "EQ Eight Scale and Adaptive Q are observed couplings, not a literal DSP response claim.",
@@ -6683,5 +6690,5 @@ inline nlohmann::json managed_device_fixture() {
    "opaque_state_observed": false
   }
  }
-})fixture");
+})fixture"));
 }

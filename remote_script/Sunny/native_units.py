@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import math
 import re
-from decimal import Decimal, localcontext
+from decimal import ROUND_HALF_EVEN, Decimal, localcontext
 from typing import Any
 
 FORMATTER_BUDGET = 64
@@ -117,7 +117,9 @@ def _policy(device_class: str, original_name: str, unit: str) -> dict[str, Any]:
             _fail("UnknownCapability", "Utility identity/unit is outside the finite registry")
         return {"Channel Mode": "Stereo", "Mono": "Off", "Mute": "Off"}
     if device_class == "Eq8":
-        if original_name == "Output Gain" and unit == "Decibels":
+        if (original_name == "Output Gain" and unit == "Decibels") or (
+            original_name == "Scale" and unit == "Percent"
+        ):
             return {"global_mode": 0}
         match = re.fullmatch(r"([1-8]) (Frequency|Gain|Resonance) A", original_name)
         units = {"Frequency": "Hertz", "Gain": "Decibels", "Resonance": "QualityFactor"}
@@ -139,7 +141,7 @@ def _policy(device_class: str, original_name: str, unit: str) -> dict[str, Any]:
 
 
 def _registered_context(capability_id: str) -> tuple[str, str, str, dict[str, Any]]:
-    """Select only the 32 continuous identities in registry version 2.
+    """Select only the 33 continuous identities in registry version 3.
 
     Callers supply no descriptor or mode policy. The native observation below
     still verifies every identity and required mode against the real population.
@@ -163,6 +165,8 @@ def _registered_context(capability_id: str) -> tuple[str, str, str, dict[str, An
     if capability_id in drift:
         original_name, unit = drift[capability_id]
         return "Drift", original_name, unit, _policy("Drift", original_name, unit)
+    if capability_id == "eq8.scale":
+        return "Eq8", "Scale", "Percent", _policy("Eq8", "Scale", "Percent")
     if capability_id == "eq8.output_gain":
         return "Eq8", "Output Gain", "Decibels", _policy("Eq8", "Output Gain", "Decibels")
     match = re.fullmatch(r"eq8\.band\.([1-8])\.(frequency|gain|q)", capability_id)
@@ -175,6 +179,37 @@ def _registered_context(capability_id: str) -> tuple[str, str, str, dict[str, An
         original_name = match.group(1) + " " + control + " A"
         return "Eq8", original_name, unit, _policy("Eq8", original_name, unit)
     _fail("UnknownCapability", "Capability is outside the finite continuous display registry")
+
+
+def registered_native_mode_context(capability_id: str) -> tuple[str, str, int]:
+    """Mirror only quantized identities in the same finite source registry.
+
+    The managed owner still observes actual parent/type/domain/labels and retains
+    the objects. No expected current mode or caller-supplied descriptor is used.
+    """
+    controls = {
+        "utility.enabled": ("StereoGain", "Device On", 2),
+        "utility.channel_mode": ("StereoGain", "Channel Mode", 4),
+        "utility.mono": ("StereoGain", "Mono", 2),
+        "utility.mute": ("StereoGain", "Mute", 2),
+        "utility.left_invert": ("StereoGain", "Left Inv", 2),
+        "utility.right_invert": ("StereoGain", "Right Inv", 2),
+        "utility.bass_mono": ("StereoGain", "Bass Mono", 2),
+        "utility.dc_filter": ("StereoGain", "DC Filter", 2),
+        "eq8.enabled": ("Eq8", "Device On", 2),
+        "eq8.adaptive_q": ("Eq8", "Adaptive Q", 2),
+    }
+    if capability_id in controls:
+        return controls[capability_id]
+    match = re.fullmatch(r"eq8\.band\.([1-8])\.(enabled|type)", capability_id)
+    if match:
+        enabled = match.group(2) == "enabled"
+        return (
+            "Eq8",
+            match.group(1) + (" Filter On A" if enabled else " Filter Type A"),
+            2 if enabled else 8,
+        )
+    _fail("UnknownCapability", "Mode identity is outside the finite native registry")
 
 
 def valid_native_display_request(query: Any) -> bool:
@@ -556,6 +591,7 @@ def resolve_native_display_value(
 
         with localcontext() as decimal_context:
             decimal_context.prec = 110
+            decimal_context.rounding = ROUND_HALF_EVEN
             desired_decimal = Decimal(str(desired))
             tolerance_decimal = Decimal(str(admitted_tolerance))
             if device_class_name == "Eq8":

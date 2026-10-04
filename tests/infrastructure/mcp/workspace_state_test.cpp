@@ -1,4 +1,6 @@
 /** Workspace publication and real filesystem recovery through public APIs. */
+#include "../ableton/managed_song_settings_fixture.hpp"
+
 #include <atomic>
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
@@ -12,6 +14,10 @@
 #include <sunny/core/score/serialization.hpp>
 #include <sunny/core/score/workflows.hpp>
 #include <sunny/core/timbre/workflows.hpp>
+#include <sunny/infrastructure/ableton/detail/managed_fingerprint.hpp>
+#include <sunny/infrastructure/ableton/lom_protocol.hpp>
+#include <sunny/infrastructure/ableton/managed_song_settings.hpp>
+#include <sunny/infrastructure/ableton/realization_store.hpp>
 #include <sunny/infrastructure/mcp/mix_tools.hpp>
 #include <sunny/infrastructure/mcp/project_tools.hpp>
 #include <sunny/infrastructure/mcp/score_tools.hpp>
@@ -866,4 +872,102 @@ TEST_CASE("Handlers registered before workspace open continue to use the replace
     CHECK(saved["committed"] == true);
     CHECK(call(server, "workspace_import", {{"path", path.string()}}).contains("error"));
     CHECK(call(server, "workspace_recover_backup", {{"path", path.string()}})["preview"] == true);
+}
+
+TEST_CASE("Workspace namespace switch preserves unresolved Set-wide native "
+          "fence atomically",
+          "[mcp][workspace][native-history][song-settings]") {
+#ifndef _WIN32
+    Directory directory;
+    Fixture active;
+    Fixture other{2};
+    const auto active_path = directory.path / "active.json";
+    const auto other_path = directory.path / "other.json";
+    REQUIRE(save_workspace(active.session, active_path).success);
+    REQUIRE(save_workspace(other.session, other_path).success);
+    REQUIRE(save_workspace(other.session, other_path).success);
+    const auto ns = active.session.realization->metadata.workspace_namespace;
+    auto opened = RealizationStore::open(directory.path, ns, RealizationStoreMode::InitializeNew);
+    REQUIRE(opened);
+    active.session.realization->metadata.history_base_directory = directory.path;
+    active.session.realization->store = std::move(*opened);
+    REQUIRE(save_workspace(active.session, active_path).success);
+    const std::string token(32, '1');
+    const ManagedBridgeContext native_context{"bridge_a", "document_a"};
+    auto preview = song_settings_test_fixture::normal_preview().at("preview");
+    preview["project_key"] = "w" + ns + "_s1";
+    preview["binding_key"] = "part_1";
+    const auto preview_fp = managed_detail::managed_digest(preview);
+    REQUIRE(preview_fp);
+    const json payload{
+        {"document_token", native_context.document_token},
+        {"operation_id", token},
+        {"project_key", preview.at("project_key")},
+        {"binding_key", "part_1"},
+        {"preview_token", preview.at("preview_token")},
+        {"preview_fingerprint", *preview_fp},
+        {"approved_preview", preview},
+        {"expected_content_fingerprint", preview.at("binding_guard").at("content_fingerprint")},
+        {"expected_note_identity_fingerprint",
+         preview.at("binding_guard").at("note_identity_fingerprint")},
+        {"desired", preview.at("desired")},
+        {"explicit_set_wide_approval", true}};
+    const auto request =
+        LomProtocol::call_method(LomPaths::song(), "sunny_managed_apply_song_settings", {payload});
+    const auto prepared = prepare_managed_operation(native_context, request);
+    REQUIRE(prepared);
+    const auto actual = song_settings_test_fixture::normal_preview().at("observation");
+    const auto& clip = actual.at("manifest").at("clip");
+    RealizationAttemptIntent intent;
+    intent.attempt_id = token;
+    intent.score_id = ScoreId{1};
+    intent.part_id = PartId{1};
+    intent.project_revision = 1;
+    intent.desired_note_keys = {"e1_n0", "e2_n0"};
+    intent.desired_projection = {{"clip_end", clip.at("end_marker")},
+                                 {"signature_numerator", clip.at("signature_numerator")},
+                                 {"signature_denominator", clip.at("signature_denominator")},
+                                 {"notes", actual.at("manifest").at("notes")}};
+    for (auto& note : intent.desired_projection["notes"])
+        note["velocity"] = note.at("velocity").get<int>();
+    const auto semantic =
+        realization_note_identity(intent.desired_note_keys, intent.desired_projection);
+    REQUIRE(semantic);
+    intent.desired_note_identity = *semantic;
+    intent.prepared = *prepared;
+    REQUIRE(active.session.realization->store->fence(intent));
+    const auto before = snapshot(active.session);
+    const auto ledger_path = directory.path / ns / "ledger.json";
+    const auto ledger_before = bytes(ledger_path);
+    auto* retained_store = active.session.realization->store.get();
+    const auto refused = open_workspace(active.session, other_path);
+    REQUIRE_FALSE(refused);
+    CHECK(refused.error().message.find(token) != std::string::npos);
+    CHECK(refused.error().message.find("Set-wide reconciliation required") != std::string::npos);
+    CHECK(snapshot(active.session) == before);
+    CHECK(active.session.realization->store.get() == retained_store);
+    CHECK(bytes(ledger_path) == ledger_before);
+    REQUIRE(recover_workspace_backup(active.session, other_path, false));
+    const auto backup_refused = recover_workspace_backup(active.session, other_path, true);
+    REQUIRE_FALSE(backup_refused);
+    CHECK(backup_refused.error().message.find(token) != std::string::npos);
+    CHECK(snapshot(active.session) == before);
+    CHECK(active.session.realization->store.get() == retained_store);
+    CHECK(bytes(ledger_path) == ledger_before);
+    // An inactive handle must read its own persisted namespace, never replace it
+    // with B.
+    active.session.realization->store.reset();
+    const auto absent_handle = open_workspace(active.session, other_path);
+    REQUIRE_FALSE(absent_handle);
+    CHECK(snapshot(active.session) == before);
+    CHECK_FALSE(active.session.realization->store);
+    CHECK(bytes(ledger_path) == ledger_before);
+    // Same-namespace reopen remains useful authoring work and retains original
+    // query keys.
+    REQUIRE(open_workspace(active.session, active_path));
+    CHECK(active.session.realization->metadata.workspace_namespace == ns);
+    CHECK(bytes(ledger_path) == ledger_before);
+#else
+    SUCCEED("Native-writing durable fence is unavailable on this platform");
+#endif
 }

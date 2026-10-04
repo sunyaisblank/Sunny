@@ -128,6 +128,7 @@ def test_preview_has_no_authority_and_literal_current_ids(current: Any) -> None:
     assert preview["allowed_domains"] == [
         "existing_note_updates",
         "note_population_updates",
+        "clip_geometry_updates",
         "absent_mixer_step_lanes",
     ]
     assert preview["preserved_unknown_domains"] == [
@@ -149,7 +150,7 @@ def test_preview_has_no_authority_and_literal_current_ids(current: Any) -> None:
     # Independent fixed cross-language fixture (not recomputed from the helper).
     assert (
         preview["preview_fingerprint"]
-        == "075133e8c2da6c6a9d3cc983d000e479ab3b1e39c791e03db9127d9892fdecc3"
+        == "1a5530ee906da455fc5d019a7b6d96c36910dfd773e534a159ba08de166ba56c"
     )
 
 
@@ -828,3 +829,41 @@ def test_current_ids_without_named_population_approval_do_not_authorize_deletion
     assert "PopulationAuthorityUnavailable" in receipt["error"]
     assert sorted(current.clip._notes) == [41, 99]
     assert record["owned_note_ids"] == {41, 99}
+
+
+@pytest.mark.parametrize(
+    "domains, fingerprint",
+    [
+        (
+            ("existing_note_updates", "absent_mixer_step_lanes"),
+            "18b377a5af2a6b3839e58003363177d2217925b444c1faaccf0e6dc4aefa4273",
+        ),
+        (
+            ("existing_note_updates", "note_population_updates", "absent_mixer_step_lanes"),
+            "075133e8c2da6c6a9d3cc983d000e479ab3b1e39c791e03db9127d9892fdecc3",
+        ),
+    ],
+)
+def test_new_helper_never_upgrades_a_retained_historical_preview(
+    current: Any, monkeypatch: pytest.MonkeyPatch, domains: tuple[str, ...], fingerprint: str
+) -> None:
+    """A newer factory list cannot enlarge the actual approval or private grant."""
+    monkeypatch.setattr("Sunny.managed_recovery.ALLOWED_DOMAINS", domains)
+    preview = current.recovery.preview(request())
+    assert preview["preview_fingerprint"] == fingerprint
+    monkeypatch.setattr(
+        "Sunny.managed_recovery.ALLOWED_DOMAINS",
+        (
+            "existing_note_updates",
+            "note_population_updates",
+            "clip_geometry_updates",
+            "absent_mixer_step_lanes",
+        ),
+    )
+    acknowledged = adopt(current, preview)
+    assert acknowledged["adoption"]["allowed_domains"] == list(domains)
+    assert acknowledged["adoption"]["preview_metadata"]["allowed_domains"] == list(domains)
+    assert acknowledged["adoption"]["preview_fingerprint"] == fingerprint
+    retained = current.registry._bindings[("project_a", "part_a")]
+    assert retained["allowed_domains"] == domains
+    assert "clip_geometry_updates" not in retained["allowed_domains"]

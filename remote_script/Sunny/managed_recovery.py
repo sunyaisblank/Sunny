@@ -16,7 +16,12 @@ from .managed_capacity import guard_managed_response_capacity, require_response_
 
 ADOPTION_SCHEMA_VERSION = 1
 MAX_ADOPTION_PREVIEWS = 256
-ALLOWED_DOMAINS = ("existing_note_updates", "note_population_updates", "absent_mixer_step_lanes")
+ALLOWED_DOMAINS = (
+    "existing_note_updates",
+    "note_population_updates",
+    "clip_geometry_updates",
+    "absent_mixer_step_lanes",
+)
 PRESERVED_UNKNOWN_DOMAINS = ("mpe", "follow_actions", "existing_envelopes", "devices")
 
 
@@ -219,6 +224,7 @@ class ManagedRecovery:
         return candidate
 
     def preview(self, request: dict[str, Any]) -> dict[str, Any]:
+        """Retain current objects/settings for explicit review; execute no setters."""
         """Read and retain concrete current objects; publish no native binding or journal."""
         if not valid_preview_request(request):
             raise RuntimeError("AdoptionUnavailable: malformed preview request")
@@ -332,7 +338,7 @@ class ManagedRecovery:
                 "owned_note_ids": set(ids),
                 "adopted_device_cohort": preview["devices"],
                 "authority_origin": "explicit_adoption",
-                "allowed_domains": ALLOWED_DOMAINS,
+                "allowed_domains": tuple(result["allowed_domains"]),
                 "content_fingerprint": current["content_fingerprint"],
                 "note_identity_fingerprint": current["note_identity_fingerprint"],
             }
@@ -343,7 +349,7 @@ class ManagedRecovery:
             "preview_fingerprint": request["preview_fingerprint"],
             "authority_origin": "explicit_adoption",
             "historical_identity_proven": False,
-            "allowed_domains": list(ALLOWED_DOMAINS),
+            "allowed_domains": list(result["allowed_domains"]),
             "preserved_unknown_domains": list(PRESERVED_UNKNOWN_DOMAINS),
             "approved_note_ids": ids,
             "devices_preserved": True,

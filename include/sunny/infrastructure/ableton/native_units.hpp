@@ -83,7 +83,7 @@ struct NativeDisplayResolution {
 /**
  * Build one read-only request on a canonical flat native Device path.
  *
- * Only the 32 continuous identities in the existing finite core registry are
+ * Only the 33 continuous identities in the existing finite core registry are
  * admitted. The peer owns class/name/unit/mode resolution; callers cannot
  * supply descriptors or modes. Both bridge validators admit only this closed
  * read-only contract; execution still requires an actual observed host peer.

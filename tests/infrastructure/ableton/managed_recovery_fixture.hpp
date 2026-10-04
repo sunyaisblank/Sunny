@@ -214,6 +214,7 @@ inline nlohmann::json preview() {
   "allowed_domains": [
     "existing_note_updates",
     "note_population_updates",
+    "clip_geometry_updates",
     "absent_mixer_step_lanes"
   ],
   "preserved_unknown_domains": [
@@ -222,7 +223,7 @@ inline nlohmann::json preview() {
     "existing_envelopes",
     "devices"
   ],
-  "preview_fingerprint": "075133e8c2da6c6a9d3cc983d000e479ab3b1e39c791e03db9127d9892fdecc3"
+  "preview_fingerprint": "1a5530ee906da455fc5d019a7b6d96c36910dfd773e534a159ba08de166ba56c"
 })JSON");
 }
 inline nlohmann::json acknowledgement() {
@@ -416,12 +417,13 @@ inline nlohmann::json acknowledgement() {
   "device_identity_fingerprint": "f5b3bc3e201756712c75bc0d5f34d2ea7c280311e1644356fdb9744d06f7d6b5",
   "adoption": {
     "preview_token": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-    "preview_fingerprint": "075133e8c2da6c6a9d3cc983d000e479ab3b1e39c791e03db9127d9892fdecc3",
+    "preview_fingerprint": "1a5530ee906da455fc5d019a7b6d96c36910dfd773e534a159ba08de166ba56c",
     "authority_origin": "explicit_adoption",
     "historical_identity_proven": false,
     "allowed_domains": [
       "existing_note_updates",
       "note_population_updates",
+      "clip_geometry_updates",
       "absent_mixer_step_lanes"
     ],
     "preserved_unknown_domains": [
@@ -458,6 +460,7 @@ inline nlohmann::json acknowledgement() {
       "allowed_domains": [
         "existing_note_updates",
         "note_population_updates",
+        "clip_geometry_updates",
         "absent_mixer_step_lanes"
       ],
       "preserved_unknown_domains": [
@@ -753,6 +756,7 @@ inline nlohmann::json owned_preview() {
   "allowed_domains": [
     "existing_note_updates",
     "note_population_updates",
+    "clip_geometry_updates",
     "absent_mixer_step_lanes"
   ],
   "preserved_unknown_domains": [
@@ -761,7 +765,7 @@ inline nlohmann::json owned_preview() {
     "existing_envelopes",
     "devices"
   ],
-  "preview_fingerprint": "314813954dac7716a3f62ebddc077cdcbdd16d98217e79120cb7dbe5c5587918"
+  "preview_fingerprint": "d50e1b9ead28f3bc83e8e8fa1c9a4f6668d80eb950422dfc8a0e5a3c4b7405cd"
 })JSON");
 }
 inline nlohmann::json owned_acknowledgement() {
@@ -1025,12 +1029,13 @@ inline nlohmann::json owned_acknowledgement() {
   "device_identity_fingerprint": "600d2c412d98397480551b9a896c35dd2c8f85dde5ea011d248b6c4df5388470",
   "adoption": {
     "preview_token": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-    "preview_fingerprint": "314813954dac7716a3f62ebddc077cdcbdd16d98217e79120cb7dbe5c5587918",
+    "preview_fingerprint": "d50e1b9ead28f3bc83e8e8fa1c9a4f6668d80eb950422dfc8a0e5a3c4b7405cd",
     "authority_origin": "explicit_adoption",
     "historical_identity_proven": false,
     "allowed_domains": [
       "existing_note_updates",
       "note_population_updates",
+      "clip_geometry_updates",
       "absent_mixer_step_lanes"
     ],
     "preserved_unknown_domains": [
@@ -1067,6 +1072,7 @@ inline nlohmann::json owned_acknowledgement() {
       "allowed_domains": [
         "existing_note_updates",
         "note_population_updates",
+        "clip_geometry_updates",
         "absent_mixer_step_lanes"
       ],
       "preserved_unknown_domains": [

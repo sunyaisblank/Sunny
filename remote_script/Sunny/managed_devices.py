@@ -10,7 +10,7 @@ from __future__ import annotations
 import copy
 import math
 import uuid
-from decimal import Decimal
+from decimal import ROUND_HALF_EVEN, Decimal, localcontext
 from typing import Any
 
 from .managed import _digest, _fingerprint, _key
@@ -20,6 +20,7 @@ from .native_units import (
     _parse,
     _registered_context,
     _same,
+    registered_native_mode_context,
     resolve_registered_native_display_value,
     valid_native_display_request,
 )
@@ -29,8 +30,9 @@ MAX_TARGETS = 32
 MAX_PARAMETERS = 512
 MAX_TEXT_BYTES = 4096
 MAX_PREVIEWS = 64
+DEVICE_MODE_METHOD = "sunny_managed_update_device_modes"
 DEVICE_METHODS = frozenset(
-    ("sunny_managed_insert_device", "sunny_managed_update_device_parameters")
+    ("sunny_managed_insert_device", "sunny_managed_update_device_parameters", DEVICE_MODE_METHOD)
 )
 _DEVICES = {
     "Drift": ("Drift", 1, "source"),
@@ -56,6 +58,8 @@ def _empty_identity() -> dict[str, Any]:
 def valid_managed_device_request(name: str, args: list[Any]) -> bool:
     """Admit one closed registered request; descriptors/modes are never supplied."""
     try:
+        if name == DEVICE_MODE_METHOD:
+            return _valid_mode_request(args)
         if name in (DEVICE_PREVIEW_METHOD, DEVICE_ADOPTION_METHOD):
             return _valid_adoption_request(name, args)
         if name not in DEVICE_METHODS or len(args) != 1 or type(args[0]) is not dict:
@@ -130,6 +134,49 @@ def valid_managed_device_request(name: str, args: list[Any]) -> bool:
         return False
 
 
+def _valid_mode_request(args: list[Any]) -> bool:
+    if len(args) != 1 or type(args[0]) is not dict:
+        return False
+    value = args[0]
+    if "enum_intents" not in value or "property_intents" not in value:
+        return False
+    probe = {
+        key: child
+        for key, child in value.items()
+        if key not in ("enum_intents", "property_intents")
+    }
+    if "physical_intents" in probe:
+        return False
+    probe["physical_intents"] = []
+    if not valid_managed_device_request("sunny_managed_update_device_parameters", [probe]):
+        return False
+    if value["device"]["role"] != "effect":
+        return False
+    intents, properties = value["enum_intents"], value["property_intents"]
+    if (
+        type(intents) is not list
+        or type(properties) is not list
+        or not 1 <= len(intents) + len(properties) <= MAX_TARGETS
+    ):
+        return False
+    identifiers = set()
+    for intent in intents:
+        if (
+            type(intent) is not dict
+            or set(intent) != {"capability_id", "label"}
+            or not _text(intent["label"], 256)
+        ):
+            return False
+        device_class, _, _ = registered_native_mode_context(intent["capability_id"])
+        if device_class != value["device"]["class_name"] or intent["capability_id"] in identifiers:
+            return False
+        identifiers.add(intent["capability_id"])
+    return not properties or (
+        value["device"]["class_name"] == "Eq8"
+        and properties == [{"property": "global_mode", "label": "Stereo"}]
+    )
+
+
 def _valid_adoption_request(name: str, args: list[Any]) -> bool:
     if len(args) != 1 or type(args[0]) is not dict:
         return False
@@ -154,7 +201,19 @@ def _valid_adoption_request(name: str, args: list[Any]) -> bool:
     for index, selection in enumerate(value["devices"]):
         if (
             type(selection) is not dict
-            or set(selection) != {"device_key", "chain_index", "device", "physical_intents"}
+            or set(selection)
+            not in (
+                {"device_key", "chain_index", "device", "physical_intents"},
+                {
+                    "device_key",
+                    "chain_index",
+                    "device",
+                    "physical_intents",
+                    "enum_intents",
+                    "property_intents",
+                    "authored_bypass",
+                },
+            )
             or type(selection["chain_index"]) is not int
             or selection["chain_index"] != index
         ):
@@ -169,6 +228,30 @@ def _valid_adoption_request(name: str, args: list[Any]) -> bool:
             "expected_device_identity_fingerprint": "0" * 64,
             **{key: selection[key] for key in ("device_key", "device", "physical_intents")},
         }
+        if "authored_bypass" in selection:
+            if type(selection["authored_bypass"]) is not bool:
+                return False
+            mode_probe = {key: child for key, child in probe.items() if key != "physical_intents"}
+            mode_probe.update(
+                enum_intents=selection["enum_intents"],
+                property_intents=selection["property_intents"],
+            )
+            if not _valid_mode_request([mode_probe]):
+                return False
+            if selection["authored_bypass"] and (
+                selection["physical_intents"]
+                or selection["property_intents"]
+                or selection["enum_intents"]
+                != [
+                    {
+                        "capability_id": "utility.enabled"
+                        if selection["device"]["class_name"] == "StereoGain"
+                        else "eq8.enabled",
+                        "label": "Off",
+                    }
+                ]
+            ):
+                return False
         if not valid_managed_device_request("sunny_managed_insert_device", [probe]) or (
             selection["device"]["role"] != ("source" if index == 0 else "effect")
         ):
@@ -321,7 +404,8 @@ class ManagedDevices:
                 or int(device.type) != declared["type"]
                 or isinstance(device.type, bool)
                 or device.can_have_chains is not False
-                or device.is_active is not True
+                or type(device.is_active) is not bool
+                or (declared["role"] == "source" and device.is_active is not True)
             ):
                 raise RuntimeError("Retained device class/role/active/flat state changed")
             raw = device.parameters
@@ -358,6 +442,28 @@ class ManagedDevices:
                 entry["parameter_handles"] = tuple(handles)
             if not parameters or not _text(device.name) or not _text(device.class_display_name):
                 raise RuntimeError("Native device names/population are unavailable")
+            if not device.is_active:
+                on = [
+                    item
+                    for item in parameters
+                    if item["name"] == "Device On" or item["original_name"] == "Device On"
+                ]
+                if len(on) != 1 or on[0]["original_name"] != "Device On":
+                    raise RuntimeError("Inactive effect needs unique actual Device On Off evidence")
+                descriptor = on[0]["descriptor"]
+                items = descriptor["value_items"]
+                if (
+                    not descriptor["is_quantized"]
+                    or set(items) != {"Off", "On"}
+                    or len(items) != 2
+                    or descriptor["minimum"] != 0.0
+                    or descriptor["maximum"] != 1.0
+                    or descriptor["value"] not in (0.0, 1.0)
+                    or items[int(descriptor["value"])] != "Off"
+                ):
+                    raise RuntimeError(
+                        "Inactive effect is not proven bypassed by actual Device On Off"
+                    )
             modes: dict[str, Any] = {}
             if device.class_name == "Drift":
                 modes = {name: _voice(device, name) for name in ("voice_mode", "voice_count")}
@@ -366,6 +472,16 @@ class ManagedDevices:
                 if isinstance(mode, bool) or not isinstance(mode, int) or mode not in (0, 1, 2):
                     raise RuntimeError("Native EQ Eight global mode is unavailable")
                 modes = {"global_mode": int(mode)}
+                try:
+                    edit, oversample = device.edit_mode, device.oversample
+                except AttributeError:
+                    pass  # Exact historical shape: these properties remain unknown.
+                else:
+                    if type(edit) is not bool or type(oversample) is not bool:
+                        raise RuntimeError(
+                            "Native EQ edit_mode/oversample must be observed Boolean properties"
+                        )
+                    modes.update(edit_mode=edit, oversample=oversample)
             cohort.append(
                 {
                     "device_key": entry["device_key"],
@@ -375,7 +491,7 @@ class ManagedDevices:
                     "name": device.name,
                     "type": int(device.type),
                     "role": declared["role"],
-                    "is_active": True,
+                    "is_active": device.is_active,
                     "can_have_chains": False,
                     "parameters": parameters,
                     "modes": modes,
@@ -420,6 +536,26 @@ class ManagedDevices:
         if state is not None and current["device_identity_fingerprint"] != state["baseline"]:
             raise RuntimeError("Managed native device state drift; preserve external edits")
 
+    def private_cohort(self, record: dict[str, Any]) -> tuple[Any, ...]:
+        """Return guarded actual Device/known parameter handles without refreshing authority.
+
+        Preserve-only unknown Devices contribute only their exact top-level handles.
+        This private witness lets another touched-domain operation detect replacement
+        even after a separate legitimate device ACK advances the serializable baseline.
+        """
+        self.verify_retained_chain(record)
+        chain = self._handles(record)
+        state = record.get("_managed_devices")
+        if state is None:
+            return chain
+        parameters: list[Any] = []
+        for entry in state["entries"]:
+            handles = entry.get("parameter_handles")
+            if type(handles) is not tuple:
+                raise RuntimeError("Owned native parameter cohort has not been retained")
+            parameters.extend(handles)
+        return chain + tuple(parameters)
+
     def seal(
         self, record: dict[str, Any], result: dict[str, Any], authorized_device_change: bool = False
     ) -> None:
@@ -455,32 +591,36 @@ class ManagedDevices:
         if type(value) is not float or not _number(value):
             raise RuntimeError("Actual native parameter readback is not finite")
         display = parameter.str_for_value(value)
-        physical, increment = _parse(display, candidate["unit"])
-        scale = candidate["balance_full_scale"]
-        if scale is not None:
-            physical = physical / Decimal(str(scale))
-            if increment is not None:
-                increment /= Decimal(str(scale))
-        unit = candidate["unit"]
-        if (
-            (unit in ("Hertz", "QualityFactor") and physical <= 0)
-            or (unit in ("Percent", "Milliseconds") and physical < 0)
-            or (unit == "StereoBalance" and not -1 <= physical <= 1)
-        ):
-            raise RuntimeError("Native readback is outside its physical unit domain")
-        target, tolerance = (
-            Decimal(str(candidate["target"])),
-            Decimal(str(candidate["display_tolerance"])),
-        )
-        return {
-            "internal_value": value,
-            "display": display,
-            "display_value": float(physical),
-            "display_increment": float(increment) if increment is not None else None,
-            "absolute_display_error": float(abs(physical - target)),
-            "matches_intent": abs(physical - target) <= tolerance,
-            "formatter_calls": 1,
-        }
+        # The receipt consumer reconstructs this explicitly fixed Decimal domain.
+        with localcontext() as decimal_context:
+            decimal_context.prec = 28
+            decimal_context.rounding = ROUND_HALF_EVEN
+            physical, increment = _parse(display, candidate["unit"])
+            scale = candidate["balance_full_scale"]
+            if scale is not None:
+                physical = physical / Decimal(str(scale))
+                if increment is not None:
+                    increment /= Decimal(str(scale))
+            unit = candidate["unit"]
+            if (
+                (unit in ("Hertz", "QualityFactor") and physical <= 0)
+                or (unit in ("Percent", "Milliseconds") and physical < 0)
+                or (unit == "StereoBalance" and not -1 <= physical <= 1)
+            ):
+                raise RuntimeError("Native readback is outside its physical unit domain")
+            target, tolerance = (
+                Decimal(str(candidate["target"])),
+                Decimal(str(candidate["display_tolerance"])),
+            )
+            return {
+                "internal_value": value,
+                "display": display,
+                "display_value": float(physical),
+                "display_increment": float(increment) if increment is not None else None,
+                "absolute_display_error": float(abs(physical - target)),
+                "matches_intent": abs(physical - target) <= tolerance,
+                "formatter_calls": 1,
+            }
 
     @staticmethod
     def _capacity(
@@ -529,6 +669,11 @@ class ManagedDevices:
         self, name: str, record: dict[str, Any], request: dict[str, Any], operation: dict[str, Any]
     ) -> dict[str, Any]:
         """Apply once inside the caller's already-reserved journal operation."""
+        if name == DEVICE_MODE_METHOD:
+            from .managed_device_modes import apply_device_modes
+
+            mode_result: dict[str, Any] = apply_device_modes(self, record, request, operation)
+            return mode_result
         if (
             not valid_managed_device_request(name, [request])
             or operation.get("outcome") != "pending"
@@ -734,6 +879,24 @@ class ManagedDevices:
         resolutions = []
         for index, selection in enumerate(request["devices"]):
             native = chain[index]
+            if "authored_bypass" in selection:
+                from .managed_device_modes import _admit
+
+                for intent in selection["enum_intents"]:
+                    admitted = _admit(self, native, intent)
+                    if admitted["descriptor"]["value"] != admitted["target_internal"]:
+                        raise RuntimeError(
+                            "AuthoredNativeMismatch: current native mode differs from selected label"
+                        )
+                for intent in selection["property_intents"]:
+                    if native.global_mode != 0:
+                        raise RuntimeError(
+                            "AuthoredNativeMismatch: current native EQ property differs from Stereo"
+                        )
+                if selection["authored_bypass"] != (native.is_active is False):
+                    raise RuntimeError(
+                        "AuthoredNativeMismatch: actual effect bypass differs from authored bypass"
+                    )
             for intent in selection["physical_intents"]:
                 evidence = resolve_registered_native_display_value(native, **intent)
                 parameter = tuple(native.parameters)[evidence["parameter_index"]]
