@@ -61,6 +61,7 @@ jobs:
           sudo apt-get install -y cmake ninja-build python3-dev
 
       - name: Initialize CodeQL
+        id: codeql-init
         uses: github/codeql-action/init@v3
         with:
           languages: cpp
@@ -73,6 +74,11 @@ jobs:
 
       - name: Perform CodeQL analysis
         uses: github/codeql-action/analyze@v3
+
+      - name: Test custom CodeQL type models
+        run: >-
+          "${{ steps.codeql-init.outputs.codeql-path }}" test run
+          --threads=2 --ram=4096 .analysis/codeql/test
 
   # Python tests (with native module)
   python-test:
