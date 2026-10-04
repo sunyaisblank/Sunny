@@ -285,3 +285,69 @@ TEST_CASE("Observed early Song scalar clamp is a stopped partial operation",
     forged["result"] = song_settings_test_fixture::normal_result();
     CHECK_FALSE(managed_song_detail::partial_valid(payload, forged));
 }
+
+#include "managed_scalar_inspection_fixture.hpp"
+
+#include <sunny/infrastructure/ableton/deployment.hpp>
+TEST_CASE("Read-only Song inspection preserves current actual scalar mismatch and later match",
+          "[ableton][managed-song-settings][inspection]") {
+    const auto all = test::managed_scalar_inspection_fixture();
+    for (const auto* prefix : {"song", "final_song"}) {
+        const auto value = all.at(std::string{prefix} + "_response");
+        const auto& body = value.at("inspection");
+        const ManagedBindingReceipt binding{
+            context, "project_a", "part_a", value.at("observation")};
+        const auto request =
+            make_managed_song_settings_inspection_request(context, binding, {92.5, 3, 8});
+        REQUIRE(request);
+        CHECK(request->property_or_method == "sunny_managed_inspect_song_settings");
+        CHECK(std::get<json>(request->args.at(0)) == all.at(std::string{prefix} + "_request"));
+        REQUIRE(LomProtocol::deserialize_request(
+            json::parse(LomProtocol::serialize_request(*request))));
+        const auto parsed = parse_managed_song_settings_inspection(*request, context, value);
+        REQUIRE(parsed);
+        CHECK(*parsed == value);
+        const bool final = std::string_view{prefix} == "final_song";
+        CHECK(body.at("before").at("settings").at("tempo") == (final ? 92.5 : 120.0));
+        CHECK(body.at("before").at("settings").at("signature_numerator") == (final ? 3 : 4));
+        CHECK(body.at("before").at("scenes").at(0).at("tempo") == 150.0);
+        CHECK(body.at("before").at("cue_points").at(0).at("time") == 4.0);
+        CHECK(body.at("scope").at("all_tracks_affected") == true);
+        CHECK_FALSE(body.contains("preview_token"));
+        CHECK_FALSE(prepare_managed_operation(context, *request));
+        CHECK_FALSE(parse_managed_song_settings_preview(*request, context, value));
+        CommandBuffer peer;
+        JournaledLomTransport readonly{peer, std::nullopt, {}, true};
+        CHECK(readonly.send(*request).success);
+        CHECK(readonly.journal().empty());
+        CHECK_FALSE(readonly.plan_diverged());
+    }
+}
+TEST_CASE("Read-only Song inspection keeps strict current Set eligibility and authority closure",
+          "[ableton][managed-song-settings][inspection][decline]") {
+    const auto all = test::managed_scalar_inspection_fixture();
+    const auto request = LomProtocol::call_method(
+        LomPaths::song(), "sunny_managed_inspect_song_settings", {all.at("song_request")});
+    const auto value = all.at("song_response");
+    for (int mutation = 0; mutation < 10; ++mutation) {
+        auto bad = value;
+        auto& body = bad["inspection"];
+        if (mutation == 0) body["before"]["tempo_parameter"]["automation_state"] = 1;
+        if (mutation == 1) body["before"]["flags"]["is_playing"] = true;
+        if (mutation == 2) body["desired"]["tempo"] = 93.0;
+        if (mutation == 3) body["context"]["bridge_instance"] = "other_bridge";
+        if (mutation == 4)
+            body["binding_guard"]["note_identity_fingerprint"] = std::string(64, 'a');
+        if (mutation == 5) body["authority_origin"] = "explicit_current_set_settings";
+        if (mutation == 6) body["native_mutation_started"] = 0;
+        if (mutation == 7) body["preview_token"] = std::string(32, 'a');
+        if (mutation == 8) body["scope"]["historical_song_identity_proven"] = true;
+        if (mutation == 9) body["unavailable_domains"] = json::array();
+        CHECK_FALSE(parse_managed_song_settings_inspection(request, context, bad));
+    }
+    auto bad_request = request;
+    auto payload = std::get<json>(bad_request.args.at(0));
+    payload["document_token"] = "different_document";
+    bad_request.args.at(0) = payload;
+    CHECK_FALSE(parse_managed_song_settings_inspection(bad_request, context, value));
+}

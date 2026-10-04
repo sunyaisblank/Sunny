@@ -9,6 +9,7 @@ from typing import Any
 
 import pytest
 from live_model import Device, DeviceType, Track
+from Sunny.handler import BRIDGE_PROTOCOL_VERSION
 from Sunny.managed_mixer import ADOPT_METHOD, DOMAINS, PREVIEW_METHOD, UPDATE_METHOD, valid_request
 from test_managed_devices import Parameter
 from test_managed_recovery import adopt
@@ -484,3 +485,99 @@ def test_successful_original_track_creation_grants_real_mixer_without_clip_adopt
     assert ack["outcome"] == "acknowledged", ack
     assert track.mute is True and track.mixer_device.track_activator.value == 0.0
     assert state.track.mute is False
+
+
+def test_readonly_static_mixer_inspection_observes_actual_controls_without_tokens(
+    state: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Current nonlinear display is independent of the selected desired candidate."""
+    payload = preview_request(state, purpose="inspect")
+    helper = state.registry._mixer
+    helper._previews = {f"{index:032x}": {} for index in range(256)}
+    before = state.registry._capture(state.record)
+    count = len(state.registry._operations)
+    monkeypatch.setattr(
+        "Sunny.managed_mixer.uuid",
+        SimpleNamespace(uuid4=lambda: pytest.fail("inspection allocated token")),
+    )
+    for _ in range(3):
+        wire = state.registry._handler.handle(
+            {
+                "bridge_protocol_version": BRIDGE_PROTOCOL_VERSION,
+                "type": "call",
+                "path": "song",
+                "name": "sunny_managed_inspect_static_mixer",
+                "args": [payload],
+            }
+        )
+        assert wire["success"], wire
+        result = wire["value"]
+        assert set(result) == {"schema_version", "outcome", "inspection"}
+        assert result["outcome"] == "observed"
+        body = result["inspection"]
+        assert "preview_token" not in body
+        assert body["purpose"] == "inspect"
+        assert body["authority_origin"] == "none"
+        assert body["native_mutation_started"] is False
+        candidate = body["candidates"]["volume"]
+        assert candidate["internal_value"] == 0.5
+        assert candidate["display"] == "-6.00 dB"
+        assert candidate["current_display"]["display"] == "-25.66 dB"
+        assert body["before"]["track_context"]["mute"] is False
+        assert body["before"]["track_context"]["solo"] is False
+    assert len(helper._previews) == 256
+    assert "_managed_mixer" not in state.record
+    assert len(state.registry._operations) == count
+    assert state.volume.writes == []
+    assert state.registry._capture(state.record) == before
+
+
+def test_readonly_static_mixer_inspection_has_fresh_after_write_evidence(state: Any) -> None:
+    """Final read sees genuine nonlinear target/mute/solo, with no new journal."""
+    grant(state)
+    result = update(state)
+    assert result["outcome"] == "acknowledged"
+    payload = preview_request(state, purpose="inspect")
+    grant_identity = state.record["_managed_mixer"]
+    before_grant = dict(grant_identity)
+    count = len(state.registry._operations)
+    previews = len(state.registry._mixer._previews)
+    response = state.registry.dispatch("sunny_managed_inspect_static_mixer", [payload])
+    body = response["inspection"]
+    assert body["candidates"]["volume"]["current_display"]["display"] == "-6.00 dB"
+    assert body["before"]["track_context"]["mute"] is True
+    assert body["before"]["track_context"]["solo"] is True
+    assert body["before"]["mixer_capture"]["parameters"][1]["descriptor"]["value"] == -0.25
+    assert state.record["_managed_mixer"] is grant_identity
+    assert state.record["_managed_mixer"] == before_grant
+    assert len(state.registry._operations) == count
+    assert len(state.registry._mixer._previews) == previews
+    assert state.volume.writes == [0.5]
+
+
+def test_readonly_static_mixer_inspection_preserves_selected_existing_envelope(state: Any) -> None:
+    """Write prerequisites still apply; this read cannot approve clearing native automation."""
+    state.track._clip_slots[0]._clip.automation_envelope = (
+        lambda parameter: object() if parameter is state.track.mixer_device.panning else None
+    )
+    payload = preview_request(state, {"pan": -0.25}, purpose="inspect")
+    count = len(state.registry._operations)
+    with pytest.raises(RuntimeError, match="existing selected envelope preserved"):
+        state.registry.dispatch("sunny_managed_inspect_static_mixer", [payload])
+    assert state.volume.writes == []
+    assert len(state.registry._operations) == count
+    assert not state.registry._mixer._previews
+
+
+def test_readonly_static_mixer_inspection_rejects_cohort_drift_during_formatter(state: Any) -> None:
+    """A foreign Solo change during capture is observed drift, never adopted state."""
+    foreign = state.song.return_tracks[0]
+    state.volume.callback = lambda _: setattr(foreign, "solo", True)
+    payload = preview_request(state, purpose="inspect")
+    count = len(state.registry._operations)
+    with pytest.raises(RuntimeError, match="context changed during formatter"):
+        state.registry.dispatch("sunny_managed_inspect_static_mixer", [payload])
+    assert state.volume.writes == []
+    assert len(state.registry._operations) == count
+    assert "_managed_mixer" not in state.record
+    assert not state.registry._mixer._previews

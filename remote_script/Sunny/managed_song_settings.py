@@ -14,6 +14,7 @@ from typing import Any
 from .managed import _digest, _fingerprint, _key
 from .managed_capacity import guard_managed_response_capacity, require_response_capacity
 
+INSPECTION_METHOD = "sunny_managed_inspect_song_settings"
 PREVIEW_METHOD = "sunny_managed_preview_song_settings"
 APPLY_METHOD = "sunny_managed_apply_song_settings"
 MAX_PREVIEWS = 256
@@ -93,7 +94,9 @@ def valid_request(method: str, value: Any) -> bool:
             "approved_preview",
             "explicit_set_wide_approval",
         )
-    if method not in (PREVIEW_METHOD, APPLY_METHOD) or not _closed(value, fields):
+    if method not in (PREVIEW_METHOD, INSPECTION_METHOD, APPLY_METHOD) or not _closed(
+        value, fields
+    ):
         return False
     if not all(
         _key(value[name]) for name in ("document_token", "project_key", "binding_key")
@@ -104,7 +107,7 @@ def valid_request(method: str, value: Any) -> bool:
         for name in ("expected_content_fingerprint", "expected_note_identity_fingerprint")
     ):
         return False
-    if method == PREVIEW_METHOD:
+    if method in (PREVIEW_METHOD, INSPECTION_METHOD):
         return True
     return (
         _key(value["operation_id"])
@@ -168,6 +171,11 @@ class ManagedSongSettings:
         if len(result) > MAX_COHORT:
             raise RuntimeError("SongSettingsUnavailable: native cohort exceeds4096")
         return result
+
+    def _same_many(self, left: Any, right: Any) -> bool:
+        return len(left) == len(right) and all(
+            self.registry._same(a, b) for a, b in zip(left, right)
+        )
 
     def _current(self, request: dict[str, Any]) -> Any:
         song = self.registry._ensure_document()
@@ -347,25 +355,25 @@ class ManagedSongSettings:
             raise RuntimeError("SongSettingsUnavailable: approved native note IDs differ")
         return record, observation
 
+    def inspect(self, request: dict[str, Any]) -> dict[str, Any]:
+        """Read actual Set scalars and guards without retaining tokens or authority."""
+        return self._readonly_capture(request, inspection=True)
+
     def preview(self, request: dict[str, Any]) -> dict[str, Any]:
         """Retain current objects/settings for explicit review; execute no setters."""
-        if not valid_request(PREVIEW_METHOD, request):
+        return self._readonly_capture(request, inspection=False)
+
+    def _readonly_capture(self, request: dict[str, Any], *, inspection: bool) -> dict[str, Any]:
+        method = INSPECTION_METHOD if inspection else PREVIEW_METHOD
+        if not valid_request(method, request):
             raise RuntimeError("SongSettingsUnavailable: malformed preview request")
         song = self._current(request)
-        if len(self._previews) >= MAX_PREVIEWS:
+        if not inspection and len(self._previews) >= MAX_PREVIEWS:
             raise RuntimeError("SongSettingsUnavailable: preview capacity exhausted")
         record, observation = self._binding(request)
         device_cohort = self.registry._devices.private_cohort(record)
         before, cohort = self._capture(song)
         self._idle(before, request["desired"])
-        token = ""
-        for _ in range(64):
-            candidate = uuid.uuid4().hex
-            if candidate not in self._previews:
-                token = candidate
-                break
-        if not token:
-            raise RuntimeError("SongSettingsUnavailable: preview token collision bound exhausted")
         approved = {
             "schema_version": 1,
             "context": {
@@ -374,7 +382,6 @@ class ManagedSongSettings:
             },
             "project_key": request["project_key"],
             "binding_key": request["binding_key"],
-            "preview_token": token,
             "desired": copy.deepcopy(request["desired"]),
             "before": before,
             "binding_guard": {
@@ -385,6 +392,36 @@ class ManagedSongSettings:
             "scope": dict(SCOPE),
             "unavailable_domains": list(UNAVAILABLE),
         }
+        if inspection:
+            current_record, confirmed = self._binding(request)
+            after, actual = self._capture(song)
+            if (
+                current_record is not record
+                or observation != confirmed
+                or before != after
+                or not self._same_many(cohort, actual)
+                or not self._same_many(device_cohort, self.registry._devices.private_cohort(record))
+                or not self.registry._same(song, self._current(request))
+            ):
+                raise RuntimeError("SongSettingsUnavailable: inspection native state changed")
+            approved.update(authority_origin="none", native_mutation_started=False)
+            result = {
+                "schema_version": 1,
+                "outcome": "observed",
+                "inspection": approved,
+                "observation": observation,
+            }
+            require_response_capacity({"success": True, "value": result})
+            return result
+        token = ""
+        for _ in range(64):
+            candidate = uuid.uuid4().hex
+            if candidate not in self._previews:
+                token = candidate
+                break
+        if not token:
+            raise RuntimeError("SongSettingsUnavailable: preview token collision bound exhausted")
+        approved["preview_token"] = token
         result = {
             "schema_version": 1,
             "outcome": "previewed",

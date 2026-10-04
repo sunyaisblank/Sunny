@@ -135,16 +135,23 @@ def test_owning_drift_hz_ms_then_note_revision_and_restart_preserve_native_ids(d
         assert native.parameters[1].value == 0.75
         assert native.voice_mode_index == 1 and native.voice_count_index == 2
         _ok(client, "workspace_save", path=workflow.server_workspace)
+        before_read = workflow.history_ledger().read_bytes()
+        before_writes = tuple(tuple(parameter.writes) for parameter in native.parameters)
     with workflow.process() as restarted:
         again = _timbre(restarted, selections)
         assert again["success"] and again["source_insertion_requested"] is False, again
+        assert again["state"] == "selected_device_intent_already_observed"
+        assert again["mutation_dispatched"] is False and again["authority_granted"] is False
+        assert workflow.history_ledger().read_bytes() == before_read
+        assert tuple(tuple(parameter.writes) for parameter in native.parameters) == before_writes
         assert track._devices[0] is native and native.parameters[1].value == 0.75
         retained = _ok(restarted, "project_realization_inspect", attempt_id=authored["attempt_id"])
         assert retained["receipt"] == authored["receipt"]
     assert track.clip_slots[0] is slot and slot.clip is clip
     assert len(workflow.native_device_insertions) == 1
     assert workflow.managed_calls.count("sunny_managed_insert_device") == 1
-    assert workflow.managed_calls.count("sunny_managed_update_device_parameters") == 2
+    assert workflow.managed_calls.count("sunny_managed_update_device_parameters") == 1
+    assert workflow.managed_calls.count("sunny_managed_inspect_devices") >= 1
 
 
 def test_device_lost_reply_is_query_only_and_cannot_insert_again(device_workflow):

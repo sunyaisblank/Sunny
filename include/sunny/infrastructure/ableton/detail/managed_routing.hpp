@@ -3,6 +3,7 @@
 #pragma once
 #include <sunny/infrastructure/ableton/managed_routing.hpp>
 namespace sunny::infrastructure::managed_routing_detail {
+inline constexpr std::string_view send_inspection_method = "sunny_managed_inspect_send";
 inline constexpr std::string_view candidates_method = "sunny_managed_routing_candidates";
 inline constexpr std::string_view preview_method = "sunny_managed_preview_routing";
 inline constexpr std::string_view group_preview_method = "sunny_managed_preview_group";

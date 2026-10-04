@@ -17,6 +17,7 @@ from .managed import _digest, _fingerprint, _key
 from .managed_capacity import guard_managed_response_capacity
 from .managed_song_settings import ManagedSongSettings
 
+SEND_INSPECTION_METHOD = "sunny_managed_inspect_send"
 CANDIDATES_METHOD = "sunny_managed_routing_candidates"
 PREVIEW_METHOD = "sunny_managed_preview_routing"
 GROUP_PREVIEW_METHOD = "sunny_managed_preview_group"
@@ -151,7 +152,7 @@ def valid_request(method: str, value: Any) -> bool:
             "explicit_current_routing_approval",
         )
     return bool(
-        method in (PREVIEW_METHOD, APPLY_METHOD)
+        method in (PREVIEW_METHOD, SEND_INSPECTION_METHOD, APPLY_METHOD)
         and _closed(value, fields)
         and all(_key(value[name]) for name in ("document_token", "project_key", "binding_key"))
         and all(
@@ -159,8 +160,9 @@ def valid_request(method: str, value: Any) -> bool:
             for name in ("expected_content_fingerprint", "expected_note_identity_fingerprint")
         )
         and valid_intent(value["intent"])
+        and (method != SEND_INSPECTION_METHOD or value["intent"]["kind"] == "send_level")
         and (
-            method == PREVIEW_METHOD
+            method in (PREVIEW_METHOD, SEND_INSPECTION_METHOD)
             or (
                 _key(value["operation_id"])
                 and type(value["preview_token"]) is str
@@ -600,14 +602,22 @@ class ManagedRouting:
         guard_managed_response_capacity({}, result)
         return result
 
+    def inspect_send(self, request: dict[str, Any]) -> dict[str, Any]:
+        """Read current native Send dB evidence without tokens or authority refresh."""
+        return self._readonly_capture(request, inspection=True)
+
     def preview(self, request: dict[str, Any]) -> dict[str, Any]:
         """Zero native writes, grants or baseline changes."""
-        if not valid_request(PREVIEW_METHOD, request):
+        return self._readonly_capture(request, inspection=False)
+
+    def _readonly_capture(self, request: dict[str, Any], *, inspection: bool) -> dict[str, Any]:
+        method = SEND_INSPECTION_METHOD if inspection else PREVIEW_METHOD
+        if not valid_request(method, request):
             raise RuntimeError("RoutingUnavailable: malformed preview request")
         if request["intent"]["kind"] == "adopt_group":
             raise RuntimeError("RoutingUnavailable: use separate current Group bootstrap preview")
         song = self._current(request)
-        if len(self._previews) >= MAX_PREVIEWS:
+        if not inspection and len(self._previews) >= MAX_PREVIEWS:
             raise RuntimeError("RoutingUnavailable: preview capacity exhausted")
         record = self.registry._bindings.get((request["project_key"], request["binding_key"]))
         if record is None:
@@ -620,17 +630,14 @@ class ManagedRouting:
             != request["expected_note_identity_fingerprint"]
         ):
             raise RuntimeError("RoutingUnavailable: owning Part preview guard differs")
+        device_cohort = self.registry._devices.private_cohort(record)
         before, witness = self._frame(song)
         selected, objects = self._select(request, song, record)
         after, actual = self._frame(song)
         if before != after or not self._witness_equal(witness, actual):
             raise RuntimeError("RoutingUnavailable: native preview capture drift")
-        token = uuid.uuid4().hex
-        if token in self._previews:
-            raise RuntimeError("RoutingUnavailable: preview token collision")
         body = {
             "schema_version": 1,
-            "preview_token": token,
             "context": {"bridge_instance": self._epoch[0], "document_token": self._epoch[1]},
             "project_key": request["project_key"],
             "binding_key": request["binding_key"],
@@ -646,6 +653,36 @@ class ManagedRouting:
                 "historical_identity_proven": False,
             },
         }
+        if inspection:
+            readback = self._send_readback(body, objects[1])
+            confirmed_bindings, confirmed_private = self._bindings()
+            confirmed, actual = self._frame(song)
+            current_selected, current_objects = self._select(request, song, record)
+            if (
+                before != confirmed
+                or not self._witness_equal(witness, actual)
+                or bindings != confirmed_bindings
+                or len(private) != len(confirmed_private)
+                or any(
+                    original[0] is not current[0] or original[2] != current[2]
+                    for original, current in zip(private, confirmed_private)
+                )
+                or selected != current_selected
+                or not self._same_many(objects, current_objects)
+                or not self._same_many(device_cohort, self.registry._devices.private_cohort(record))
+                or not self.registry._same(song, self._current(request))
+            ):
+                raise RuntimeError("RoutingUnavailable: Send inspection native state changed")
+            body.update(
+                authority_origin="none", native_mutation_started=False, send_readback=readback
+            )
+            result = {"outcome": "observed", "inspection": body, "observation": observation}
+            guard_managed_response_capacity({}, result)
+            return result
+        token = uuid.uuid4().hex
+        if token in self._previews:
+            raise RuntimeError("RoutingUnavailable: preview token collision")
+        body["preview_token"] = token
         result = {
             "preview_token": token,
             "preview_fingerprint": _digest(body),

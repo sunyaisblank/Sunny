@@ -14,6 +14,7 @@ from .native_mixer_units import _MixerObservation, resolve_native_mixer_display_
 from .native_units import _parse
 
 PREVIEW_METHOD = "sunny_managed_preview_static_mixer"
+INSPECTION_METHOD = "sunny_managed_inspect_static_mixer"
 ADOPT_METHOD = "sunny_managed_adopt_static_mixer"
 UPDATE_METHOD = "sunny_managed_update_static_mixer"
 DOMAINS = ("volume", "pan", "mute", "solo")
@@ -96,7 +97,12 @@ def valid_request(method: str, value: Any) -> bool:
             "explicit_current_mixer_approval",
             "explicit_set_wide_audible_approval",
         )
-    if method not in (PREVIEW_METHOD, ADOPT_METHOD, UPDATE_METHOD) or not _closed(value, fields):
+    if method not in (
+        PREVIEW_METHOD,
+        INSPECTION_METHOD,
+        ADOPT_METHOD,
+        UPDATE_METHOD,
+    ) or not _closed(value, fields):
         return False
     if (
         not all(_key(value[n]) for n in ("document_token", "project_key", "binding_key"))
@@ -104,11 +110,15 @@ def valid_request(method: str, value: Any) -> bool:
             _fingerprint(value[n])
             for n in ("expected_content_fingerprint", "expected_note_identity_fingerprint")
         )
-        or value["purpose"] not in ("adopt", "update")
+        or (
+            value["purpose"] != "inspect"
+            if method == INSPECTION_METHOD
+            else value["purpose"] not in ("adopt", "update")
+        )
         or not desired_valid(value["desired"], value["selected_domains"])
     ):
         return False
-    if method == PREVIEW_METHOD:
+    if method in (PREVIEW_METHOD, INSPECTION_METHOD):
         return True
     return (
         value["purpose"] == ("adopt" if method == ADOPT_METHOD else "update")
@@ -403,10 +413,13 @@ class ManagedMixer:
             if record["clip"].automation_envelope(parameter) is not None:
                 raise RuntimeError("StaticMixerUnavailable: existing selected envelope preserved")
 
-    def preview(self, request: dict[str, Any]) -> dict[str, Any]:
-        """Observe current handles and finite targets without granting authority or setters."""
-        if not valid_request(PREVIEW_METHOD, request) or len(self._previews) >= MAX_PREVIEWS:
-            raise RuntimeError("StaticMixerUnavailable: invalid request or preview capacity256")
+    def _readonly_capture(
+        self, request: dict[str, Any], *, inspection: bool
+    ) -> tuple[dict[str, Any], Any, tuple[Any, ...]]:
+        """Observe eligible selected current controls; do not allocate authority."""
+        method = INSPECTION_METHOD if inspection else PREVIEW_METHOD
+        if not valid_request(method, request):
+            raise RuntimeError("StaticMixerUnavailable: invalid closed read-only request")
         record = self._record(request)
         self._guard(record, request)
         self._admit(record, request["desired"])
@@ -433,21 +446,8 @@ class ManagedMixer:
                 context_check=check,
             )
         check()
-        token = ""
-        for _ in range(16):
-            candidate_token = uuid.uuid4().hex
-            if (
-                type(candidate_token) is str
-                and len(candidate_token) == 32
-                and all(c in "0123456789abcdef" for c in candidate_token)
-                and candidate_token not in self._previews
-            ):
-                token = candidate_token
-                break
-        if not token:
-            raise RuntimeError("StaticMixerUnavailable: preview token collision bound exhausted")
         grant = record.get("_managed_mixer")
-        preview = {
+        body = {
             "schema_version": 1,
             "context": {
                 "bridge_instance": self.registry._bridge_instance,
@@ -455,7 +455,6 @@ class ManagedMixer:
             },
             "project_key": request["project_key"],
             "binding_key": request["binding_key"],
-            "preview_token": token,
             "purpose": request["purpose"],
             "selected_domains": list(request["selected_domains"]),
             "desired": copy.deepcopy(request["desired"]),
@@ -470,6 +469,36 @@ class ManagedMixer:
             },
             "unavailable_domains": list(UNAVAILABLE),
         }
+        if inspection:
+            body.update(authority_origin="none", native_mutation_started=False)
+        return body, record, cohort
+
+    def inspect(self, request: dict[str, Any]) -> dict[str, Any]:
+        """Fresh finite control evidence; retain no preview, grant or journal."""
+        body, _, _ = self._readonly_capture(request, inspection=True)
+        result = {"schema_version": 1, "outcome": "observed", "inspection": body}
+        require_response_capacity({"success": True, "value": result})
+        return result
+
+    def preview(self, request: dict[str, Any]) -> dict[str, Any]:
+        """Read selected controls for separate approval, without any native setter."""
+        if len(self._previews) >= MAX_PREVIEWS:
+            raise RuntimeError("StaticMixerUnavailable: preview capacity256")
+        preview, record, cohort = self._readonly_capture(request, inspection=False)
+        token = ""
+        for _ in range(16):
+            candidate_token = uuid.uuid4().hex
+            if (
+                type(candidate_token) is str
+                and len(candidate_token) == 32
+                and all(c in "0123456789abcdef" for c in candidate_token)
+                and candidate_token not in self._previews
+            ):
+                token = candidate_token
+                break
+        if not token:
+            raise RuntimeError("StaticMixerUnavailable: preview token collision bound exhausted")
+        preview["preview_token"] = token
         result = {
             "schema_version": 1,
             "outcome": "previewed",

@@ -26,6 +26,12 @@ struct ManagedRoutingPreview {
 make_managed_routing_candidates_request(const ManagedBridgeContext&, const ManagedBindingReceipt&);
 [[nodiscard]] sunny::core::Result<nlohmann::json> parse_managed_routing_candidates(
     const LomRequest&, const ManagedBridgeContext&, const nlohmann::json& actual);
+/** Fresh native Send formatter readback. Mismatch is valid observed evidence;
+ * no preview token, grant, journal or baseline refresh. SendLevel intent only. */
+[[nodiscard]] sunny::core::Result<LomRequest> make_managed_send_inspection_request(
+    const ManagedBridgeContext&, const ManagedBindingReceipt&, const nlohmann::json& send_intent);
+[[nodiscard]] sunny::core::Result<nlohmann::json> parse_managed_send_inspection(
+    const LomRequest&, const ManagedBridgeContext&, const nlohmann::json& actual);
 /** Closed finite intent. Product validates owning Mix/revision and affected
  * membership. */
 [[nodiscard]] sunny::core::Result<LomRequest> make_managed_routing_preview_request(

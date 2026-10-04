@@ -2,9 +2,9 @@
 
 **Managed receipt schema:** 1  
 **Bridge protocol:** 46, unreleased coordinated contract  
-**Status:** Durable selected-Part notes, physical Drift controls, Step panning and explicit current-object adoption; host qualification pending
+**Status:** Durable selected-project notes, finite physical devices, Mixer/routing, Step pan, Song settings and explicit current-object recovery; host qualification pending
 
-Live12.4 is the primary product target, with compatible Live12.3 behavior retained.
+Live 12.4 is the primary product target, with compatible Live 12.3 behavior retained.
 The exact host patch, edition and operating system remain final qualification facts.
 
 ## 1. Native identities and preservation boundary
@@ -54,8 +54,8 @@ Session Clip, unarmed Track, same-track real DeviceParameter, active/enabled con
 internal domain, and no overridden automation. The authorizer is active only inside
 that tokened managed lane and matches the exact resolved Track/Clip/Parameter identities.
 Generic envelope authoring is denied outside this context, including generic writes to
-an otherwise owned Track. Subsequent complete update/recovery of envelope content is
-unavailable; samples are evidence only for their queried times.
+an otherwise owned Track. Complete envelope populations remain unobserved; explicit selected Step-lane replacement
+authorizes overwriting its unsampled state. Samples are evidence only for their queried times.
 
 ## 2. Closed versioned operations
 
@@ -232,7 +232,8 @@ domain. Score whole-note rational positions convert explicitly to Live quarter-n
 multiplication by four. Readback compares each Step start and representable interval midpoint
 with its authored value at absolute tolerance `1e-6`. This proves only those samples; it never
 claims complete envelope population. A repeat preserves any existing selected envelope, including
-unsampled user edits. Linear/curve interpolation and complete envelope revision remain unavailable.
+unsampled user edits. Linear/curve interpolation remains unavailable; selected Step-lane
+replacement requires separate approval of overwriting unsampled state.
 
 ## 5. Population, device controls and current-object adoption
 
@@ -272,9 +273,10 @@ failure retains that object and blocks replay. Knob agreement does not qualify D
 unselected profile leaves and effects remain explicit residuals.
 
 The native helper supports Drift, Utility and EQ Eight, at most 16 flat devices, 32 physical
-controls per device and 512 parameter descriptors. The current owning public device path admits
-an empty or source-only Drift chain. Additional effect-chain authoring requires its owning
-mapping and order contract; the helper's inventory alone is not an end-to-end product claim.
+controls per device and 512 parameter descriptors. The owning public path admits Drift followed by explicitly selected finite EQ Eight and Utility
+stages, including a separate Mix input-trim Utility. Existing keys, classes and full selected order
+must agree; authoring appends missing stages without deletion or reorder. The capability inventory
+alone does not qualify unselected mappings, device DSP, editions or host behavior.
 Full device capture observes a finite floating-point default only for continuous parameters.
 For quantized parameters it records `default_value:null` without accessing that getter, as
 required by the [DeviceParameter contract](https://docs.cycling74.com/apiref/lom/deviceparameter/).
@@ -301,5 +303,67 @@ An approved empty chain grants source insertion and owned-effect append on the e
 Track without claiming formatter evidence for devices not yet inserted. A current known-chain
 grant does not restore historical native identity. Unknown plugins/racks remain preserve-only.
 After reopening a real Set, these in-place paths require final host qualification of actual
-current identities, IDs, parameter/mode state and persistence. Native host qualification remains
-in issue22; essential geometry, routing and further automation integration keep issues30/31 open.
+current identities, IDs, parameter/mode state and persistence. Exact-host qualification is required before these recovery paths are claimed for actual saved Live Sets.
+
+
+## 6. Selected-project composition and physical recovery
+
+`project_realization_plan` selects at most 64 active Parts, 64 removed Parts and 128 routing phases
+under one current owning revision. Every selected authored projection is compiled before native
+writes. Current verified note/geometry and finite Device/Mixer guards are read independently of
+operation acknowledgement metadata. Existing selected Source targets resolve through their actual
+formatter before project dispatch. Future instrument/effect descriptors remain causal admission
+points after insertion; unavailable native objects are never replaced by fabricated descriptors.
+The exact returned plan, including original selections and actual observations, must fit the 4 MiB
+public MCP input limit with framing/approval reserve. It is recomputed before application.
+Preflight also reserves the compact final evidence, phase summaries and original operation tokens
+within a 16 MiB complete coordinator MCP response, including text/structured copies and the
+accepted request-ID bound. Actual final serialization is checked again. An unexpected oversized
+reply stops with explicit capacity failure and retains original tokens and mutation/uncertainty
+status without granting retry; complete typed operation evidence remains in existing history.
+
+`project_realization_apply` requires literal plan approval and the applicable existing selected-domain
+approvals. It invokes the same registered native writers directly inside the serialized owning
+request, without a second persistence journal or recursive MCP request. Order is Group adoption,
+Clip revision, Return creation/adoption, Source/effects, output routing, sends, static Mixer,
+selected Step-lane replacement, mute-only retirement and optional constant Song settings. Output
+type and channel require separate approved plans: the channel is selected only from the actual
+cohort advertised after the type acknowledgement. Existing Group members require current Clip
+authority before this coordinator starts; it cannot create or regroup Tracks into native Groups.
+
+Every intermediate Clip projection uses the final owning revision. Length expansion precedes
+later attacks, population revision precedes shrink, and final extent/meter follow. Partial or lost
+replies stop dependent phases. Returned phase identifiers name original durable attempts for
+query-only reconciliation; no phase is replayed to discover whether it executed. The response
+contains compact phase summaries, while complete immutable typed evidence remains in native
+history. A new plan resumes only from freshly verified retained state.
+
+Final verification checks actual notes, geometry, attack associations and retained finite cohorts.
+Tokenless Device, static Mixer, Send and Song inspections recheck actual handles, full guards and genuine
+formatter readback without allocating preview authority or a mutation token. Source/active-effect
+no-ops require this fresh selected physical-intent proof, never an old acknowledgement alone.
+Bypassed effects use enable/configure/verify/disable phases. Their selected physical targets and
+original tolerances must match successful typed configuration history joined to the final actual
+Device cohort and current context. This proves configuration before disable; it does not claim
+fresh formatted physical readback while the effect is disabled. Fader dB
+uses the original tolerance and decimal formatter arithmetic; pan uses its explicit Stereo control
+coordinate. When a selected pan lane follows static pan, the static acknowledgement describes
+that earlier phase, while final Step boundaries/midpoints describe the lane. The final Step read
+must return the same full Part observation as the earlier note/geometry/cohort verification.
+Other selected static
+controls, Send levels and optional constant Song tempo/meter are inspected at final state. Complete breakpoint/modulation populations, audible judgment
+and DSP equivalence remain unproved. Retirement proves mute and preserves Solo, so its returned
+Solo state is an audible residual rather than a guarantee that other Tracks will sound.
+
+For simultaneous offline Score/Timbre/Mix changes and native context replacement, Clip adoption
+can select `projection_source: retained_verified_realization` and repeat the exact returned
+`historical_projection_attempt`. Separate Device adoption can select
+`device_projection_source: retained_verified_realization` and repeat `device_history_attempt`.
+The pure saved-history fold validates immutable typed same-workspace/Score/Part attempts, original
+physical targets/tolerances and complete Device joins through the selected musical history ceiling.
+Unknown or incomplete intervening evidence declines; no current IR rollback, normalized-value
+conversion, guessed default or replacement native identity is introduced. The saved finite chain
+must remain a prefix of the current owning logical Source/effect order with identical keys/classes.
+Fresh preview/adoption checks saved targets on current objects without setters and grants current
+Device authority only. Ordinary owning writers subsequently apply the current authored targets.
+Bypassed historical physical targets and unobserved opaque state remain explicit residuals.

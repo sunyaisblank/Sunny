@@ -225,3 +225,76 @@ TEST_CASE("Routing candidate inspector rejects valid hashes attached to the wron
     actual["preview_token"] = std::string(32, 'a');
     REQUIRE_FALSE(parse_managed_routing_candidates(request, context, actual));
 }
+
+#include "managed_scalar_inspection_fixture.hpp"
+
+#include <sunny/infrastructure/ableton/deployment.hpp>
+TEST_CASE("Read-only Send inspection closes actual nonlinear native formatter mismatch and match",
+          "[ableton][managed][routing][inspection]") {
+    const auto all = test::managed_scalar_inspection_fixture();
+    const ManagedBridgeContext context{"bridge_a", "document_a"};
+    for (const auto* prefix : {"send", "final_send"}) {
+        const auto value = all.at(std::string{prefix} + "_response");
+        const auto& body = value.at("inspection");
+        const ManagedBindingReceipt binding{
+            context, "project_a", "part_a", value.at("observation")};
+        const auto request =
+            make_managed_send_inspection_request(context, binding, body.at("intent"));
+        REQUIRE(request);
+        CHECK(request->property_or_method == "sunny_managed_inspect_send");
+        CHECK(std::get<json>(request->args.at(0)) == all.at(std::string{prefix} + "_request"));
+        REQUIRE(LomProtocol::deserialize_request(
+            json::parse(LomProtocol::serialize_request(*request))));
+        const auto parsed = parse_managed_send_inspection(*request, context, value);
+        REQUIRE(parsed);
+        CHECK(*parsed == value);
+        const bool final = std::string_view{prefix} == "final_send";
+        const auto& actual = body.at("send_readback");
+        CHECK(actual.at("display") == (final ? "-24.000000000000 dB" : "-14.058874503046 dB"));
+        CHECK(actual.at("internal_value") == (final ? 0.25 : 0.5));
+        CHECK(actual.at("matches_intent") == final);
+        CHECK(body.at("selected").at("candidate").at("internal_value") == 0.25);
+        CHECK_FALSE(body.contains("preview_token"));
+        CHECK_FALSE(prepare_managed_operation(context, *request));
+        CHECK_FALSE(parse_managed_routing_preview(*request, context, value));
+        CHECK_FALSE(make_managed_send_inspection_request(
+            context, binding, {{"kind", "create_return"}, {"aux_key", "aux_room"}}));
+        CommandBuffer peer;
+        JournaledLomTransport readonly{peer, std::nullopt, {}, true};
+        CHECK(readonly.send(*request).success);
+        CHECK(readonly.journal().empty());
+        CHECK_FALSE(readonly.plan_diverged());
+    }
+}
+TEST_CASE("Read-only Send evidence rejects forged formatter truth and foreign anchor context",
+          "[ableton][managed][routing][inspection][decline]") {
+    const auto all = test::managed_scalar_inspection_fixture();
+    const ManagedBridgeContext context{"bridge_a", "document_a"};
+    const auto request = LomProtocol::call_method(
+        LomPaths::song(), "sunny_managed_inspect_send", {all.at("send_request")});
+    const auto actual = all.at("send_response");
+    for (int mutation = 0; mutation < 9; ++mutation) {
+        auto bad = actual;
+        auto& body = bad["inspection"];
+        if (mutation == 0) body["send_readback"]["matches_intent"] = true;
+        if (mutation == 1) body["send_readback"]["display"] = "-24.000000000000 dB";
+        if (mutation == 2) body["send_readback"]["internal_value"] = 0.25;
+        if (mutation == 3) body["selected"]["return_index"] = 999;
+        if (mutation == 4) body["context"]["document_token"] = "other_document";
+        if (mutation == 5) body["authority_origin"] = "explicit_current_routing_approval";
+        if (mutation == 6) body["native_mutation_started"] = 0;
+        if (mutation == 7) body["preview_token"] = std::string(32, 'a');
+        if (mutation == 8) body["scope"]["tap_policy_observed"] = true;
+        CHECK_FALSE(parse_managed_send_inspection(request, context, bad));
+    }
+    auto bad_request = request;
+    auto payload = std::get<json>(bad_request.args.at(0));
+    payload["intent"]["level_db"] = -14.0;
+    bad_request.args.at(0) = payload;
+    CHECK_FALSE(parse_managed_send_inspection(bad_request, context, actual));
+    bad_request = request;
+    payload = std::get<json>(bad_request.args.at(0));
+    payload["document_token"] = "another_document";
+    bad_request.args.at(0) = payload;
+    CHECK_FALSE(parse_managed_send_inspection(bad_request, context, actual));
+}

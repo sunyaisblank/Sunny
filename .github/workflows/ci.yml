@@ -149,7 +149,7 @@ jobs:
             '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"ci","version":"1"}}}' \
             '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' \
             | docker run -i --rm sunny-mcp:ci \
-            | python3 -c "import json,sys; r=[json.loads(l) for l in sys.stdin]; assert r[0]['result']['serverInfo']['name']=='sunny-mcp'; names={t['name'] for t in r[1]['result']['tools']}; assert {'score_create','get_timbre_json','replace_timbre_effect','remove_timbre_automation','get_mix_json','replace_mix_effect','remove_mix_effect','reorder_mix_effects','query_how_would_x_handle','project_plan_to_ableton'} <= names"
+            | python3 -c "import json,sys; r=[json.loads(l) for l in sys.stdin]; assert r[0]['result']['serverInfo']['name']=='sunny-mcp'; names={t['name'] for t in r[1]['result']['tools']}; assert {'score_create','get_timbre_json','replace_timbre_effect','remove_timbre_automation','get_mix_json','replace_mix_effect','remove_mix_effect','reorder_mix_effects','query_how_would_x_handle','project_plan_to_ableton','project_realization_plan','project_realization_apply'} <= names"
 
       - uses: actions/setup-python@v5
         with:
@@ -170,7 +170,34 @@ jobs:
           SUNNY_TEST_BRIDGE_HOST=host.docker.internal \
           SUNNY_NATIVE_MCP_COMMAND="docker run -i --rm --user $(id -u):$(id -g) --add-host host.docker.internal:host-gateway --mount type=bind,source={workspace_dir},target=/data -e SUNNY_WORKSPACE_PATH -e SUNNY_ABLETON_HOST -e SUNNY_TCP_PORT sunny-mcp:ci" \
           PYTHONPATH=remote_script:python \
-          python -m pytest tests/python/test_mcp_realization_workflow.py tests/python/test_mcp_realization_mismatch.py tests/python/test_mcp_note_population_workflow.py tests/python/test_mcp_native_device_workflow.py tests/python/test_mcp_native_recovery_workflow.py tests/python/test_mcp_mix_realization_workflow.py tests/python/test_mcp_native_geometry_workflow.py tests/python/test_mcp_native_clip_revision_workflow.py tests/python/test_mcp_native_song_settings_workflow.py tests/python/test_mcp_native_envelope_revision_workflow.py tests/python/test_mcp_native_effect_workflow.py tests/python/test_mcp_native_mixer_workflow.py tests/python/test_mcp_retired_part_recovery.py tests/python/test_mcp_historical_part_recovery.py tests/python/test_mcp_native_routing_workflow.py -v --tb=short
+          python -m pytest \
+            tests/python/test_mcp_realization_workflow.py \
+            tests/python/test_mcp_realization_mismatch.py \
+            tests/python/test_mcp_note_population_workflow.py \
+            tests/python/test_mcp_native_device_workflow.py \
+            tests/python/test_mcp_native_recovery_workflow.py \
+            tests/python/test_mcp_mix_realization_workflow.py \
+            tests/python/test_mcp_native_geometry_workflow.py \
+            tests/python/test_mcp_native_clip_revision_workflow.py \
+            tests/python/test_mcp_native_song_settings_workflow.py \
+            tests/python/test_mcp_native_envelope_revision_workflow.py \
+            tests/python/test_mcp_native_effect_workflow.py \
+            tests/python/test_mcp_native_mixer_workflow.py \
+            tests/python/test_mcp_retired_part_recovery.py \
+            tests/python/test_mcp_historical_part_recovery.py \
+            tests/python/test_mcp_native_routing_workflow.py \
+            tests/python/test_mcp_project_portfolio.py \
+            tests/python/test_mcp_native_project_portfolio.py \
+            tests/python/test_mcp_project_realization_coordinator.py \
+            tests/python/test_mcp_project_realization_native_admission.py \
+            tests/python/test_mcp_historic_device_recovery_workflow.py \
+            tests/python/test_mcp_source_projection_boundary.py \
+            tests/python/test_mcp_bypassed_effect_intent.py \
+            tests/python/test_mcp_bypassed_effect_coordinator.py \
+            tests/python/test_mcp_project_final_pan_observation.py \
+            tests/python/test_mcp_project_preserved_devices_summary.py \
+            tests/python/test_mcp_coordinator_capacity_independent.py \
+            -v --tb=short
 
       - name: Authoring and recovery across container restarts
         run: |

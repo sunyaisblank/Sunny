@@ -264,3 +264,75 @@ TEST_CASE("Owning Mix static planner preserves effective level algebra and "
     CHECK_FALSE(plan_native_mix_static(
         graph, graph.channels[1].id, PartId{82}, {false, false, false, false, 0.0}));
 }
+
+#include "managed_inspection_fixture.hpp"
+
+#include <sunny/infrastructure/ableton/deployment.hpp>
+
+TEST_CASE(
+    "Read-only static Mixer inspection separates actual current display from desired candidate",
+    "[ableton][managed_mixer][inspection]") {
+    const auto fixture = test::managed_inspection_fixture();
+    for (const auto* prefix : {"mixer", "final_mixer"}) {
+        const auto actual = fixture.at(std::string(prefix) + "_response");
+        const auto& body = actual.at("inspection");
+        const ManagedBindingReceipt current{
+            context, "project_a", "part_a", body.at("before").at("binding_observation")};
+        const auto request = make_managed_static_mixer_inspection_request(context, current, four());
+        REQUIRE(request);
+        CHECK(request->property_or_method == "sunny_managed_inspect_static_mixer");
+        CHECK(payload(*request) == fixture.at(std::string(prefix) + "_request"));
+        REQUIRE(LomProtocol::deserialize_request(
+            json::parse(LomProtocol::serialize_request(*request))));
+        const auto parsed = parse_managed_static_mixer_inspection(*request, context, actual);
+        REQUIRE(parsed);
+        CHECK(*parsed == actual);
+        CHECK(body.at("candidates").at("volume").at("display") == "-6.00 dB");
+        CHECK(body.at("candidates").at("volume").at("current_display").at("display") ==
+              (std::string_view(prefix) == "mixer" ? "-25.66 dB" : "-6.00 dB"));
+        CHECK(body.at("before").at("track_context").at("mute") ==
+              (std::string_view(prefix) == "final_mixer"));
+        CHECK_FALSE(prepare_managed_operation(context, *request));
+        CHECK_FALSE(parse_managed_static_mixer_preview(*request, context, actual));
+        CommandBuffer peer;
+        JournaledLomTransport readonly{peer, std::nullopt, {}, true};
+        CHECK(readonly.send(*request).success);
+        CHECK(readonly.journal().empty());
+        CHECK_FALSE(readonly.plan_diverged());
+    }
+}
+
+TEST_CASE(
+    "Read-only static Mixer inspection rejects fabricated authority context and malformed display",
+    "[ableton][managed_mixer][inspection][decline]") {
+    const auto fixture = test::managed_inspection_fixture();
+    const auto request = LomProtocol::call_method(
+        LomPaths::song(), "sunny_managed_inspect_static_mixer", {fixture.at("mixer_request")});
+    const auto original = fixture.at("mixer_response");
+    auto response = original;
+    response["inspection"]["preview_token"] = std::string(32, '0');
+    CHECK_FALSE(parse_managed_static_mixer_inspection(request, context, response));
+    response = original;
+    response["inspection"]["authority_origin"] = "explicit_current_device_adoption";
+    CHECK_FALSE(parse_managed_static_mixer_inspection(request, context, response));
+    response = original;
+    response["inspection"]["native_mutation_started"] = 0;
+    CHECK_FALSE(parse_managed_static_mixer_inspection(request, context, response));
+    for (const auto* field : {"document_token", "bridge_instance"}) {
+        response = original;
+        response["inspection"]["context"][field] = "foreign";
+        CHECK_FALSE(parse_managed_static_mixer_inspection(request, context, response));
+    }
+    response = original;
+    response["inspection"]["candidates"]["volume"]["current_display"]["display"] = "25.66 ms";
+    CHECK_FALSE(parse_managed_static_mixer_inspection(request, context, response));
+    response = original;
+    response["inspection"]["before"]["track_context"]["mute"] = true;
+    CHECK_FALSE(parse_managed_static_mixer_inspection(request, context, response));
+    auto wrong = fixture.at("mixer_request");
+    wrong["purpose"] = "adopt";
+    CHECK_FALSE(managed_mixer_detail::request_valid("sunny_managed_inspect_static_mixer", wrong));
+    wrong = fixture.at("mixer_request");
+    wrong["operation_id"] = "forbidden";
+    CHECK_FALSE(managed_mixer_detail::request_valid("sunny_managed_inspect_static_mixer", wrong));
+}

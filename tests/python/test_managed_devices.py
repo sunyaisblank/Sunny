@@ -933,3 +933,170 @@ def test_initial_envelope_creation_device_drift_stops_before_any_step(
     assert target.registry.dispatch("sunny_managed_operation", [query]) == result
     assert target.registry.dispatch("sunny_managed_author_envelope", [payload]) == result
     assert inserted == []
+
+
+def test_readonly_device_inspection_has_fresh_physical_evidence_without_retention(
+    target: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Seventy reads exceed preview capacity and preserve actual immutable guards."""
+    apply(
+        target,
+        request(
+            target,
+            "source",
+            intents=[{"capability_id": "drift.lp.frequency", "target": 1200.0, "tolerance": 0.0}],
+        ),
+    )
+    native = target.record["track"]._devices[0]
+    parameter = native.parameters[1]
+    parameter.calls.clear()
+    payload = preview_request(target)
+    helper = target.registry._devices
+    # A literally full preview journal must not constrain this read-only path.
+    helper._context(payload, helper._version())
+    helper._previews = {f"{index:032x}": {} for index in range(64)}
+    before = target.registry._capture(target.record)
+    state = target.record["_managed_devices"]
+    baseline = state["baseline"]
+    operations = copy.deepcopy(target.registry._operations)
+    monkeypatch.setattr(
+        "Sunny.managed_devices.uuid",
+        SimpleNamespace(uuid4=lambda: pytest.fail("inspection allocated a token")),
+    )
+    for _ in range(70):
+        wire = target.registry._handler.handle(
+            {
+                "bridge_protocol_version": BRIDGE_PROTOCOL_VERSION,
+                "type": "call",
+                "path": "song",
+                "name": "sunny_managed_inspect_devices",
+                "args": [payload],
+            }
+        )
+        assert wire["success"], wire
+        response = wire["value"]
+        assert set(response) == {
+            "outcome",
+            "document_token",
+            "project_key",
+            "binding_key",
+            "inspection",
+        }
+        assert response["outcome"] == "observed"
+        body = response["inspection"]
+        assert body["authority_origin"] == "none"
+        assert body["native_mutation_started"] is False
+        readback = body["resolutions"][0]["current_readback"]
+        assert readback["internal_value"] == 0.5
+        assert readback["display"] == "1200.00 Hz"
+        assert readback["matches_intent"] is True
+        assert body["binding_observation"]["note_identity"] == before["note_identity"]
+    assert parameter.calls
+    assert parameter.writes == [0.5]
+    assert target.record["_managed_devices"] is state
+    assert state["baseline"] == baseline
+    assert len(helper._previews) == 64
+    assert target.registry._operations == operations
+    assert target.registry._capture(target.record) == before
+
+
+def test_readonly_device_inspection_of_preserved_chain_does_not_grant_authority(
+    target: Any,
+) -> None:
+    """Actual current selection cannot authorize a later setter merely through a read."""
+    apply(
+        target,
+        request(
+            target,
+            "source",
+            intents=[{"capability_id": "drift.lp.frequency", "target": 1200.0, "tolerance": 0.0}],
+        ),
+    )
+    target.record.pop("_managed_devices")
+    target.record["adopted_device_cohort"] = tuple(target.record["track"]._devices)
+    result = target.registry.dispatch("sunny_managed_inspect_devices", [preview_request(target)])
+    assert result["inspection"]["resolutions"][0]["current_readback"]["display"] == "1200.00 Hz"
+    assert "_managed_devices" not in target.record
+    assert not target.registry._devices._previews
+    assert result["inspection"]["authority_origin"] == "none"
+
+
+def test_readonly_device_inspection_rejects_formatter_mismatch_without_journal(target: Any) -> None:
+    """A literal changed curve at unchanged internal value cannot echo the desired Hz."""
+    apply(
+        target,
+        request(
+            target,
+            "source",
+            intents=[{"capability_id": "drift.lp.frequency", "target": 1200.0, "tolerance": 0.0}],
+        ),
+    )
+    payload = preview_request(target)
+    parameter = target.record["track"]._devices[0].parameters[1]
+    parameter.oracle = lambda value: f"{300 + 4000 * value * value:.2f} Hz"
+    count = len(target.registry._operations)
+    with pytest.raises(RuntimeError, match="formatted value differs"):
+        target.registry.dispatch("sunny_managed_inspect_devices", [payload])
+    assert parameter.writes == [0.5]
+    assert len(target.registry._operations) == count
+    assert not target.registry._devices._previews
+
+
+def test_readonly_device_inspection_rejects_same_value_parameter_replacement(target: Any) -> None:
+    """Exact privately captured native handles, not names/value hashes, guard the read."""
+    apply(
+        target,
+        request(
+            target,
+            "source",
+            intents=[{"capability_id": "drift.lp.frequency", "target": 1200.0, "tolerance": 0.0}],
+        ),
+    )
+    payload = preview_request(target)
+    native = target.record["track"]._devices[0]
+    old = native.parameters[1]
+    replacement = Parameter(
+        "LP Freq", lambda value: f"{200 + 4000 * value * value:.2f} Hz", value=0.5
+    )
+    replacement._canonical_parent = native
+    changed = False
+
+    def replace(_: float) -> None:
+        nonlocal changed
+        if not changed:
+            changed = True
+            native._parameters = (native.parameters[0], replacement, *native.parameters[2:])
+
+    old.callback = replace
+    baseline = target.record["_managed_devices"]["baseline"]
+    count = len(target.registry._operations)
+    with pytest.raises(
+        RuntimeError, match="Captured target differs from its actual native population member"
+    ):
+        target.registry.dispatch("sunny_managed_inspect_devices", [payload])
+    assert old.writes == [0.5]
+    assert replacement.writes == []
+    assert target.record["_managed_devices"]["baseline"] == baseline
+    assert len(target.registry._operations) == count
+    assert not target.registry._devices._previews
+
+
+def test_device_preview_still_clears_only_retired_document_capacity(target: Any) -> None:
+    """Factored capture preserves the established epoch boundary before capacity checks."""
+    apply(
+        target,
+        request(
+            target,
+            "source",
+            intents=[{"capability_id": "drift.lp.frequency", "target": 1200.0, "tolerance": 0.0}],
+        ),
+    )
+    helper = target.registry._devices
+    helper._preview_document = "retired_document"
+    helper._previews = {f"{index:032x}": {} for index in range(64)}
+    payload = preview_request(target)
+    result = helper.preview(target.record, payload)
+    assert result["outcome"] == "previewed"
+    assert helper._preview_document == target.context["document_token"]
+    assert list(helper._previews) == [result["preview_token"]]
+    assert target.record["track"]._devices[0].parameters[1].writes == [0.5]

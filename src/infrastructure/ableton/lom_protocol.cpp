@@ -424,12 +424,14 @@ bool valid_managed_request(std::string_view name, const std::vector<json>& args)
     const auto& value = args[0];
     if (is_one_of(name,
                   {"sunny_managed_routing_candidates",
+                   "sunny_managed_inspect_send",
                    "sunny_managed_preview_routing",
                    "sunny_managed_preview_group",
                    "sunny_managed_apply_routing"}))
         return managed_routing_detail::request_valid(name, value);
     if (is_one_of(name,
                   {"sunny_managed_preview_static_mixer",
+                   "sunny_managed_inspect_static_mixer",
                    "sunny_managed_adopt_static_mixer",
                    "sunny_managed_update_static_mixer"}))
         return managed_mixer_detail::request_valid(name, value);
@@ -437,13 +439,16 @@ bool valid_managed_request(std::string_view name, const std::vector<json>& args)
                   {"sunny_managed_preview_envelope_replacement", "sunny_managed_replace_envelope"}))
         return managed_envelope_detail::request_valid(name, value);
     if (is_one_of(name,
-                  {"sunny_managed_preview_song_settings", "sunny_managed_apply_song_settings"}))
+                  {"sunny_managed_preview_song_settings",
+                   "sunny_managed_inspect_song_settings",
+                   "sunny_managed_apply_song_settings"}))
         return managed_song_detail::request_valid(name, value);
     if (is_one_of(name,
                   {"sunny_managed_insert_device",
                    "sunny_managed_update_device_parameters",
                    "sunny_managed_update_device_modes",
                    "sunny_managed_preview_devices",
+                   "sunny_managed_inspect_devices",
                    "sunny_managed_adopt_devices"}))
         return managed_device_detail::device_request_valid(name, value);
     if (name == "sunny_managed_preview_adoption")
@@ -556,16 +561,20 @@ sunny::core::Result<void> LomProtocol::validate_request(const LomRequest& reques
                         "sunny_managed_update_device_parameters",
                         "sunny_managed_update_device_modes",
                         "sunny_managed_preview_devices",
+                        "sunny_managed_inspect_devices",
                         "sunny_managed_adopt_devices",
                         "sunny_managed_update_clip_geometry",
                         "sunny_managed_preview_song_settings",
+                        "sunny_managed_inspect_song_settings",
                         "sunny_managed_apply_song_settings",
                         "sunny_managed_preview_envelope_replacement",
                         "sunny_managed_replace_envelope",
                         "sunny_managed_preview_static_mixer",
+                        "sunny_managed_inspect_static_mixer",
                         "sunny_managed_adopt_static_mixer",
                         "sunny_managed_update_static_mixer",
                         "sunny_managed_routing_candidates",
+                        "sunny_managed_inspect_send",
                         "sunny_managed_preview_routing",
                         "sunny_managed_preview_group",
                         "sunny_managed_apply_routing",

@@ -125,6 +125,7 @@ target_sources(
         infrastructure/ableton/lom_protocol_test.cpp
         infrastructure/ableton/managed_realization_test.cpp
         infrastructure/ableton/managed_devices_test.cpp
+        infrastructure/ableton/managed_device_recovery_test.cpp
         infrastructure/ableton/managed_recovery_test.cpp
         infrastructure/ableton/managed_clip_geometry_test.cpp
         infrastructure/ableton/managed_song_settings_test.cpp

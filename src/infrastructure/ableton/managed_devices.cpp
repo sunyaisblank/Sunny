@@ -20,6 +20,7 @@ using Unit = sunny::core::LiveNativePhysicalUnit;
 constexpr std::string_view insert_method = "sunny_managed_insert_device";
 constexpr std::string_view update_method = "sunny_managed_update_device_parameters";
 constexpr std::string_view preview_method = "sunny_managed_preview_devices";
+constexpr std::string_view inspection_method = "sunny_managed_inspect_devices";
 constexpr std::string_view mode_method = "sunny_managed_update_device_modes";
 constexpr std::string_view adopt_method = "sunny_managed_adopt_devices";
 
@@ -523,7 +524,7 @@ bool device_request_valid(std::string_view method, const json& payload) {
                    key(payload.at("preview_token")) &&
                    device_preview_valid(payload.at("approved_preview"));
         }
-        if (method == preview_method) {
+        if (method == preview_method || method == inspection_method) {
             if (!fields(payload,
                         {"document_token",
                          "project_key",
@@ -629,7 +630,7 @@ bool device_request_valid(std::string_view method, const json& payload) {
         return false;
     }
 }
-bool device_preview_valid(const json& preview) {
+bool device_readonly_body_valid(const json& preview, std::string_view authority_origin) {
     try {
         if (!fields(preview,
                     {"schema_version",
@@ -642,7 +643,7 @@ bool device_preview_valid(const json& preview) {
                      "host_qualified",
                      "opaque_state_observed"}) ||
             !integer(preview.at("schema_version"), 1) || preview.at("schema_version") != 1 ||
-            preview.at("authority_origin") != "explicit_current_device_adoption" ||
+            preview.at("authority_origin") != authority_origin ||
             preview.at("native_mutation_started") != false ||
             preview.at("native_knob_only") != true || preview.at("host_qualified") != false ||
             preview.at("opaque_state_observed") != false)
@@ -719,6 +720,9 @@ bool device_preview_valid(const json& preview) {
     } catch (const json::exception&) {
         return false;
     }
+}
+bool device_preview_valid(const json& preview) {
+    return device_readonly_body_valid(preview, "explicit_current_device_adoption");
 }
 bool device_adoption_result_matches_request(const json& payload, const json& result) {
     try {
@@ -1052,10 +1056,12 @@ make_managed_device_update_request(const ManagedBridgeContext& context,
                                    std::span<const ManagedDevicePhysicalIntent> intents) {
     return make_request(update_method, context, operation_id, binding, device_key, device, intents);
 }
+namespace {
 Result<LomRequest>
-make_managed_device_preview_request(const ManagedBridgeContext& context,
-                                    const ManagedBindingReceipt& binding,
-                                    std::span<const ManagedDeviceAdoptionSelection> selections) {
+make_device_readonly_request(const ManagedBridgeContext& context,
+                             const ManagedBindingReceipt& binding,
+                             std::span<const ManagedDeviceAdoptionSelection> selections,
+                             std::string_view method) {
     if (!key(context.bridge_instance) ||
         context.bridge_instance != binding.context.bridge_instance ||
         context.document_token != binding.context.document_token ||
@@ -1093,10 +1099,59 @@ make_managed_device_preview_request(const ManagedBridgeContext& context,
                  {"binding_key", binding.binding_key},
                  {"expected_content_fingerprint", binding.observation.at("content_fingerprint")},
                  {"devices", std::move(devices)}};
-    if (!managed_device_detail::device_request_valid(preview_method, payload))
+    if (!managed_device_detail::device_request_valid(method, payload))
         return std::unexpected(ErrorCode::ProtocolError);
-    return LomProtocol::call_method(
-        LomPaths::song(), std::string{preview_method}, {std::move(payload)});
+    return LomProtocol::call_method(LomPaths::song(), std::string{method}, {std::move(payload)});
+}
+} // namespace
+Result<LomRequest>
+make_managed_device_preview_request(const ManagedBridgeContext& context,
+                                    const ManagedBindingReceipt& binding,
+                                    std::span<const ManagedDeviceAdoptionSelection> selections) {
+    return make_device_readonly_request(context, binding, selections, preview_method);
+}
+Result<LomRequest>
+make_managed_device_inspection_request(const ManagedBridgeContext& context,
+                                       const ManagedBindingReceipt& binding,
+                                       std::span<const ManagedDeviceAdoptionSelection> selections) {
+    return make_device_readonly_request(context, binding, selections, inspection_method);
+}
+Result<json> parse_managed_device_inspection(const LomRequest& request,
+                                             const ManagedBridgeContext& context,
+                                             const json& response) {
+    try {
+        if (request.type != LomRequestType::CallMethod ||
+            request.path.segments != LomPaths::song().segments ||
+            request.property_or_method != inspection_method || request.args.size() != 1 ||
+            !std::holds_alternative<json>(request.args[0]) || !key(context.bridge_instance) ||
+            !fields(response,
+                    {"outcome", "document_token", "project_key", "binding_key", "inspection"}) ||
+            response.at("outcome") != "observed")
+            return std::unexpected(ErrorCode::ProtocolError);
+        const auto& payload = std::get<json>(request.args[0]);
+        const auto& body = response.at("inspection");
+        if (!managed_device_detail::device_request_valid(inspection_method, payload) ||
+            context.document_token != payload.at("document_token").get<std::string>() ||
+            !managed_device_detail::device_readonly_body_valid(body, "none"))
+            return std::unexpected(ErrorCode::ProtocolError);
+        for (const auto* field : {"document_token", "project_key", "binding_key"})
+            if (response.at(field) != payload.at(field))
+                return std::unexpected(ErrorCode::ProtocolError);
+        const ManagedBindingReceipt observed{context,
+                                             payload.at("project_key"),
+                                             payload.at("binding_key"),
+                                             body.at("binding_observation")};
+        if (!managed_binding_from_json(managed_binding_to_json(observed)) ||
+            !managed_detail::group_touched_boundary(
+                observed.observation, context, observed.project_key, observed.binding_key) ||
+            body.at("devices") != payload.at("devices") ||
+            observed.observation.at("content_fingerprint") !=
+                payload.at("expected_content_fingerprint"))
+            return std::unexpected(ErrorCode::ProtocolError);
+        return response;
+    } catch (const json::exception&) {
+        return std::unexpected(ErrorCode::ProtocolError);
+    }
 }
 Result<ManagedDeviceAdoptionPreview> parse_managed_device_preview(
     const LomRequest& request, const ManagedBridgeContext& context, const json& response) {

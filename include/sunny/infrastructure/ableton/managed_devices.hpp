@@ -99,6 +99,16 @@ make_managed_device_preview_request(const ManagedBridgeContext& context,
 [[nodiscard]] sunny::core::Result<ManagedDeviceAdoptionPreview> parse_managed_device_preview(
     const LomRequest& request, const ManagedBridgeContext& context, const nlohmann::json& response);
 
+/** Fresh closed physical/mode readback of the complete current finite chain.
+ * No preview token, grant, retained baseline, operation journal or native write
+ * is created. The actual binding and formatter population must remain guarded. */
+[[nodiscard]] sunny::core::Result<LomRequest>
+make_managed_device_inspection_request(const ManagedBridgeContext& context,
+                                       const ManagedBindingReceipt& binding,
+                                       std::span<const ManagedDeviceAdoptionSelection> selections);
+[[nodiscard]] sunny::core::Result<nlohmann::json> parse_managed_device_inspection(
+    const LomRequest& request, const ManagedBridgeContext& context, const nlohmann::json& response);
+
 /** A separately fenced explicit adoption of CURRENT objects, without native
  * setters or transfer of historical ownership. Grants finite controls and
  * AppendOwnedChain on these CURRENT handles. Grant requires exact native

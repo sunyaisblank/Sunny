@@ -699,3 +699,96 @@ def test_candidate_inspector_rejects_equal_valued_handle_drift(state: Any) -> No
     with pytest.raises(RuntimeError, match="changed|retained|drift"):
         state.helper.candidates(candidate_request(state))
     assert state.calls == [] and state.helper._previews == {} and state.helper._returns == {}
+
+
+def test_send_inspection_reads_actual_formatter_without_preview_retention(
+    state: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Nonlinear native .5 differs from target .25; reading grants/writes nothing."""
+    from Sunny.managed_routing import MAX_PREVIEWS, SEND_INSPECTION_METHOD
+
+    adopt_return(state)
+    parameter = send_parameter(state)
+    state.registry._routing = state.helper
+    intent = {
+        "kind": "send_level",
+        "aux_key": "aux_room",
+        "level_db": -24.0,
+        "tolerance_db": 0.0,
+        "requested_pre_fader": False,
+    }
+    payload = preview_request(state, intent)
+    # Initialize the actual epoch before deliberately exhausting preview capacity.
+    state.helper._current(payload)
+    state.helper._previews = {f"{i:032x}": object() for i in range(MAX_PREVIEWS)}
+    before_previews = dict(state.helper._previews)
+    record = state.registry._bindings[("project_a", "part_a")]
+    before_guard = record["content_fingerprint"]
+    before_notes = dict(state.clip._notes)
+    monkeypatch.setattr(
+        "Sunny.managed_routing.uuid.uuid4",
+        lambda: pytest.fail("read-only Send inspection allocated a token"),
+    )
+    result = state.registry.dispatch(SEND_INSPECTION_METHOD, [payload])
+    body = result["inspection"]
+    assert set(result) == {"outcome", "inspection", "observation"}
+    assert result["outcome"] == "observed"
+    assert "preview_token" not in body
+    assert body["authority_origin"] == "none"
+    assert body["native_mutation_started"] is False
+    actual = body["send_readback"]
+    assert actual["internal_value"] == 0.5
+    assert actual["display"] == "-14.058874503046 dB"
+    assert actual["matches_intent"] is False
+    assert body["selected"]["candidate"]["internal_value"] == 0.25
+    assert parameter.writes == []
+    assert state.clip._notes == before_notes
+    assert state.helper._previews == before_previews
+    assert record["content_fingerprint"] == before_guard
+    assert state.registry._operations == {}
+    # Simulate a legitimate owned Send write separately; fresh actual readback changes.
+    parameter.value = 0.25
+    state.registry._seal(record)
+    result = state.registry.dispatch(SEND_INSPECTION_METHOD, [preview_request(state, intent)])
+    assert result["inspection"]["send_readback"]["display"] == "-24.000000000000 dB"
+    assert result["inspection"]["send_readback"]["matches_intent"] is True
+    assert parameter.writes == [0.25]
+
+
+@pytest.mark.parametrize("drift", ["scene", "parameter"])
+def test_send_inspection_rejects_native_formatter_and_handle_drift(
+    state: Any, monkeypatch: pytest.MonkeyPatch, drift: str
+) -> None:
+    """Real formatter callback drift cannot be reported as a stable fresh read."""
+    from Sunny.managed_routing import SEND_INSPECTION_METHOD, valid_request
+
+    adopt_return(state)
+    parameter = send_parameter(state)
+    intent = {
+        "kind": "send_level",
+        "aux_key": "aux_room",
+        "level_db": -24.0,
+        "tolerance_db": 0.0,
+        "requested_pre_fader": False,
+    }
+    payload = preview_request(state, intent)
+    assert valid_request(SEND_INSPECTION_METHOD, payload)
+    bad = copy.deepcopy(payload)
+    bad["intent"] = {"kind": "create_return", "aux_key": "other"}
+    assert not valid_request(SEND_INSPECTION_METHOD, bad)
+    original = state.helper._send_readback
+
+    def changed(body: Any, native: Any) -> Any:
+        value = original(body, native)
+        if drift == "scene":
+            state.song.scenes[0].name = "Changed while reading actual Send"
+        else:
+            # Equal public values do not confer identity on another native control.
+            state.track._mixer._sends = (copy.copy(parameter),)
+        return value
+
+    monkeypatch.setattr(state.helper, "_send_readback", changed)
+    with pytest.raises(RuntimeError, match="inspection native state changed"):
+        state.helper.inspect_send(payload)
+    assert parameter.writes == []
+    assert state.helper._previews == {}

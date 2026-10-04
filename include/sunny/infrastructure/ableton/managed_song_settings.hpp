@@ -29,6 +29,12 @@ make_managed_song_settings_preview_request(const ManagedBridgeContext& context,
                                            const ManagedSongSettings& desired);
 [[nodiscard]] sunny::core::Result<ManagedSongSettingsPreview> parse_managed_song_settings_preview(
     const LomRequest& request, const ManagedBridgeContext& context, const nlohmann::json& value);
+/** Fresh current Set snapshot with existing idle/automation/Part guard checks;
+ * no preview token, grant, journal or authority refresh. */
+[[nodiscard]] sunny::core::Result<LomRequest> make_managed_song_settings_inspection_request(
+    const ManagedBridgeContext&, const ManagedBindingReceipt&, const ManagedSongSettings& desired);
+[[nodiscard]] sunny::core::Result<nlohmann::json> parse_managed_song_settings_inspection(
+    const LomRequest&, const ManagedBridgeContext&, const nlohmann::json& actual);
 /** Owning product must compare real Score projection and fence this exact intent before send. */
 [[nodiscard]] sunny::core::Result<LomRequest>
 make_managed_song_settings_request(const ManagedBridgeContext& context,

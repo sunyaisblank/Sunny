@@ -278,14 +278,27 @@ bool snapshot_valid(const json& v, const json& metadata, bool require_envelope_a
         return false;
     }
 }
-bool preview_valid(const json& p) {
+bool readonly_body_valid(const json& p, bool inspection) {
     try {
-        if (!recovery_fields(p,
+        auto common = p;
+        if (inspection) {
+            if (!common.is_object() || !common.contains("authority_origin") ||
+                !common.contains("native_mutation_started") ||
+                common.at("authority_origin") != "none" ||
+                common.at("native_mutation_started") != false || common.contains("preview_token"))
+                return false;
+            common.erase("authority_origin");
+            common.erase("native_mutation_started");
+        } else {
+            if (!common.contains("preview_token") || !recovery_hex(common.at("preview_token"), 32))
+                return false;
+            common.erase("preview_token");
+        }
+        if (!recovery_fields(common,
                              {"schema_version",
                               "context",
                               "project_key",
                               "binding_key",
-                              "preview_token",
                               "purpose",
                               "selected_domains",
                               "desired",
@@ -296,8 +309,8 @@ bool preview_valid(const json& p) {
                               "unavailable_domains"}) ||
             !note_integer(p.at("schema_version"), 1, 1) || !recovery_context(p.at("context")) ||
             !recovery_key(p.at("project_key")) || !recovery_key(p.at("binding_key")) ||
-            !recovery_hex(p.at("preview_token"), 32) ||
-            (p.at("purpose") != "adopt" && p.at("purpose") != "update") ||
+            (inspection ? p.at("purpose") != "inspect"
+                        : (p.at("purpose") != "adopt" && p.at("purpose") != "update")) ||
             !desired_valid(p.at("desired"), p.at("selected_domains")) ||
             !mask(p.at("current_authority_domains"), true) || !snapshot_valid(p.at("before"), p))
             return false;
@@ -354,6 +367,9 @@ bool preview_valid(const json& p) {
         return false;
     }
 }
+bool preview_valid(const json& p) {
+    return readonly_body_valid(p, false);
+}
 bool request_valid(std::string_view method, const json& v) {
     try {
         const std::initializer_list<std::string_view> common = {
@@ -365,7 +381,7 @@ bool request_valid(std::string_view method, const json& v) {
             "purpose",
             "selected_domains",
             "desired"};
-        if (method == preview_method) {
+        if (method == preview_method || method == inspection_method) {
             if (!recovery_fields(v, common)) return false;
         } else if (method == adopt_method || method == update_method) {
             if (!recovery_fields(v,
@@ -402,7 +418,9 @@ bool request_valid(std::string_view method, const json& v) {
                recovery_key(v.at("binding_key")) &&
                recovery_hex(v.at("expected_content_fingerprint"), 64) &&
                recovery_hex(v.at("expected_note_identity_fingerprint"), 64) &&
-               (v.at("purpose") == "adopt" || v.at("purpose") == "update") &&
+               (method == inspection_method
+                    ? v.at("purpose") == "inspect"
+                    : (v.at("purpose") == "adopt" || v.at("purpose") == "update")) &&
                desired_valid(v.at("desired"), v.at("selected_domains"));
     } catch (const json::exception&) {
         return false;
@@ -574,11 +592,12 @@ json managed_static_mixer_desired_to_json(const ManagedStaticMixerDesired& value
     if (value.solo) d["solo"] = *value.solo;
     return d;
 }
-Result<LomRequest>
-make_managed_static_mixer_preview_request(const ManagedBridgeContext& context,
-                                          const ManagedBindingReceipt& binding,
-                                          const ManagedStaticMixerDesired& desired,
-                                          bool adoption) {
+namespace {
+Result<LomRequest> make_mixer_readonly_request(const ManagedBridgeContext& context,
+                                               const ManagedBindingReceipt& binding,
+                                               const ManagedStaticMixerDesired& desired,
+                                               std::string_view purpose,
+                                               std::string_view method) {
     using namespace managed_detail;
     if (context.bridge_instance != binding.context.bridge_instance ||
         context.document_token != binding.context.document_token ||
@@ -596,13 +615,57 @@ make_managed_static_mixer_preview_request(const ManagedBridgeContext& context,
         {"binding_key", binding.binding_key},
         {"expected_content_fingerprint", binding.observation.at("content_fingerprint")},
         {"expected_note_identity_fingerprint", binding.observation.at("note_identity_fingerprint")},
-        {"purpose", adoption ? "adopt" : "update"},
+        {"purpose", purpose},
         {"selected_domains", selected},
         {"desired", d}};
-    if (!managed_mixer_detail::request_valid(managed_mixer_detail::preview_method, request))
+    if (!managed_mixer_detail::request_valid(method, request))
         return std::unexpected(ErrorCode::ProtocolError);
-    return LomProtocol::call_method(
-        LomPaths::song(), std::string(managed_mixer_detail::preview_method), {request});
+    return LomProtocol::call_method(LomPaths::song(), std::string(method), {request});
+}
+} // namespace
+Result<LomRequest>
+make_managed_static_mixer_preview_request(const ManagedBridgeContext& context,
+                                          const ManagedBindingReceipt& binding,
+                                          const ManagedStaticMixerDesired& desired,
+                                          bool adoption) {
+    return make_mixer_readonly_request(context,
+                                       binding,
+                                       desired,
+                                       adoption ? "adopt" : "update",
+                                       managed_mixer_detail::preview_method);
+}
+Result<LomRequest>
+make_managed_static_mixer_inspection_request(const ManagedBridgeContext& context,
+                                             const ManagedBindingReceipt& binding,
+                                             const ManagedStaticMixerDesired& desired) {
+    return make_mixer_readonly_request(
+        context, binding, desired, "inspect", managed_mixer_detail::inspection_method);
+}
+Result<json> parse_managed_static_mixer_inspection(const LomRequest& request,
+                                                   const ManagedBridgeContext& context,
+                                                   const json& value) {
+    using namespace managed_detail;
+    try {
+        if (request.type != LomRequestType::CallMethod ||
+            request.path.segments != LomPaths::song().segments ||
+            request.property_or_method != managed_mixer_detail::inspection_method ||
+            request.args.size() != 1 || !std::holds_alternative<json>(request.args[0]) ||
+            !recovery_fields(value, {"schema_version", "outcome", "inspection"}) ||
+            !note_integer(value.at("schema_version"), 1, 1) || value.at("outcome") != "observed" ||
+            !managed_mixer_detail::readonly_body_valid(value.at("inspection"), true))
+            return std::unexpected(ErrorCode::ProtocolError);
+        const auto& p = value.at("inspection");
+        const auto& payload = std::get<json>(request.args[0]);
+        if (!managed_mixer_detail::request_valid(managed_mixer_detail::inspection_method,
+                                                 payload) ||
+            p.at("context") != json{{"bridge_instance", context.bridge_instance},
+                                    {"document_token", context.document_token}} ||
+            !managed_mixer_detail::matches_before(p, payload))
+            return std::unexpected(ErrorCode::ProtocolError);
+        return value;
+    } catch (const json::exception&) {
+        return std::unexpected(ErrorCode::ProtocolError);
+    }
 }
 Result<ManagedStaticMixerPreview> parse_managed_static_mixer_preview(
     const LomRequest& request, const ManagedBridgeContext& context, const json& value) {

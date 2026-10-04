@@ -544,9 +544,24 @@ bool frame_valid(const json& value) {
         return false;
     }
 }
-bool preview_valid(const json& preview) {
+bool readonly_body_valid(const json& value, bool inspection) {
     try {
+        auto preview = value;
+        if (inspection) {
+            if (!preview.is_object() || !preview.contains("authority_origin") ||
+                !preview.contains("native_mutation_started") ||
+                !preview.contains("send_readback") || preview.at("authority_origin") != "none" ||
+                !preview.at("native_mutation_started").is_boolean() ||
+                preview.at("native_mutation_started") != false ||
+                preview.contains("preview_token") || !preview.contains("intent") ||
+                preview.at("intent").value("kind", "") != "send_level")
+                return false;
+            preview.erase("authority_origin");
+            preview.erase("native_mutation_started");
+            preview.erase("send_readback");
+        }
         const bool group = preview.contains("group_only");
+        if (inspection && group) return false;
         if (!(group ? recovery_fields(preview,
                                       {"schema_version",
                                        "preview_token",
@@ -560,20 +575,24 @@ bool preview_valid(const json& preview) {
                                        "before",
                                        "selected",
                                        "scope"})
-                    : recovery_fields(preview,
-                                      {"schema_version",
-                                       "preview_token",
-                                       "context",
-                                       "project_key",
-                                       "binding_key",
-                                       "intent",
-                                       "binding_guard",
-                                       "before",
-                                       "affected_bindings",
-                                       "selected",
-                                       "scope"})) ||
+                    : recovery_fields(
+                          [&preview] {
+                              auto fields = preview;
+                              fields.erase("preview_token");
+                              return fields;
+                          }(),
+                          {"schema_version",
+                           "context",
+                           "project_key",
+                           "binding_key",
+                           "intent",
+                           "binding_guard",
+                           "before",
+                           "affected_bindings",
+                           "selected",
+                           "scope"})) ||
             !note_integer(preview.at("schema_version"), 1, 1) ||
-            !recovery_hex(preview.at("preview_token"), 32) ||
+            (!inspection && !recovery_hex(preview.at("preview_token"), 32)) ||
             !recovery_context(preview.at("context")) || !recovery_key(preview.at("project_key")) ||
             !recovery_key(preview.at("binding_key")) || !intent_valid(preview.at("intent")) ||
             !guard_valid(preview.at("binding_guard")) || !frame_valid(preview.at("before")))
@@ -674,6 +693,17 @@ bool preview_valid(const json& preview) {
         return false;
     }
 }
+bool preview_valid(const json& preview) {
+    return readonly_body_valid(preview, false);
+}
+bool send_inspection_valid(const json& value) {
+    try {
+        return readonly_body_valid(value, true) &&
+               send_readback_valid(value, value.at("before"), value.at("send_readback"));
+    } catch (const json::exception&) {
+        return false;
+    }
+}
 bool request_valid(std::string_view method, const json& payload) {
     try {
         if (method == candidates_method)
@@ -701,7 +731,7 @@ bool request_valid(std::string_view method, const json& payload) {
                        [&payload](const auto& key) { return key == payload.at("binding_key"); }) &&
                    recovery_fields(payload.at("selector"), {"track_index", "slot_index"}) &&
                    recovery_selector(payload.at("selector"));
-        if (!(method == preview_method
+        if (!((method == preview_method || method == send_inspection_method)
                   ? recovery_fields(payload,
                                     {"document_token",
                                      "project_key",
@@ -728,6 +758,8 @@ bool request_valid(std::string_view method, const json& payload) {
             !recovery_hex(payload.at("expected_note_identity_fingerprint"), 64) ||
             !intent_valid(payload.at("intent")))
             return false;
+        if (method == send_inspection_method)
+            return payload.at("intent").at("kind") == "send_level";
         if (method == preview_method) return payload.at("intent").at("kind") != "adopt_group";
         const auto& preview = payload.at("approved_preview");
         return recovery_key(payload.at("operation_id")) &&
@@ -1045,9 +1077,11 @@ Result<json> parse_managed_routing_candidates(const LomRequest& request,
         return std::unexpected(ErrorCode::ProtocolError);
     }
 }
-Result<LomRequest> make_managed_routing_preview_request(const ManagedBridgeContext& context,
-                                                        const ManagedBindingReceipt& binding,
-                                                        const json& intent) {
+namespace {
+Result<LomRequest> routing_read_request(const ManagedBridgeContext& context,
+                                        const ManagedBindingReceipt& binding,
+                                        const json& intent,
+                                        std::string_view method) {
     if (!managed_binding_from_json(managed_binding_to_json(binding)) ||
         context.bridge_instance != binding.context.bridge_instance ||
         context.document_token != binding.context.document_token ||
@@ -1062,10 +1096,62 @@ Result<LomRequest> make_managed_routing_preview_request(const ManagedBridgeConte
         {"expected_content_fingerprint", binding.observation.at("content_fingerprint")},
         {"expected_note_identity_fingerprint", binding.observation.at("note_identity_fingerprint")},
         {"intent", intent}};
-    if (!managed_routing_detail::request_valid(managed_routing_detail::preview_method, payload))
+    if (!managed_routing_detail::request_valid(method, payload))
         return std::unexpected(ErrorCode::ProtocolError);
-    return LomProtocol::call_method(
-        LomPaths::song(), std::string{managed_routing_detail::preview_method}, {payload});
+    return LomProtocol::call_method(LomPaths::song(), std::string{method}, {payload});
+}
+} // namespace
+Result<LomRequest> make_managed_routing_preview_request(const ManagedBridgeContext& context,
+                                                        const ManagedBindingReceipt& binding,
+                                                        const json& intent) {
+    return routing_read_request(context, binding, intent, managed_routing_detail::preview_method);
+}
+Result<LomRequest> make_managed_send_inspection_request(const ManagedBridgeContext& context,
+                                                        const ManagedBindingReceipt& binding,
+                                                        const json& intent) {
+    return routing_read_request(
+        context, binding, intent, managed_routing_detail::send_inspection_method);
+}
+Result<json> parse_managed_send_inspection(const LomRequest& request,
+                                           const ManagedBridgeContext& context,
+                                           const json& value) {
+    using namespace managed_detail;
+    try {
+        if (request.type != LomRequestType::CallMethod ||
+            request.path.segments != LomPaths::song().segments ||
+            request.property_or_method != managed_routing_detail::send_inspection_method ||
+            request.args.size() != 1 || !std::holds_alternative<json>(request.args.front()) ||
+            !recovery_fields(value, {"outcome", "inspection", "observation"}) ||
+            value.at("outcome") != "observed" ||
+            !managed_routing_detail::send_inspection_valid(value.at("inspection")))
+            return std::unexpected(ErrorCode::ProtocolError);
+        const auto& payload = std::get<json>(request.args.front());
+        const auto& body = value.at("inspection");
+        const auto& observation = value.at("observation");
+        if (!managed_routing_detail::request_valid(request.property_or_method, payload) ||
+            payload.at("document_token") != context.document_token ||
+            body.at("context") != context_json(context) ||
+            body.at("project_key") != payload.at("project_key") ||
+            body.at("binding_key") != payload.at("binding_key") ||
+            !managed_routing_detail::equal(body.at("intent"), payload.at("intent")) ||
+            body.at("binding_guard").at("content_fingerprint") !=
+                payload.at("expected_content_fingerprint") ||
+            body.at("binding_guard").at("note_identity_fingerprint") !=
+                payload.at("expected_note_identity_fingerprint") ||
+            !managed_routing_detail::binding_valid(body.at("context"),
+                                                   body.at("project_key"),
+                                                   body.at("binding_key"),
+                                                   observation,
+                                                   false) ||
+            managed_routing_detail::observation_guard(observation) != body.at("binding_guard") ||
+            !managed_routing_detail::equal(
+                managed_routing_detail::anchor(body)->at("before_manifest"),
+                observation.at("manifest")))
+            return std::unexpected(ErrorCode::ProtocolError);
+        return value;
+    } catch (const json::exception&) {
+        return std::unexpected(ErrorCode::ProtocolError);
+    }
 }
 Result<LomRequest> make_managed_group_preview_request(const ManagedBridgeContext& context,
                                                       const std::string& project,

@@ -49,6 +49,16 @@ state; `project_realization_update` revises existing attacks and adds or deletes
 preserving retained native note IDs. These tools require the owning project's current revision. They retain receipts across server
 restart and authored undo, detect user drift, and refuse duplicate creation. A lost reply requires
 `project_realization_reconcile`, which queries the original token without replaying the mutation.
+For several Parts, `project_realization_plan` preflights the selected owning Score, source/effect
+controls, static Mixer, Step pan lanes, routing, removed-Part retirement and optional Song settings.
+Pass its exact returned plan to `project_realization_apply` with explicit plan and selected-domain
+approvals. All phases use the same owning revision and existing per-operation fences. Known
+unsupported selections decline before the first fence; a newly inserted device still needs actual
+native descriptor admission. A failure stops later phases and returns original attempt identifiers
+for reconciliation. Plans also reserve the complete MCP reply within the 16 MiB coordinator
+limit; select a smaller aggregate when that reservation or the 4 MiB apply-input limit is exceeded.
+Final readback checks the selected physical controls and current cohorts;
+unselected domains and audible/DSP equivalence remain explicit limits.
 `project_realization_author_mix_lane` also authors a selected Part's Step panning lane when
 the native envelope is absent, then checks sampled values. Existing envelopes are preserved.
 To revise the whole selected envelope, use `project_realization_preview_mix_lane_replacement`
@@ -68,7 +78,10 @@ fresh current Set approval. Opening another workspace or applying its backup is 
 that uncertainty remains; original attempt history remains queryable.
 `project_realization_plan_timbre` reads explicitly selected Drift cutoff and ADSR durations in Hz
 and milliseconds. `project_realization_author_timbre` inserts or revises that source using actual
-native formatter and parameter readback. Unselected sound fields remain reported as unapplied.
+native formatter and parameter readback. Fresh readback of unchanged selected source and active
+effect intent returns without repeating device setters. Selected bypassed effects are enabled,
+configured and verified, then disabled; their saved configuration is distinguished from current
+readable values while bypassed. Unselected sound fields remain reported as unapplied.
 `project_realization_plan_effects` and `project_realization_author_effects` cover explicitly
 selected native EQ Eight bands and Utility gain/width stages after Drift. Mix input trim uses
 a separate Utility, and `set_channel_input_trim` edits its authored dB value. Each native mode
@@ -79,7 +92,9 @@ uses the actual native formatter; programme loudness needs supplied measurement 
 Solo requires explicit approval of its Set-wide audible effect. Existing selected automation
 is preserved, so apply static pan before authoring its lane. A reopened Mixer needs separate
 current-object adoption. `project_realization_retire_part` explicitly mutes a removed Part's
-retained Track while preserving its Clip, notes, devices and historical receipts.
+retained Track while preserving its Clip, notes, devices and historical receipts. Mute-only
+retirement also retains Solo; the returned Solo state explains when other Tracks remain muted
+via solo.
 The routing plan, preview and apply tools join owning Aux sends to actual Returns and select
 currently advertised output targets. `project_realization_inspect_routing` reads their current
 identifiers and attached destinations; inspect again after changing the output type to select
@@ -96,7 +111,13 @@ If the Score changed offline before reopening Live, select
 `projection_source: "retained_verified_realization"` for the Clip preview and adoption, and
 repeat the returned `historical_projection_attempt` when approving adoption. This establishes
 the current objects against their last verified musical baseline; the next update applies the
-current Score. Device adoption still requires separately matching physical intent.
+current Score. If physical intent also changed offline, use
+`device_projection_source: "retained_verified_realization"` for the separate device preview/adoption
+and repeat its returned `device_history_attempt`. This reads the saved finite physical targets and
+original tolerances from verified history, then checks them against current native objects without
+setters. The current owning source/effect writers apply the newly authored values after adoption.
+The current logical device keys, classes and order must still agree; historical receipts never
+restore old native identities.
 For removed Parts, Clip recovery uses the last verified historical note/geometry projection;
 separate mute-only Mixer adoption permits retirement without recreating the Score Part.
 

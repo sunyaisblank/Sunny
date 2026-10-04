@@ -25,6 +25,13 @@ make_managed_static_mixer_preview_request(const ManagedBridgeContext&,
                                           bool adoption);
 [[nodiscard]] sunny::core::Result<ManagedStaticMixerPreview> parse_managed_static_mixer_preview(
     const LomRequest&, const ManagedBridgeContext&, const nlohmann::json&);
+/** Read current selected control/formatter/Solo cohort evidence with usual
+ * write-eligibility preconditions. No token, grant, baseline refresh or journal.
+ * Current controls need not equal desired targets; callers compare final state. */
+[[nodiscard]] sunny::core::Result<LomRequest> make_managed_static_mixer_inspection_request(
+    const ManagedBridgeContext&, const ManagedBindingReceipt&, const ManagedStaticMixerDesired&);
+[[nodiscard]] sunny::core::Result<nlohmann::json> parse_managed_static_mixer_inspection(
+    const LomRequest&, const ManagedBridgeContext&, const nlohmann::json&);
 /** Prepared request is immutable; owning product fences it before dispatch.
  * Adoption grants only exact selected CURRENT handles, no setters or historical
  * ownership. */

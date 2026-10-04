@@ -275,7 +275,7 @@ void McpServer::run(std::istream& input, std::ostream& output) {
     running_.store(true, std::memory_order_relaxed);
     std::string line;
 
-    constexpr std::size_t MAX_LINE_LENGTH = std::size_t{4} * 1024 * 1024; // 4 MiB
+    constexpr std::size_t MAX_LINE_LENGTH = MCP_MAX_INPUT_BYTES;
 
     // Replacement keeps one malformed UTF-8 byte in a tool payload from
     // aborting the write and, with it, the session.

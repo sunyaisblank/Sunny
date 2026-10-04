@@ -35,10 +35,12 @@ MANAGED_SCHEMA_VERSION = 1
 MANAGED_CALLS = frozenset(
     {
         "sunny_managed_routing_candidates",
+        "sunny_managed_inspect_send",
         "sunny_managed_preview_routing",
         "sunny_managed_preview_group",
         "sunny_managed_apply_routing",
         "sunny_managed_preview_static_mixer",
+        "sunny_managed_inspect_static_mixer",
         "sunny_managed_adopt_static_mixer",
         "sunny_managed_update_static_mixer",
         "sunny_managed_context",
@@ -56,9 +58,11 @@ MANAGED_CALLS = frozenset(
         "sunny_managed_insert_device",
         "sunny_managed_update_device_parameters",
         "sunny_managed_preview_devices",
+        "sunny_managed_inspect_devices",
         "sunny_managed_adopt_devices",
         "sunny_managed_update_clip_geometry",
         "sunny_managed_preview_song_settings",
+        "sunny_managed_inspect_song_settings",
         "sunny_managed_apply_song_settings",
         "sunny_managed_preview_envelope_replacement",
         "sunny_managed_replace_envelope",
@@ -68,16 +72,20 @@ MANAGED_CALLS = frozenset(
 MANAGED_READS = frozenset(
     {
         "sunny_managed_routing_candidates",
+        "sunny_managed_inspect_send",
         "sunny_managed_preview_routing",
         "sunny_managed_preview_group",
         "sunny_managed_preview_static_mixer",
+        "sunny_managed_inspect_static_mixer",
         "sunny_managed_context",
         "sunny_managed_operation",
         "sunny_managed_observe",
         "sunny_managed_sample_envelope",
         "sunny_managed_preview_adoption",
         "sunny_managed_preview_devices",
+        "sunny_managed_inspect_devices",
         "sunny_managed_preview_song_settings",
+        "sunny_managed_inspect_song_settings",
         "sunny_managed_preview_envelope_replacement",
     }
 )
@@ -421,6 +429,7 @@ def valid_managed_request(name: str, args: list[Any]) -> bool:
     value = args[0]
     if name in (
         "sunny_managed_routing_candidates",
+        "sunny_managed_inspect_send",
         "sunny_managed_preview_routing",
         "sunny_managed_preview_group",
         "sunny_managed_apply_routing",
@@ -440,13 +449,18 @@ def valid_managed_request(name: str, args: list[Any]) -> bool:
         return geometry_accepted
     if name in (
         "sunny_managed_preview_static_mixer",
+        "sunny_managed_inspect_static_mixer",
         "sunny_managed_adopt_static_mixer",
         "sunny_managed_update_static_mixer",
     ):
         from .managed_mixer import valid_request
 
         return len(args) == 1 and valid_request(name, value)
-    if name in ("sunny_managed_preview_song_settings", "sunny_managed_apply_song_settings"):
+    if name in (
+        "sunny_managed_preview_song_settings",
+        "sunny_managed_inspect_song_settings",
+        "sunny_managed_apply_song_settings",
+    ):
         from .managed_song_settings import valid_request
 
         song_accepted: bool = valid_request(name, value)
@@ -456,6 +470,7 @@ def valid_managed_request(name: str, args: list[Any]) -> bool:
         "sunny_managed_update_device_parameters",
         "sunny_managed_update_device_modes",
         "sunny_managed_preview_devices",
+        "sunny_managed_inspect_devices",
         "sunny_managed_adopt_devices",
     ):
         from .managed_devices import valid_managed_device_request
@@ -1025,6 +1040,8 @@ class ManagedRegistry:
         request = args[0]
         if name == "sunny_managed_routing_candidates":
             return self._routing.candidates(request)
+        if name == "sunny_managed_inspect_send":
+            return self._routing.inspect_send(request)
         if name == "sunny_managed_preview_routing":
             return self._routing.preview(request)
         if name == "sunny_managed_preview_group":
@@ -1036,14 +1053,22 @@ class ManagedRegistry:
         if name == "sunny_managed_preview_adoption":
             preview: dict[str, Any] = self._recovery.preview(request)
             return preview
-        if name == "sunny_managed_preview_devices":
+        if name in ("sunny_managed_preview_devices", "sunny_managed_inspect_devices"):
             record = self._bindings.get((request["project_key"], request["binding_key"]))
             if record is None:
                 raise RuntimeError("RecoveryUnavailable: managed native handles were not retained")
-            device_preview: dict[str, Any] = self._devices.preview(record, request)
+            device_preview: dict[str, Any] = (
+                self._devices.inspect(record, request)
+                if name == "sunny_managed_inspect_devices"
+                else self._devices.preview(record, request)
+            )
             return device_preview
+        if name == "sunny_managed_inspect_static_mixer":
+            return self._mixer.inspect(request)
         if name == "sunny_managed_preview_static_mixer":
             return self._mixer.preview(request)
+        if name == "sunny_managed_inspect_song_settings":
+            return self._song_settings.inspect(request)
         if name == "sunny_managed_preview_song_settings":
             song_preview: dict[str, Any] = self._song_settings.preview(request)
             return song_preview

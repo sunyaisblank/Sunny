@@ -14,6 +14,7 @@
 #pragma once
 
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <iosfwd>
@@ -23,6 +24,8 @@
 #include <string>
 
 namespace sunny::infrastructure {
+
+inline constexpr std::size_t MCP_MAX_INPUT_BYTES = std::size_t{4} * 1024 * 1024;
 
 /// Tool definition for MCP registration
 struct McpToolDef {

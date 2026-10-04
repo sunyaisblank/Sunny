@@ -371,3 +371,83 @@ TEST_CASE("Managed native quantized default is explicitly unavailable while "
     refresh_device_digest(wrong);
     CHECK_FALSE(managed_device_detail::device_supplement_valid(wrong));
 }
+
+#include "managed_inspection_fixture.hpp"
+
+#include <sunny/infrastructure/ableton/deployment.hpp>
+
+TEST_CASE("Read-only device inspection parses actual nonlinear formatter and ordered modes",
+          "[ableton][managed-device][inspection]") {
+    const auto fixture = test::managed_inspection_fixture();
+    const auto& actual = fixture.at("device_response");
+    const ManagedBridgeContext context{"bridge_a", "document_a"};
+    const std::array selections{
+        ManagedDeviceAdoptionSelection{
+            "source", 0, ManagedNativeDevice::Drift, {{"drift.lp.frequency", 1200.0, 0.0}}},
+        ManagedDeviceAdoptionSelection{"effect",
+                                       1,
+                                       ManagedNativeDevice::Utility,
+                                       {{"utility.gain", 0.0, 0.0}},
+                                       {{"utility.channel_mode", "Stereo"}}}};
+    const auto request = make_managed_device_inspection_request(
+        context, binding(actual.at("inspection").at("binding_observation")), selections);
+    REQUIRE(request);
+    CHECK(request->property_or_method == "sunny_managed_inspect_devices");
+    CHECK(std::get<json>(request->args[0]) == fixture.at("device_request"));
+    REQUIRE(
+        LomProtocol::deserialize_request(json::parse(LomProtocol::serialize_request(*request))));
+    const auto observed = parse_managed_device_inspection(*request, context, actual);
+    REQUIRE(observed);
+    CHECK(*observed == actual);
+    CHECK(actual.at("inspection").at("authority_origin") == "none");
+    CHECK(actual.at("inspection").at("resolutions")[0].at("current_readback").at("display") ==
+          "1200.00 Hz");
+    CHECK(actual.at("inspection").at("resolutions")[1].at("current_readback").at("display") ==
+          "0.00 dB");
+    CHECK_FALSE(parse_managed_device_preview(*request, context, actual));
+    CHECK_FALSE(prepare_managed_operation(context, *request));
+    CommandBuffer peer;
+    JournaledLomTransport readonly{peer, std::nullopt, {}, true};
+    CHECK(readonly.send(*request).success);
+    CHECK(readonly.journal().empty());
+    CHECK_FALSE(readonly.plan_diverged());
+    REQUIRE(peer.entries().size() == 1);
+    CHECK(peer.entries()[0].request.property_or_method == "sunny_managed_inspect_devices");
+}
+
+TEST_CASE("Read-only device inspection independently closes fields guards physical text and modes",
+          "[ableton][managed-device][inspection][decline]") {
+    const auto fixture = test::managed_inspection_fixture();
+    const ManagedBridgeContext context{"bridge_a", "document_a"};
+    const auto request = LomProtocol::call_method(
+        LomPaths::song(), "sunny_managed_inspect_devices", {fixture.at("device_request")});
+    const auto original = fixture.at("device_response");
+    for (const auto& field : {"document_token", "project_key", "binding_key"}) {
+        auto response = original;
+        response[field] = "foreign";
+        CHECK_FALSE(parse_managed_device_inspection(request, context, response));
+    }
+    for (const auto& value : {json(0), json(nullptr), json(true)}) {
+        auto response = original;
+        response["inspection"]["native_mutation_started"] = value;
+        CHECK_FALSE(parse_managed_device_inspection(request, context, response));
+    }
+    auto response = original;
+    response["inspection"]["authority_origin"] = "explicit_current_device_adoption";
+    CHECK_FALSE(parse_managed_device_inspection(request, context, response));
+    response = original;
+    response["preview_token"] = std::string(32, '0');
+    CHECK_FALSE(parse_managed_device_inspection(request, context, response));
+    response = original;
+    response["inspection"]["resolutions"][0]["current_readback"]["display"] = "1300.00 Hz";
+    CHECK_FALSE(parse_managed_device_inspection(request, context, response));
+    response = original;
+    auto& observation = response["inspection"]["binding_observation"];
+    observation["device_identity"]["cohort"][1]["parameters"][4]["descriptor"]["value"] = 0.0;
+    refresh_device_digest(observation);
+    REQUIRE(managed_device_detail::device_supplement_valid(observation));
+    CHECK_FALSE(parse_managed_device_inspection(request, context, response));
+    response = original;
+    response["inspection"]["binding_observation"]["track_tag"] = "Sunny|foreign|part_a|track";
+    CHECK_FALSE(parse_managed_device_inspection(request, context, response));
+}

@@ -3,8 +3,10 @@
 #include <sunny/infrastructure/ableton/detail/managed_recovery.hpp>
 #include <sunny/infrastructure/ableton/managed_song_settings.hpp>
 namespace sunny::infrastructure::managed_song_detail {
+[[nodiscard]] bool inspection_valid(const nlohmann::json&);
 [[nodiscard]] bool observation_closes(const nlohmann::json& preview,
                                       const nlohmann::json& observation);
+inline constexpr std::string_view inspection_method = "sunny_managed_inspect_song_settings";
 inline constexpr std::string_view preview_method = "sunny_managed_preview_song_settings";
 inline constexpr std::string_view apply_method = "sunny_managed_apply_song_settings";
 inline constexpr std::array<std::string_view, 3> scalar_fields{

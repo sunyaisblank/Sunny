@@ -603,3 +603,78 @@ def test_valid_device_guard_renewal_after_song_preview_cannot_transfer_its_appro
             "signature_numerator": 3,
             "signature_denominator": 4,
         }
+
+
+def test_song_inspection_preserves_tokens_grants_and_reads_current_global_scalars(
+    state: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A fresh actual120/4/4 mismatch remains usable preflight evidence, no setters."""
+    from Sunny.managed_song_settings import INSPECTION_METHOD, MAX_PREVIEWS
+
+    payload = preview_request(state)
+    state.helper._current(payload)
+    state.helper._previews = {f"{i:032x}": object() for i in range(MAX_PREVIEWS)}
+    before_previews = dict(state.helper._previews)
+    record = state.registry._bindings[("project_a", "part_a")]
+    guard = record["content_fingerprint"]
+    before_notes = dict(state.clip._notes)
+    state.registry._song_settings = state.helper
+    calls = watch_setters(monkeypatch)
+    monkeypatch.setattr(
+        "Sunny.managed_song_settings.uuid.uuid4",
+        lambda: pytest.fail("Song inspection allocated a preview token"),
+    )
+    value = state.registry.dispatch(INSPECTION_METHOD, [payload])
+    body = value["inspection"]
+    assert set(value) == {"schema_version", "outcome", "inspection", "observation"}
+    assert value["outcome"] == "observed"
+    assert body["before"]["settings"] == {
+        "tempo": 120.0,
+        "signature_numerator": 4,
+        "signature_denominator": 4,
+    }
+    assert body["desired"] == {
+        "tempo": 92.5,
+        "signature_numerator": 3,
+        "signature_denominator": 8,
+    }
+    assert body["authority_origin"] == "none"
+    assert body["native_mutation_started"] is False
+    assert "preview_token" not in body
+    assert body["scope"]["all_tracks_affected"] is True
+    assert body["before"]["scenes"][0]["tempo"] == 150.0
+    assert body["before"]["cue_points"][0]["time"] == 4.0
+    assert calls == []
+    assert state.clip._notes == before_notes
+    assert state.helper._previews == before_previews
+    assert record["content_fingerprint"] == guard
+    assert state.registry._operations == {}
+
+
+def test_song_inspection_keeps_actual_tempo_eligibility_and_current_cohort_checks(
+    state: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No token or new authority hides automated tempo or replaced current Scenes."""
+    payload = preview_request(state)
+    calls = watch_setters(monkeypatch)
+    state.tempo_parameter._automation_state = AutomationState.playing
+    with pytest.raises(RuntimeError, match="actual Main song_tempo"):
+        state.helper.inspect(payload)
+    state.tempo_parameter._automation_state = AutomationState.none
+    original = state.helper._capture
+    captures = 0
+
+    def replaced(song: Any) -> Any:
+        nonlocal captures
+        captures += 1
+        if captures == 2:
+            scene = Scene(state.song.scenes[0].name)
+            scene.enable_launch_overrides(150.0, 7, 8)
+            state.song._scenes = (scene,)
+        return original(song)
+
+    monkeypatch.setattr(state.helper, "_capture", replaced)
+    with pytest.raises(RuntimeError, match="inspection native state changed"):
+        state.helper.inspect(payload)
+    assert calls == []
+    assert state.helper._previews == {}

@@ -105,7 +105,8 @@ bool binding_closes(const json& preview, const json& observation) {
 } // namespace
 bool observation_closes(const json& preview, const json& observation) {
     try {
-        return preview_valid(preview) && binding_closes(preview, observation);
+        return (preview_valid(preview) || inspection_valid(preview)) &&
+               binding_closes(preview, observation);
     } catch (const json::exception&) {
         return false;
     }
@@ -210,23 +211,38 @@ bool untouched(const json& before, const json& after) {
     current.erase("settings");
     return managed_digest(previous) == managed_digest(current);
 }
-bool preview_valid(const json& preview) {
+bool readonly_body_valid(const json& value, bool inspection) {
     try {
-        if (!recovery_fields(preview,
-                             {"schema_version",
-                              "context",
-                              "project_key",
-                              "binding_key",
-                              "preview_token",
-                              "desired",
-                              "before",
-                              "binding_guard",
-                              "scope",
-                              "unavailable_domains"}) ||
+        auto preview = value;
+        if (inspection) {
+            if (!preview.is_object() || !preview.contains("authority_origin") ||
+                !preview.contains("native_mutation_started") ||
+                preview.at("authority_origin") != "none" ||
+                !preview.at("native_mutation_started").is_boolean() ||
+                preview.at("native_mutation_started") != false || preview.contains("preview_token"))
+                return false;
+            preview.erase("authority_origin");
+            preview.erase("native_mutation_started");
+        }
+        if (!recovery_fields(
+                [&preview] {
+                    auto fields = preview;
+                    fields.erase("preview_token");
+                    return fields;
+                }(),
+                {"schema_version",
+                 "context",
+                 "project_key",
+                 "binding_key",
+                 "desired",
+                 "before",
+                 "binding_guard",
+                 "scope",
+                 "unavailable_domains"}) ||
             !note_integer(preview.at("schema_version"), 1, 1) ||
             !recovery_context(preview.at("context")) || !recovery_key(preview.at("project_key")) ||
             !recovery_key(preview.at("binding_key")) ||
-            !recovery_hex(preview.at("preview_token"), 32) ||
+            (!inspection && !recovery_hex(preview.at("preview_token"), 32)) ||
             !settings_valid(preview.at("desired")) || !snapshot_valid(preview.at("before")) ||
             !idle(preview.at("before"), preview.at("desired")))
             return false;
@@ -252,9 +268,15 @@ bool preview_valid(const json& preview) {
         return false;
     }
 }
+bool preview_valid(const json& value) {
+    return readonly_body_valid(value, false);
+}
+bool inspection_valid(const json& value) {
+    return readonly_body_valid(value, true);
+}
 bool request_valid(std::string_view method, const json& payload) {
     try {
-        if (method == preview_method)
+        if (method == preview_method || method == inspection_method)
             return recovery_fields(payload,
                                    {"document_token",
                                     "project_key",
@@ -453,9 +475,11 @@ plan_managed_song_settings(const sunny::core::Score& score) {
                                "tempo20..999/numerator1..99/denominator1,2,4,8,16 required");
     return settings;
 }
-Result<LomRequest> make_managed_song_settings_preview_request(const ManagedBridgeContext& context,
-                                                              const ManagedBindingReceipt& binding,
-                                                              const ManagedSongSettings& desired) {
+namespace {
+Result<LomRequest> song_read_request(const ManagedBridgeContext& context,
+                                     const ManagedBindingReceipt& binding,
+                                     const ManagedSongSettings& desired,
+                                     std::string_view method) {
     if (!managed_binding_from_json(managed_binding_to_json(binding)) ||
         context.bridge_instance != binding.context.bridge_instance ||
         context.document_token != binding.context.document_token ||
@@ -469,10 +493,54 @@ Result<LomRequest> make_managed_song_settings_preview_request(const ManagedBridg
         {"expected_content_fingerprint", binding.observation.at("content_fingerprint")},
         {"expected_note_identity_fingerprint", binding.observation.at("note_identity_fingerprint")},
         {"desired", managed_song_settings_to_json(desired)}};
-    if (!managed_song_detail::request_valid(managed_song_detail::preview_method, payload))
+    if (!managed_song_detail::request_valid(method, payload))
         return std::unexpected(ErrorCode::ProtocolError);
-    return LomProtocol::call_method(
-        LomPaths::song(), std::string{managed_song_detail::preview_method}, {payload});
+    return LomProtocol::call_method(LomPaths::song(), std::string{method}, {payload});
+}
+} // namespace
+Result<LomRequest> make_managed_song_settings_preview_request(const ManagedBridgeContext& context,
+                                                              const ManagedBindingReceipt& binding,
+                                                              const ManagedSongSettings& desired) {
+    return song_read_request(context, binding, desired, managed_song_detail::preview_method);
+}
+Result<LomRequest>
+make_managed_song_settings_inspection_request(const ManagedBridgeContext& context,
+                                              const ManagedBindingReceipt& binding,
+                                              const ManagedSongSettings& desired) {
+    return song_read_request(context, binding, desired, managed_song_detail::inspection_method);
+}
+Result<json> parse_managed_song_settings_inspection(const LomRequest& request,
+                                                    const ManagedBridgeContext& context,
+                                                    const json& value) {
+    using namespace managed_detail;
+    try {
+        if (request.type != LomRequestType::CallMethod ||
+            request.path.segments != LomPaths::song().segments ||
+            request.property_or_method != managed_song_detail::inspection_method ||
+            request.args.size() != 1 || !std::holds_alternative<json>(request.args.at(0)) ||
+            !recovery_fields(value, {"schema_version", "outcome", "inspection", "observation"}) ||
+            !note_integer(value.at("schema_version"), 1, 1) || value.at("outcome") != "observed" ||
+            !managed_song_detail::inspection_valid(value.at("inspection")))
+            return std::unexpected(ErrorCode::ProtocolError);
+        const auto& payload = std::get<json>(request.args.at(0));
+        const auto& body = value.at("inspection");
+        if (!managed_song_detail::request_valid(request.property_or_method, payload) ||
+            payload.at("document_token") != context.document_token ||
+            body.at("context") != json{{"bridge_instance", context.bridge_instance},
+                                       {"document_token", context.document_token}} ||
+            body.at("project_key") != payload.at("project_key") ||
+            body.at("binding_key") != payload.at("binding_key") ||
+            body.at("desired").dump() != payload.at("desired").dump() ||
+            body.at("binding_guard").at("content_fingerprint") !=
+                payload.at("expected_content_fingerprint") ||
+            body.at("binding_guard").at("note_identity_fingerprint") !=
+                payload.at("expected_note_identity_fingerprint") ||
+            !managed_song_detail::observation_closes(body, value.at("observation")))
+            return std::unexpected(ErrorCode::ProtocolError);
+        return value;
+    } catch (const json::exception&) {
+        return std::unexpected(ErrorCode::ProtocolError);
+    }
 }
 Result<ManagedSongSettingsPreview> parse_managed_song_settings_preview(
     const LomRequest& request, const ManagedBridgeContext& context, const json& value) {

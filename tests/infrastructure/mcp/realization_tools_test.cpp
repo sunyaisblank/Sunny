@@ -118,6 +118,70 @@ struct Fixture {
 };
 } // namespace
 
+TEST_CASE("Selected native project plans fit the real public apply byte limit",
+          "[mcp][realization][coordinator][capacity]") {
+#ifdef _WIN32
+    SKIP("Native planning uses the primary POSIX Docker history admission");
+#else
+    Directory directory;
+    LostReplyTransport transport;
+    Fixture fixture(&transport);
+    transport.session = &fixture.session;
+    for (unsigned index = 0; index < 2; ++index)
+        REQUIRE_FALSE(fixture
+                          .call("score_add_part",
+                                {{"score_id", 1}, {"name", "Dense line"}, {"instrument_type", 47}})
+                          .contains("error"));
+    auto* score = fixture.session.score->find(1);
+    REQUIRE(score);
+    const auto& first_events = score->parts.at(0).measures.at(0).voices.at(0).events;
+    const auto first_note =
+        std::ranges::find_if(first_events, [](const auto& event) { return event.is_note_group(); });
+    REQUIRE(first_note != first_events.end());
+    auto note = *first_note->as_note_group();
+    note.duration = Beat{1, 16384};
+    std::uint64_t identity = 10000;
+    for (auto& part : score->parts) {
+        auto& events = part.measures.at(0).voices.at(0).events;
+        events.clear();
+        for (std::int64_t index = 0; index < 8192; ++index) {
+            events.push_back({EventId{identity++}, Beat{index * 2, 16384}, note});
+            events.push_back({EventId{identity++},
+                              Beat{index * 2 + 1, 16384},
+                              RestEvent{Beat{1, 16384}, true, {}}});
+        }
+    }
+    // Dyadic placements are exact at PPQ8192, with a two-tick note and
+    // two-tick gap. Every Part fits its own native frame; the aggregate plan
+    // must also be consumable through the smaller stdio input boundary.
+    REQUIRE(fixture.call("workspace_save", {{"path", (directory.path / "dense.json").string()}})
+                .at("success") == true);
+    json selection{{"score_id", 1},
+                   {"expected_project_revision", fixture.session.project->projects.at(1).revision},
+                   {"ppq", 8192},
+                   {"parts", {{{"part_id", 1}}}},
+                   {"routing", json::array()}};
+    const auto small = fixture.call("project_realization_plan", selection);
+    REQUIRE(small.at("success") == true);
+    const json public_apply{
+        {"jsonrpc", "2.0"},
+        {"id", 1},
+        {"method", "tools/call"},
+        {"params",
+         {{"name", "project_realization_apply"},
+          {"arguments", {{"plan", small.at("plan")}, {"explicit_plan_approval", true}}}}}};
+    CHECK(public_apply.dump(-1, ' ', true).size() <= MCP_MAX_INPUT_BYTES);
+    selection["parts"].push_back({{"part_id", 2}});
+    selection["parts"].push_back({{"part_id", 3}});
+    const auto large = fixture.call("project_realization_plan", selection);
+    CHECK(large.at("success") == false);
+    CHECK(large.at("error").get<std::string>().find("public apply request") != std::string::npos);
+    CHECK(transport.mutations == 0);
+    REQUIRE(fixture.session.realization->store);
+    CHECK(fixture.session.realization->store->attempts().empty());
+#endif
+}
+
 TEST_CASE("Native product requires durable namespace before any bridge operation",
           "[mcp][realization][fence]") {
     LostReplyTransport transport;

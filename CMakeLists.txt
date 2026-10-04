@@ -230,6 +230,7 @@ target_sources(
         src/infrastructure/ableton/lom_protocol.cpp
         src/infrastructure/ableton/managed_realization.cpp
         src/infrastructure/ableton/managed_devices.cpp
+        src/infrastructure/ableton/managed_device_recovery.cpp
         src/infrastructure/ableton/managed_recovery.cpp
         src/infrastructure/ableton/managed_song_settings.cpp
         src/infrastructure/ableton/managed_envelope_revision.cpp
@@ -265,6 +266,7 @@ target_sources(
         src/infrastructure/mcp/project_tools.cpp
         src/infrastructure/mcp/project_session.cpp
         src/infrastructure/mcp/realization_tools.cpp
+        src/infrastructure/mcp/realization_coordinator.cpp
         src/infrastructure/mcp/project_timeline.cpp
         src/infrastructure/mcp/workspace_state.cpp
         src/infrastructure/mcp/workspace_tools.cpp

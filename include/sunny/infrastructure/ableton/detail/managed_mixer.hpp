@@ -2,6 +2,7 @@
 #include <sunny/infrastructure/ableton/managed_mixer.hpp>
 namespace sunny::infrastructure::managed_mixer_detail {
 inline constexpr std::string_view preview_method = "sunny_managed_preview_static_mixer";
+inline constexpr std::string_view inspection_method = "sunny_managed_inspect_static_mixer";
 inline constexpr std::string_view adopt_method = "sunny_managed_adopt_static_mixer";
 inline constexpr std::string_view update_method = "sunny_managed_update_static_mixer";
 [[nodiscard]] bool desired_valid(const nlohmann::json&, const nlohmann::json& domains);

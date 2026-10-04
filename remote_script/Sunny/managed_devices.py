@@ -40,6 +40,7 @@ _DEVICES = {
     "EQ Eight": ("Eq8", 2, "effect"),
 }
 DEVICE_PREVIEW_METHOD = "sunny_managed_preview_devices"
+DEVICE_INSPECTION_METHOD = "sunny_managed_inspect_devices"
 DEVICE_ADOPTION_METHOD = "sunny_managed_adopt_devices"
 
 
@@ -60,7 +61,7 @@ def valid_managed_device_request(name: str, args: list[Any]) -> bool:
     try:
         if name == DEVICE_MODE_METHOD:
             return _valid_mode_request(args)
-        if name in (DEVICE_PREVIEW_METHOD, DEVICE_ADOPTION_METHOD):
+        if name in (DEVICE_PREVIEW_METHOD, DEVICE_INSPECTION_METHOD, DEVICE_ADOPTION_METHOD):
             return _valid_adoption_request(name, args)
         if name not in DEVICE_METHODS or len(args) != 1 or type(args[0]) is not dict:
             return False
@@ -833,21 +834,19 @@ class ManagedDevices:
         result["device_update"] = update
         return result
 
-    def preview(self, record: dict[str, Any], request: dict[str, Any]) -> dict[str, Any]:
-        """Observe selected current objects for a separately fenced explicit adoption.
-
-        Every member of the current finite known chain must be declared. An empty
-        chain is an explicit prospective append-authority preview, without
-        parameter formatter calls or native setters. Desired
-        physical values must already match actual formatter readback: preview
-        and adoption never repair or overwrite authored/native mismatches.
-        """
-        if not valid_managed_device_request(DEVICE_PREVIEW_METHOD, [request]):
-            raise RuntimeError("Invalid closed current-device preview request")
+    def _readonly_capture(
+        self, record: dict[str, Any], request: dict[str, Any], *, inspection: bool
+    ) -> tuple[dict[str, Any], dict[str, Any], tuple[int, int, int]]:
+        """Capture complete current handles/formatter state; grant nothing."""
+        method = DEVICE_INSPECTION_METHOD if inspection else DEVICE_PREVIEW_METHOD
+        if not valid_managed_device_request(method, [request]):
+            raise RuntimeError("Invalid closed current-device read-only request")
         version = self._version()
         self._context(request, version)
-        if len(self._previews) >= MAX_PREVIEWS:
+        if not inspection and len(self._previews) >= MAX_PREVIEWS:
             raise RuntimeError("Current-device preview journal is full; no records are evicted")
+        if inspection:
+            self.registry._require_in_place_guard(record, request["expected_content_fingerprint"])
         chain = self._chain(record)
         if len(chain) != len(request["devices"]):
             raise RuntimeError(
@@ -923,12 +922,34 @@ class ManagedDevices:
             "binding_observation": observed,
             "devices": copy.deepcopy(request["devices"]),
             "resolutions": resolutions,
-            "authority_origin": "explicit_current_device_adoption",
+            "authority_origin": "none" if inspection else "explicit_current_device_adoption",
             "native_mutation_started": False,
             "native_knob_only": True,
             "host_qualified": False,
             "opaque_state_observed": False,
         }
+        if inspection:
+            self.registry._require_in_place_guard(record, request["expected_content_fingerprint"])
+        return value, state, version
+
+    def inspect(self, record: dict[str, Any], request: dict[str, Any]) -> dict[str, Any]:
+        """Fresh finite evidence without tokens, grants, baselines or journals."""
+        value, _, _ = self._readonly_capture(record, request, inspection=True)
+        response = {
+            "outcome": "observed",
+            "document_token": request["document_token"],
+            "project_key": request["project_key"],
+            "binding_key": request["binding_key"],
+            "inspection": value,
+        }
+        from .managed_capacity import require_response_capacity
+
+        require_response_capacity({"success": True, "value": response})
+        return response
+
+    def preview(self, record: dict[str, Any], request: dict[str, Any]) -> dict[str, Any]:
+        """Observe current objects for separately fenced explicit adoption only."""
+        value, state, version = self._readonly_capture(record, request, inspection=False)
         token = uuid.uuid4().hex
         fingerprint = _digest(value)
         response = {
