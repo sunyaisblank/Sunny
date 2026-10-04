@@ -14,7 +14,12 @@
  * mutations are atomic: a mid-mutation failure restores the pre-mutation
  * snapshot before the error propagates.
  *
- * Invariant: undo restores the pre-mutation document exactly.
+ * Successful mutations and history restoration may replace Score storage.
+ * Callers must reacquire nested references/pointers/iterators from the current
+ * Score; stable typed identities, not addresses, identify restored content.
+ *
+ * Invariant: undo restores pre-mutation content with its original typed IDs;
+ * version and observed/retired identity reservations remain monotonic.
  * Invariant: version counter increases monotonically, never reused.
  * At UINT64_MAX, every state-changing operation returns ArithmeticOverflow
  * before changing the Score or its UndoStack. Raw mutation entry points check
@@ -25,6 +30,7 @@
 
 #include <memory>
 #include <optional>
+#include <span>
 #include <sunny/core/pitch/diatonic_interval.hpp>
 #include <sunny/core/score/document.hpp>
 #include <vector>
@@ -275,6 +281,39 @@ delete_measures(Score& score, std::uint32_t bar, std::uint32_t count, UndoStack*
 set_score_tuning(Score& score, ScoreTuning tuning, UndoStack* undo = nullptr);
 
 /**
+ * Replace the complete ordered TempoMap atomically, using exact typed rates.
+ * Incoming Linear durations and MetricModulation rates must already satisfy
+ * S24. No sorting, interpolation approximation, or payload repair is performed.
+ */
+[[nodiscard]] Result<MutationResult>
+set_tempo_map(Score& score, TempoMap tempo_map, UndoStack* undo = nullptr);
+
+/**
+ * Annotate a standalone tuplet over already-scaled note/rest allocations.
+ * Members must be nonempty, distinct, and form one contiguous
+ * measured span in one voice/measure. Their sum must equal scaled_allocation
+ * and normal * normal_type. actual counts nominal rhythmic units rather than
+ * events, so mixed written durations are allowed. Durations/onsets/IDs remain
+ * unchanged. Existing tuplet membership and nested editing are rejected; point events may lie
+ * between members but cannot themselves be members. Returns the fresh TupletId.
+ */
+[[nodiscard]] Result<TupletId> create_tuplet_group(Score& score,
+                                                   std::span<const EventId> members,
+                                                   std::uint8_t actual,
+                                                   std::uint8_t normal,
+                                                   Beat normal_type,
+                                                   Beat scaled_allocation,
+                                                   UndoStack* undo = nullptr);
+
+/**
+ * Remove a standalone tuplet annotation while retaining all scaled durations.
+ * Parent/child nesting conflicts reject the operation. The removed TupletId
+ * remains reserved through deletion, undo/redo, and canonical serialization.
+ */
+[[nodiscard]] Result<MutationResult>
+remove_tuplet_group(Score& score, TupletId tuplet_id, UndoStack* undo = nullptr);
+
+/**
  * @brief Set the time signature at a bar atomically
  *
  * Retiles only rest coverage through the next meter change, recomputes exact
@@ -371,7 +410,13 @@ reorder_parts(Score& score, const std::vector<PartId>& new_order, UndoStack* und
                                                         UndoStack* undo = nullptr);
 
 /**
- * @brief Change the instrument type of a part
+ * @brief Apply the standard range, transposition and default clef of an instrument
+ *
+ * Concert note pitches, identity, explicit staff clefs, articulation mappings,
+ * custom metadata and rendering configuration are preserved. Consequently
+ * sounding MIDI stays the same and written-pitch export follows the new
+ * instrument transposition. Pitched/unpitched percussion role changes reject
+ * the edit because they require an explicit channel/key-map migration.
  */
 [[nodiscard]] Result<MutationResult> assign_instrument(Score& score,
                                                        PartId part_id,

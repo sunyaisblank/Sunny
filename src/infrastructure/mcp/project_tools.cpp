@@ -13,7 +13,10 @@
 #include <sunny/core/project/validation.hpp>
 #include <sunny/infrastructure/ableton/target_profile.hpp>
 #include <sunny/infrastructure/formats/ableton_project.hpp>
+#include <sunny/infrastructure/mcp/project_session.hpp>
 #include <sunny/infrastructure/mcp/project_tools.hpp>
+#include <sunny/infrastructure/mcp/session_ids.hpp>
+#include <sunny/infrastructure/mcp/workspace_tools.hpp>
 #include <vector>
 
 namespace sunny::infrastructure {
@@ -1307,6 +1310,8 @@ std::optional<ResolvedProject> resolve_stored_project(const StoredProjectDeploym
 } // namespace
 
 void register_project_tools(McpServer& server, const McpSession& session, LomTransport* transport) {
+    register_project_authoring_tools(server, session);
+    register_workspace_tools(server, session);
     const auto schema =
         json{{"type", "object"},
              {"properties",
@@ -1347,6 +1352,20 @@ void register_project_tools(McpServer& server, const McpSession& session, LomTra
             std::string error;
             auto project = resolve_project(params, scores, timbres, mixes, error);
             if (!project) return error_response(error);
+            const auto observed_plan_id = plans->plans.empty() ? 0 : plans->plans.rbegin()->first;
+            auto allocation =
+                mcp_detail::checked_session_id_batch(plans->next_plan_id, observed_plan_id);
+            if (!allocation)
+                return json{{"error", "Project deployment plan identity allocation rejected"},
+                            {"error_code", static_cast<int>(allocation.error())}};
+            constexpr std::size_t max_retained_plans = 256;
+            std::vector<std::uint64_t> prune_ids;
+            for (const auto& [plan_id, retained] : plans->plans) {
+                if (plans->plans.size() - prune_ids.size() < max_retained_plans) break;
+                if (retained.consumed) prune_ids.push_back(plan_id);
+            }
+            if (plans->plans.size() - prune_ids.size() >= max_retained_plans)
+                return error_response("Too many unconsumed project deployment plans");
             if (transport == nullptr || !transport->ensure_connected())
                 return json{{"success", false},
                             {"connected", false},
@@ -1366,29 +1385,22 @@ void register_project_tools(McpServer& server, const McpSession& session, LomTra
                             {"connected", transport->is_connected()},
                             {"error_code", static_cast<int>(plan.error())},
                             {"error", "Ableton project planning failed"}};
-            if (plans->next_plan_id == std::numeric_limits<std::uint64_t>::max())
-                return error_response("Project deployment plan ID space exhausted");
-            constexpr std::size_t max_retained_plans = 256;
-            for (auto item = plans->plans.begin();
-                 plans->plans.size() >= max_retained_plans && item != plans->plans.end();) {
-                if (item->second.consumed)
-                    item = plans->plans.erase(item);
-                else
-                    ++item;
-            }
-            if (plans->plans.size() >= max_retained_plans)
-                return error_response("Too many unconsumed project deployment plans");
-
-            const auto plan_id = plans->next_plan_id;
+            const auto plan_id = allocation->first;
             StoredProjectDeploymentPlan stored;
             stored.score_id = project->score_id;
             stored.timbre_profile_ids = project->profile_ids;
             stored.mix_graph_id = project->mix_graph_id;
             stored.plan = std::move(*plan);
-            const auto [position, inserted] = plans->plans.emplace(plan_id, std::move(stored));
-            if (!inserted) return error_response("Project deployment plan ID collision");
-            ++plans->next_plan_id;
-            return plan_j(plan_id, *position->second.plan);
+            auto response = plan_j(plan_id, *stored.plan);
+            static_cast<void>(response.dump());
+            std::map<std::uint64_t, StoredProjectDeploymentPlan> prepared;
+            prepared.emplace(plan_id, std::move(stored));
+            // All fallible candidate work is complete before canonical publication.
+            plans->plans.merge(prepared);
+            for (const auto retired_id : prune_ids)
+                plans->plans.erase(retired_id);
+            plans->next_plan_id = allocation->next;
+            return response;
         });
 
     const auto apply_schema =

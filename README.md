@@ -102,38 +102,91 @@ Sunny build is optional. MCP still travels over standard input and output, so th
 the container itself:
 
 ```bash
-docker build -t sunny-mcp .
+docker build -t sunny-mcp:0.4.0 .
+docker image inspect sunny-mcp:0.4.0 --format '{{.Id}}'
 ```
+
+Keep the returned `sha256:...` image ID. Use that same ID when exporting the bridge and in
+the MCP configuration below, so rebuilding a tag cannot silently select different sources.
+The image includes its exact installable Remote Script:
+
+```bash
+docker create --name sunny-bridge-export sunny-mcp:0.4.0
+docker cp sunny-bridge-export:/opt/sunny/remote-script/Sunny ./Sunny
+docker rm sunny-bridge-export
+```
+
+These commands create a stopped container and export files; they do not start Sunny or Live.
+Replace the image tag in `docker create` with the retained image ID if the tag has changed.
+The exported `Sunny/source.sha256` identifies the bundled Python sources.
 
 ```json
 {
   "mcpServers": {
     "sunny": {
       "command": "docker",
-      "args": ["run", "-i", "--rm", "-e", "SUNNY_ABLETON_HOST=192.168.1.20", "sunny-mcp"]
+      "args": ["run", "-i", "--rm", "--mount", "type=volume,source=sunny-data,target=/data", "-e", "SUNNY_ABLETON_HOST=host.docker.internal", "-e", "SUNNY_TCP_PORT=9001", "sha256:REPLACE_WITH_IMAGE_ID"]
     }
   }
 }
 ```
 
-Replace the address with the machine running Live. The container's only network use is the
-outbound connection to the Remote Script.
+This example uses Docker Desktop with Live on the same computer. Configure the bridge listener
+as described below. For Live on another LAN computer, replace `host.docker.internal` with that
+computer's address, such as `192.168.1.20`. On Linux Docker Engine, add
+`"--add-host", "host.docker.internal:host-gateway"` to use the host machine. No `-p` or inbound
+container port is needed: MCP uses stdio and the container connects outbound to TCP 9001.
+
+For a native `sunny-mcp` on the same computer as Live, `SUNNY_ABLETON_HOST=127.0.0.1` connects to
+the default loopback listener. Inside an ordinary Docker container, `127.0.0.1` refers to that
+container and does not address Live on the host. Running without `SUNNY_ABLETON_HOST` starts an
+offline authoring session with the same durable volume.
+
+The volume retains saved work when a container is replaced. After authoring, call
+`workspace_save` with `path: "/data/workspace.sunny.json"`. The next container restores that
+file before accepting requests. Saving includes every Score, Timbre profile, Mix graph, shared
+preset, corpus record, owning project relationship, rendering configuration, and identity
+reservation. Undo history and temporary deployment plans end with the process. Changes require an
+explicit save; closing the client does not save them automatically.
+
+For a native server, set `SUNNY_WORKSPACE_PATH` to your saved workspace path to enable the same
+startup restore. `workspace_open` replaces authored state only after complete validation;
+`workspace_import` refuses identity collisions. If the main file is corrupt, startup reports the
+error and exits. Explicitly set `SUNNY_WORKSPACE_RECOVERY=backup` to restore the supported `.bak`,
+then call `workspace_save` to repair the main file and remove the recovery setting. Recovery never
+silently replaces the main file. Sample and external preset paths are retained; their files must
+also be available to a later container.
+
+`score_export_midi` returns an actual type-0 Standard MIDI File as `midi_base64`, along with its
+compilation loss report. `score_compile_to_musicxml` returns notation XML. Both use the same
+authored Score, with concert pitch in MIDI and instrument-transposed written pitch in MusicXML.
 
 ## Connecting Ableton Live
 
-Copy the Remote Script into the `Remote Scripts` folder of your Live User Library and select it
-as a control surface (Preferences, Link/Tempo/MIDI, Control Surface: Sunny):
-
-```bash
-cp -r remote_script/Sunny "${HOME}/Music/Ableton/User Library/Remote Scripts/Sunny"
-```
+Live 12.4 is the primary target; Live 12.3+ has the finite supported version floors below.
+Export the `Sunny` folder from the same image ID used by your MCP client, then copy that folder
+into `Remote Scripts` under your configured Live User Library. Select Sunny as a control surface
+in Live's Preferences, Link/Tempo/MIDI. For a native build, use the generated
+`.bin/remote_script/Sunny` folder from that build. Restart or reload the control surface after
+replacing the folder.
 
 The script listens on TCP port 9001, bound to `127.0.0.1` unless `SUNNY_BIND_HOST` is set in the
 environment of the Live process. If you bind to another interface, restrict access with a
 firewall: the port accepts commands that change your Live Set.
 
-The bridge and server must use the same bridge contract. The Remote Script runs inside Live's
-own Python and retains Python 3.7 syntax compatibility for Live 11.
+For Docker Desktop on the Live computer, or for a client on another LAN computer, set
+`SUNNY_BIND_HOST=0.0.0.0` in the environment that launches Live and permit TCP 9001 only from
+the intended client or local Docker network. Keep the default `127.0.0.1` binding for a native
+client on the same computer. One bridge client is served at a time; close another connected
+Sunny client before starting a replacement. Do not expose the listener to the public internet.
+
+Protocol version 46 and a SHA256 of all bundled Python sources must match the server. The first
+ordinary request on each connection checks the bridge's source identity; reconnects check again.
+A mismatch refuses that request before sending it and names the expected/observed identity.
+Install the bridge from the correct image and reload it. Profile and Remote Script log queries
+remain available to diagnose the mismatch. Source identity proves matching Sunny code; it does
+not establish exact-host native API or playback qualification. The script runs inside Live's
+own Python and retains the finite legacy Live 11 behaviour and Python 3.7 syntax compatibility.
 
 Sunny's operation choices follow the version floors in the official
 [Live Object Model reference](https://docs.cycling74.com/apiref/lom/), whose current reference

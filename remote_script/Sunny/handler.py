@@ -21,6 +21,8 @@ import math
 import os
 from typing import Any
 
+from .build_identity import BRIDGE_SOURCE_SHA256
+
 logger = logging.getLogger("sunny.remote_script.handler")
 
 
@@ -64,6 +66,13 @@ _SONG_CALLS = frozenset(
         "create_scene",
         "create_midi_track",
         "create_return_track",
+        "sunny_managed_context",
+        "sunny_managed_operation",
+        "sunny_managed_observe",
+        "sunny_managed_create_clip",
+        "sunny_managed_replace_clip",
+        "sunny_managed_rebind",
+        "sunny_managed_author_envelope",
     }
 )
 
@@ -155,7 +164,12 @@ def _path_kind(path: str) -> str | None:
 
 
 def _finite_number(value: Any) -> bool:
-    return not isinstance(value, bool) and isinstance(value, (int, float)) and math.isfinite(value)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False
 
 
 def _protocol_index(value: Any, *, allow_append: bool = False) -> bool:
@@ -338,6 +352,66 @@ def _valid_ranged_notes_query(value: Any) -> bool:
     )
 
 
+def _valid_envelope_parameter(value: Any) -> bool:
+    if not isinstance(value, dict) or not isinstance(value.get("kind"), str):
+        return False
+    kind = value["kind"]
+    if kind in ("volume", "panning"):
+        return set(value) == {"kind"}
+    if kind == "send":
+        return set(value) == {"kind", "send_index"} and _protocol_index(value["send_index"])
+    return (
+        kind == "device"
+        and set(value) == {"kind", "device_index", "parameter_name"}
+        and _protocol_index(value["device_index"])
+        and isinstance(value["parameter_name"], str)
+        and bool(value["parameter_name"])
+    )
+
+
+def _valid_step_envelope_author(value: Any) -> bool:
+    if (
+        not isinstance(value, dict)
+        or set(value) != {"parameter", "interpolation", "clip_end", "points"}
+        or not _valid_envelope_parameter(value["parameter"])
+        or value["interpolation"] != "step"
+        or not _finite_number(value["clip_end"])
+        or value["clip_end"] <= 0.0
+        or not isinstance(value["points"], list)
+        or not value["points"]
+    ):
+        return False
+    previous = -1.0
+    for point in value["points"]:
+        if (
+            not isinstance(point, dict)
+            or set(point) != {"time", "value"}
+            or not _finite_number(point["time"])
+            or not _finite_number(point["value"])
+            or not previous < float(point["time"]) < float(value["clip_end"])
+        ):
+            return False
+        previous = float(point["time"])
+    return value["points"][0]["time"] == 0.0
+
+
+def _valid_step_envelope_query(value: Any) -> bool:
+    if (
+        not isinstance(value, dict)
+        or set(value) != {"parameter", "sample_times"}
+        or not _valid_envelope_parameter(value["parameter"])
+        or not isinstance(value["sample_times"], list)
+        or not value["sample_times"]
+    ):
+        return False
+    previous = -1.0
+    for time in value["sample_times"]:
+        if not _finite_number(time) or time < 0.0 or float(time) <= previous:
+            return False
+        previous = float(time)
+    return True
+
+
 def _valid_request_arguments(req_type: str, kind: str, name: str, args: list[Any]) -> bool:
     if req_type == "get":
         return not args
@@ -392,6 +466,10 @@ def _valid_request_arguments(req_type: str, kind: str, name: str, args: list[Any
             return isinstance(value, float) and value == 0.0
         return _finite_number(value)
     if kind == "song":
+        if name.startswith("sunny_managed_"):
+            from .managed import valid_managed_request
+
+            return valid_managed_request(name, args)
         if name in (
             "sunny_get_target_profile",
             "sunny_get_target_snapshot",
@@ -437,6 +515,10 @@ def _valid_request_arguments(req_type: str, kind: str, name: str, args: list[Any
     if kind == "clip":
         if name == "sunny_clear_all_envelopes":
             return not args
+        if name == "sunny_author_step_envelope":
+            return len(args) == 1 and _valid_step_envelope_author(args[0])
+        if name == "sunny_get_step_envelope":
+            return len(args) == 1 and _valid_step_envelope_query(args[0])
         return len(args) == 1 and (
             _valid_note_dictionary(args[0])
             if name == "add_new_notes"
@@ -542,6 +624,8 @@ def _request_allowed(req_type: str, path: str, name: str, args: list[Any]) -> bo
                 "get_notes_extended",
                 "get_all_notes_extended",
                 "sunny_clear_all_envelopes",
+                "sunny_author_step_envelope",
+                "sunny_get_step_envelope",
             )
         )
     elif kind == "mixer_device":
@@ -573,9 +657,16 @@ def _request_allowed(req_type: str, path: str, name: str, args: list[Any]) -> bo
 class LomHandler:
     """Translates LomRequest JSON to Ableton LOM API calls."""
 
-    def __init__(self, surface, remote_log=None):
+    def __init__(
+        self, surface, remote_log=None, *, envelope_authorizer=None, managed_registry=None
+    ):
         self._surface = surface
         self._remote_log = remote_log
+        # The surface dispatches Live operations on its main thread. Product
+        # admission stays denied until managed project identities supply this
+        # callback; a path/index/name never establishes ownership.
+        self._envelope_authorizer = envelope_authorizer
+        self._managed_registry = managed_registry
 
     @staticmethod
     def is_remote_log_request(request: object) -> bool:
@@ -633,6 +724,11 @@ class LomHandler:
             if req_type == "call" and name == "sunny_get_target_snapshot":
                 return {"success": True, "value": self._serialise(self._target_snapshot())}
 
+            if req_type == "call" and name.startswith("sunny_managed_"):
+                if self._managed_registry is None:
+                    return {"success": False, "error": "Managed ownership registry is unavailable"}
+                return {"success": True, "value": self._managed_registry.dispatch(name, args)}
+
             obj = self._resolve_path(path)
 
             if req_type == "get":
@@ -687,6 +783,12 @@ class LomHandler:
                 if name == "sunny_get_device_parameter":
                     evidence = self._get_device_parameter(obj, *args)
                     return {"success": True, "value": self._serialise(evidence)}
+                if name == "sunny_author_step_envelope":
+                    acknowledgement = self._author_step_envelope(path, obj, args[0])
+                    return {"success": True, "value": acknowledgement}
+                if name == "sunny_get_step_envelope":
+                    evidence = self._get_step_envelope(path, obj, args[0])
+                    return {"success": True, "value": evidence}
                 if name == "add_new_notes":
                     return {"success": True, "value": self._add_new_notes(obj, args[0]["notes"])}
                 if name == "get_notes_by_id":
@@ -877,6 +979,7 @@ class LomHandler:
                 "name": "Sunny Remote Script",
                 "runtime": "control_surface_python",
                 "contract": "version_coupled_private",
+                "source_sha256": BRIDGE_SOURCE_SHA256,
             },
             "live": {
                 "version": {
@@ -1815,6 +1918,188 @@ class LomHandler:
                 f"Device parameter '{parameter_name}' is ambiguous ({len(matches)} matches)"
             )
         return matches[0]
+
+    @staticmethod
+    def _same_live_object(first: Any, second: Any) -> bool:
+        # Live may supply distinct Python wrappers for one native identity.
+        return first is second or first == second
+
+    @staticmethod
+    def _envelope_valid(envelope: Any) -> bool:
+        # Pinned ableton.v2.base.liveobj_valid uses native equality with None
+        # to reject invalid Live wrappers, not just Python identity.
+        return envelope != None  # noqa: E711
+
+    @classmethod
+    def _step_clip_interval(cls, clip: Any, *, idle: bool) -> float:
+        for name, expected in (
+            ("is_session_clip", True),
+            ("is_arrangement_clip", False),
+            ("is_audio_clip", False),
+            ("is_midi_clip", True),
+            ("looping", False),
+        ):
+            if getattr(clip, name) is not expected:
+                raise RuntimeError(
+                    f"Step envelopes require a nonlooping MIDI Session clip ({name})"
+                )
+        start = cls._lom_float(clip.start_marker, "Step envelope clip start")
+        end = cls._lom_float(clip.end_marker, "Step envelope clip end")
+        if start != 0.0 or end <= start:
+            raise RuntimeError("Step envelopes require the generated marker interval [0, clip_end)")
+        if idle:
+            for name in (
+                "is_playing",
+                "is_recording",
+                "is_overdubbing",
+                "is_triggered",
+                "will_record_on_start",
+            ):
+                if getattr(clip, name) is not False:
+                    raise RuntimeError(f"Step envelope authoring requires an idle clip ({name})")
+        return end
+
+    def _step_envelope_target(
+        self, path: str, clip: Any, selector: dict[str, Any]
+    ) -> tuple[Any, Any, dict[str, Any]]:
+        import Live
+
+        track = self._resolve_path("/".join(path.split("/")[:3]))
+        slot = self._resolve_path(path.rsplit("/", 1)[0])
+        if (
+            not isinstance(track, Live.Track.Track)
+            or not isinstance(clip, Live.Clip.Clip)
+            or not self._same_live_object(clip.canonical_parent, slot)
+            or not self._same_live_object(slot.canonical_parent, track)
+            or not self._same_live_object(slot.clip, clip)
+        ):
+            raise RuntimeError("Step envelope clip does not belong to the resolved target track")
+
+        kind = selector["kind"]
+        owner = track.mixer_device
+        if kind == "device":
+            owner = self._device_chain(track)[selector["device_index"]]
+            parameter = self._resolve_device_parameter(owner, selector["parameter_name"])
+        elif kind == "send":
+            parameter = owner.sends[selector["send_index"]]
+        else:
+            parameter = getattr(owner, kind)
+        if (
+            not isinstance(parameter, Live.DeviceParameter.DeviceParameter)
+            or not self._same_live_object(parameter.canonical_parent, owner)
+            or not self._same_live_object(owner.canonical_parent, track)
+        ):
+            raise RuntimeError("Step envelope parameter does not belong to the target track")
+
+        minimum = self._lom_float(parameter.min, "Step envelope parameter minimum")
+        maximum = self._lom_float(parameter.max, "Step envelope parameter maximum")
+        observed = self._lom_float(parameter.value, "Step envelope parameter value")
+        state = _device_parameter_state(parameter.state, "state", parameter.name)
+        automation_state = _device_parameter_state(
+            parameter.automation_state, "automation state", parameter.name
+        )
+        if (
+            minimum >= maximum
+            or not minimum <= observed <= maximum
+            or parameter.is_quantized is not False
+            or parameter.is_enabled is not True
+            or state != 0
+        ):
+            raise RuntimeError("Step envelopes require an enabled, active continuous parameter")
+        domain = {
+            "matched_name": self._lom_string(parameter.name, "Step envelope parameter name"),
+            "original_name": self._lom_string(
+                parameter.original_name, "Step envelope original name"
+            ),
+            "minimum": minimum,
+            "maximum": maximum,
+            "unit": "internal",
+            "state": state,
+            "automation_state": automation_state,
+        }
+        return track, parameter, domain
+
+    def _authorize_step_envelope(self, track: Any, clip: Any, parameter: Any) -> None:
+        # This callback runs in the same Live main-thread dispatch as the
+        # mutation. It must resolve managed ownership using these native
+        # identities, and must not mutate Live objects itself.
+        if (
+            not callable(self._envelope_authorizer)
+            or self._envelope_authorizer(track, clip, parameter) is not True
+        ):
+            raise RuntimeError("Native envelope authoring is not authorized for these identities")
+
+    def _author_step_envelope(self, path: str, clip: Any, lane: dict[str, Any]) -> dict[str, Any]:
+        if not callable(self._envelope_authorizer):
+            raise RuntimeError("Native envelope authoring is not authorized")
+        track, parameter, domain = self._step_envelope_target(path, clip, lane["parameter"])
+        end = self._step_clip_interval(clip, idle=True)
+        if end != float(lane["clip_end"]):
+            raise RuntimeError("Step envelope marker interval differs from the authored clip_end")
+        if domain["automation_state"] == 2:
+            raise RuntimeError("Step envelope parameter automation is overridden")
+        # Validate the entire lane before the first mutation. Values are Live
+        # internal units; display_value availability and physical-unit maps
+        # remain separately qualified.
+        steps = []
+        for index, point in enumerate(lane["points"]):
+            value = float(point["value"])
+            if not domain["minimum"] <= value <= domain["maximum"]:
+                raise RuntimeError("Step envelope value is outside the actual parameter domain")
+            start = float(point["time"])
+            stop = (
+                float(lane["points"][index + 1]["time"]) if index + 1 < len(lane["points"]) else end
+            )
+            steps.append((start, stop - start, value))
+        lookup = getattr(clip, "automation_envelope", None)
+        create = getattr(clip, "create_automation_envelope", None)
+        if not callable(lookup) or not callable(create):
+            raise RuntimeError("Native Python envelope authoring API is unavailable")
+        envelope = lookup(parameter)
+        created = not self._envelope_valid(envelope)
+        if created:
+            self._authorize_step_envelope(track, clip, parameter)
+            envelope = create(parameter)
+        if not self._envelope_valid(envelope) or not callable(
+            getattr(envelope, "insert_step", None)
+        ):
+            raise RuntimeError(
+                "Native envelope creation/lookup did not return an editable envelope"
+            )
+        for start, duration, value in steps:
+            self._authorize_step_envelope(track, clip, parameter)
+            envelope.insert_step(start, duration, value)
+        # This is an acknowledgement of returned mutation calls, not readback
+        # of authored points or proof of saved/reopened persistence.
+        return {
+            "action": "created" if created else "updated",
+            "steps_inserted": len(steps),
+            "parameter": domain,
+        }
+
+    def _get_step_envelope(self, path: str, clip: Any, query: dict[str, Any]) -> dict[str, Any]:
+        _, parameter, domain = self._step_envelope_target(path, clip, query["parameter"])
+        end = self._step_clip_interval(clip, idle=False)
+        if any(time >= end for time in query["sample_times"]):
+            raise RuntimeError("Step envelope sample times must be inside the marker interval")
+        lookup = getattr(clip, "automation_envelope", None)
+        if not callable(lookup):
+            raise RuntimeError("Native Python envelope readback API is unavailable")
+        envelope = lookup(parameter)
+        present = self._envelope_valid(envelope)
+        samples = []
+        if present:
+            sample = getattr(envelope, "value_at_time", None)
+            if not callable(sample):
+                raise RuntimeError("Native envelope does not expose value_at_time")
+            for time in query["sample_times"]:
+                value = self._lom_float(sample(float(time)), "Step envelope sampled value")
+                if not domain["minimum"] <= value <= domain["maximum"]:
+                    raise RuntimeError(
+                        "Step envelope sampled value is outside the parameter domain"
+                    )
+                samples.append({"time": float(time), "value": value})
+        return {"has_envelope": present, "parameter": domain, "samples": samples}
 
     @classmethod
     def _get_device_parameter(

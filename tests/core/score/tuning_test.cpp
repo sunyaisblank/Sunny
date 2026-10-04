@@ -144,7 +144,7 @@ TEST_CASE("Score tuning schema six round-trips exactly and older schemas migrate
     score.tuning.cents_from_reference[60] = -901.25;
 
     auto encoded = score_to_json(score);
-    CHECK(encoded.at("schema_version") == 8);
+    CHECK(encoded.at("schema_version") == SCORE_IR_SCHEMA_VERSION);
     CHECK(encoded.at("tuning").at("cents_from_reference").size() == 128);
     auto decoded = score_from_json(encoded);
     REQUIRE(decoded.has_value());

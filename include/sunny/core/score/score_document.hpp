@@ -87,6 +87,7 @@ class ScoreDocument {
         const std::uint64_t next_version = before->version + 1;
         candidate.version = next_version;
         if (!is_compilable(candidate)) return std::unexpected(ErrorCode::InvalidMutation);
+        retain_score_identities(candidate, *before);
 
         Snapshot committed = std::make_shared<const Score>(std::move(candidate));
         {

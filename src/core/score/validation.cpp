@@ -563,8 +563,6 @@ void validate_s8(const Score& score, std::vector<Diagnostic>& out) {
                     bool arithmetic_failed = !expected;
                     bool seen_member = false;
                     bool left_membership = false;
-                    std::size_t direct_events = 0;
-                    std::set<TupletId> direct_children;
                     for (const auto& event : voice.events) {
                         if (!event.is_note_group() && !event.is_rest()) continue;
                         const auto* leaf = event_tuplet_context(event);
@@ -593,26 +591,15 @@ void validate_s8(const Score& score, std::vector<Diagnostic>& out) {
                                     arithmetic_failed = true;
                                 else
                                     sum = *next_sum;
-
-                                const auto next = std::next(member);
-                                if (next == event_chain->end())
-                                    ++direct_events;
-                                else
-                                    direct_children.insert((*next)->id);
                             }
                         }
                         if (!is_member && seen_member) left_membership = true;
                     }
 
-                    if (direct_events + direct_children.size() != context.actual) {
-                        out.push_back(make_diagnostic(
-                            ValidationSeverity::Error,
-                            "S8",
-                            "Tuplet direct events and child tuplets do not equal actual count",
-                            ErrorCode::TupletSpanError,
-                            location,
-                            part.id));
-                    }
+                    // actual counts nominal rhythmic units, not events. A
+                    // written quarter plus an eighth is a valid 3:2 eighth
+                    // triplet. The exact allocation is the weighted authority,
+                    // including unequal members and nested child spans.
                     if (arithmetic_failed || !expected || sum != *expected) {
                         out.push_back(make_diagnostic(ValidationSeverity::Error,
                                                       "S8",
@@ -1663,6 +1650,7 @@ void validate_s14(const Score& score, std::vector<Diagnostic>& out) {
     for (const auto& part : score.parts) {
         for (const auto& m : part.measures) {
             for (const auto& v : m.voices) {
+                const auto tuplet_contexts = collect_tuplet_contexts(v);
                 std::map<std::uint64_t, std::size_t> voice_event_indices;
                 std::map<std::uint64_t, std::size_t> measured_event_indices;
                 std::size_t measured_index = 0;
@@ -1762,11 +1750,20 @@ void validate_s14(const Score& score, std::vector<Diagnostic>& out) {
                         previous_event_index = voice_it->second;
                         previous_measured_index = measured_it->second;
 
-                        Beat written_duration = event.duration();
+                        Result<Beat> written_duration = event.duration();
+                        if (const auto* context = event_tuplet_context(event)) {
+                            const auto chain = tuplet_context_chain(context, tuplet_contexts);
+                            if (!chain) {
+                                written_duration = std::unexpected(chain.error());
+                            } else {
+                                const auto ratio = cumulative_tuplet_written_ratio(*chain);
+                                written_duration =
+                                    ratio ? checked_mul(event.duration(), *ratio)
+                                          : Result<Beat>{std::unexpected(ratio.error())};
+                            }
+                        }
                         bool contains_grace = false;
                         if (const auto* group = event.as_note_group()) {
-                            if (group->tuplet_context)
-                                written_duration = group->tuplet_context->normal_type;
                             contains_grace =
                                 std::ranges::any_of(group->notes, [](const Note& note) {
                                     return note.grace.has_value();
@@ -1780,12 +1777,17 @@ void validate_s14(const Score& score, std::vector<Diagnostic>& out) {
                                     ScoreTime{m.bar_number, event.offset},
                                     part.id));
                             }
-                        } else if (const auto* rest = event.as_rest();
-                                   rest && rest->tuplet_context) {
-                            written_duration = rest->tuplet_context->normal_type;
                         }
-                        if (written_duration <= Beat::zero() || written_duration >= Beat{1, 4} ||
-                            contains_grace) {
+                        if (!written_duration) {
+                            out.push_back(make_diagnostic(
+                                ValidationSeverity::Error,
+                                "S14",
+                                "BeamGroup member written duration cannot be resolved exactly",
+                                written_duration.error(),
+                                ScoreTime{m.bar_number, event.offset},
+                                part.id));
+                        } else if (*written_duration <= Beat::zero() ||
+                                   *written_duration >= Beat{1, 4} || contains_grace) {
                             out.push_back(make_diagnostic(
                                 ValidationSeverity::Error,
                                 "S14",

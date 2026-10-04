@@ -69,13 +69,18 @@ class _McpClient:
         self,
         binary: Path | None,
         port: int,
-        host: str = "127.0.0.1",
+        host: str | None = "127.0.0.1",
         command: list[str] | None = None,
     ) -> None:
         # ``command`` replaces the binary, e.g. ``docker run -i --rm -e
         # SUNNY_ABLETON_HOST -e SUNNY_TCP_PORT sunny-mcp``; the host and port
         # still travel in the environment.
-        environment = dict(os.environ, SUNNY_ABLETON_HOST=host, SUNNY_TCP_PORT=str(port))
+        environment = dict(os.environ)
+        if host is None:
+            environment.pop("SUNNY_ABLETON_HOST", None)
+            environment.pop("SUNNY_TCP_PORT", None)
+        else:
+            environment.update(SUNNY_ABLETON_HOST=host, SUNNY_TCP_PORT=str(port))
         self._process = subprocess.Popen(
             command or [str(binary)],
             stdin=subprocess.PIPE,
@@ -134,10 +139,12 @@ def bridge(request, monkeypatch):
     command = os.environ.get("SUNNY_MCP_COMMAND")
     binary = None if command else _sunny_mcp_binary()
     # Tests may request another Live version with indirect parametrisation.
-    live = LiveSet(getattr(request, "param", (12, 3, 5))).install(monkeypatch)
+    live = LiveSet(getattr(request, "param", (12, 4, 0))).install(monkeypatch)
+    bind_host = os.environ.get("SUNNY_TEST_BRIDGE_BIND_HOST", "127.0.0.1")
+    client_host = os.environ.get("SUNNY_TEST_BRIDGE_HOST", "127.0.0.1")
     # Port 0 asks the OS for an ephemeral port; the surface's own parser
     # accepts only 1..65535, so the configuration is supplied directly.
-    monkeypatch.setattr(surface_module, "_server_configuration", lambda: ("127.0.0.1", 0))
+    monkeypatch.setattr(surface_module, "_server_configuration", lambda: (bind_host, 0))
     main_thread = _LiveMainThread()
     surface = SunnyControlSurface(object())
     surface.schedule_message = main_thread.schedule_message
@@ -150,6 +157,7 @@ def bridge(request, monkeypatch):
         client = _McpClient(
             binary,
             surface._server.bound_port,
+            host=client_host,
             command=shlex.split(command) if command else None,
         )
         yield live, client
@@ -202,6 +210,7 @@ def _event_id(client: _McpClient, score_id: int, part_index: int, bar: int, offs
     raise AssertionError(f"no note at bar {bar} offset {offset}")
 
 
+@pytest.mark.parametrize("bridge", [(12, 3, 5), (12, 4, 0)], indirect=True)
 def test_score_compiles_to_exact_live_notes_with_a_tie_and_a_triplet(bridge):
     """A two-bar 4/4 score reaches Live as exactly the hand-derived notes."""
     live, client = bridge
@@ -436,7 +445,7 @@ def test_progression_clip_and_session_state_reach_live(bridge):
     assert state["track_count"] == 1
     assert state["return_track_count"] == 1
     assert state["tempo"] == 120.0
-    assert state["target_profile"]["live"]["version"]["string"] == "12.3.5"
+    assert state["target_profile"]["live"]["version"]["string"] == "12.4.0"
 
 
 @pytest.mark.parametrize("bridge", [(11, 0, 0), (11, 3, 0)], indirect=True)

@@ -354,7 +354,7 @@ TEST_CASE("schema eight preserves typed chord numeral and degree algebra",
     score.parts[0].measures[0].voices[0].events.push_back(Event{EventId{1002}, Beat{1, 2}, chord});
 
     auto encoded = score_to_json(score);
-    REQUIRE(encoded["schema_version"] == 8);
+    REQUIRE(encoded["schema_version"] == SCORE_IR_SCHEMA_VERSION);
     const auto& event = encoded["parts"][0]["measures"][0]["voices"][0]["events"][1];
     CHECK(event["numeral"] ==
           nlohmann::json{{"root", 5}, {"alteration", 0}, {"key", {{"fifths", 0}, {"mode", 0}}}});
@@ -1081,4 +1081,65 @@ TEST_CASE("out-of-range PitchClass root rejects", "[score-ir][serialisation][tru
     j["harmonic_annotations"][0]["chord"]["root"] = 15;
     auto result = score_from_json(j);
     CHECK_FALSE(result.has_value());
+}
+
+TEST_CASE("schema nine persists every typed identity reservation canonically",
+          "[score-ir][serialisation][identity][reservation]") {
+    auto score = make_serialisation_score();
+    score.identity_reservations.events.insert(EventId{17});
+    score.identity_reservations.parts.insert(PartId{17});
+    score.identity_reservations.sections.insert(SectionId{17});
+    score.identity_reservations.tuplets.insert(TupletId{17});
+    score.identity_reservations.beams.insert(BeamGroupId{17});
+    const auto expected = collect_score_identities(score);
+    auto encoded = score_to_json(score);
+    REQUIRE(encoded["schema_version"] == 9);
+    REQUIRE(encoded["identity_reservations"]["sections"] == nlohmann::json::array({17, 200}));
+    auto restored = score_from_json(encoded);
+    REQUIRE(restored);
+    REQUIRE(restored->identity_reservations == expected);
+    REQUIRE(score_to_json(*restored) == encoded);
+}
+
+TEST_CASE("schema nine rejects malformed reservations and omitted live identities",
+          "[score-ir][serialisation][identity][reservation]") {
+    const auto encoded = score_to_json(make_serialisation_score());
+    const auto reject = [&](nlohmann::json malformed) {
+        auto loaded = score_from_json(malformed);
+        REQUIRE_FALSE(loaded);
+        REQUIRE(loaded.error() == ErrorCode::FormatError);
+    };
+    auto malformed = encoded;
+    malformed.erase("identity_reservations");
+    reject(malformed);
+    malformed = encoded;
+    malformed["identity_reservations"].erase("tuplets");
+    reject(malformed);
+    for (auto array : {nlohmann::json::array({-1}),
+                       nlohmann::json::array({1.5}),
+                       nlohmann::json::array({"1"}),
+                       nlohmann::json::array({1, 1}),
+                       nlohmann::json::array({2, 1}),
+                       nlohmann::json("1")}) {
+        malformed = encoded;
+        malformed["identity_reservations"]["tuplets"] = std::move(array);
+        reject(malformed);
+    }
+    malformed = encoded;
+    malformed["identity_reservations"]["events"] = nlohmann::json::array();
+    reject(malformed);
+}
+
+TEST_CASE("legacy identity migration records represented IDs and preserves positive holes",
+          "[score-ir][serialisation][identity][reservation]") {
+    auto score = make_serialisation_score();
+    auto encoded = score_to_json(score);
+    const auto live = collect_score_identities(score);
+    for (int schema : {1, 4, 7, 8}) {
+        encoded["schema_version"] = schema;
+        encoded.erase("identity_reservations");
+        auto migrated = score_from_json(encoded);
+        REQUIRE(migrated);
+        REQUIRE(migrated->identity_reservations == live);
+    }
 }

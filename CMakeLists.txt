@@ -57,6 +57,12 @@ foreach(
     endif()
 endforeach()
 set(_sunny_generated_include_dir "${PROJECT_BINARY_DIR}/generated/include")
+include(cmake/BridgeBundle.cmake)
+sunny_prepare_bridge_bundle(
+    "${PROJECT_SOURCE_DIR}/remote_script/Sunny"
+    "${PROJECT_BINARY_DIR}/remote_script/Sunny"
+    SUNNY_BRIDGE_SOURCE_SHA256_VALUE
+)
 file(MAKE_DIRECTORY "${_sunny_generated_include_dir}/sunny/infrastructure/ableton")
 configure_file(
     cmake/version.hpp.in
@@ -138,6 +144,7 @@ target_sources(
         src/core/score/views.cpp
         src/core/score/workflows.cpp
         src/core/timbre/serialization.cpp
+        src/core/timbre/live_capabilities.cpp
         src/core/timbre/validation.cpp
         src/core/timbre/workflows.cpp
         src/core/transform/k_net.cpp
@@ -221,6 +228,7 @@ target_sources(
         src/infrastructure/ableton/dispatcher.cpp
         src/infrastructure/ableton/deployment.cpp
         src/infrastructure/ableton/lom_protocol.cpp
+        src/infrastructure/ableton/managed_realization.cpp
         src/infrastructure/ableton/target_snapshot.cpp
         src/infrastructure/ableton/target_profile.cpp
         src/infrastructure/ableton/transport.cpp
@@ -242,8 +250,13 @@ target_sources(
         src/infrastructure/mcp/corpus_tools.cpp
         src/infrastructure/mcp/mix_tools.cpp
         src/infrastructure/mcp/project_tools.cpp
+        src/infrastructure/mcp/project_session.cpp
+        src/infrastructure/mcp/project_timeline.cpp
+        src/infrastructure/mcp/workspace_state.cpp
+        src/infrastructure/mcp/workspace_tools.cpp
         src/infrastructure/mcp/evidence_encoding.cpp
         src/infrastructure/mcp/score_tools.cpp
+        src/infrastructure/mcp/score_notation_tools.cpp
         src/infrastructure/mcp/server.cpp
         src/infrastructure/mcp/timbre_tools.cpp
         src/infrastructure/orchestrator.cpp

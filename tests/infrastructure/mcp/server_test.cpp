@@ -27,6 +27,7 @@
 #include <sunny/core/detail/serialization_integer.hpp>
 #include <sunny/core/harmony/roman_numeral.hpp>
 #include <sunny/core/scale/definitions.hpp>
+#include <sunny/core/score/serialization.hpp>
 #include <sunny/infrastructure/mcp/core_tools.hpp>
 #include <sunny/infrastructure/mcp/corpus_tools.hpp>
 #include <sunny/infrastructure/mcp/mix_tools.hpp>
@@ -149,27 +150,28 @@ TEST_CASE("Score MCP identity exhaustion never wraps or overwrites",
           "[mcp][score][identity][atomicity]") {
     McpServer server;
     auto session = std::make_shared<ScoreSession>();
-    session->next_score_id = std::numeric_limits<std::uint64_t>::max();
+    const auto last_identity = std::numeric_limits<std::uint64_t>::max() - 1;
+    session->next_score_id = last_identity;
     register_score_tools(server, session);
     const json create_params = {{"title", "Last identity"},
                                 {"total_bars", 1},
                                 {"parts", {{{"name", "Piano"}, {"instrument_type", 0}}}}};
 
     const auto last = call_tool(server, "score_create", create_params, 3010);
-    REQUIRE(last["score_id"] == std::numeric_limits<std::uint64_t>::max());
+    REQUIRE(last["score_id"] == last_identity);
     REQUIRE(session->scores.size() == 1);
-    REQUIRE(session->find(std::numeric_limits<std::uint64_t>::max()) != nullptr);
-    CHECK(session->find(std::numeric_limits<std::uint64_t>::max())->id ==
-          sunny::core::ScoreId{std::numeric_limits<std::uint64_t>::max()});
+    REQUIRE(session->find(last_identity) != nullptr);
+    CHECK(session->find(last_identity)->id == sunny::core::ScoreId{last_identity});
 
     const auto rejected_create = call_tool(server, "score_create", create_params, 3011);
-    CHECK(rejected_create["error"] == "score identity domain exhausted");
+    CHECK(rejected_create["error"] == "score identity allocation rejected");
+    CHECK(rejected_create["error_code"] ==
+          static_cast<int>(sunny::core::ErrorCode::ArithmeticOverflow));
     const auto rejected_reduction =
-        call_tool(server,
-                  "score_get_reduction",
-                  {{"score_id", std::numeric_limits<std::uint64_t>::max()}},
-                  3012);
-    CHECK(rejected_reduction["error"] == "score identity domain exhausted");
+        call_tool(server, "score_get_reduction", {{"score_id", last_identity}}, 3012);
+    CHECK(rejected_reduction["error"] == "score identity allocation rejected");
+    CHECK(rejected_reduction["error_code"] ==
+          static_cast<int>(sunny::core::ErrorCode::ArithmeticOverflow));
     CHECK(session->scores.size() == 1);
     CHECK(session->next_score_id == std::numeric_limits<std::uint64_t>::max());
 }
@@ -226,7 +228,7 @@ TEST_CASE("Score MCP authors one complete tuning atomically and exposes target r
     REQUIRE(changed["ok"] == true);
     const auto stored =
         call_tool(server, "score_get_json", {{"score_id", created["score_id"]}}, 3022);
-    CHECK(stored["schema_version"] == 8);
+    CHECK(stored["schema_version"] == sunny::core::SCORE_IR_SCHEMA_VERSION);
     CHECK(stored["tuning"]["name"] == "MCP custom");
     CHECK(stored["tuning"]["cents_from_reference"][60] == -901.25);
 
@@ -738,7 +740,7 @@ TEST_CASE("all public tools advertise object-shaped JSON Schemas", "[mcp][tools]
     auto response =
         server.process_request({{"jsonrpc", "2.0"}, {"method", "tools/list"}, {"id", 30}});
     const auto& tools = response["result"]["tools"];
-    REQUIRE(tools.size() == 129);
+    REQUIRE(tools.size() == 158);
     for (const auto& tool : tools) {
         CAPTURE(tool["name"]);
         const auto& schema = tool["inputSchema"];
@@ -1614,7 +1616,7 @@ TEST_CASE("Score MCP authors typed harmony and exports structured MusicXML",
 
     const auto authored =
         call_tool(server, "score_get_json", {{"score_id", created["score_id"]}}, 507);
-    REQUIRE(authored["schema_version"] == 8);
+    REQUIRE(authored["schema_version"] == sunny::core::SCORE_IR_SCHEMA_VERSION);
     const auto& event = authored["parts"][0]["measures"][0]["voices"][0]["events"][1];
     CHECK(event["numeral"]["root"] == 5);
     CHECK(event["inversion"] == 1);
@@ -2616,8 +2618,11 @@ TEST_CASE("Project MCP plan/apply is read-only until one guarded one-shot applic
              {"mapping_provenance", "guarded plan fixture"}}}},
           {"aux_returns", json::array()}}}};
 
+    session.deployment->next_plan_id = std::numeric_limits<std::uint64_t>::max() - 1;
     const auto plan = call_tool(server, "project_plan_to_ableton", project_ids, 573);
     REQUIRE(plan["success"] == true);
+    CHECK(plan["plan_id"] == std::numeric_limits<std::uint64_t>::max() - 1);
+    CHECK(session.deployment->next_plan_id == std::numeric_limits<std::uint64_t>::max());
     CHECK(plan["one_shot"] == true);
     CHECK_FALSE(plan["planned_mutations"].empty());
     CHECK(plan["output_routing_bindings"] == project_ids["output_routing_bindings"]);

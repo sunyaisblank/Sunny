@@ -791,6 +791,73 @@ TEST_CASE("tuplet rests retain their written duration", "[lilypond][compiler][tu
     CHECK(rest < result->ly.find("}", tuplet));
 }
 
+TEST_CASE("Mixed-duration tuplet spacers preserve the exact sounding allocation",
+          "[lilypond][compiler][tuplet][rest][regression]") {
+    auto score = make_test_score(1);
+    auto& events = score.parts[0].measures[0].voices[0].events;
+    events.clear();
+    const TupletContext context{TupletId{3}, 3, 2, Beat{1, 8}, std::nullopt};
+    NoteGroup note;
+    note.notes.push_back(Note{SpelledPitch{0, 0, 4}, VelocityValue{{}, 80}});
+    note.duration = Beat{1, 12};
+    note.tuplet_context = context;
+    events.push_back(Event{EventId{8092001}, Beat::zero(), RestEvent{Beat{1, 6}, false, context}});
+    events.push_back(Event{EventId{8092002}, Beat{1, 6}, note});
+    events.push_back(Event{EventId{8092003}, Beat{1, 4}, RestEvent{Beat{3, 4}, true}});
+    const auto result = compile_score_to_lilypond(score);
+    REQUIRE(result);
+    // 1/6 sounding × 3/2 = a quarter spacer; normal_type is only the eighth unit.
+    CHECK(result->ly.find("\\tuplet 3/2 { s4 c'8 }") != std::string::npos);
+}
+
+TEST_CASE("Tuplet residual multipliers preserve mixed durations below the glyph limit",
+          "[lilypond][compiler][tuplet][regression]") {
+    auto score = make_test_score(1);
+    auto& events = score.parts[0].measures[0].voices[0].events;
+    events.clear();
+    const TupletContext context{TupletId{3}, 3, 2, Beat{1, 8}, std::nullopt};
+    NoteGroup note;
+    note.notes.push_back(Note{SpelledPitch{0, 0, 4}, VelocityValue{DynamicLevel::mf, 80}});
+    note.duration = Beat{1, 3072};
+    note.tuplet_context = context;
+    events.push_back(Event{EventId{8093001}, Beat::zero(), note});
+    events.push_back(
+        Event{EventId{8093002}, Beat{1, 3072}, RestEvent{Beat{767, 3072}, false, context}});
+    events.push_back(Event{EventId{8093003}, Beat{1, 4}, RestEvent{Beat{3, 4}, true}});
+    const auto result = compile_score_to_lilypond(score);
+    REQUIRE(result);
+    INFO(result->ly);
+    CHECK(result->ly.find("c'1*1/2048") != std::string::npos);
+    CHECK(result->ly.find("s1*767/2048") != std::string::npos);
+    CHECK(result->report.has_residuals());
+    REQUIRE(result->report.diagnostics.size() == 1);
+    CHECK(result->report.diagnostics[0].message.find("no written note value") != std::string::npos);
+}
+
+TEST_CASE("LilyPond tuplet glyphs include the documented 256th and 1024th values",
+          "[lilypond][compiler][tuplet][regression]") {
+    for (const auto denominator : {256, 1024}) {
+        auto score = make_test_score(1);
+        auto& events = score.parts[0].measures[0].voices[0].events;
+        events.clear();
+        const TupletContext context{TupletId{3}, 3, 2, Beat{1, 8}, std::nullopt};
+        NoteGroup note;
+        note.notes.push_back(Note{SpelledPitch{0, 0, 4}, VelocityValue{DynamicLevel::mf, 80}});
+        note.duration = Beat{2, 3 * denominator};
+        note.tuplet_context = context;
+        events.push_back(Event{EventId{8094001}, Beat::zero(), note});
+        events.push_back(Event{EventId{8094002},
+                               note.duration,
+                               RestEvent{Beat{1, 4} - note.duration, false, context}});
+        events.push_back(Event{EventId{8094003}, Beat{1, 4}, RestEvent{Beat{3, 4}, true}});
+        const auto result = compile_score_to_lilypond(score);
+        REQUIRE(result);
+        INFO(result->ly);
+        CHECK(result->ly.find("c'" + std::to_string(denominator)) != std::string::npos);
+        CHECK_FALSE(result->report.has_residuals());
+    }
+}
+
 TEST_CASE("chord noteheads ties and articulations remain per-note", "[lilypond][compiler][chord]") {
     auto score = make_test_score(1);
     auto& voice = score.parts[0].measures[0].voices[0];

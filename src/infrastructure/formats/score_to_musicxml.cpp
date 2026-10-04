@@ -1348,8 +1348,8 @@ EventTupletProjection project_event_tuplets(const sunny::core::Voice& voice,
     for (std::size_t i = next_common; i < projection.chain.size(); ++i)
         projection.stops.push_back(TupletBoundary{projection.chain[i], static_cast<int>(i + 1)});
 
-    if (const auto ratio = sunny::core::cumulative_tuplet_written_ratio(projection.chain))
-        projection.cumulative_ratio = *ratio;
+    projection.cumulative_ratio =
+        sunny::core::cumulative_tuplet_written_ratio(projection.chain).value();
     return projection;
 }
 
@@ -1368,7 +1368,7 @@ void emit_tuplet_time_modification(pugi::xml_node note,
     tm.append_child("normal-notes")
         .text()
         .set(static_cast<long long>(projection.cumulative_ratio.denominator() * inferred_normal));
-    if (projection.chain.size() > 1) {
+    if (!projection.chain.empty()) {
         const auto outer_type = projection.chain.front()->normal_type;
         if (const auto graphic = musicxml_graphic_duration(outer_type)) {
             tm.append_child("normal-type").text().set(graphic->type.data());
@@ -1546,6 +1546,8 @@ compile_score_to_musicxml(const sunny::core::Score& score) {
     if (!sunny::core::is_compilable(score)) {
         return std::unexpected(sunny::core::ErrorCode::InvariantViolation);
     }
+    if (auto valid = sunny::core::validate_tuplet_written_durations(score); !valid)
+        return std::unexpected(valid.error());
 
     sunny::core::CompilationReport report;
     report.tuning_definitions_requested = 1;
@@ -1964,8 +1966,9 @@ compile_score_to_musicxml(const sunny::core::Score& score) {
                                         n, written->pieces[piece].value, voice_number, cue_size);
                                 } else {
                                     const auto written_type_duration =
-                                        tuplets.chain.empty() ? ng->duration
-                                                              : tuplets.chain.back()->normal_type;
+                                        sunny::core::checked_mul(ng->duration,
+                                                                 tuplets.cumulative_ratio)
+                                            .value();
                                     graphic_duration_emitted = emit_note_voice_type_and_dot(
                                         n, written_type_duration, voice_number, cue_size);
                                 }

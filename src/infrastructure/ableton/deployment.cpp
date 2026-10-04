@@ -19,6 +19,10 @@ bool is_read_only_request(const LomRequest& request) {
            request.property_or_method == "sunny_get_target_profile" ||
            request.property_or_method == "sunny_get_target_snapshot" ||
            request.property_or_method == "sunny_get_device_parameter" ||
+           request.property_or_method == "sunny_get_step_envelope" ||
+           request.property_or_method == "sunny_managed_context" ||
+           request.property_or_method == "sunny_managed_operation" ||
+           request.property_or_method == "sunny_managed_observe" ||
            request.property_or_method == "sunny_get_device_count";
 }
 

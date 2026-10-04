@@ -37,6 +37,7 @@ struct AbletonTargetProfile {
     std::string adapter_name = "Sunny Remote Script";
     std::string adapter_runtime = "control_surface_python";
     std::string adapter_contract = "version_coupled_private";
+    std::string adapter_source_sha256 = SUNNY_BRIDGE_SOURCE_SHA256;
 
     CapabilityState clip_note_insertion = CapabilityState::Unknown;
     CapabilityState native_device_insertion = CapabilityState::Unknown;

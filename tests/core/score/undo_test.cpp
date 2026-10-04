@@ -154,7 +154,7 @@ TEST_CASE("modify_pitch with undo restores original pitch", "[score-ir][undo]") 
     REQUIRE(undo_result.has_value());
 
     // Verify pitch restored
-    updated = voice.events[0].as_note_group();
+    updated = score.parts[0].measures[0].voices[0].events[0].as_note_group();
     REQUIRE(updated != nullptr);
     CHECK(updated->notes[0].pitch == original_pitch);
     CHECK_FALSE(stack.can_undo());
@@ -212,7 +212,7 @@ TEST_CASE("insert_note with undo removes the inserted event", "[score-ir][undo]"
     // After undo, the voice should revert (event count may change)
     // The inserted note should be gone; verify no note group remains at offset 3/4
     bool has_note_at_34 = false;
-    for (const auto& ev : voice.events) {
+    for (const auto& ev : score.parts[0].measures[0].voices[0].events) {
         if (ev.is_note_group() && ev.offset == Beat{3, 4}) {
             has_note_at_34 = true;
         }
@@ -289,7 +289,7 @@ TEST_CASE("transpose_region with undo restores original pitches", "[score-ir][un
     REQUIRE(undo_result.has_value());
 
     // Should be back to C4
-    updated = voice.events[0].as_note_group();
+    updated = score.parts[0].measures[0].voices[0].events[0].as_note_group();
     REQUIRE(updated != nullptr);
     CHECK(updated->notes[0].pitch.letter == 0); // C
     CHECK(updated->notes[0].pitch.octave == 4);
@@ -366,12 +366,14 @@ TEST_CASE("redo after undo restores post-mutation pitch", "[score-ir][undo]") {
     // Undo back to C4
     auto ur = undo(score, stack);
     REQUIRE(ur.has_value());
-    CHECK(voice.events[0].as_note_group()->notes[0].pitch == original_pitch);
+    CHECK(score.parts[0].measures[0].voices[0].events[0].as_note_group()->notes[0].pitch ==
+          original_pitch);
 
     // Redo back to D4
     auto rr = redo(score, stack);
     REQUIRE(rr.has_value());
-    CHECK(voice.events[0].as_note_group()->notes[0].pitch == new_pitch);
+    CHECK(score.parts[0].measures[0].voices[0].events[0].as_note_group()->notes[0].pitch ==
+          new_pitch);
 }
 
 // =============================================================================
@@ -401,7 +403,7 @@ TEST_CASE("set_dynamic undo restores original dynamic", "[score-ir][undo]") {
     auto ur = undo(score, stack);
     REQUIRE(ur.has_value());
 
-    updated = voice.events[0].as_note_group();
+    updated = score.parts[0].measures[0].voices[0].events[0].as_note_group();
     REQUIRE(updated != nullptr);
     CHECK(updated->notes[0].dynamic == DynamicLevel::mf);
 }
@@ -872,7 +874,7 @@ TEST_CASE("group of 3 mutations undoes as one", "[score-ir][undo][group]") {
     auto ur = undo(score, stack);
     REQUIRE(ur.has_value());
 
-    auto* restored = voice.events[0].as_note_group();
+    auto* restored = score.parts[0].measures[0].voices[0].events[0].as_note_group();
     REQUIRE(restored != nullptr);
     CHECK(restored->notes[0].pitch == p0);
     CHECK(restored->notes[1].pitch == p1);
@@ -906,7 +908,7 @@ TEST_CASE("group of 3 mutations redoes as one", "[score-ir][undo][group]") {
     auto rr = redo(score, stack);
     REQUIRE(rr.has_value());
 
-    auto* restored = voice.events[0].as_note_group();
+    auto* restored = score.parts[0].measures[0].voices[0].events[0].as_note_group();
     REQUIRE(restored != nullptr);
     CHECK(restored->notes[0].pitch == q0);
     CHECK(restored->notes[1].pitch == q1);
@@ -936,7 +938,7 @@ TEST_CASE("nested groups collapse into single undo entry", "[score-ir][undo][gro
     auto ur = undo(score, stack);
     REQUIRE(ur.has_value());
 
-    auto* restored = voice.events[0].as_note_group();
+    auto* restored = score.parts[0].measures[0].voices[0].events[0].as_note_group();
     REQUIRE(restored != nullptr);
     CHECK(restored->notes[0].pitch == SpelledPitch{0, 0, 4});
 }
@@ -1130,10 +1132,10 @@ TEST_CASE("undo-redo-undo cycle does not accumulate events", "[score-ir][undo][a
     REQUIRE(ur2.has_value());
 
     // Event count should match original — no accumulation
-    CHECK(voice.events.size() == original_count);
+    CHECK(score.parts[0].measures[0].voices[0].events.size() == original_count);
 
     // Pitch should be restored to original
-    auto* restored = voice.events[0].as_note_group();
+    auto* restored = score.parts[0].measures[0].voices[0].events[0].as_note_group();
     REQUIRE(restored != nullptr);
     CHECK(restored->notes[0].pitch == original_pitch);
 }

@@ -9,10 +9,175 @@
 
 #include <catch2/catch_test_macros.hpp>
 #include <limits>
+#include <sunny/infrastructure/ableton/deployment.hpp>
 #include <sunny/infrastructure/ableton/lom_protocol.hpp>
 #include <sunny/infrastructure/ableton/target_profile.hpp>
 
 using namespace sunny::infrastructure;
+
+TEST_CASE("Session Step envelope RPC admits a closed finite internal-domain shape",
+          "[lom][protocol][automation]") {
+    using nlohmann::json;
+    const auto path = LomPaths::clip(0, 0);
+    const json parameter = {{"kind", "device"}, {"device_index", 0}, {"parameter_name", "Dry/Wet"}};
+    const json author = {{"parameter", parameter},
+                         {"interpolation", "step"},
+                         {"clip_end", 4.0},
+                         {"points",
+                          json::array({{{"time", 0.0}, {"value", 0.25}},
+                                       {{"time", 1.0}, {"value", 0.8}},
+                                       {{"time", 2.5}, {"value", 0.15}}})}};
+    const json query = {{"parameter", parameter}, {"sample_times", {0.0, 0.999, 1.0, 3.999}}};
+    CHECK(LomProtocol::validate_request(
+        LomProtocol::call_method(path, "sunny_author_step_envelope", {author})));
+    CHECK(LomProtocol::validate_request(
+        LomProtocol::call_method(path, "sunny_get_step_envelope", {query})));
+    for (const auto& selector : {json{{"kind", "volume"}},
+                                 json{{"kind", "panning"}},
+                                 json{{"kind", "send"}, {"send_index", 0}}}) {
+        auto mixer_author = author;
+        mixer_author["parameter"] = selector;
+        CHECK(LomProtocol::validate_request(
+            LomProtocol::call_method(path, "sunny_author_step_envelope", {mixer_author})));
+    }
+
+    SECTION("selectors are relative, unambiguous and exact") {
+        const std::vector<json> selectors = {
+            {{"kind", "volume"}, {"path", "song/tracks/1"}},
+            {{"kind", "send"}, {"send_index", true}},
+            {{"kind", "send"}, {"send_index", -1}},
+            {{"kind", "device"}, {"device_index", 0.0}, {"parameter_name", "Dry/Wet"}},
+            {{"kind", "device"}, {"device_index", 2147483648ULL}, {"parameter_name", "Dry/Wet"}},
+            {{"kind", "device"}, {"device_index", 0}, {"parameter_name", ""}},
+            {{"kind", "device"},
+             {"device_index", 0},
+             {"parameter_name", "Dry/Wet"},
+             {"unit", "dB"}},
+            {{"kind", "unknown"}}};
+        for (const auto& selector : selectors) {
+            auto invalid_author = author;
+            invalid_author["parameter"] = selector;
+            auto invalid_query = query;
+            invalid_query["parameter"] = selector;
+            CHECK_FALSE(LomProtocol::validate_request(
+                LomProtocol::call_method(path, "sunny_author_step_envelope", {invalid_author})));
+            CHECK_FALSE(LomProtocol::validate_request(
+                LomProtocol::call_method(path, "sunny_get_step_envelope", {invalid_query})));
+        }
+        CHECK_FALSE(LomProtocol::validate_request(
+            LomProtocol::call_method(LomPaths::track(0), "sunny_author_step_envelope", {author})));
+        CHECK_FALSE(LomProtocol::validate_request(
+            LomProtocol::call_method(LomPath::parse("song/tracks/0/arrangement_clips/0"),
+                                     "sunny_author_step_envelope",
+                                     {author})));
+        CHECK_FALSE(LomProtocol::validate_request(
+            LomProtocol::call_method(path, "sunny_author_step_envelope", {author, false})));
+        CHECK_FALSE(LomProtocol::validate_request(
+            LomProtocol::call_method(path, "sunny_get_step_envelope")));
+    }
+    SECTION("lane intent is finite, Step, ordered and spans from zero") {
+        std::vector<json> invalid;
+        auto changed = author;
+        changed["interpolation"] = "linear";
+        invalid.push_back(changed);
+        changed = author;
+        changed["clip_end"] = true;
+        invalid.push_back(changed);
+        changed = author;
+        changed["clip_end"] = std::numeric_limits<double>::infinity();
+        invalid.push_back(changed);
+        changed = author;
+        changed["clip_end"] = 0.0;
+        invalid.push_back(changed);
+        changed = author;
+        changed["foreign_clip"] = "song/tracks/1/clip_slots/0/clip";
+        invalid.push_back(changed);
+        for (const auto& points :
+             {json::array(),
+              json::array({{{"time", 0.1}, {"value", 0.2}}}),
+              json::array({{{"time", 0.0}, {"value", true}}}),
+              json::array({{{"time", 0.0}, {"value", std::numeric_limits<double>::quiet_NaN()}}}),
+              json::array({{{"time", 0.0}, {"value", 0.2}, {"curve", "linear"}}}),
+              json::array({{{"time", 0.0}, {"value", 0.2}}, {{"time", 4.0}, {"value", 0.3}}}),
+              json::array({{{"time", 0.0}, {"value", 0.2}}, {{"time", 0.0}, {"value", 0.3}}}),
+              json::array({{{"time", 0ULL}, {"value", 0.2}},
+                           {{"time", 9007199254740992ULL}, {"value", 0.3}},
+                           {{"time", 9007199254740993ULL}, {"value", 0.4}}})}) {
+            changed = author;
+            changed["clip_end"] = points.size() == 3 ? 18014398509481984.0 : 4.0;
+            changed["points"] = points;
+            invalid.push_back(changed);
+        }
+        for (const auto& value : invalid)
+            CHECK_FALSE(LomProtocol::validate_request(
+                LomProtocol::call_method(path, "sunny_author_step_envelope", {value})));
+    }
+    SECTION("queries are finite ordered distinct sample controls") {
+        for (const auto& times : {json::array(),
+                                  json::array({-0.1}),
+                                  json::array({true}),
+                                  json::array({std::numeric_limits<double>::infinity()}),
+                                  json::array({std::numeric_limits<double>::quiet_NaN()}),
+                                  json::array({0.5, 0.5}),
+                                  json::array({1.5, 0.5}),
+                                  json::array({9007199254740992ULL, 9007199254740993ULL})}) {
+            auto changed = query;
+            changed["sample_times"] = times;
+            CHECK_FALSE(LomProtocol::validate_request(
+                LomProtocol::call_method(path, "sunny_get_step_envelope", {changed})));
+        }
+        auto changed = query;
+        changed["points"] = author["points"];
+        CHECK_FALSE(LomProtocol::validate_request(
+            LomProtocol::call_method(path, "sunny_get_step_envelope", {changed})));
+    }
+}
+
+TEST_CASE("envelope readback is read only and uncertain author calls are journalled once",
+          "[lom][protocol][automation][journal]") {
+    using nlohmann::json;
+    const json author = {{"parameter", {{"kind", "volume"}}},
+                         {"interpolation", "step"},
+                         {"clip_end", 4.0},
+                         {"points", json::array({{{"time", 0.0}, {"value", 0.5}}})}};
+    const json query = {{"parameter", {{"kind", "volume"}}}, {"sample_times", {0.5, 3.5}}};
+    const auto read =
+        LomProtocol::call_method(LomPaths::clip(0, 0), "sunny_get_step_envelope", {query});
+    const auto write =
+        LomProtocol::call_method(LomPaths::clip(0, 0), "sunny_author_step_envelope", {author});
+    CommandBuffer target;
+    JournaledLomTransport guarded{target, std::nullopt, {}, true};
+    CHECK(guarded.send(read).success);
+    CHECK(guarded.journal().empty());
+    CHECK_FALSE(guarded.plan_diverged());
+    CHECK_FALSE(guarded.send(write).success);
+    REQUIRE(guarded.journal().size() == 1);
+    CHECK(guarded.journal().front().outcome == AbletonMutationOutcome::DeclinedBeforeSend);
+    REQUIRE(target.entries().size() == 1);
+    CHECK(target.entries().front().request.property_or_method == "sunny_get_step_envelope");
+
+    class UncertainTransport final : public LomTransport {
+      public:
+        std::size_t sends = 0;
+        LomResponse send(const LomRequest&) override {
+            ++sends;
+            return {false,
+                    std::nullopt,
+                    std::string{"timeout after send"},
+                    LomDeliveryState::SentWithoutValidResponse};
+        }
+        LomResponse send_notes(const LomPath&, const std::vector<LomNoteData>&) override {
+            return {false, std::nullopt, std::string{"unused"}, LomDeliveryState::NotSent};
+        }
+        bool is_connected() const override { return true; }
+    } uncertain;
+    JournaledLomTransport journaled{uncertain};
+    CHECK_FALSE(journaled.send(write).success);
+    CHECK(uncertain.sends == 1);
+    REQUIRE(journaled.journal().size() == 1);
+    CHECK(journaled.journal().front().outcome == AbletonMutationOutcome::Indeterminate);
+    CHECK(journaled.journal().front().target_may_have_mutated());
+}
 
 // =============================================================================
 // LomPath Tests

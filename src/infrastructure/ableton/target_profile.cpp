@@ -104,6 +104,7 @@ Result<void> validate_target_profile(const AbletonTargetProfile& profile) {
         profile.adapter_name != "Sunny Remote Script" ||
         profile.adapter_runtime != "control_surface_python" ||
         profile.adapter_contract != "version_coupled_private" ||
+        profile.adapter_source_sha256 != SUNNY_BRIDGE_SOURCE_SHA256 ||
         profile.clip_note_insertion != expected.clip_note_insertion ||
         profile.native_device_insertion != expected.native_device_insertion ||
         profile.automation_envelope_authoring != CapabilityState::Unavailable ||
@@ -131,9 +132,10 @@ Result<AbletonTargetProfile> target_profile_from_json(const nlohmann::json& valu
         const auto& adapter = value.at("adapter");
         const auto& live = value.at("live");
         const auto& capabilities = value.at("capabilities");
-        if (!exact_fields(adapter, {"name", "runtime", "contract"}) ||
+        if (!exact_fields(adapter, {"name", "runtime", "contract", "source_sha256"}) ||
             !adapter.at("name").is_string() || !adapter.at("runtime").is_string() ||
-            !adapter.at("contract").is_string() || !exact_fields(live, {"version"})) {
+            !adapter.at("contract").is_string() || !adapter.at("source_sha256").is_string() ||
+            !exact_fields(live, {"version"})) {
             return std::unexpected(ErrorCode::ProtocolError);
         }
 
@@ -168,6 +170,7 @@ Result<AbletonTargetProfile> target_profile_from_json(const nlohmann::json& valu
         profile.adapter_name = adapter.at("name").get<std::string>();
         profile.adapter_runtime = adapter.at("runtime").get<std::string>();
         profile.adapter_contract = adapter.at("contract").get<std::string>();
+        profile.adapter_source_sha256 = adapter.at("source_sha256").get<std::string>();
 
         // The bridge is part of this repository.  Reject a peer that claims a
         // different host contract, or capability flags inconsistent with the
@@ -208,7 +211,8 @@ nlohmann::json target_profile_to_json(const AbletonTargetProfile& profile) {
         {"adapter",
          {{"name", profile.adapter_name},
           {"runtime", profile.adapter_runtime},
-          {"contract", profile.adapter_contract}}},
+          {"contract", profile.adapter_contract},
+          {"source_sha256", profile.adapter_source_sha256}}},
         {"live",
          {{"version",
            {{"major", profile.live_version.major},

@@ -22,6 +22,8 @@
 
 #pragma once
 
+#include <span>
+#include <string_view>
 #include <sunny/core/corpus/document.hpp>
 #include <sunny/core/corpus/validation.hpp>
 #include <sunny/core/score/document.hpp>
@@ -128,6 +130,35 @@ struct SignatureDetectionEvidence {
 detect_signature_patterns(CorpusDatabase& corpus,
                           ComposerProfileId composer_id,
                           SignatureDetectionEvidence* evidence = nullptr);
+
+/** A produced StyleProfile field and the domain containing it. */
+struct StyleProfileField {
+    std::string_view domain;
+    std::string_view name;
+};
+
+/** A stored analysis field consumed by a profile aggregate. */
+struct StyleProfileSourceField {
+    std::string_view domain;
+    std::string_view path;
+};
+
+/** Actual source dependencies; empty means no implemented aggregate producer. */
+[[nodiscard]] std::span<const StyleProfileSourceField>
+style_profile_field_sources(std::string_view domain, std::string_view field);
+
+/** Every profile field, including fields with no implemented aggregate producer. */
+[[nodiscard]] std::span<const StyleProfileField> style_profile_fields();
+
+/**
+ * Eligibility of a work for one profile field, using its actual source dependencies.
+ * Explicitly unavailable fields never contribute a value or denominator. Absent
+ * legacy evidence remains Unqualified; measured zero remains eligible. Unknown
+ * fields and fields without an aggregate producer return Unavailable.
+ */
+[[nodiscard]] AnalysisEvidenceKind style_profile_field_evidence(const WorkAnalysis& analysis,
+                                                                std::string_view domain,
+                                                                std::string_view field);
 
 // =============================================================================
 // Query

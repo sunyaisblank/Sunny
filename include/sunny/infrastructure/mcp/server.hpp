@@ -14,6 +14,7 @@
 #pragma once
 
 #include <atomic>
+#include <cstdint>
 #include <functional>
 #include <iosfwd>
 #include <map>
@@ -33,6 +34,12 @@ struct McpToolDef {
 /// MCP tool handler callback
 using McpToolHandler = std::function<nlohmann::json(const nlohmann::json& params)>;
 
+/// Authoring domain routed through the request-atomic project boundary.
+/// Live transport/deployment tools retain None and never enter local rollback.
+enum class McpDocumentDomain : std::uint8_t { None, Score, Timbre, Mix };
+using McpToolExecutor = std::function<nlohmann::json(
+    McpDocumentDomain, const std::string&, const nlohmann::json&, const McpToolHandler&)>;
+
 /**
  * @brief MCP Server (JSON-RPC 2.0 over stdio)
  *
@@ -44,6 +51,29 @@ using McpToolHandler = std::function<nlohmann::json(const nlohmann::json& params
 class McpServer {
   public:
     McpServer() = default;
+
+    class RegistrationScope {
+      public:
+        RegistrationScope(McpServer& server, McpDocumentDomain domain)
+            : server_(server), previous_(server.registration_domain_) {
+            server_.registration_domain_ = domain;
+        }
+        ~RegistrationScope() { server_.registration_domain_ = previous_; }
+        RegistrationScope(const RegistrationScope&) = delete;
+        RegistrationScope& operator=(const RegistrationScope&) = delete;
+
+      private:
+        McpServer& server_;
+        McpDocumentDomain previous_;
+    };
+
+    /** Tag every tool in one IR registration group; explicitly clear query tags. */
+    [[nodiscard]] RegistrationScope registration_scope(McpDocumentDomain domain) {
+        return RegistrationScope(*this, domain);
+    }
+    void set_tool_document_domain(const std::string& name, McpDocumentDomain domain);
+    /** Install before requests; the executor runs under the existing request mutex. */
+    void set_tool_executor(McpToolExecutor executor);
 
     /**
      * @brief Register a tool
@@ -98,11 +128,14 @@ class McpServer {
     struct ToolEntry {
         McpToolDef definition;
         McpToolHandler handler;
+        McpDocumentDomain document_domain = McpDocumentDomain::None;
     };
 
     std::map<std::string, ToolEntry> tools_;
     std::atomic<bool> running_{false};
     std::mutex request_mutex_;
+    McpDocumentDomain registration_domain_ = McpDocumentDomain::None;
+    McpToolExecutor tool_executor_;
 
     nlohmann::json handle_discover(const nlohmann::json& id);
     nlohmann::json handle_initialize(const nlohmann::json& id, const nlohmann::json& params);

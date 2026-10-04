@@ -17,6 +17,7 @@
 #include <functional>
 #include <mutex>
 #include <netinet/in.h>
+#include <nlohmann/json.hpp>
 #include <optional>
 #include <poll.h>
 #include <string>
@@ -64,6 +65,14 @@ std::string frame(const std::string& payload) {
 
 std::string response_with_value(const std::string& value_json) {
     return R"({"bridge_protocol_version":46,"success":true,"value":)" + value_json + "}";
+}
+
+bool answer_identity_request(int client, const std::string& request) {
+    const auto value = nlohmann::json::parse(request);
+    if (value.value("name", "") != "sunny_get_target_profile") return false;
+    const auto profile = target_profile_to_json(modeled_target_profile({12, 4, 0, "12.4.0"}));
+    write_bytes(client, frame(response_with_value(profile.dump())));
+    return true;
 }
 
 /// Loopback peer that runs one scripted session per accepted connection, in
@@ -172,14 +181,20 @@ class ScriptedPeer {
 
 ScriptedPeer::Session answer_each_request_with(std::string value_json) {
     return [value = std::move(value_json)](int client) {
-        while (read_frame(client))
-            write_bytes(client, frame(response_with_value(value)));
+        while (const auto request = read_frame(client)) {
+            if (!answer_identity_request(client, *request))
+                write_bytes(client, frame(response_with_value(value)));
+        }
     };
 }
 
 ScriptedPeer::Session answer_one_request_with(std::string value_json) {
     return [value = std::move(value_json)](int client) {
-        if (read_frame(client)) write_bytes(client, frame(response_with_value(value)));
+        while (const auto request = read_frame(client)) {
+            if (answer_identity_request(client, *request)) continue;
+            write_bytes(client, frame(response_with_value(value)));
+            return;
+        }
     };
 }
 
@@ -443,6 +458,8 @@ TEST_CASE("a request after the peer vanished while idle is declined as not sent"
 TEST_CASE("a response later than the deadline is indeterminate and never answers a later request",
           "[bridge][transport][loopback][lifecycle][indeterminate]") {
     ScriptedPeer peer({[](int client) {
+                           const auto identity = read_frame(client);
+                           if (!identity || !answer_identity_request(client, *identity)) return;
                            if (!read_frame(client)) return;
                            std::this_thread::sleep_for(400ms);
                            write_bytes(client, frame(response_with_value(R"("late")")));
@@ -472,6 +489,8 @@ TEST_CASE("a response later than the deadline is indeterminate and never answers
 TEST_CASE("the response deadline bounds the whole response rather than each receive",
           "[bridge][transport][loopback][lifecycle][indeterminate]") {
     ScriptedPeer peer({[](int client) {
+        const auto identity = read_frame(client);
+        if (!identity || !answer_identity_request(client, *identity)) return;
         if (!read_frame(client)) return;
         const auto bytes = frame(response_with_value("1"));
         for (const char byte : bytes) {
@@ -539,4 +558,133 @@ TEST_CASE("TcpTransport classifies why a connection could not be made",
         CHECK(describe(ConnectFailure::HostUnresolved) != describe(ConnectFailure::Refused));
         CHECK(describe(ConnectFailure::Refused) != describe(ConnectFailure::TimedOut));
     }
+}
+
+TEST_CASE(
+    "Bridge source mismatch declines direct mutation and notes while diagnostics remain readable",
+    "[bridge][transport][loopback][source-identity]") {
+    for (const auto* problem : {"missing", "wrong_type", "malformed", "different", "contract"}) {
+        INFO(problem);
+        auto profile = target_profile_to_json(modeled_target_profile({12, 4, 0, "12.4.0"}));
+        if (std::string_view(problem) == "missing")
+            profile["adapter"].erase("source_sha256");
+        else if (std::string_view(problem) == "wrong_type")
+            profile["adapter"]["source_sha256"] = 46;
+        else if (std::string_view(problem) == "malformed")
+            profile["adapter"]["source_sha256"] = "unknown";
+        else if (std::string_view(problem) == "different")
+            profile["adapter"]["source_sha256"] = std::string(64, '0');
+        else
+            profile["adapter"]["contract"] = "documented_public";
+        std::atomic<unsigned> identity_reads = 0, ordinary_requests = 0, diagnostic_reads = 0;
+        ScriptedPeer peer({[&](int client) {
+            while (const auto request = read_frame(client)) {
+                const auto wire = nlohmann::json::parse(*request);
+                const auto name = wire.at("name").get<std::string>();
+                if (name == "sunny_get_target_profile") {
+                    ++identity_reads;
+                    write_bytes(client, frame(response_with_value(profile.dump())));
+                } else if (name == "sunny_get_remote_log") {
+                    ++diagnostic_reads;
+                    write_bytes(client, frame(response_with_value(R"({"message":"available"})")));
+                } else {
+                    ++ordinary_requests;
+                    write_bytes(client, frame(response_with_value("120.0")));
+                }
+            }
+        }});
+        TcpTransport transport(loopback_config(peer.port()));
+        REQUIRE(transport.connect());
+        const auto mutation =
+            transport.send(LomProtocol::set_property(LomPaths::song(), "tempo", 132.0));
+        CHECK_FALSE(mutation.success);
+        CHECK(mutation.delivery == LomDeliveryState::NotSent);
+        REQUIRE(mutation.error);
+        CHECK(mutation.error->find("same server image") != std::string::npos);
+        if (std::string_view(problem) == "different") {
+            CHECK(mutation.error->find(SUNNY_BRIDGE_SOURCE_SHA256) != std::string::npos);
+            CHECK(mutation.error->find(std::string(64, '0')) != std::string::npos);
+        }
+        const auto notes = transport.send_notes(LomPaths::clip(0, 0), {});
+        CHECK_FALSE(notes.success);
+        CHECK(notes.delivery == LomDeliveryState::NotSent);
+        CHECK(ordinary_requests == 0);
+        CHECK(identity_reads == 1); // Failed compatibility is retained on this socket.
+        CHECK(transport.bridge_identity_error().has_value());
+        const auto log =
+            transport.send(LomProtocol::call_method(LomPaths::song(), "sunny_get_remote_log", {0}));
+        CHECK(log.success);
+        CHECK(diagnostic_reads == 1);
+        CHECK_FALSE(transport.target_profile()); // Diagnostic remains readable, admission fails.
+        CHECK(identity_reads == 2);
+        CHECK(ordinary_requests == 0);
+        transport.disconnect();
+        peer.wait_for_closed_sessions(1);
+    }
+}
+
+TEST_CASE("Matching source handshake is cached per socket and refreshed after reconnect",
+          "[bridge][transport][loopback][source-identity]") {
+    std::atomic<unsigned> identity_reads = 0, ordinary_requests = 0;
+    const auto matched = target_profile_to_json(modeled_target_profile({12, 4, 0, "12.4.0"}));
+    auto mismatched = matched;
+    mismatched["adapter"]["source_sha256"] = std::string(64, '0');
+    const auto session = [&](const nlohmann::json& profile, unsigned request_limit) {
+        return [&, profile, request_limit](int client) {
+            unsigned ordinary_in_session = 0;
+            while (const auto request = read_frame(client)) {
+                const auto wire = nlohmann::json::parse(*request);
+                if (wire.at("name") == "sunny_get_target_profile") {
+                    ++identity_reads;
+                    write_bytes(client, frame(response_with_value(profile.dump())));
+                } else {
+                    ++ordinary_requests;
+                    ++ordinary_in_session;
+                    write_bytes(client, frame(response_with_value("120.0")));
+                    if (ordinary_in_session == request_limit) return;
+                }
+            }
+        };
+    };
+    ScriptedPeer peer({session(matched, 2), session(mismatched, 1)});
+    TcpTransport transport(loopback_config(peer.port()));
+    REQUIRE(transport.connect());
+    REQUIRE(transport.send(tempo_request()).success);
+    REQUIRE(transport.send(tempo_request()).success);
+    CHECK(identity_reads == 1);
+    CHECK(ordinary_requests == 2);
+    peer.wait_for_closed_sessions(1);
+    const auto declined =
+        transport.send(LomProtocol::set_property(LomPaths::song(), "tempo", 138.0));
+    CHECK_FALSE(declined.success);
+    CHECK(declined.delivery == LomDeliveryState::NotSent);
+    CHECK(identity_reads == 2);
+    CHECK(ordinary_requests == 2);
+    transport.disconnect();
+    peer.wait_for_closed_sessions(2);
+}
+
+TEST_CASE("An uncertain read-only identity handshake never sends the caller mutation",
+          "[bridge][transport][loopback][source-identity]") {
+    std::atomic<unsigned> frames = 0;
+    ScriptedPeer peer({[&](int client) {
+        if (const auto request = read_frame(client)) {
+            ++frames;
+            const auto wire = nlohmann::json::parse(*request);
+            if (wire.at("name") != "sunny_get_target_profile") return;
+            std::this_thread::sleep_for(200ms);
+        }
+    }});
+    auto config = loopback_config(peer.port());
+    config.response_timeout = 50ms;
+    TcpTransport transport(config);
+    REQUIRE(transport.connect());
+    const auto declined =
+        transport.send(LomProtocol::set_property(LomPaths::song(), "tempo", 138.0));
+    CHECK_FALSE(declined.success);
+    CHECK(declined.delivery == LomDeliveryState::NotSent);
+    CHECK(frames == 1);
+    CHECK_FALSE(transport.is_connected());
+    CHECK(transport.bridge_identity_error().has_value());
+    peer.wait_for_closed_sessions(1);
 }

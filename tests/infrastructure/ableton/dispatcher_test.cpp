@@ -308,11 +308,26 @@ class LoopbackServer {
 
             std::string payload(payload_len, '\0');
             if (!recv_exact(client, payload.data(), payload_len)) break;
-            ++served_;
+            const auto request = nlohmann::json::parse(payload);
+            auto response = response_;
+            if (request.value("name", "") == "sunny_get_target_profile") {
+                const auto canned = nlohmann::json::parse(response_);
+                if (!canned.contains("value") || !canned["value"].is_object() ||
+                    !canned["value"].contains("adapter")) {
+                    response =
+                        nlohmann::json{
+                            {"bridge_protocol_version", SUNNY_BRIDGE_PROTOCOL_VERSION},
+                            {"success", true},
+                            {"value",
+                             target_profile_to_json(modeled_target_profile({12, 4, 0, "12.4.0"}))}}
+                            .dump();
+                }
+            } else
+                ++served_;
 
-            std::uint32_t resp_len = htonl(static_cast<std::uint32_t>(response_.size()));
+            std::uint32_t resp_len = htonl(static_cast<std::uint32_t>(response.size()));
             ::send(client, &resp_len, sizeof(resp_len), 0);
-            ::send(client, response_.data(), response_.size(), 0);
+            ::send(client, response.data(), response.size(), 0);
         }
         if (client_fd_.exchange(-1) >= 0) ::close(client);
     }

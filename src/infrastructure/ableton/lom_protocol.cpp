@@ -340,6 +340,119 @@ bool valid_ranged_notes_query(const json& value) {
            value.at("time_span").get<double>() > 0.0;
 }
 
+bool valid_envelope_parameter(const json& value) {
+    if (!value.is_object() || !value.contains("kind") || !value.at("kind").is_string())
+        return false;
+    const auto& kind = value.at("kind").get_ref<const std::string&>();
+    if (kind == "volume" || kind == "panning") return value.size() == 1;
+    if (kind == "send")
+        return value.size() == 2 && value.contains("send_index") &&
+               protocol_index(value.at("send_index"));
+    return kind == "device" && value.size() == 3 && value.contains("device_index") &&
+           protocol_index(value.at("device_index")) && value.contains("parameter_name") &&
+           value.at("parameter_name").is_string() &&
+           !value.at("parameter_name").get_ref<const std::string&>().empty();
+}
+
+bool valid_step_envelope_author(const json& value) {
+    if (!value.is_object() || value.size() != 4 || !value.contains("parameter") ||
+        !valid_envelope_parameter(value.at("parameter")) || !value.contains("interpolation") ||
+        value.at("interpolation") != "step" || !value.contains("clip_end") ||
+        !finite_number(value.at("clip_end")) || value.at("clip_end").get<double>() <= 0.0 ||
+        !value.contains("points") || !value.at("points").is_array() || value.at("points").empty())
+        return false;
+    const auto& points = value.at("points");
+    const double end = value.at("clip_end").get<double>();
+    double previous = -1.0;
+    for (const auto& point : points) {
+        if (!point.is_object() || point.size() != 2 || !point.contains("time") ||
+            !finite_number(point.at("time")) || !point.contains("value") ||
+            !finite_number(point.at("value")))
+            return false;
+        const double time = point.at("time").get<double>();
+        if (time <= previous || time >= end) return false;
+        previous = time;
+    }
+    return points[0].at("time").get<double>() == 0.0;
+}
+
+bool valid_step_envelope_query(const json& value) {
+    if (!value.is_object() || value.size() != 2 || !value.contains("parameter") ||
+        !valid_envelope_parameter(value.at("parameter")) || !value.contains("sample_times") ||
+        !value.at("sample_times").is_array() || value.at("sample_times").empty())
+        return false;
+    double previous = -1.0;
+    for (const auto& time : value.at("sample_times")) {
+        if (!finite_number(time)) return false;
+        const double sample_time = time.get<double>();
+        if (sample_time < 0.0 || sample_time <= previous) return false;
+        previous = sample_time;
+    }
+    return true;
+}
+
+bool managed_key(const json& value) {
+    if (!value.is_string()) return false;
+    const auto& text = value.get_ref<const std::string&>();
+    return !text.empty() && text.size() <= 64 && std::ranges::all_of(text, [](unsigned char c) {
+        return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+               c == '_' || c == '-';
+    });
+}
+
+bool managed_fingerprint(const json& value) {
+    if (!value.is_string()) return false;
+    const auto& text = value.get_ref<const std::string&>();
+    return text.size() == 64 && std::ranges::all_of(text, [](unsigned char c) {
+               return (c >= 'a' && c <= 'f') || (c >= '0' && c <= '9');
+           });
+}
+
+bool valid_managed_request(std::string_view name, const std::vector<json>& args) {
+    if (name == "sunny_managed_context") return args.empty();
+    if (args.size() != 1 || !args[0].is_object()) return false;
+    const auto& value = args[0];
+    if (!value.contains("document_token") || !managed_key(value.at("document_token"))) return false;
+    if (name == "sunny_managed_operation")
+        return value.size() == 2 && value.contains("operation_id") &&
+               managed_key(value.at("operation_id"));
+    for (const auto* key : {"project_key", "binding_key"})
+        if (!value.contains(key) || !managed_key(value.at(key))) return false;
+    if (name == "sunny_managed_observe") return value.size() == 3;
+    if (!value.contains("operation_id") || !managed_key(value.at("operation_id"))) return false;
+    if (name == "sunny_managed_rebind")
+        return value.size() == 5 && value.contains("expected_manifest") &&
+               value.at("expected_manifest").is_object() &&
+               value.at("expected_manifest").contains("schema_version") &&
+               json_to_int(value.at("expected_manifest").at("schema_version")) == 1;
+    const bool guarded =
+        name == "sunny_managed_replace_clip" || name == "sunny_managed_author_envelope";
+    if (guarded && (!value.contains("expected_content_fingerprint") ||
+                    !managed_fingerprint(value.at("expected_content_fingerprint"))))
+        return false;
+    if (name == "sunny_managed_author_envelope")
+        return value.size() == 6 && value.contains("lane") &&
+               valid_step_envelope_author(value.at("lane")) &&
+               value.at("lane").at("parameter").at("kind") != "device";
+    if (!is_one_of(name, {"sunny_managed_create_clip", "sunny_managed_replace_clip"}) ||
+        value.size() != (guarded ? 9U : 8U))
+        return false;
+    for (const auto* key : {"clip_end", "signature_numerator", "signature_denominator", "notes"})
+        if (!value.contains(key)) return false;
+    const auto numerator = json_to_int(value.at("signature_numerator"));
+    const auto denominator = json_to_int(value.at("signature_denominator"));
+    if (!finite_number(value.at("clip_end")) || value.at("clip_end").get<double>() <= 0.0 ||
+        !numerator || *numerator < 1 || *numerator > 99 || !denominator ||
+        !is_one_of(std::to_string(*denominator), {"1", "2", "4", "8", "16"}) ||
+        !value.at("notes").is_array())
+        return false;
+    if (!value.at("notes").empty() && !valid_note_dictionary(json{{"notes", value.at("notes")}}))
+        return false;
+    return std::ranges::all_of(value.at("notes"), [&value](const json& note) {
+        return note.at("start_time").get<double>() < value.at("clip_end").get<double>();
+    });
+}
+
 } // namespace
 
 sunny::core::Result<void> LomProtocol::validate_request(const LomRequest& request) {
@@ -374,6 +487,13 @@ sunny::core::Result<void> LomProtocol::validate_request(const LomRequest& reques
                         "sunny_get_return_track_count",
                         "sunny_get_remote_log",
                         "sunny_set_cue",
+                        "sunny_managed_context",
+                        "sunny_managed_operation",
+                        "sunny_managed_observe",
+                        "sunny_managed_create_clip",
+                        "sunny_managed_replace_clip",
+                        "sunny_managed_rebind",
+                        "sunny_managed_author_envelope",
                         "create_scene",
                         "create_midi_track",
                         "create_return_track"}));
@@ -425,13 +545,14 @@ sunny::core::Result<void> LomProtocol::validate_request(const LomRequest& reques
                                                                        "legato",
                                                                        "velocity_amount",
                                                                        "groove"})) ||
-            (request.type == LomRequestType::CallMethod &&
-             is_one_of(name,
-                       {"add_new_notes",
-                        "get_notes_by_id",
-                        "get_notes_extended",
-                        "get_all_notes_extended",
-                        "sunny_clear_all_envelopes"}));
+            (request.type == LomRequestType::CallMethod && is_one_of(name,
+                                                                     {"add_new_notes",
+                                                                      "get_notes_by_id",
+                                                                      "get_notes_extended",
+                                                                      "get_all_notes_extended",
+                                                                      "sunny_clear_all_envelopes",
+                                                                      "sunny_author_step_envelope",
+                                                                      "sunny_get_step_envelope"}));
         break;
     case PathKind::VolumeParameter:
         operation_allowed = request.type == LomRequestType::SetProperty && name == "display_value";
@@ -528,13 +649,15 @@ sunny::core::Result<void> LomProtocol::validate_request(const LomRequest& reques
 
     bool valid = false;
     if (*kind == PathKind::Song) {
-        if (is_one_of(name,
-                      {"sunny_get_target_profile",
-                       "sunny_get_target_snapshot",
-                       "sunny_get_scene_count",
-                       "sunny_get_track_count",
-                       "sunny_get_return_track_count",
-                       "create_return_track"}))
+        if (name.starts_with("sunny_managed_"))
+            valid = valid_managed_request(name, args);
+        else if (is_one_of(name,
+                           {"sunny_get_target_profile",
+                            "sunny_get_target_snapshot",
+                            "sunny_get_scene_count",
+                            "sunny_get_track_count",
+                            "sunny_get_return_track_count",
+                            "create_return_track"}))
             valid = args.empty();
         else if (name == "create_scene" || name == "create_midi_track")
             valid = args.size() == 1 && protocol_index(args[0], true);
@@ -568,11 +691,13 @@ sunny::core::Result<void> LomProtocol::validate_request(const LomRequest& reques
             valid = args.empty();
         else
             valid = args.size() == 1 &&
-                    (name == "add_new_notes"            ? valid_note_dictionary(args[0])
-                     : name == "get_notes_by_id"        ? valid_note_id_query(args[0])
-                     : name == "get_all_notes_extended" ? valid_all_notes_query(args[0])
-                     : name == "get_notes_extended"     ? valid_ranged_notes_query(args[0])
-                                                        : false);
+                    (name == "add_new_notes"                ? valid_note_dictionary(args[0])
+                     : name == "get_notes_by_id"            ? valid_note_id_query(args[0])
+                     : name == "get_all_notes_extended"     ? valid_all_notes_query(args[0])
+                     : name == "get_notes_extended"         ? valid_ranged_notes_query(args[0])
+                     : name == "sunny_author_step_envelope" ? valid_step_envelope_author(args[0])
+                     : name == "sunny_get_step_envelope"    ? valid_step_envelope_query(args[0])
+                                                            : false);
     } else if (*kind == PathKind::Device) {
         if (name == "sunny_get_device_parameter")
             valid = args.size() == 2 && args[0].is_string() &&

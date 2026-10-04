@@ -36,6 +36,7 @@ TEST_CASE("target profile JSON round trips through strict validation",
     CHECK(parsed->live_version.version_string == "12.3.5");
     CHECK(parsed->native_device_insertion == CapabilityState::Available);
     CHECK(parsed->adapter_contract == "version_coupled_private");
+    CHECK(parsed->adapter_source_sha256 == SUNNY_BRIDGE_SOURCE_SHA256);
 }
 
 TEST_CASE("target profile rejects a peer whose claims contradict its Live version",
@@ -57,6 +58,27 @@ TEST_CASE("in-memory target profile validation rejects transport-supplied contra
     const auto invalid = validate_target_profile(profile);
     REQUIRE_FALSE(invalid.has_value());
     CHECK(invalid.error() == ErrorCode::ProtocolError);
+}
+
+TEST_CASE("Target profiles require the exact bundled source identity",
+          "[ableton][target-profile][source-identity]") {
+    const auto expected = modeled_target_profile({12, 4, 0, "12.4.0"});
+    const auto original = target_profile_to_json(expected);
+    REQUIRE(target_profile_from_json(original));
+    for (const auto& identity : {nlohmann::json(nullptr),
+                                 nlohmann::json(46),
+                                 nlohmann::json("unknown"),
+                                 nlohmann::json(std::string(64, '0'))}) {
+        auto value = original;
+        value["adapter"]["source_sha256"] = identity;
+        CHECK_FALSE(target_profile_from_json(value));
+    }
+    auto missing = original;
+    missing["adapter"].erase("source_sha256");
+    CHECK_FALSE(target_profile_from_json(missing));
+    auto in_memory = expected;
+    in_memory.adapter_source_sha256 = std::string(64, '0');
+    CHECK_FALSE(validate_target_profile(in_memory));
 }
 
 TEST_CASE("target profile rejects incompatible bridge identity and protocol",

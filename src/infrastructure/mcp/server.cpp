@@ -241,7 +241,16 @@ void McpServer::register_tool(std::string name,
     entry.definition.description = std::move(description);
     entry.definition.input_schema = normalise_input_schema(input_schema);
     entry.handler = std::move(handler);
+    entry.document_domain = registration_domain_;
     tools_[std::move(name)] = std::move(entry);
+}
+
+void McpServer::set_tool_document_domain(const std::string& name, McpDocumentDomain domain) {
+    tools_.at(name).document_domain = domain;
+}
+
+void McpServer::set_tool_executor(McpToolExecutor executor) {
+    tool_executor_ = std::move(executor);
 }
 
 void McpServer::run() {
@@ -458,7 +467,11 @@ McpServer::handle_tools_call(const nlohmann::json& id, const nlohmann::json& par
     }
 
     try {
-        auto result = it->second.handler(arguments);
+        auto result =
+            tool_executor_ && it->second.document_domain != McpDocumentDomain::None
+                ? tool_executor_(
+                      it->second.document_domain, tool_name, arguments, it->second.handler)
+                : it->second.handler(arguments);
         const bool is_error = (result.is_object() && result.contains("error")) ||
                               (result.is_object() && result.contains("success") &&
                                result["success"].is_boolean() && !result["success"].get<bool>());

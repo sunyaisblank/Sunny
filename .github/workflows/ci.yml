@@ -97,6 +97,10 @@ jobs:
       - name: Install dependencies
         run: uv sync --all-extras
 
+      - name: Install independent notation parser
+        if: matrix.python-version == '3.12'
+        run: sudo apt-get update && sudo apt-get install -y lilypond
+
       # sunny-mcp drives the end-to-end tests against the offline Live model.
       - name: Build native module and MCP server for this Python
         run: |
@@ -107,6 +111,8 @@ jobs:
           cmake --build .bin-python --target sunny_native sunny-mcp
 
       - name: Run tests
+        env:
+          SUNNY_LILYPOND_COMMAND: ${{ matrix.python-version == '3.12' && 'lilypond' || '' }}
         run: |
           PYTHONPATH=python:remote_script:.bin-python/python \
           SUNNY_MCP_BINARY=.bin-python/sunny-mcp \
@@ -151,10 +157,18 @@ jobs:
 
       - name: End-to-end through the container
         run: |
-          python -m pip install pytest
-          SUNNY_MCP_COMMAND="docker run -i --rm --network host -e SUNNY_ABLETON_HOST -e SUNNY_TCP_PORT sunny-mcp:ci" \
+          python -m pip install pytest 'mido>=1.3,<2'
+          SUNNY_TEST_BRIDGE_BIND_HOST=0.0.0.0 \
+          SUNNY_TEST_BRIDGE_HOST=host.docker.internal \
+          SUNNY_MCP_COMMAND="docker run -i --rm --add-host host.docker.internal:host-gateway -e SUNNY_ABLETON_HOST -e SUNNY_TCP_PORT sunny-mcp:ci" \
           PYTHONPATH=remote_script:python \
           python -m pytest tests/python/test_live_end_to_end.py -v --tb=short
+
+      - name: Authoring and recovery across container restarts
+        run: |
+          SUNNY_WORKSPACE_MCP_COMMAND='docker run -i --rm --network none --mount type=bind,source={workspace_dir},target=/data -e SUNNY_WORKSPACE_PATH -e SUNNY_WORKSPACE_RECOVERY sunny-mcp:ci' \
+          PYTHONPATH=remote_script:python \
+          python -m pytest tests/python/test_mcp_workspace_workflow.py -v --tb=short
 
   # Python linting
   lint:
