@@ -325,6 +325,12 @@ def test_offline_score_source_and_effect_edits_recover_saved_intent_then_apply_f
         }
         foreign = copy.deepcopy(approved)
         foreign["document_token"] = "foreign_document"
+        # Ledger order follows random attempt IDs, not dispatch chronology.
+        # Choose a genuinely older snapshot for the stale-history refusal.
+        oldest_attempt = min(state["saved_attempts"], key=lambda entry: entry["dispatch_ordinal"])[
+            "intent"
+        ]["attempt_id"]
+        assert oldest_attempt != selected["device_history_attempt"]
         invalid = [
             {"preview": foreign},
             {"expected_project_revision": state["revision"] - 1},
@@ -332,7 +338,7 @@ def test_offline_score_source_and_effect_edits_recover_saved_intent_then_apply_f
             {"device_projection_source": "caller_defined"},
             {"desired_devices": [{"physical_intents": [{"target": 2450.0}]}]},
             {"device_history_attempt": "f" * 32},
-            {"device_history_attempt": state["saved_attempts"][0]["intent"]["attempt_id"]},
+            {"device_history_attempt": oldest_attempt},
         ]
         for change in invalid:
             rejected = _device_call(
