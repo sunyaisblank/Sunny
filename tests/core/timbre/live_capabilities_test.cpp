@@ -114,25 +114,79 @@ void expect_decline(const LiveNativeMappingPreflight& result, Disposition dispos
 TEST_CASE("native registry is finite versioned provenance without host qualification",
           "[timbre][live-capabilities]") {
     const auto& provenance = live_native_registry_provenance();
-    CHECK(provenance.registry_version == 1);
+    CHECK(provenance.registry_version == 2);
     CHECK(provenance.public_lom_reference_version == LiveNativeVersion{12, 4, 5});
     CHECK(provenance.first_candidate_version == LiveNativeVersion{12, 3, 0});
     CHECK(provenance.last_candidate_version == LiveNativeVersion{12, 4, 65535});
     CHECK(provenance.python_source_commit == "e83d5192f321b24eb9daab843ac49a2d95d862b1");
     CHECK_FALSE(provenance.host_qualified);
     const auto entries = live_native_parameter_registry();
-    REQUIRE(entries.size() == 44);
+    REQUIRE(entries.size() == 48);
     std::set<std::string> ids;
     for (const auto& entry : entries) {
         CHECK(ids.insert(entry.id).second);
         CHECK_FALSE(entry.python_source_location.empty());
-        CHECK((entry.device_class_name == "StereoGain" || entry.device_class_name == "Eq8"));
+        CHECK((entry.device_class_name == "StereoGain" || entry.device_class_name == "Eq8" ||
+               entry.device_class_name == "Drift"));
         CHECK(entry.band <= 8);
     }
     CHECK(ids.contains("utility.balance"));
     CHECK(ids.contains("eq8.band.8.type"));
+    CHECK(ids.contains("drift.lp.frequency"));
+    CHECK(ids.contains("drift.env.1.release"));
     CHECK_FALSE(ids.contains("eq8.band.9.type"));
     CHECK_FALSE(ids.contains("autofilter.frequency"));
+}
+
+TEST_CASE("Drift registry requires actual instrument role and observed native voice properties",
+          "[timbre][live-capabilities][drift]") {
+    auto device = utility();
+    device.class_name = "Drift";
+    device.device_type = 1;
+    device.parameters = {continuous("LP Freq", -4.0, 8.0, 1.0),
+                         enumeration("LP Type", {"II", "I"}, 1.0),
+                         continuous("Env 1 Attack", -4.0, 8.0, 1.0),
+                         continuous("Env 1 Decay", -4.0, 8.0, 1.0),
+                         continuous("Env 1 Release", -4.0, 8.0, 1.0)};
+    device.integer_properties = {{"voice_mode_index", 1}, {"voice_count_index", 2}};
+    device.string_list_properties = {{"voice_mode_list", {"Unison", "Poly", "Mono", "Stereo"}},
+                                     {"voice_count_list", {"16", "8", "4", "2"}}};
+    for (const auto* id :
+         {"drift.lp.frequency", "drift.env.1.attack", "drift.env.1.decay", "drift.env.1.release"}) {
+        const auto result =
+            preflight_live_native_parameter(id, LiveNativeInternalValue{3.5}, device, 3);
+        REQUIRE(result.candidate);
+        CHECK(result.candidate->internal_value == 3.5);
+        CHECK(result.candidate->device_class_name == "Drift");
+        CHECK_FALSE(result.candidate->host_qualified);
+    }
+    expect_decline(preflight_live_native_parameter(
+                       "drift.env.1.attack",
+                       LiveNativePhysicalValue{LiveNativePhysicalUnit::Milliseconds, 250.0},
+                       device,
+                       3),
+                   Disposition::UnsupportedUnitMapping);
+    device.device_type = 2;
+    expect_decline(preflight_live_native_parameter(
+                       "drift.lp.frequency", LiveNativeInternalValue{3.5}, device, 3),
+                   Disposition::DeviceMismatch);
+    device.device_type = 1;
+    device.integer_properties.erase("voice_mode_index");
+    expect_decline(preflight_live_native_parameter(
+                       "drift.env.1.attack", LiveNativeInternalValue{3.5}, device, 3),
+                   Disposition::ObservationUnavailable);
+    device.integer_properties["voice_mode_index"] = 4;
+    expect_decline(preflight_live_native_parameter(
+                       "drift.env.1.attack", LiveNativeInternalValue{3.5}, device, 3),
+                   Disposition::InvalidDomain);
+    device.integer_properties["voice_mode_index"] = 1;
+    parameter(device, "LP Type").is_enabled = false;
+    expect_decline(preflight_live_native_parameter(
+                       "drift.lp.frequency", LiveNativeInternalValue{3.5}, device, 3),
+                   Disposition::InactiveParameter);
+    REQUIRE(preflight_live_native_parameter(
+                "drift.env.1.attack", LiveNativeInternalValue{3.5}, device, 3)
+                .candidate);
 }
 
 TEST_CASE("Utility preflight preserves actual internal values and localized public names",

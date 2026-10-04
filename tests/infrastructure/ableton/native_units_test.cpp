@@ -240,6 +240,56 @@ json balance_candidate() {
     return candidate;
 }
 
+json drift_candidate(bool time = false) {
+    auto candidate = time ? utility_candidate() : eq_candidate();
+    candidate["device_class_name"] = "Drift";
+    candidate["parameter_original_name"] = time ? "Env 1 Attack" : "LP Freq";
+    candidate["population"] = json::parse(R"JSON([
+      {"name":"Device On","original_name":"Device On"},
+      {"name":"Envelope sustain","original_name":"Env 1 Sustain"},
+      {"name":"Localized target","original_name":"LP Freq"},
+      {"name":"LP Type","original_name":"LP Type"}])JSON");
+    candidate["population"][2]["original_name"] = candidate["parameter_original_name"];
+    candidate["modes"] = json::parse(R"JSON({
+      "voice_mode":{"index":1,"value_items":["Unison","Poly","Mono","Stereo"],"label":"Poly"},
+      "voice_count":{"index":2,"value_items":["16","8","4","2"],"label":"4"}
+    })JSON");
+    candidate["eq8_scale_display"] = nullptr;
+    candidate["formatter_calls"] = 20;
+    if (!time) {
+        candidate["modes"]["LP Type"] = json::parse(R"JSON({
+          "minimum":0.0,"maximum":1.0,"value":1.0,"is_quantized":true,
+          "is_enabled":true,"state":0,"automation_state":0,
+          "value_items":["II","I"],"label":"I"})JSON");
+    } else {
+        candidate["unit"] = "Milliseconds";
+        candidate["display_increment"] = 1.0;
+        const std::array<const char*, 17> displays{"0 ms",
+                                                   "1.00 ms",
+                                                   "2 ms",
+                                                   "4 ms",
+                                                   "8 ms",
+                                                   "16 ms",
+                                                   "31.25 ms",
+                                                   "62.5 ms",
+                                                   "125 ms",
+                                                   "0.250 s",
+                                                   "0.500 s",
+                                                   "1 s",
+                                                   "2 s",
+                                                   "4 s",
+                                                   "8 s",
+                                                   "16 s",
+                                                   "32 s"};
+        const std::array<double, 17> physical{
+            0, 1, 2, 4, 8, 16, 31.25, 62.5, 125, 250, 500, 1000, 2000, 4000, 8000, 16000, 32000};
+        const std::array<double, 17> internal{
+            -4, -2, 0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28};
+        replace_readings(candidate, displays, physical, internal, 9);
+    }
+    return candidate;
+}
+
 class ObservationTransport final : public LomTransport {
   public:
     LomResponse response{true, envelope("utility.gain", utility_candidate()), std::nullopt};
@@ -278,7 +328,7 @@ TEST_CASE("Native unit requests admit the finite continuous catalogue and exact 
             ++quantized;
         }
     }
-    CHECK(admitted == 28);
+    CHECK(admitted == 32);
     CHECK(quantized == 16);
     for (const auto* path : {"song/return_tracks/0/devices/0", "song/master_track/devices/0"})
         CHECK(make_native_display_resolution_request(LomPath::parse(path), "utility.gain", -6, 0));
@@ -295,6 +345,61 @@ TEST_CASE("Native unit requests admit the finite continuous catalogue and exact 
     CHECK_FALSE(make_native_display_resolution_request(device, "utility.gain", 0, -1));
     CHECK_FALSE(make_native_display_resolution_request(
         device, "utility.gain", std::numeric_limits<double>::infinity(), 0));
+}
+
+TEST_CASE("Drift display candidates retain exact native voice properties and physical units",
+          "[ableton][native-units][drift]") {
+    auto frequency = drift_candidate();
+    auto parsed = parse_native_display_resolution(request("drift.lp.frequency", 1000),
+                                                  envelope("drift.lp.frequency", frequency));
+    REQUIRE(parsed);
+    REQUIRE(parsed->candidate);
+    CHECK(parsed->candidate->unit == sunny::core::LiveNativePhysicalUnit::Hertz);
+    CHECK(parsed->candidate->display == "1.00 kHz");
+    CHECK(parsed->candidate->modes.at("LP Type").at("label") == "I");
+    CHECK(parsed->candidate->modes.at("voice_mode").at("label") == "Poly");
+    CHECK(parsed->candidate->modes.at("voice_count").at("label") == "4");
+    CHECK_FALSE(parsed->candidate->host_qualified);
+    for (const auto& [id, original] :
+         std::array{std::pair{"drift.env.1.attack", "Env 1 Attack"},
+                    std::pair{"drift.env.1.decay", "Env 1 Decay"},
+                    std::pair{"drift.env.1.release", "Env 1 Release"}}) {
+        auto time = drift_candidate(true);
+        time["parameter_original_name"] = original;
+        time["population"][2]["original_name"] = original;
+        parsed = parse_native_display_resolution(request(id, 250), envelope(id, time));
+        REQUIRE(parsed);
+        REQUIRE(parsed->candidate);
+        CHECK(parsed->candidate->unit == sunny::core::LiveNativePhysicalUnit::Milliseconds);
+        CHECK(parsed->candidate->display == "0.250 s");
+        CHECK(parsed->candidate->display_value == 250.0);
+        CHECK(parsed->candidate->display_increment == 1.0);
+        CHECK(parsed->candidate->internal_value == 14.0);
+        CHECK(parsed->candidate->descriptor.minimum == -4.0);
+        CHECK(parsed->candidate->descriptor.maximum == 28.0);
+        CHECK(parsed->candidate->native_knob_only);
+    }
+}
+
+TEST_CASE("Drift candidate parser declines malformed voice domains and unsupported time grammar",
+          "[ableton][native-units][drift]") {
+    const auto check = [&](auto mutate) {
+        auto candidate = drift_candidate(true);
+        mutate(candidate);
+        CHECK_FALSE(parse_native_display_resolution(request("drift.env.1.attack", 250),
+                                                    envelope("drift.env.1.attack", candidate)));
+    };
+    check([](auto& c) { c["modes"].erase("voice_mode"); });
+    check([](auto& c) { c["modes"]["voice_count"]["index"] = true; });
+    check([](auto& c) { c["modes"]["voice_mode"]["index"] = 4; });
+    check([](auto& c) { c["modes"]["voice_count"]["value_items"] = {"4", "4"}; });
+    check([](auto& c) { c["modes"]["voice_mode"]["label"] = "Mono"; });
+    for (const auto* invalid : {"250us", "0.25 seconds", "0,25 s", "250", "-1 ms"})
+        check([&](auto& c) { c["display"] = invalid; });
+    auto frequency = drift_candidate();
+    frequency["modes"]["LP Type"]["is_enabled"] = false;
+    CHECK_FALSE(parse_native_display_resolution(request("drift.lp.frequency", 1000),
+                                                envelope("drift.lp.frequency", frequency)));
 }
 
 TEST_CASE("Native display protocol rejects descriptor and policy injection",

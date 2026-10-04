@@ -2,7 +2,7 @@
 
 **Managed receipt schema:** 1  
 **Bridge protocol:** 46, unreleased coordinated contract  
-**Status:** Durable MCP admission for selected Part clips, note revisions and Step panning lanes; host qualification pending
+**Status:** Durable selected-Part notes, physical Drift controls, Step panning and explicit current-object adoption; host qualification pending
 
 Live12.4 is the primary product target, with compatible Live12.3 behavior retained.
 The exact host patch, edition and operating system remain final qualification facts.
@@ -26,7 +26,7 @@ Logical project and binding keys use ASCII letters, digits, underscore and hyphe
 with length1..64. The created tags are `Sunny|PROJECT|BINDING|track` and
 `Sunny|PROJECT|BINDING|clip`. Existing matching tags prevent duplicate creation;
 tags alone never confer ownership. A fresh registry cannot authorize an old native
-object through an index or tag.
+object through an index or tag without a separately approved current-object preview.
 
 The finite structural manifest includes the complete modern eight-field semantic
 note population, Clip marker/loop/launch/groove/runtime scalars, Track runtime and
@@ -75,6 +75,12 @@ validators before dispatch.
 | `sunny_managed_author_envelope` | `expected_content_fingerprint`, `lane` | Author the exact guarded mixer Step lane; acknowledge native calls separately from sampled readback |
 | `sunny_managed_sample_envelope` | `document_token`, `project_key`, `binding_key`, `parameter`, `sample_times` only | Read-only actual envelope samples on retained identities |
 | `sunny_managed_update_notes` | `expected_content_fingerprint`, `changes` | Revise retained native note IDs after full-population and collision preflight |
+| `sunny_managed_revise_note_population` | `expected_content_fingerprint`, `changes`, `deletions`, `additions` | Selectively delete/add attacks and revise retained IDs without reconstruction |
+| `sunny_managed_preview_adoption` | `document_token`, `project_key`, `binding_key`, `selector` only | Read-only exact current Clip/Track/IDs preview; no authority |
+| `sunny_managed_adopt_clip` | `preview_token`, `preview_fingerprint`, `explicit_adoption:true` | Fenced fresh current-object Clip/note authority; no native setters |
+| `sunny_managed_insert_device` / `sunny_managed_update_device_parameters` | `expected_content_fingerprint`, `expected_device_identity_fingerprint`, `device_key`, `device`, `physical_intents` | Resolve all selected actual native controls before setters; retain native devices on partial failure |
+| `sunny_managed_preview_devices` | `document_token`, `project_key`, `binding_key`, `expected_content_fingerprint`, `devices` only | Read-only full finite current device-chain preview; empty-chain insertion grant requires separate approval |
+| `sunny_managed_adopt_devices` | `preview_token`, `approved_preview` | Fenced fresh current-device controls/append authority; no native setters |
 
 Mutation common fields are `document_token`, `operation_id`, `project_key`, and
 `binding_key`. `clip_end` is finite positive Live quarter-note beats, signature
@@ -147,8 +153,8 @@ delivery, outcome, journal and error. Schema/version/type mismatches are rejecte
 Persisted binding receipts retain tags, logical keys and the actual observed manifest;
 they do not contain usable native pointers or transfer ownership by index.
 
-Successful create/replace/envelope journals require `native_mutation_started=true`;
-read-only rebind requires false. Result logical tags must match the original request.
+Successful native mutations require `native_mutation_started=true`;
+rebind and the two explicit current-object adoption operations require false. Result logical tags must match the original request.
 Request and actual-content fingerprints use shared bounded typed SHA256 encoding,
 preserving JSON scalar types, IEEE754 signed zero and UTF8 text independently of
 JSON float spelling. Native receipt validation recomputes note and Clip match flags
@@ -189,8 +195,8 @@ Track/Clip creation and note readback, dropped-reply reconciliation without dupl
 reconnect/Live Set reset/restart behavior, track/scene reorder and known/unknown user
 drift. They must separately author a managed Step lane, independently sample its
 native values, save/reopen the Set and inspect native envelope persistence; a new
-bridge must continue to decline recovery while complete content verification is
-unavailable. Those checks must not be reported as complete native aggregate deployment.
+bridge requires fresh explicit current-object adoption for in-place revision. Complete native
+content verification and destructive recovery remain unavailable. Those checks must not be reported as complete native aggregate deployment.
 
 The selected Part MCP workflow resolves a current owning project revision and uses the existing
 Score compiler. Attack addresses retain the source Event identity and note ordinal; tied
@@ -228,6 +234,72 @@ with its authored value at absolute tolerance `1e-6`. This proves only those sam
 claims complete envelope population. A repeat preserves any existing selected envelope, including
 unsampled user edits. Linear/curve interpolation and complete envelope revision remain unavailable.
 
-Issues30 and31 remain open for owned device insertion/parameter mapping, Mix routing and
-automation integration, attack population/clip geometry revisions, and useful saved/reopened
-ownership recovery. Native host qualification remains in issue22.
+## 5. Population, device controls and current-object adoption
+
+`project_realization_update` preserves existing Event/ordinal attack associations and permits
+whole Event addition/deletion. An existing Event's chord cardinality cannot change in place:
+`UnsupportedChordCardinalityRevision` prevents transferring unknown expression to another
+ordinal. Explicit deletion followed by a new Event is a separate lifecycle. Selective native
+remove-by-ID, detached existing-note application and new specification insertion run in that
+order, with full actual ID/value readback after each phase. An intermediate mismatch stops
+later phases. Returned added IDs remain may-have-created evidence immediately; new operational
+associations require unique actual value-to-key matching, independently of return order. The
+fourteen-field population supplement independently verifies changes, absence, additions,
+untouched notes, retained IDs and cardinality. No phase compensates or replays after uncertainty.
+
+The finite bridge frame limit is 16 MiB. Admission includes the immutable request, outer
+success/value envelope, complete prospective notes/IDs, before/after evidence and optional device
+state. Every future finite float reserves 32 ASCII bytes and native IDs reserve their signed
+int32 width; escaped text and wire separators are counted. Known note evidence is budgeted before
+Track creation, and actual new Track/Clip metadata is checked before note insertion. Failure
+while learning native metadata retains any created objects as partial evidence. Existing-ID,
+population, creation and adoption builders return `ManagedReplyCapacityExceeded` (4113) before
+the product fence when their conservative bound exceeds capacity. This is a byte admission
+boundary, not a guarantee that every population below 65536 fits. A direct request whose echoed
+failure journal itself cannot fit is rejected before reservation with a compact error and no
+native calls; it is not journal-confirmed `declined`. Native error text is bounded to 1024
+characters. The conservative bound can decline a request whose eventual actual reply would fit.
+
+`project_realization_author_timbre` applies the explicit physical selections returned by
+`project_realization_plan_timbre`: Drift cutoff in Hz and ADSR stage durations in milliseconds.
+The original legacy rendering mappings stay unchanged. A stable source key is derived from the
+owning profile ID. Insertion requires an actual empty retained chain and a separately retained
+Track append grant; revision requires the exact retained source Device/parameter cohort. All
+native formatter candidates resolve before parameter setters. Actual formatted readback must
+meet the requested tolerance; untouched parameters, modes and note IDs remain guarded. Insertion
+can create a device before its actual descriptors or availability can be fully resolved. Late
+failure retains that object and blocks replay. Knob agreement does not qualify DSP equivalence;
+unselected profile leaves and effects remain explicit residuals.
+
+The native helper supports Drift, Utility and EQ Eight, at most 16 flat devices, 32 physical
+controls per device and 512 parameter descriptors. The current owning public device path admits
+an empty or source-only Drift chain. Additional effect-chain authoring requires its owning
+mapping and order contract; the helper's inventory alone is not an end-to-end product claim.
+Full device capture observes a finite floating-point default only for continuous parameters.
+For quantized parameters it records `default_value:null` without accessing that getter, as
+required by the [DeviceParameter contract](https://docs.cycling74.com/apiref/lom/deviceparameter/).
+The native consumer requires this distinction rather than manufacturing a default.
+Capture metadata never confers append authority. Only original managed Track creation or fenced
+explicit current-device adoption grants it; a clean same-handle recovery may retain an existing
+grant. Ordinary note acknowledgement cannot upgrade preserve-only device authority.
+
+`project_realization_preview_adoption` selects current Sunny-tagged Track/Slot/Clip identities
+and captures their actual notes/IDs, Set metadata and device cohort. Tags select candidates;
+they are not proof of historical identity. The preview reports whether the current compiled
+owning Score and unambiguous attack associations match, and grants no authority.
+`project_realization_adopt` requires literal approval of that exact preview and durably fences
+the fresh authority transition. It grants existing-note updates, population revision and absent
+mixer Step lanes while preserving unknown MPE, Follow Actions, envelopes and devices. Later
+current-state/epoch/handle changes decline. A successful fenced adoption establishes a new
+current authority boundary for that Part: earlier uncertainty stays saved/queryable and is never
+an absence or retry proof; uncertainty after the new boundary still blocks dependent writes.
+
+`project_realization_preview_device_adoption` and `project_realization_adopt_devices` grant
+separate current-device authority. Existing selected controls must already match the owning
+physical targets at preview and approval; these operations never repair mismatches with setters.
+An approved empty chain grants source insertion and owned-effect append on the exact current
+Track without claiming formatter evidence for devices not yet inserted. A current known-chain
+grant does not restore historical native identity. Unknown plugins/racks remain preserve-only.
+After reopening a real Set, these in-place paths require final host qualification of actual
+current identities, IDs, parameter/mode state and persistence. Native host qualification remains
+in issue22; essential geometry, routing and further automation integration keep issues30/31 open.

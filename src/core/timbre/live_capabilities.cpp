@@ -109,7 +109,29 @@ Disposition require_enum_mode(const LiveNativeDeviceProbe& device,
 
 Disposition validate_modes(const LiveNativeParameterCapability& capability,
                            const LiveNativeDeviceProbe& device) {
-    if (capability.mode == Mode::UtilityStereo) {
+    if (capability.mode == Mode::DriftVoice || capability.mode == Mode::DriftFilter) {
+        for (const auto* name : {"voice_mode", "voice_count"}) {
+            const auto index = device.integer_properties.find(std::string{name} + "_index");
+            const auto list = device.string_list_properties.find(std::string{name} + "_list");
+            if (index == device.integer_properties.end() ||
+                list == device.string_list_properties.end())
+                return Disposition::ObservationUnavailable;
+            if (list->second.empty() || list->second.size() > 64 || index->second < 0 ||
+                static_cast<std::size_t>(index->second) >= list->second.size())
+                return Disposition::InvalidDomain;
+            std::set<std::string> unique;
+            for (const auto& item : list->second)
+                if (item.empty() || !unique.insert(item).second) return Disposition::InvalidDomain;
+        }
+        if (capability.mode == Mode::DriftFilter) {
+            const auto type = parameter_by_original_name(device, "LP Type");
+            if (!type.parameter)
+                return type.disposition == Disposition::ParameterMismatch
+                           ? Disposition::ObservationUnavailable
+                           : type.disposition;
+            return validate_parameter(*type.parameter, Kind::Quantized, 2);
+        }
+    } else if (capability.mode == Mode::UtilityStereo) {
         for (const auto& [name, label] : std::array{std::pair{"Channel Mode", "Stereo"},
                                                     std::pair{"Mono", "Off"},
                                                     std::pair{"Mute", "Off"}}) {
@@ -155,6 +177,8 @@ const LiveNativeRegistryProvenance& live_native_registry_provenance() {
          "Push2/custom_bank_definitions.py:2619-2640",
          "Push2/device_options.py:49-83",
          "Push2/eq8.py:16-35",
+         "Push2/custom_bank_definitions.py:1565-1625",
+         "Push2/drift.py:45-52",
          "_MxDCore/LomTypes.py:375-390,425-429"},
         false};
     return provenance;
@@ -163,7 +187,7 @@ const LiveNativeRegistryProvenance& live_native_registry_provenance() {
 std::span<const LiveNativeParameterCapability> live_native_parameter_registry() {
     static const auto entries = [] {
         std::vector<LiveNativeParameterCapability> result;
-        result.reserve(44);
+        result.reserve(48);
         for (const auto& [id, parameter, unit] :
              std::array{std::tuple{"utility.gain", "Gain", Unit::Decibels},
                         std::tuple{"utility.balance", "Balance", Unit::StereoBalance},
@@ -217,6 +241,24 @@ std::span<const LiveNativeParameterCapability> live_native_parameter_registry() 
                           Mode::Eq8Stereo,
                           0,
                           "_Generic/Devices.py:404"});
+        for (const auto& [id, parameter, unit, mode] : std::array{
+                 std::tuple{"drift.lp.frequency", "LP Freq", Unit::Hertz, Mode::DriftFilter},
+                 std::tuple{
+                     "drift.env.1.attack", "Env 1 Attack", Unit::Milliseconds, Mode::DriftVoice},
+                 std::tuple{
+                     "drift.env.1.decay", "Env 1 Decay", Unit::Milliseconds, Mode::DriftVoice},
+                 std::tuple{
+                     "drift.env.1.release", "Env 1 Release", Unit::Milliseconds, Mode::DriftVoice}})
+            result.push_back({id,
+                              "Drift",
+                              "Drift",
+                              parameter,
+                              Kind::Continuous,
+                              std::nullopt,
+                              unit,
+                              mode,
+                              0,
+                              "Push2/custom_bank_definitions.py:1565-1625;Push2/drift.py:45-52"});
         return result;
     }();
     return entries;
@@ -243,11 +285,11 @@ LiveNativeMappingPreflight preflight_live_native_parameter(const std::string& ca
         return decline(
             Disposition::ObservationUnavailable,
             "Native device identity/order/activity or full parameter population was not observed");
-    if (*observed.class_name != entry->device_class_name || *observed.device_type != 2 ||
-        !*observed.is_active || *observed.can_have_chains)
-        return decline(
-            Disposition::DeviceMismatch,
-            "Expected an active flat native audio device with the exact registered class");
+    const std::uint8_t required_type = entry->device_class_name == "Drift" ? 1 : 2;
+    if (*observed.class_name != entry->device_class_name ||
+        *observed.device_type != required_type || !*observed.is_active || *observed.can_have_chains)
+        return decline(Disposition::DeviceMismatch,
+                       "Expected an active flat native device with the registered class and role");
     if (*observed.chain_index != expected_chain_index)
         return decline(Disposition::WrongChainOrder,
                        "Actual native chain order differs from the planned position");
@@ -283,7 +325,7 @@ LiveNativeMappingPreflight preflight_live_native_parameter(const std::string& ca
             return decline(Disposition::InvalidIntent, "Requested internal value must be finite");
     } else if (const auto* physical = std::get_if<LiveNativePhysicalValue>(&intent)) {
         if (!std::isfinite(physical->value) || physical->unit < Unit::Decibels ||
-            physical->unit > Unit::StereoBalance)
+            physical->unit > Unit::Milliseconds)
             return decline(Disposition::InvalidIntent,
                            "Requested physical value and unit must be valid and finite");
         return decline(Disposition::UnsupportedUnitMapping,

@@ -1,10 +1,14 @@
 #include <array>
 #include <cmath>
+#include <map>
 #include <ranges>
 #include <set>
+#include <sunny/infrastructure/ableton/detail/managed_capacity.hpp>
+#include <sunny/infrastructure/ableton/detail/managed_devices.hpp>
 #include <sunny/infrastructure/ableton/detail/managed_fingerprint.hpp>
 #include <sunny/infrastructure/ableton/detail/managed_notes.hpp>
 #include <sunny/infrastructure/ableton/managed_realization.hpp>
+#include <sunny/infrastructure/ableton/managed_recovery.hpp>
 
 namespace sunny::infrastructure {
 namespace {
@@ -43,7 +47,12 @@ bool mutation(const LomRequest& request) {
             request.property_or_method == "sunny_managed_replace_clip" ||
             request.property_or_method == "sunny_managed_rebind" ||
             request.property_or_method == "sunny_managed_author_envelope" ||
-            request.property_or_method == "sunny_managed_update_notes");
+            request.property_or_method == "sunny_managed_update_notes" ||
+            request.property_or_method == "sunny_managed_revise_note_population" ||
+            request.property_or_method == "sunny_managed_adopt_clip" ||
+            request.property_or_method == "sunny_managed_insert_device" ||
+            request.property_or_method == "sunny_managed_update_device_parameters" ||
+            request.property_or_method == "sunny_managed_adopt_devices");
 }
 
 json context_json(const ManagedBridgeContext& context) {
@@ -314,6 +323,10 @@ bool observation_valid(const json& value) {
             notes.push_back(managed_detail::semantic_note(note));
         if (!notes_match(notes, value.at("manifest").at("notes"))) return false;
     }
+    if (!managed_device_detail::device_supplement_valid(value)) return false;
+    if (value.contains("device_identity") && value.at("manifest").at("devices_empty") !=
+                                                 value.at("device_identity").at("cohort").empty())
+        return false;
     const auto digest = managed_detail::managed_digest(value.at("manifest"));
     return digest && value.at("content_fingerprint") == *digest;
 }
@@ -337,6 +350,16 @@ bool result_matches_intent(const json& observation, const json& intent, std::str
     if (observation.at("track_tag") != "Sunny|" + project + "|" + binding + "|track" ||
         observation.at("clip_tag") != "Sunny|" + project + "|" + binding + "|clip")
         return false;
+    if (name == "sunny_managed_adopt_clip")
+        return managed_detail::adoption_acknowledgement_valid(intent, observation);
+    if (name == "sunny_managed_adopt_devices")
+        return managed_device_detail::device_adoption_result_matches_request(intent, observation);
+    if (name == "sunny_managed_insert_device" || name == "sunny_managed_update_device_parameters") {
+        return observation.contains("device_update") &&
+               observation.at("device_update").contains("before_observation") &&
+               observation_valid(observation.at("device_update").at("before_observation")) &&
+               managed_device_detail::device_result_matches_request(name, intent, observation);
+    }
     if (name == "sunny_managed_create_clip" || name == "sunny_managed_replace_clip") {
         if (!observation.contains("observed_notes_match_request") ||
             !observation.contains("observed_clip_properties_match_request"))
@@ -353,6 +376,132 @@ bool result_matches_intent(const json& observation, const json& intent, std::str
     }
     if (name == "sunny_managed_rebind")
         return observation.at("manifest") == intent.at("expected_manifest");
+    if (name == "sunny_managed_revise_note_population") {
+        if (!observation.contains("note_identity") ||
+            !observation.contains("note_population_update"))
+            return false;
+        const auto& update = observation.at("note_population_update");
+        if (!fields(update,
+                    {"before_manifest",
+                     "before_note_identity",
+                     "before_note_identity_fingerprint",
+                     "changes_submitted",
+                     "deletions_submitted",
+                     "additions_submitted",
+                     "returned_added_note_ids",
+                     "addition_associations",
+                     "observed_changes_match_request",
+                     "observed_deletions_absent",
+                     "observed_additions_match_request",
+                     "untouched_notes_preserved",
+                     "retained_note_ids_preserved",
+                     "observed_population_cardinality_match"}) ||
+            !identity_evidence_valid(update.at("before_note_identity"),
+                                     update.at("before_note_identity_fingerprint")))
+            return false;
+        for (const auto* category : {"changes", "deletions", "additions"}) {
+            const auto count = std::string(category) + "_submitted";
+            if (!integer(update.at(count), 0, 65536) ||
+                update.at(count).get<std::size_t>() != intent.at(category).size())
+                return false;
+        }
+        for (const auto* flag : {"observed_changes_match_request",
+                                 "observed_deletions_absent",
+                                 "observed_additions_match_request",
+                                 "untouched_notes_preserved",
+                                 "retained_note_ids_preserved",
+                                 "observed_population_cardinality_match"})
+            if (!update.at(flag).is_boolean()) return false;
+        bool structural = false, complete = false;
+        if (!manifest_valid(update.at("before_manifest"), structural, complete) ||
+            !note_update_boundary(update.at("before_manifest")) ||
+            managed_detail::managed_digest(update.at("before_manifest")) !=
+                std::optional<std::string>{
+                    intent.at("expected_content_fingerprint").get<std::string>()} ||
+            update.at("before_manifest").at("entire_clip_population_observed") != true ||
+            observation.at("note_identity").at("entire_clip_population_observed") != true)
+            return false;
+        json before_values = json::array();
+        for (const auto& note : update.at("before_note_identity").at("notes"))
+            before_values.push_back(managed_detail::semantic_note(note));
+        if (!notes_match(before_values, update.at("before_manifest").at("notes"))) return false;
+        const auto proposed = managed_detail::proposed_population(
+            update.at("before_note_identity"),
+            intent,
+            update.at("before_manifest").at("clip").at("end_marker").get<double>());
+        if (!proposed) return false;
+        const auto before = managed_detail::note_map(update.at("before_note_identity"));
+        const auto after = managed_detail::note_map(observation.at("note_identity"));
+        std::set<std::int32_t> changed, deleted, added;
+        for (const auto& change : intent.at("changes"))
+            changed.insert(change.at("note_id").get<std::int32_t>());
+        for (const auto& deletion : intent.at("deletions"))
+            deleted.insert(deletion.at("note_id").get<std::int32_t>());
+        const auto& returned = update.at("returned_added_note_ids");
+        if (!returned.is_array() || returned.size() != intent.at("additions").size()) return false;
+        for (const auto& id : returned) {
+            if (!managed_detail::note_integer(id, INT32_MIN, INT32_MAX) ||
+                !added.insert(id.get<std::int32_t>()).second ||
+                before.contains(id.get<std::int32_t>()))
+                return false;
+        }
+        bool changes_match = true, deletions_absent = true, untouched = true, retained = true;
+        for (const auto id : deleted)
+            deletions_absent = deletions_absent && !after.contains(id);
+        for (const auto& [id, note] : before) {
+            if (deleted.contains(id)) continue;
+            const auto found = after.find(id);
+            retained = retained && found != after.end();
+            const auto& expected = changed.contains(id) ? proposed->at(id) : note;
+            const bool match =
+                found != after.end() && managed_detail::managed_digest(found->second) ==
+                                            managed_detail::managed_digest(expected);
+            if (changed.contains(id))
+                changes_match = changes_match && match;
+            else
+                untouched = untouched && match;
+        }
+        json associations = json::array();
+        auto remaining = added;
+        bool additions_match = true;
+        // Index each actual returned-ID value once. Exact typed canonical bytes
+        // close digest collisions without assuming native insertion order.
+        std::map<std::string, std::map<std::string, std::set<std::int32_t>>> by_value;
+        for (const auto id : remaining) {
+            const auto found = after.find(id);
+            if (found == after.end()) continue;
+            const auto note = managed_detail::semantic_note(found->second);
+            by_value[*managed_detail::managed_digest(note)]
+                    [*managed_detail::canonical_managed_bytes(note)]
+                        .insert(id);
+        }
+        for (const auto& addition : intent.at("additions")) {
+            const auto note = managed_detail::semantic_note(addition.at("note"));
+            auto digest = by_value.find(*managed_detail::managed_digest(note));
+            if (digest == by_value.end()) {
+                additions_match = false;
+                continue;
+            }
+            auto value = digest->second.find(*managed_detail::canonical_managed_bytes(note));
+            if (value == digest->second.end() || value->second.size() != 1) {
+                additions_match = false;
+                continue;
+            }
+            const auto id = *value->second.begin();
+            value->second.clear();
+            remaining.erase(id);
+            associations.push_back(json{{"note_key", addition.at("note_key")}, {"note_id", id}});
+        }
+        additions_match = additions_match && remaining.empty();
+        return update.at("addition_associations") == associations &&
+               update.at("observed_changes_match_request").get<bool>() == changes_match &&
+               update.at("observed_deletions_absent").get<bool>() == deletions_absent &&
+               update.at("observed_additions_match_request").get<bool>() == additions_match &&
+               update.at("untouched_notes_preserved").get<bool>() == untouched &&
+               update.at("retained_note_ids_preserved").get<bool>() == retained &&
+               update.at("observed_population_cardinality_match").get<bool>() ==
+                   (after.size() == proposed->size() + added.size());
+    }
     if (name == "sunny_managed_update_notes") {
         if (!observation.contains("note_identity") || !observation.contains("note_update"))
             return false;
@@ -508,12 +657,29 @@ Result<ManagedOperationReceipt> observe_journal(ManagedOperationReceipt result,
         json{{"name", result.request.property_or_method}, {"request", *intent}});
     if (!request_digest || journal.at("request_fingerprint") != *request_digest) return malformed();
     if (outcome == "acknowledged") {
-        const bool native_mutation = result.request.property_or_method != "sunny_managed_rebind";
+        const bool native_mutation =
+            result.request.property_or_method != "sunny_managed_rebind" &&
+            result.request.property_or_method != "sunny_managed_adopt_clip" &&
+            result.request.property_or_method != "sunny_managed_adopt_devices";
         if (journal.at("native_mutation_started").get<bool>() != native_mutation ||
             !journal.contains("result") || !observation_valid(journal.at("result")) ||
             !result_matches_intent(
                 journal.at("result"), *intent, result.request.property_or_method))
             return malformed();
+        if (result.request.property_or_method == "sunny_managed_revise_note_population") {
+            json calls = json::array();
+            if (!intent->at("deletions").empty()) calls.push_back("remove_notes_by_id");
+            if (!intent->at("changes").empty()) calls.push_back("apply_note_modifications");
+            if (!intent->at("additions").empty()) calls.push_back("add_new_notes");
+            if (!journal.contains("progress") ||
+                !fields(journal.at("progress"),
+                        {"started_calls", "returned_calls", "returned_added_note_ids"}) ||
+                journal.at("progress").at("started_calls") != calls ||
+                journal.at("progress").at("returned_calls") != calls ||
+                journal.at("progress").at("returned_added_note_ids") !=
+                    journal.at("result").at("note_population_update").at("returned_added_note_ids"))
+                return malformed();
+        }
         result.outcome = ManagedOperationOutcome::Acknowledged;
     } else if (outcome == "declined") {
         if (journal.at("native_mutation_started").get<bool>()) return malformed();
@@ -610,7 +776,9 @@ Result<ManagedClipProjection> managed_clip_projection(const CommandBuffer& recor
     if (!created || !start || !end || !numerator || !denominator)
         return std::unexpected(ErrorCode::ProtocolError);
     const ManagedBridgeContext test_context{"projection", "projection"};
-    if (!make_managed_clip_request(test_context, "projection", "projection", "projection", result))
+    const auto shape =
+        make_managed_clip_request(test_context, "projection", "projection", "projection", result);
+    if (!shape && shape.error() != ErrorCode::ManagedReplyCapacityExceeded)
         return std::unexpected(ErrorCode::ProtocolError);
     return result;
 }
@@ -652,6 +820,11 @@ make_managed_clip_request(const ManagedBridgeContext& context,
         expected_content_fingerprint ? "sunny_managed_replace_clip" : "sunny_managed_create_clip",
         {payload});
     if (!LomProtocol::validate_request(request)) return std::unexpected(ErrorCode::ProtocolError);
+    if (!managed_detail::creation_response_fits(payload,
+                                                expected_content_fingerprint
+                                                    ? "sunny_managed_replace_clip"
+                                                    : "sunny_managed_create_clip"))
+        return std::unexpected(ErrorCode::ManagedReplyCapacityExceeded);
     return request;
 }
 
@@ -1132,6 +1305,50 @@ Result<LomRequest> make_managed_note_update_request(const ManagedBridgeContext& 
               {"expected_content_fingerprint", binding.observation.at("content_fingerprint")},
               {"changes", changes}}});
     if (!LomProtocol::validate_request(request)) return std::unexpected(ErrorCode::ProtocolError);
+    if (!managed_detail::note_response_fits(
+            *payload(request),
+            request.property_or_method,
+            binding.observation,
+            binding.observation.at("note_identity").at("notes").size()))
+        return std::unexpected(ErrorCode::ManagedReplyCapacityExceeded);
+    return request;
+}
+
+Result<LomRequest> make_managed_note_population_request(const ManagedBridgeContext& context,
+                                                        const std::string& operation_id,
+                                                        const ManagedBindingReceipt& binding,
+                                                        const json& changes,
+                                                        const json& deletions,
+                                                        const json& additions) {
+    if (!context_valid(context) || !managed_binding_from_json(managed_binding_to_json(binding)) ||
+        context.document_token != binding.context.document_token ||
+        context.bridge_instance != binding.context.bridge_instance ||
+        !binding.observation.contains("note_identity") ||
+        !note_update_boundary(binding.observation.at("manifest")))
+        return std::unexpected(ErrorCode::ProtocolError);
+    auto request = LomProtocol::call_method(
+        LomPaths::song(),
+        "sunny_managed_revise_note_population",
+        {json{{"document_token", context.document_token},
+              {"operation_id", operation_id},
+              {"project_key", binding.project_key},
+              {"binding_key", binding.binding_key},
+              {"expected_content_fingerprint", binding.observation.at("content_fingerprint")},
+              {"changes", changes},
+              {"deletions", deletions},
+              {"additions", additions}}});
+    const auto proposed = managed_detail::proposed_population(
+        binding.observation.at("note_identity"),
+        *payload(request),
+        binding.observation.at("manifest").at("clip").at("end_marker").get<double>());
+    if (!LomProtocol::validate_request(request) || !proposed)
+        return std::unexpected(ErrorCode::ProtocolError);
+    if (!managed_detail::note_response_fits(*payload(request),
+                                            request.property_or_method,
+                                            binding.observation,
+                                            proposed->size() + additions.size(),
+                                            true))
+        return std::unexpected(ErrorCode::ManagedReplyCapacityExceeded);
     return request;
 }
 } // namespace sunny::infrastructure

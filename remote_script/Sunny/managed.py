@@ -11,6 +11,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import re
 import struct
 import uuid
 from typing import Any
@@ -21,6 +22,12 @@ from .handler import (
     _valid_note_dictionary,
     _valid_step_envelope_author,
     _valid_step_envelope_query,
+)
+from .managed_capacity import (
+    guard_creation_response_capacity,
+    guard_managed_response_capacity,
+    guard_note_response_capacity,
+    guard_operation_reservation_capacity,
 )
 
 MANAGED_SCHEMA_VERSION = 1
@@ -35,6 +42,13 @@ MANAGED_CALLS = frozenset(
         "sunny_managed_rebind",
         "sunny_managed_author_envelope",
         "sunny_managed_update_notes",
+        "sunny_managed_revise_note_population",
+        "sunny_managed_preview_adoption",
+        "sunny_managed_adopt_clip",
+        "sunny_managed_insert_device",
+        "sunny_managed_update_device_parameters",
+        "sunny_managed_preview_devices",
+        "sunny_managed_adopt_devices",
     }
 )
 MANAGED_READS = frozenset(
@@ -43,6 +57,8 @@ MANAGED_READS = frozenset(
         "sunny_managed_operation",
         "sunny_managed_observe",
         "sunny_managed_sample_envelope",
+        "sunny_managed_preview_adoption",
+        "sunny_managed_preview_devices",
     }
 )
 
@@ -219,10 +235,17 @@ def _proposed_notes(
             raise RuntimeError("Managed proposed note is outside the generated marker domain")
         if any(note[name] != before[note_id][name] for name in ("pitch", "start_time", "duration")):
             geometry.add(note_id)
+    _geometry_admissible(before, proposed, geometry)
+    return proposed
+
+
+def _geometry_admissible(
+    before: dict[int, Any], proposed: dict[int, Any], geometry: set[int]
+) -> None:
     # No epsilon: adjacent half-open intervals are safe; any positive overlap
     # involving a moved/resized/repitched note can trigger Live's replacement.
     if not geometry:
-        return proposed
+        return
     if any(
         not _finite_number(note["start_time"] + note["duration"])
         for population in (before, proposed)
@@ -238,14 +261,17 @@ def _proposed_notes(
         if not any(note["note_id"] in geometry for note in notes):
             continue
         notes.sort(key=lambda note: note["start_time"])
-        for index, first in enumerate(notes):
-            for second in notes[index + 1 :]:
-                if second["start_time"] >= first["start_time"] + first["duration"]:
-                    break
-                if first["note_id"] in geometry or second["note_id"] in geometry:
-                    raise RuntimeError(
-                        "Managed note collision: same-pitch half-open intervals overlap"
-                    )
+        furthest_end = float("-inf")
+        changed_end = float("-inf")
+        for note in notes:
+            start = note["start_time"]
+            changed = note["note_id"] in geometry
+            if (changed and furthest_end > start) or changed_end > start:
+                raise RuntimeError("Managed note collision: same-pitch half-open intervals overlap")
+            end = start + note["duration"]
+            furthest_end = max(furthest_end, end)
+            if changed:
+                changed_end = max(changed_end, end)
     # The source-observed vector API does not establish atomic collision
     # handling for a batch. Until host-qualified, no destination may cover
     # another retained note's baseline interval, even if that note also moves.
@@ -276,6 +302,93 @@ def _proposed_notes(
                 raise RuntimeError(
                     "IntermediateCollisionUnavailable: destination covers another retained baseline note"
                 )
+
+
+def _valid_population_request(value: dict[str, Any]) -> bool:
+    changes: Any = value.get("changes")
+    deletions: Any = value.get("deletions")
+    additions: Any = value.get("additions")
+    if any(
+        type(items) is not list or len(items) > 65536 for items in (changes, deletions, additions)
+    ):
+        return False
+    if not any((changes, deletions, additions)) or (changes and not _valid_note_changes(changes)):
+        return False
+    ids = {c["note_id"] for c in changes}
+    for deletion in deletions:
+        if (
+            type(deletion) is not dict
+            or set(deletion) != {"note_id", "expected"}
+            or type(deletion["note_id"]) is not int
+            or not -(1 << 31) <= deletion["note_id"] < (1 << 31)
+            or deletion["note_id"] in ids
+            or type(deletion["expected"]) is not dict
+            or set(deletion["expected"]) != _NOTE_FIELDS
+            or not all(_valid_note_value(k, v) for k, v in deletion["expected"].items())
+        ):
+            return False
+        ids.add(deletion["note_id"])
+    keys = set()
+    for addition in additions:
+        if (
+            type(addition) is not dict
+            or set(addition) != {"note_key", "note"}
+            or type(addition["note_key"]) is not str
+            or not re.fullmatch(r"e[1-9][0-9]{0,19}_n(?:0|[1-9][0-9]{0,4})", addition["note_key"])
+            or addition["note_key"] in keys
+            or type(addition["note"]) is not dict
+            or set(addition["note"]) != _NOTE_FIELDS
+            or not all(_valid_note_value(k, v) for k, v in addition["note"].items())
+            or float(addition["note"]["start_time"]) < 0.0
+        ):
+            return False
+        event, ordinal = addition["note_key"][1:].split("_n")
+        if int(event) > (1 << 64) - 1 or int(ordinal) > 65535:
+            return False
+        keys.add(addition["note_key"])
+    return True
+
+
+def _proposed_population(
+    identity: dict[str, Any], request: dict[str, Any], clip_end: float
+) -> dict[int, Any]:
+    if not identity["entire_clip_population_observed"]:
+        raise RuntimeError(
+            "NotePopulationUnavailable: population revisions require Live 11.1+ full readback"
+        )
+    before = {n["note_id"]: n for n in identity["notes"]}
+    retained = dict(before)
+    for deletion in request["deletions"]:
+        note_id = deletion["note_id"]
+        if note_id not in retained or _digest(_semantic_note(retained[note_id])) != _digest(
+            _semantic_note(deletion["expected"])
+        ):
+            raise RuntimeError("Managed deletion identity/value drift")
+        del retained[note_id]
+    if len(retained) + len(request["additions"]) > 65536:
+        raise RuntimeError("Managed final note population exceeds 65536")
+    current = {"entire_clip_population_observed": True, "notes": list(retained.values())}
+    proposed = (
+        _proposed_notes(current, request["changes"], clip_end)
+        if request["changes"]
+        else copy.deepcopy(retained)
+    )
+    # Synthetic geometry IDs are private arithmetic labels, never native authority.
+    final = copy.deepcopy(proposed)
+    geometry = set()
+    synthetic = -(1 << 31)
+    for addition in request["additions"]:
+        while synthetic in before or synthetic in final:
+            synthetic += 1
+        note = _semantic_note(addition["note"])
+        if not 0.0 <= note["start_time"] < clip_end or not _finite_number(
+            note["start_time"] + note["duration"]
+        ):
+            raise RuntimeError("Managed addition outside generated finite marker domain")
+        final[synthetic] = {"note_id": synthetic, **note}
+        geometry.add(synthetic)
+        synthetic += 1
+    _geometry_admissible(proposed, final, geometry)
     return proposed
 
 
@@ -286,6 +399,25 @@ def valid_managed_request(name: str, args: list[Any]) -> bool:
     if name not in MANAGED_CALLS or len(args) != 1 or type(args[0]) is not dict:
         return False
     value = args[0]
+    if name in (
+        "sunny_managed_insert_device",
+        "sunny_managed_update_device_parameters",
+        "sunny_managed_preview_devices",
+        "sunny_managed_adopt_devices",
+    ):
+        from .managed_devices import valid_managed_device_request
+
+        device_accepted: bool = valid_managed_device_request(name, args)
+        return device_accepted
+    if name in ("sunny_managed_preview_adoption", "sunny_managed_adopt_clip"):
+        from .managed_recovery import valid_adoption_request, valid_preview_request
+
+        recovery_accepted: bool = (
+            valid_preview_request(value)
+            if name == "sunny_managed_preview_adoption"
+            else valid_adoption_request(value)
+        )
+        return recovery_accepted
     if not _key(value.get("document_token")):
         return False
     if name == "sunny_managed_operation":
@@ -319,6 +451,14 @@ def valid_managed_request(name: str, args: list[Any]) -> bool:
             and _fingerprint(value["expected_content_fingerprint"])
             and _valid_step_envelope_author(value["lane"])
             and value["lane"]["parameter"]["kind"] in ("volume", "panning", "send")
+        )
+    if name == "sunny_managed_revise_note_population":
+        return (
+            set(value)
+            == operation_keys
+            | {"expected_content_fingerprint", "changes", "deletions", "additions"}
+            and _fingerprint(value["expected_content_fingerprint"])
+            and _valid_population_request(value)
         )
     if name == "sunny_managed_update_notes":
         return (
@@ -362,6 +502,14 @@ class ManagedRegistry:
         self._bindings: dict[tuple[str, str], dict[str, Any]] = {}
         self._operations: dict[str, dict[str, Any]] = {}
         self._author_context: Any = None
+        self._reset_helpers()
+
+    def _reset_helpers(self) -> None:
+        from .managed_devices import ManagedDevices
+        from .managed_recovery import ManagedRecovery
+
+        self._devices = ManagedDevices(self)
+        self._recovery = ManagedRecovery(self, self._devices)
 
     def attach_handler(self, handler: Any) -> None:
         """Supply the existing adapter; all callbacks still run on its Live dispatch."""
@@ -381,6 +529,7 @@ class ManagedRegistry:
             self._bindings.clear()
             self._operations.clear()
             self._author_context = None
+            self._reset_helpers()
         return song
 
     @staticmethod
@@ -612,7 +761,7 @@ class ManagedRegistry:
             "mpe_note_expression_state_observed": False,
             "follow_actions_state_observed": False,
         }
-        return {
+        result = {
             "track_index": track_index,
             "slot_index": slot_index,
             "manifest": manifest,
@@ -629,6 +778,8 @@ class ManagedRegistry:
                 "FollowActionsUnavailable: Follow Action settings were not observed",
             ],
         }
+        result.update(self._devices.capture(record))
+        return result
 
     def _parameter_manifest(self, parameter: Any) -> dict[str, Any]:
         import Live
@@ -667,6 +818,7 @@ class ManagedRegistry:
     def _require_guard(
         self, record: dict[str, Any], fingerprint: str, *, destructive: bool = True
     ) -> dict[str, Any]:
+        self._devices.verify_retained_chain(record)
         observation = self._capture(record)
         boundary = "content_boundary_complete" if destructive else "structural_boundary_complete"
         if not observation[boundary]:
@@ -744,6 +896,7 @@ class ManagedRegistry:
         return True
 
     def _require_in_place_guard(self, record: dict[str, Any], fingerprint: str) -> dict[str, Any]:
+        self._devices.verify_retained_chain(record)
         observation = self._capture(record)
         if (
             fingerprint != record.get("content_fingerprint")
@@ -775,6 +928,15 @@ class ManagedRegistry:
             return self._observe(song, request)
         if name == "sunny_managed_sample_envelope":
             return self._sample_envelope(song, request)
+        if name == "sunny_managed_preview_adoption":
+            preview: dict[str, Any] = self._recovery.preview(request)
+            return preview
+        if name == "sunny_managed_preview_devices":
+            record = self._bindings.get((request["project_key"], request["binding_key"]))
+            if record is None:
+                raise RuntimeError("RecoveryUnavailable: managed native handles were not retained")
+            device_preview: dict[str, Any] = self._devices.preview(record, request)
+            return device_preview
         if request["document_token"] != self._document_token:
             return {"outcome": "unknown_epoch", "document_token": self._document_token}
         if name == "sunny_managed_operation":
@@ -811,9 +973,27 @@ class ManagedRegistry:
             "outcome": "pending",
             "native_mutation_started": False,
         }
+        guard_operation_reservation_capacity(operation)
         self._operations[operation_id] = operation
         try:
-            if name == "sunny_managed_create_clip":
+            if name == "sunny_managed_adopt_clip":
+                result = self._recovery.adopt(binding, request, operation)
+            elif name in (
+                "sunny_managed_insert_device",
+                "sunny_managed_update_device_parameters",
+                "sunny_managed_adopt_devices",
+            ):
+                record = self._bindings.get(binding)
+                if record is None:
+                    raise RuntimeError(
+                        "RecoveryUnavailable: managed native handles were not retained"
+                    )
+                result = (
+                    self._devices.adopt(record, request, operation)
+                    if name == "sunny_managed_adopt_devices"
+                    else self._devices.apply(name, record, request, operation)
+                )
+            elif name == "sunny_managed_create_clip":
                 result = self._create(song, binding, request, operation)
             elif name == "sunny_managed_replace_clip":
                 record = self._bindings.get(binding)
@@ -822,13 +1002,16 @@ class ManagedRegistry:
                         "RecoveryUnavailable: managed native handles were not retained"
                     )
                 self._require_guard(record, request["expected_content_fingerprint"])
+                guard_creation_response_capacity(operation)
                 operation["native_mutation_started"] = True
                 record["slot"].delete_clip()
                 record["clip"] = None
-                self._fill_clip(record, request)
+                self._fill_clip(record, request, operation)
                 result = self._seal(record)
             elif name == "sunny_managed_rebind":
                 result = self._rebind(song, binding, request)
+            elif name == "sunny_managed_revise_note_population":
+                result = self._revise_population(binding, request, operation)
             elif name == "sunny_managed_update_notes":
                 result = self._update_notes(binding, request, operation)
             else:
@@ -879,6 +1062,7 @@ class ManagedRegistry:
                     path, record["clip"], request["lane"]
                 )
                 result = {"acknowledgement": acknowledgement, **self._seal(record)}
+            guard_managed_response_capacity(operation, result)
             operation.update({"outcome": "acknowledged", "result": result})
         except Exception as error:
             operation.update(
@@ -886,7 +1070,7 @@ class ManagedRegistry:
                     "outcome": "indeterminate"
                     if operation["native_mutation_started"]
                     else "declined",
-                    "error": str(error),
+                    "error": str(error)[:1024],
                     "partial_binding_retained": binding in self._bindings,
                 }
             )
@@ -961,6 +1145,7 @@ class ManagedRegistry:
         record = self._bindings.get(binding)
         if record is None:
             raise RuntimeError("RecoveryUnavailable: managed native handles were not retained")
+        self._devices.verify_retained_chain(record)
         before = self._capture(record)
         if (
             request["expected_content_fingerprint"] != record.get("content_fingerprint")
@@ -982,6 +1167,7 @@ class ManagedRegistry:
         requested_ids = {change["note_id"] for change in request["changes"]}
         if not requested_ids <= record.get("owned_note_ids", set()):
             raise RuntimeError("Managed note identities are not retained insertion identities")
+        guard_note_response_capacity(operation, before, len(before["note_identity"]["notes"]))
         clip = record["clip"]
         if not all(
             callable(getattr(clip, name, None))
@@ -1036,6 +1222,174 @@ class ManagedRegistry:
         }
         return result
 
+    def _revise_population(
+        self, binding: tuple[str, str], request: dict[str, Any], operation: dict[str, Any]
+    ) -> dict[str, Any]:
+        record = self._bindings.get(binding)
+        if record is None:
+            raise RuntimeError("RecoveryUnavailable: managed native handles were not retained")
+        if record.get(
+            "authority_origin"
+        ) == "explicit_adoption" and "note_population_updates" not in record.get(
+            "allowed_domains", ()
+        ):
+            raise RuntimeError(
+                "PopulationAuthorityUnavailable: explicit adoption did not grant population revision"
+            )
+        before = self._require_in_place_guard(record, request["expected_content_fingerprint"])
+        proposed = _proposed_population(
+            before["note_identity"], request, float(record["clip"].end_marker)
+        )
+        changed = {c["note_id"]: c for c in request["changes"]}
+        deleted = {d["note_id"] for d in request["deletions"]}
+        if not (set(changed) | deleted) <= record.get("owned_note_ids", set()):
+            raise RuntimeError("Managed note identities are not retained insertion identities")
+        clip = record["clip"]
+        methods: list[str] = []
+        if changed:
+            methods.extend(("get_notes_by_id", "apply_note_modifications"))
+        if deleted:
+            methods.append("remove_notes_by_id")
+        if request["additions"]:
+            methods.append("add_new_notes")
+            # Construct and validate actual Python specifications before any native mutation.
+            import Live
+
+            specifications = [
+                Live.Clip.MidiNoteSpecification(**a["note"]) for a in request["additions"]
+            ]
+        else:
+            specifications = []
+        if not all(callable(getattr(clip, name, None)) for name in methods):
+            raise RuntimeError("Native Python population revision API unavailable")
+        guard_note_response_capacity(
+            operation, before, len(proposed) + len(specifications), population=True
+        )
+        selected = clip.get_notes_by_id(tuple(sorted(changed))) if changed else []
+        selected_values = self._handler._midi_notes_dictionary(selected)["notes"] if changed else []
+        expected_selected = [n for n in before["note_identity"]["notes"] if n["note_id"] in changed]
+        if _digest(sorted(selected_values, key=lambda n: n["note_id"])) != _digest(
+            expected_selected
+        ):
+            raise RuntimeError("Managed native selected-note identity changed")
+        final = self._require_in_place_guard(record, request["expected_content_fingerprint"])
+        if (
+            request["document_token"] != self._document_token
+            or final["note_identity_fingerprint"] != before["note_identity_fingerprint"]
+        ):
+            raise RuntimeError("Managed native context/population changed before mutation")
+        progress: dict[str, Any] = {
+            "started_calls": [],
+            "returned_calls": [],
+            "returned_added_note_ids": [],
+        }
+        operation["progress"] = progress
+        previous = {n["note_id"]: n for n in before["note_identity"]["notes"]}
+        retained = {i: n for i, n in previous.items() if i not in deleted}
+
+        def start(name: str) -> None:
+            operation["native_mutation_started"] = True
+            progress["started_calls"].append(name)
+
+        def require_population(expected: dict[int, Any]) -> None:
+            observed = self._capture(record)
+            actual = {n["note_id"]: n for n in observed["note_identity"]["notes"]}
+            # All finite non-note evidence must remain exact; coverage is not opaque completeness.
+            manifest = copy.deepcopy(observed["manifest"])
+            manifest["notes"] = before["manifest"]["notes"]
+            if (
+                not observed["note_identity"]["entire_clip_population_observed"]
+                or _digest(manifest) != before["content_fingerprint"]
+                or _digest([actual[i] for i in sorted(actual)])
+                != _digest([expected[i] for i in sorted(expected)])
+            ):
+                raise RuntimeError(
+                    "Managed population intermediate readback mismatch; no further native writes"
+                )
+
+        if deleted:
+            start("remove_notes_by_id")
+            clip.remove_notes_by_id(tuple(sorted(deleted)))
+            progress["returned_calls"].append("remove_notes_by_id")
+            require_population(retained)
+        if changed:
+            start("apply_note_modifications")
+            for note in selected:
+                for name in changed[note.note_id]["updates"]:
+                    setattr(note, name, proposed[note.note_id][name])
+            clip.apply_note_modifications(selected)
+            progress["returned_calls"].append("apply_note_modifications")
+            require_population(proposed)
+        added_ids = []
+        if specifications:
+            start("add_new_notes")
+            added_ids = list(clip.add_new_notes(specifications))
+            progress["returned_calls"].append("add_new_notes")
+            progress["returned_added_note_ids"] = added_ids
+            if (
+                len(added_ids) != len(specifications)
+                or len(set(added_ids)) != len(added_ids)
+                or any(type(i) is not int or not -(1 << 31) <= i < (1 << 31) for i in added_ids)
+                or set(added_ids) & set(previous)
+            ):
+                raise RuntimeError("Native insertion IDs are invalid, incomplete or reused")
+            record.setdefault("possible_created_note_ids", set()).update(added_ids)
+        result = self._capture(record)
+        after = {n["note_id"]: n for n in result["note_identity"]["notes"]}
+        associations = []
+        remaining = set(added_ids)
+        additions_match = True
+        # Build actual values once; repeated full-population matching would
+        # monopolize Live's main thread at otherwise admitted populations.
+        # Full typed canonical bytes close hash collisions and preserve ambiguity.
+        by_value: dict[bytes, dict[bytes, set[int]]] = {}
+        for note_id in remaining:
+            if note_id in after:
+                canonical = _canonical_bytes(_semantic_note(after[note_id]))
+                by_value.setdefault(hashlib.sha256(canonical).digest(), {}).setdefault(
+                    canonical, set()
+                ).add(note_id)
+        for addition in request["additions"]:
+            canonical = _canonical_bytes(_semantic_note(addition["note"]))
+            matches = by_value.get(hashlib.sha256(canonical).digest(), {}).get(canonical, set())
+            if len(matches) != 1:
+                additions_match = False
+                continue
+            note_id = matches.pop()
+            remaining.remove(note_id)
+            associations.append({"note_key": addition["note_key"], "note_id": note_id})
+        result["note_population_update"] = {
+            "before_manifest": before["manifest"],
+            "before_note_identity": before["note_identity"],
+            "before_note_identity_fingerprint": before["note_identity_fingerprint"],
+            "changes_submitted": len(changed),
+            "deletions_submitted": len(deleted),
+            "additions_submitted": len(specifications),
+            "returned_added_note_ids": added_ids,
+            "addition_associations": associations,
+            "observed_changes_match_request": all(
+                i in after and _digest(after[i]) == _digest(proposed[i]) for i in changed
+            ),
+            "observed_deletions_absent": not deleted & set(after),
+            "observed_additions_match_request": additions_match and not remaining,
+            "untouched_notes_preserved": all(
+                i in after and _digest(n) == _digest(after[i])
+                for i, n in retained.items()
+                if i not in changed
+            ),
+            "retained_note_ids_preserved": set(retained) <= set(after),
+            "observed_population_cardinality_match": len(after)
+            == len(proposed) + len(specifications),
+        }
+        # Full result capacity is checked before accepting a new guard. Partial failures retain handles.
+        guard_managed_response_capacity(operation, result)
+        record["owned_note_ids"].difference_update(deleted)
+        record["owned_note_ids"].update(association["note_id"] for association in associations)
+        supplement = result["note_population_update"]
+        result = self._seal(record)
+        result["note_population_update"] = supplement
+        return result
+
     def _create(
         self,
         song: Any,
@@ -1060,6 +1414,7 @@ class ManagedRegistry:
             raise RuntimeError(
                 "Managed creation requires existing Scene0; no global Scene content is changed"
             )
+        guard_creation_response_capacity(operation)
         before = tuple(song.tracks)
         operation["native_mutation_started"] = True
         try:
@@ -1084,10 +1439,13 @@ class ManagedRegistry:
         record["track"].arm = False
         record["track"].implicit_arm = False
         record["slot"] = record["track"].clip_slots[0]
-        self._fill_clip(record, request)
+        self._fill_clip(record, request, operation)
+        self._devices.retain_created_track_authority(record)
         return self._seal(record)
 
-    def _fill_clip(self, record: dict[str, Any], request: dict[str, Any]) -> None:
+    def _fill_clip(
+        self, record: dict[str, Any], request: dict[str, Any], operation: dict[str, Any]
+    ) -> None:
         try:
             record["slot"].create_clip(float(request["clip_end"]))
         finally:
@@ -1121,11 +1479,18 @@ class ManagedRegistry:
             for note in request["notes"]
         ]
         record["owned_note_ids"] = set()
+        # Newly measurable native metadata cannot be presumed before creating the
+        # Track/Clip. Retain those actual partial handles if this late check fails;
+        # known note populations are already checked before Track creation.
+        guard_creation_response_capacity(operation, self._capture(record))
         if request["notes"]:
             record["owned_note_ids"] = set(self._handler._add_new_notes(clip, request["notes"]))
 
-    def _seal(self, record: dict[str, Any]) -> dict[str, Any]:
+    def _seal(
+        self, record: dict[str, Any], authorized_device_change: bool = False
+    ) -> dict[str, Any]:
         result = self._capture(record)
+        self._devices.seal(record, result, authorized_device_change=authorized_device_change)
         record["content_fingerprint"] = result["content_fingerprint"]
         record["note_identity_fingerprint"] = result["note_identity_fingerprint"]
         result["track_tag"] = record["track_tag"]

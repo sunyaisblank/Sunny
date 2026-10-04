@@ -1,3 +1,4 @@
+#include "managed_note_population_fixture.hpp"
 #include "managed_note_update_fixture.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -5,6 +6,7 @@
 #include <limits>
 #include <sunny/core/score/workflows.hpp>
 #include <sunny/infrastructure/ableton/deployment.hpp>
+#include <sunny/infrastructure/ableton/detail/managed_capacity.hpp>
 #include <sunny/infrastructure/ableton/detail/managed_fingerprint.hpp>
 #include <sunny/infrastructure/ableton/managed_realization.hpp>
 #include <sunny/infrastructure/formats/ableton_score.hpp>
@@ -1339,4 +1341,279 @@ TEST_CASE("Managed same-pitch start swaps cannot rely on unqualified native batc
     changes[0]["updates"] = {{"start_time", 1.0}};
     changes[1]["updates"] = {{"start_time", 3.0}};
     CHECK(make_managed_note_update_request(context, "adjacent", binding, changes));
+}
+
+namespace {
+json population_fixture() {
+    return json::parse(managed_note_population_fixture);
+}
+ManagedBindingReceipt population_before_binding() {
+    const auto fixture = population_fixture();
+    auto before = fixture.at("journal").at("result");
+    const auto& supplement = before.at("note_population_update");
+    const auto manifest = supplement.at("before_manifest");
+    const auto identity = supplement.at("before_note_identity");
+    before.erase("note_population_update");
+    before["manifest"] = manifest;
+    before["note_identity"] = identity;
+    refresh_manifest(before);
+    refresh_identity(before);
+    return {context, "project_a", "part_a", before};
+}
+ManagedOperationReceipt population_prepared() {
+    const auto request = LomProtocol::call_method(LomPaths::song(),
+                                                  "sunny_managed_revise_note_population",
+                                                  {population_fixture().at("request")});
+    auto prepared = prepare_managed_operation(context, request);
+    REQUIRE(prepared);
+    return *prepared;
+}
+} // namespace
+
+TEST_CASE(
+    "Population receipt closes literal independent Python IDs geometry and insertion association",
+    "[managed][lom][population]") {
+    const auto fixture = population_fixture();
+    CHECK(fixture.at("journal").at("request_fingerprint") ==
+          "72e7310be47b01eefce9c56083500d14e133cbfec5990a766195809b81da712e");
+    const auto binding = population_before_binding();
+    const auto& intent = fixture.at("request");
+    const auto request = make_managed_note_population_request(context,
+                                                              "population_a",
+                                                              binding,
+                                                              intent.at("changes"),
+                                                              intent.at("deletions"),
+                                                              intent.at("additions"));
+    REQUIRE(request);
+    CHECK(json::parse(LomProtocol::serialize_request(*request)).at("args").at(0) == intent);
+    const auto prepared = prepare_managed_operation(context, *request);
+    REQUIRE(prepared);
+    Peer peer;
+    peer.responses.push_back({true, LomValue{fixture.at("journal")}, std::nullopt});
+    auto executed = execute_managed_operation(*prepared, peer);
+    REQUIRE(executed);
+    CHECK(executed->outcome == ManagedOperationOutcome::Acknowledged);
+    CHECK_FALSE(executed->explicit_retry_safe());
+    const auto retained = managed_binding_receipt(*executed);
+    REQUIRE(retained);
+    CHECK(managed_binding_from_json(managed_binding_to_json(*retained)));
+    const auto& notes = retained->observation.at("note_identity").at("notes");
+    REQUIRE(notes.size() == 2);
+    CHECK(notes.at(0).at("note_id") == 1);
+    CHECK(notes.at(0).at("pitch") == 62);
+    CHECK(notes.at(0).at("start_time") == 0.0);
+    CHECK(notes.at(0).at("duration") == 1.0);
+    CHECK(notes.at(0).at("velocity") == 96.0);
+    CHECK(notes.at(1).at("note_id") == 3);
+    CHECK(notes.at(1).at("pitch") == 64);
+    CHECK(notes.at(1).at("start_time") == 2.0);
+    CHECK(retained->observation.at("note_population_update").at("addition_associations") ==
+          json::array({{{"note_key", "e3_n0"}, {"note_id", 3}}}));
+    const auto calls = peer.requests.size();
+    CHECK_FALSE(execute_managed_operation(*executed, peer));
+    CHECK(peer.requests.size() == calls);
+}
+
+TEST_CASE(
+    "Population contradictory closure is uncertain but truthful final mismatch remains evidence",
+    "[managed][lom][population]") {
+    const auto prepared = population_prepared();
+    using Change = std::function<void(json&)>;
+    for (const Change& change : std::vector<Change>{
+             [](json& j) { j["native_mutation_started"] = false; },
+             [](json& j) {
+                 j["result"]["note_population_update"]["observed_changes_match_request"] = false;
+             },
+             [](json& j) {
+                 j["result"]["note_population_update"]["observed_deletions_absent"] = false;
+             },
+             [](json& j) {
+                 j["result"]["note_population_update"]["observed_additions_match_request"] = false;
+             },
+             [](json& j) {
+                 j["result"]["note_population_update"]["retained_note_ids_preserved"] = false;
+             },
+             [](json& j) {
+                 j["result"]["note_population_update"]["observed_population_cardinality_match"] =
+                     false;
+             },
+             [](json& j) {
+                 j["result"]["note_population_update"]["addition_associations"][0]["note_id"] = 1;
+             },
+             [](json& j) { j["progress"]["returned_calls"] = json::array(); },
+             [](json& j) { j["progress"]["returned_added_note_ids"] = json::array({999}); },
+             [](json& j) {
+                 j["result"]["note_population_update"]["returned_added_note_ids"] =
+                     json::array({2});
+             },
+             [](json& j) {
+                 j["result"]["note_population_update"]["before_note_identity_fingerprint"] =
+                     std::string(64, '0');
+             },
+             [](json& j) { j["result"]["note_population_update"]["extra"] = 0; }}) {
+        auto bad = population_fixture().at("journal");
+        change(bad);
+        Peer peer;
+        peer.responses.push_back({true, LomValue{bad}, std::nullopt});
+        const auto observed = execute_managed_operation(prepared, peer);
+        REQUIRE(observed);
+        CHECK(observed->outcome == ManagedOperationOutcome::Indeterminate);
+        CHECK_FALSE(managed_binding_receipt(*observed));
+        CHECK_FALSE(observed->explicit_retry_safe());
+    }
+    auto truthful = population_fixture().at("journal");
+    auto& observation = truthful["result"];
+    observation["note_identity"]["notes"][1]["velocity"] = 87.0;
+    observation["manifest"]["notes"][1]["velocity"] = 87.0;
+    observation["note_population_update"]["observed_additions_match_request"] = false;
+    observation["note_population_update"]["addition_associations"] = json::array();
+    refresh_manifest(observation);
+    refresh_identity(observation);
+    Peer peer;
+    peer.responses.push_back({true, LomValue{truthful}, std::nullopt});
+    const auto retained = execute_managed_operation(prepared, peer);
+    REQUIRE(retained);
+    CHECK(retained->outcome == ManagedOperationOutcome::Acknowledged);
+    CHECK(managed_binding_receipt(*retained));
+}
+
+TEST_CASE("Population preflight admits explicit deletion space and rejects malformed or colliding "
+          "revisions",
+          "[managed][lom][population]") {
+    const auto original = population_fixture().at("request");
+    auto binding = population_before_binding();
+    using Change = std::function<void(json&)>;
+    for (const Change& change : std::vector<Change>{
+             [](json& r) { r["deletions"][0]["note_id"] = 999; },
+             [](json& r) {
+                 r["deletions"][0] = {{"note_id", 1}, {"expected", r["changes"][0]["expected"]}};
+             },
+             [](json& r) {
+                 r["additions"][0]["note"]["pitch"] = 62;
+                 r["additions"][0]["note"]["start_time"] = 0.5;
+             },
+             [](json& r) { r["additions"].push_back(r["additions"][0]); },
+             [](json& r) { r["additions"][0]["note_key"] = "e0_n0"; },
+             [](json& r) { r["additions"][0]["note_key"] = "e18446744073709551616_n0"; },
+             [](json& r) { r["additions"][0]["note_key"] = "e3_n65536"; },
+             [](json& r) {
+                 r["additions"][0]["note"]["duration"] = std::numeric_limits<double>::infinity();
+             },
+             [](json& r) { r["changes"] = r["deletions"] = r["additions"] = json::array(); }}) {
+        auto invalid = original;
+        change(invalid);
+        CHECK_FALSE(make_managed_note_population_request(context,
+                                                         "population_a",
+                                                         binding,
+                                                         invalid.at("changes"),
+                                                         invalid.at("deletions"),
+                                                         invalid.at("additions")));
+    }
+    auto useful = original;
+    useful["additions"][0]["note"]["pitch"] = 67; // freed G4 ID2 interval
+    CHECK(make_managed_note_population_request(context,
+                                               "population_a",
+                                               binding,
+                                               useful.at("changes"),
+                                               useful.at("deletions"),
+                                               useful.at("additions")));
+    CHECK(make_managed_note_population_request(
+        context, "population_a", binding, json::array(), useful.at("deletions"), json::array()));
+    CHECK_FALSE(
+        make_managed_note_population_request(context,
+                                             "population_a",
+                                             binding,
+                                             json::array(),
+                                             json::array(),
+                                             useful.at("additions"))); // same G4 interval retained
+}
+
+TEST_CASE("Complete reply byte admission rejects 26000 native notes without a count-only cap",
+          "[managed][lom][notes][capacity]") {
+    auto binding = native_note_binding();
+    auto& observation = binding.observation;
+    observation["note_identity"]["notes"] = json::array();
+    observation["manifest"]["notes"] = json::array();
+    observation["manifest"]["clip"]["end_marker"] = 100000.0;
+    observation["manifest"]["clip"]["loop_end"] = 100000.0;
+    for (std::int32_t id = 1; id <= 26000; ++id) {
+        json values{{"pitch", 60},
+                    {"start_time", id * 2.0 + 0.123456789012345},
+                    {"duration", 0.123456789012345},
+                    {"velocity", 87.12345678901234},
+                    {"mute", false},
+                    {"probability", 0.987654321012345},
+                    {"velocity_deviation", -12.12345678901234},
+                    {"release_velocity", 77.12345678901234}};
+        observation["manifest"]["notes"].push_back(values);
+        values["note_id"] = id;
+        observation["note_identity"]["notes"].push_back(values);
+    }
+    refresh_manifest(observation);
+    refresh_identity(observation);
+    auto expected = observation.at("note_identity").at("notes").at(0);
+    expected.erase("note_id");
+    json changes =
+        json::array({{{"note_id", 1}, {"expected", expected}, {"updates", {{"velocity", 96.0}}}}});
+    const auto rejected = make_managed_note_update_request(context, "update_a", binding, changes);
+    REQUIRE_FALSE(rejected);
+    CHECK(rejected.error() == sunny::core::ErrorCode::ManagedReplyCapacityExceeded);
+    CHECK(observation.dump().size() < 16U * 1024U * 1024U);
+    json scalar{{"unicode", "é漢𝄞\x7f\n"}, {"float", std::numeric_limits<double>::max()}};
+    CHECK(*managed_detail::json_wire_bound(scalar) >= scalar.dump(-1, ' ', true).size());
+    CHECK(managed_detail::note_array_bound(26000, true) >
+          managed_detail::note_array_bound(26000, false));
+}
+
+TEST_CASE("Creation admits known reply bytes before a durable native dispatch fence",
+          "[managed][lom][capacity]") {
+    auto small = projection();
+    REQUIRE(make_managed_clip_request(context, "create_a", "project_a", "part_a", small));
+    auto large = projection();
+    large.clip_end = 100000.0;
+    large.notes = json::array();
+    for (std::int32_t i = 1; i <= 26000; ++i)
+        large.notes.push_back(json{{"pitch", 60},
+                                   {"start_time", i * 2.0 + 0.123456789012345},
+                                   {"duration", 0.123456789012345},
+                                   {"velocity", 87},
+                                   {"mute", false},
+                                   {"probability", 1.0},
+                                   {"velocity_deviation", 0.0},
+                                   {"release_velocity", 77.0}});
+    const auto rejected =
+        make_managed_clip_request(context, "create_a", "project_a", "part_a", large);
+    REQUIRE_FALSE(rejected);
+    CHECK(rejected.error() == sunny::core::ErrorCode::ManagedReplyCapacityExceeded);
+    CHECK(large.notes.dump().size() < 16U * 1024U * 1024U);
+
+    // Projection remains valid musical evidence. Reply admission belongs to the
+    // native builder, allowing the owning facade to report capacity pre-fence.
+    CommandBuffer recording;
+    REQUIRE(recording
+                .send(LomProtocol::call_method(
+                    LomPaths::clip_slot(0, 0), "create_clip", {large.clip_end}))
+                .success);
+    REQUIRE(recording.send(LomProtocol::set_property(LomPaths::clip(0, 0), "start_marker", 0.0))
+                .success);
+    REQUIRE(recording
+                .send(LomProtocol::set_property(LomPaths::clip(0, 0), "end_marker", large.clip_end))
+                .success);
+    REQUIRE(
+        recording.send(LomProtocol::set_property(LomPaths::clip(0, 0), "signature_numerator", 4))
+            .success);
+    REQUIRE(
+        recording.send(LomProtocol::set_property(LomPaths::clip(0, 0), "signature_denominator", 4))
+            .success);
+    REQUIRE(recording
+                .send(LomProtocol::call_method(
+                    LomPaths::clip(0, 0), "add_new_notes", {json{{"notes", large.notes}}}))
+                .success);
+    const auto projected = managed_clip_projection(recording, 0);
+    REQUIRE(projected);
+    CHECK(projected->notes.size() == 26000);
+    const auto native =
+        make_managed_clip_request(context, "create_a", "project_a", "part_a", *projected);
+    REQUIRE_FALSE(native);
+    CHECK(native.error() == sunny::core::ErrorCode::ManagedReplyCapacityExceeded);
 }

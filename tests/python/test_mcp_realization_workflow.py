@@ -23,7 +23,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from live_model import Clip, LiveSet, MidiNoteVector
+from live_model import Clip, LiveSet, MidiNoteVector, Track
 from Sunny import surface as surface_module
 from Sunny.build_identity import BRIDGE_SOURCE_SHA256
 from Sunny.surface import SunnyControlSurface
@@ -84,6 +84,12 @@ class NativeWorkflow:
 
         monkeypatch.setattr(Clip, "get_notes_by_id", select)
         monkeypatch.setattr(Clip, "apply_note_modifications", apply, raising=False)
+        # The selected native Track's parent is its actual Song, including
+        # after provider document replacement. The shared structural model
+        # keeps this relationship in _song but exposes no native getter.
+        monkeypatch.setattr(
+            Track, "canonical_parent", property(lambda track: track._song), raising=False
+        )
         monkeypatch.setattr(surface_module, "_server_configuration", lambda: (bind_host, 0))
 
         def song(surface: Any) -> Any:
@@ -105,6 +111,11 @@ class NativeWorkflow:
                 "sunny_managed_create_clip",
                 "sunny_managed_update_notes",
                 "sunny_managed_author_envelope",
+                "sunny_managed_revise_note_population",
+                "sunny_managed_adopt_clip",
+                "sunny_managed_insert_device",
+                "sunny_managed_update_device_parameters",
+                "sunny_managed_adopt_devices",
             }:
                 records = json.loads(self.history_ledger().read_text())["attempts"]
                 retained = [

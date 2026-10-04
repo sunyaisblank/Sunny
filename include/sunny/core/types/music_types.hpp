@@ -124,6 +124,7 @@ enum class ErrorCode : int {
     ProtocolError = 4110,
     TargetAddressUnrepresentable = 4111,
     TargetValueUnrepresentable = 4112,
+    ManagedReplyCapacityExceeded = 4113,
     McpParseError = 4300,
     McpToolNotFound = 4301,
 

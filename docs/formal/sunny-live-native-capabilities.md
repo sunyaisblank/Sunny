@@ -1,12 +1,12 @@
 # Sunny Native Live Parameter Capabilities
 
-**Registry version:** 1  
+**Registry version:** 2\
 **Status:** Pure source-candidate preflight; host qualification remains open  
-**Scope:** `live_capabilities.hpp` / `live_capabilities.cpp`; no product capability admission
+**Scope:** finite descriptor preflight, read-only unit resolution and explicit owning Timbre planning
 
 ## 1. Evidence and version boundary
 
-The primary product target is Live12.4, with compatible Live12.3 behavior retained.
+The primary product target is Live 12.4, with compatible Live 12.3 behavior retained.
 Exact patch, edition and operating system must be recorded during final host qualification;
 the product target does not promote a public Max API reference to a private Python ABI guarantee.
 
@@ -37,12 +37,16 @@ Source observations are distinct from public Max API and empirical host evidence
 
 ## 2. Finite entries
 
-There are **44** entries. Registry identifiers are distinct from semantic IR paths,
+There are **48** entries. Registry identifiers are distinct from semantic IR paths,
 native object identities and chain indices. Band numbers in identifiers are native
 EQ Eight numbers1..8.
 
 | Identifier | Native class | Original parameter | GUI/semantic unit retained | Required observed mode |
 |---|---|---|---|---|
+| `drift.lp.frequency` | `Drift` | `LP Freq` | Hz | Instrument type1; actual LP Type and native voice mode/count retained |
+| `drift.env.1.attack` | `Drift` | `Env 1 Attack` | ms | Instrument type1; native voice mode/count retained |
+| `drift.env.1.decay` | `Drift` | `Env 1 Decay` | ms | Same |
+| `drift.env.1.release` | `Drift` | `Env 1 Release` | ms | Same |
 | `utility.gain` | `StereoGain` | `Gain` | dB | Stereo channel, Mono off, Mute off |
 | `utility.balance` | `StereoGain` | `Balance` | Stereo balance | Same |
 | `utility.width` | `StereoGain` | `Stereo Width` | Percent | Same; actual Width present/active, no active Mid/Side substitute |
@@ -71,12 +75,16 @@ performs no host operations. The caller must supply actual observations, retain
 their provenance and native identities, and recheck managed ownership/drift before
 mutation. The type contains optional observations so absent fields remain unknown.
 
-Admission requires exact native class, audio-device type, active flat device and
+Admission requires exact native class, instrument/effect type, active flat device and
 expected chain position. A complete observed parameter population is required to
 establish unique original/public names, including aliases that would collide with
 the bridge resolver. A localized public name can match through the registered
 original name; a matching public name with a different original identity cannot.
 Targets and required mode parameters must be actual native DeviceParameter objects.
+The [DeviceParameter reference](https://docs.cycling74.com/apiref/lom/deviceparameter/) makes
+`default_value` available only for continuous parameters and `value_items` only for quantized
+parameters. Native capture respects these getter preconditions; an unavailable quantized
+default is explicit null, never a fabricated numeric value.
 
 The actual target domain must be finite and nondegenerate, current value in range,
 quantization matched, enabled and active (`state=0`) with no existing automation
@@ -102,7 +110,7 @@ The registry does not normalize internal domains to0..1 or silently apply GUI
 scales, interpolate physical mappings, clamp values or supply missing modes.
 
 The read-only `sunny_resolve_native_display_value` Device operation accepts only
-`{capability_id,target,tolerance}` and selects one of the 28 continuous entries.
+`{capability_id,target,tolerance}` and selects one of the 32 continuous entries.
 Callers cannot supply names, descriptors or modes to bypass the registered policy.
 The handler observes the actual application version before and after resolution.
 The Python `native_units.resolve_registered_native_display_value` helper queries
@@ -120,6 +128,24 @@ performs no writes and establishes neither ownership nor full effect admission.
 A later authorized write must format the independently read actual
 parameter value, rather than formatting its requested candidate again.
 
+The [Drift manual](https://www.ableton.com/en/live-manual/12/live-instrument-reference/#drift)
+describes its low-pass filter and amplitude ADSR. The [DriftDevice reference](https://docs.cycling74.com/apiref/lom/driftdevice/)
+exposes voice mode/count as actual list/index properties, rather than guessed parameter names.
+The source pin names `LP Freq`, `LP Type` and the three `Env 1` time controls. Actual voice
+lists/indices and the observed LP Type choice remain unchanged through resolution. Time displays
+accept strict `ms` and `s` grammar, with seconds multiplied by 1000 into the authored millisecond
+unit. The [edition table](https://www.ableton.com/en/live/compare-editions/) lists Drift and Utility
+in Intro/Standard/Suite; EQ Eight is optional Standard/Suite. This is candidate availability,
+while actual insertion and final host evidence determine installed-device acceptance.
+
+`project_realization_plan_timbre` is read-only and requires explicit authored NativeAbleton Drift,
+SubtractiveSynth source paths and exact source-device parameter bindings. At most four caller
+selections read cutoff Hz or the three canonical nonlooping ADSR stage times in ms directly from
+the authored profile. Existing binding ranges, curves and value_property are retained and are
+not applied by this separate opt-in physical selection. The plan records the original codec and
+all residual source/effect/other-domain leaves as RFC6901 pointers. It does not qualify oscillator,
+filter response, sustain, modulation, sound or equivalence of the entire abstract source.
+
 ## 4. Candidate limits and later integration
 
 A successful result is explicitly `RuntimeDescriptorMatchedCandidate` with
@@ -130,7 +156,7 @@ does not enter the current continuous-envelope RPC subset.
 
 These entries do not establish faithful coverage of an entire Utility/EQ effect,
 all IR fields, resources, modes, signal-path behavior or device availability in a
-particular edition. Auto Filter, instruments, other native devices, physical-unit
+particular edition. Auto Filter, other instruments/devices, general physical-unit
 calibration, and other versions remain outside this registry batch. Subsequent
 managed realization must preserve requested semantics and report remaining gaps.
 

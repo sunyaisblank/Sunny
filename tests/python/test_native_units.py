@@ -77,6 +77,12 @@ class _NativeDevice:
     def __init__(self, class_name: str, parameters: list[_NativeParameter]) -> None:
         self.class_name = class_name
         self.type = 2
+        if class_name == "Drift":
+            self.type = 1
+            self.voice_mode_list = ("Unison", "Poly", "Mono", "Stereo")
+            self.voice_mode_index = 1
+            self.voice_count_list = ("16", "8", "4", "2")
+            self.voice_count_index = 2
         self.is_active = True
         self.can_have_chains = False
         self.global_mode = 0
@@ -122,6 +128,12 @@ def _target(
             _enum("Mute", ("Off", "On"), 0),
         ]
         modes = {"Channel Mode": "Stereo", "Mono": "Off", "Mute": "Off"}
+    elif device_class == "Drift":
+        parameters = [parameter]
+        modes = {"voice_mode": None, "voice_count": None}
+        if original == "LP Freq":
+            parameters.append(_enum("LP Type", ("II", "I"), 1))
+            modes["LP Type"] = None
     else:
         parameters = [
             parameter,
@@ -156,6 +168,147 @@ def _parameter(fixture: SimpleNamespace, name: str) -> _NativeParameter:
     return next(
         parameter for parameter in fixture.device.parameters if parameter.original_name == name
     )
+
+
+@pytest.mark.parametrize(
+    "capability,original,unit,oracle,target,display,increment",
+    [
+        (
+            "drift.lp.frequency",
+            "LP Freq",
+            "Hertz",
+            lambda value: f"{200 + 8000 * value**3:.1f} Hz",
+            1200.0,
+            "1200.0 Hz",
+            0.1,
+        ),
+        (
+            "drift.env.1.attack",
+            "Env 1 Attack",
+            "Milliseconds",
+            lambda value: f"{1000 * value**2:.2f} ms",
+            250.0,
+            "250.00 ms",
+            0.01,
+        ),
+        (
+            "drift.env.1.decay",
+            "Env 1 Decay",
+            "Milliseconds",
+            lambda value: f"{2 * value**3:.4f} s",
+            250.0,
+            "0.2500 s",
+            0.1,
+        ),
+        (
+            "drift.env.1.release",
+            "Env 1 Release",
+            "Milliseconds",
+            lambda value: f"{4 * value**2:.3f} s",
+            1000.0,
+            "1.000 s",
+            1.0,
+        ),
+    ],
+)
+def test_drift_handler_resolves_literal_physical_controls_without_a_write(
+    monkeypatch, capability, original, unit, oracle, target, display, increment
+):
+    """Independent nonlinear oracles identify all four controls and ms/s precision."""
+    fixture = _target(original, unit, oracle, device_class="Drift", value=0.375)
+    result = _handler(fixture, monkeypatch).handle(_wire_request(capability, target))
+    assert result["success"] is True and result["value"]["outcome"] == "resolved", result
+    candidate = result["value"]["candidate"]
+    assert candidate["device_class_name"] == "Drift"
+    assert candidate["unit"] == unit and candidate["parameter_original_name"] == original
+    assert candidate["internal_value"] == 0.5 and candidate["display"] == display
+    assert candidate["display_value"] == target and candidate["display_increment"] == increment
+    assert candidate["modes"]["voice_mode"] == {
+        "index": 1,
+        "value_items": ["Unison", "Poly", "Mono", "Stereo"],
+        "label": "Poly",
+    }
+    assert candidate["modes"]["voice_count"] == {
+        "index": 2,
+        "value_items": ["16", "8", "4", "2"],
+        "label": "4",
+    }
+    if original == "LP Freq":
+        assert candidate["modes"]["LP Type"]["label"] == "I"
+    assert candidate["formatter_calls"] == 20
+    assert candidate["native_knob_only"] and not candidate["host_qualified"]
+    assert fixture.parameter.value == 0.375 and fixture.parameter.writes == 0
+
+
+def test_drift_zero_attack_and_mixed_millisecond_second_displays_are_exact() -> None:
+    """Zero ms is admissible; crossing the s suffix preserves exact displayed coordinates."""
+    fixture = _target(
+        "Env 1 Attack",
+        "Milliseconds",
+        lambda value: f"{2000 * value:.1f} ms" if value < 0.5 else f"{2 * value:.4f} s",
+        device_class="Drift",
+        value=0.125,
+    )
+    zero = _resolve(fixture, 0.0)
+    assert zero["display"] == "0.0 ms" and zero["internal_value"] == 0.0
+    crossing = _resolve(fixture, 1000.0)
+    assert crossing["display"] == "1.0000 s" and crossing["display_increment"] == 0.1
+    assert crossing["internal_value"] == 0.5
+    assert fixture.parameter.value == 0.125 and fixture.parameter.writes == 0
+
+
+@pytest.mark.parametrize("display", ["250us", "0.25 seconds", "0,25 s", "250", "-1 ms"])
+def test_drift_time_units_decline_without_guessing_or_locale_translation(display) -> None:
+    """Time suffixes and decimal punctuation must match the finite native grammar."""
+    fixture = _target("Env 1 Release", "Milliseconds", lambda value: display, device_class="Drift")
+    with pytest.raises(NativeUnitError) as raised:
+        _resolve(fixture, 250.0)
+    assert raised.value.reason == "UnsupportedDisplay"
+    assert raised.value.formatter_calls == 1 and fixture.parameter.writes == 0
+
+
+@pytest.mark.parametrize("corruption", ["voice_index", "voice_labels", "voice_missing", "role"])
+def test_drift_native_voice_identity_and_instrument_role_are_required(corruption) -> None:
+    """Missing or malformed native property evidence cannot inherit a default mode."""
+    fixture = _target(
+        "Env 1 Attack",
+        "Milliseconds",
+        lambda value: f"{value * 100:.2f} ms",
+        device_class="Drift",
+    )
+    if corruption == "voice_index":
+        fixture.device.voice_mode_index = True
+    elif corruption == "voice_labels":
+        fixture.device.voice_count_list = ("4", "4")
+    elif corruption == "voice_missing":
+        del fixture.device.voice_mode_list
+    else:
+        fixture.device.type = 2
+    with pytest.raises(NativeUnitError) as raised:
+        _resolve(fixture, 50.0)
+    assert raised.value.formatter_calls == 0 and fixture.parameter.calls == []
+    assert fixture.parameter.writes == 0
+
+
+@pytest.mark.parametrize("control", ["voice", "lp_type"])
+def test_drift_observed_mode_change_revokes_the_read_only_candidate(control) -> None:
+    """A native voice or filter mode change invalidates all collected display samples."""
+    fixture = _target(
+        "LP Freq",
+        "Hertz",
+        lambda value: f"{200 + 8000 * value**3:.1f} Hz",
+        device_class="Drift",
+    )
+    if control == "voice":
+        fixture.parameter.callback = lambda value: setattr(fixture.device, "voice_mode_index", 2)
+    else:
+        fixture.parameter.callback = lambda value: setattr(
+            _parameter(fixture, "LP Type"), "_value", 0.0
+        )
+    with pytest.raises(NativeUnitError) as raised:
+        _resolve(fixture, 1200.0)
+    assert raised.value.reason == "ObservationDrift" and raised.value.formatter_calls == 1
+    assert fixture.parameter.writes == 0
 
 
 def test_nonlinear_db_inversion_preserves_native_value_and_literal_display() -> None:

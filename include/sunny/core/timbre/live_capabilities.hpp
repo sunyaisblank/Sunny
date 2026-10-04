@@ -20,7 +20,7 @@
 
 namespace sunny::core {
 
-inline constexpr std::uint32_t LIVE_NATIVE_CAPABILITY_REGISTRY_VERSION = 1;
+inline constexpr std::uint32_t LIVE_NATIVE_CAPABILITY_REGISTRY_VERSION = 2;
 
 struct LiveNativeVersion {
     std::uint16_t major = 0;
@@ -51,10 +51,17 @@ enum class LiveNativePhysicalUnit : std::uint8_t {
     QualityFactor,
     Percent,
     StereoBalance,
+    Milliseconds,
 };
 
 enum class LiveNativeParameterKind : std::uint8_t { Continuous, Quantized };
-enum class LiveNativeModeRequirement : std::uint8_t { UtilityStereo, Eq8Stereo, Eq8StereoBandOn };
+enum class LiveNativeModeRequirement : std::uint8_t {
+    UtilityStereo,
+    Eq8Stereo,
+    Eq8StereoBandOn,
+    DriftVoice,
+    DriftFilter,
+};
 
 struct LiveNativeParameterCapability {
     /** A registry identifier, not a Timbre/Mix path or a native object identity. */
@@ -100,6 +107,8 @@ struct LiveNativeDeviceProbe {
     std::vector<LiveNativeParameterProbe> parameters;
     /** Device-level native properties, e.g. Eq8Device.global_mode; absent stays unknown. */
     std::map<std::string, std::int32_t> integer_properties;
+    /** Advertised native property labels, e.g. Drift voice_mode_list. */
+    std::map<std::string, std::vector<std::string>> string_list_properties;
 };
 
 struct LiveNativeInternalValue {

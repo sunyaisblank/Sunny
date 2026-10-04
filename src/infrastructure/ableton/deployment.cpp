@@ -24,6 +24,8 @@ bool is_read_only_request(const LomRequest& request) {
            request.property_or_method == "sunny_managed_operation" ||
            request.property_or_method == "sunny_managed_observe" ||
            request.property_or_method == "sunny_managed_sample_envelope" ||
+           request.property_or_method == "sunny_managed_preview_adoption" ||
+           request.property_or_method == "sunny_managed_preview_devices" ||
            request.property_or_method == "sunny_get_device_count";
 }
 

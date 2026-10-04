@@ -5,6 +5,7 @@
 #include <map>
 #include <ranges>
 #include <set>
+#include <sunny/infrastructure/ableton/detail/native_unit_display.hpp>
 #include <sunny/infrastructure/ableton/native_units.hpp>
 
 namespace sunny::infrastructure {
@@ -15,6 +16,7 @@ using sunny::core::LiveNativeParameterCapability;
 using sunny::core::LiveNativePhysicalUnit;
 using sunny::core::Result;
 using Unit = LiveNativePhysicalUnit;
+using native_unit_detail::display_reading;
 
 bool fields(const json& value, std::initializer_list<std::string_view> names) {
     return value.is_object() && value.size() == names.size() &&
@@ -67,6 +69,8 @@ const char* unit_name(Unit unit) {
         return "Percent";
     case Unit::StereoBalance:
         return "StereoBalance";
+    case Unit::Milliseconds:
+        return "Milliseconds";
     }
     return "";
 }
@@ -153,78 +157,6 @@ bool arithmetic_equal(double first, double second) {
                     scale * (8.0 * std::numeric_limits<double>::epsilon()));
 }
 
-struct DisplayReading {
-    double value = 0.0;
-    std::optional<double> increment;
-    bool negative_infinity = false;
-};
-
-std::optional<DisplayReading> display_reading(std::string_view raw, Unit unit, bool gain_infinity) {
-    if (raw.empty() || raw.size() > 80) return std::nullopt;
-    const auto first = raw.find_first_not_of(" \t");
-    if (first == std::string_view::npos) return std::nullopt;
-    raw = raw.substr(first, raw.find_last_not_of(" \t") - first + 1);
-    if (gain_infinity && (raw == "-inf dB" || raw == "-∞ dB" || raw == "−inf dB" || raw == "−∞ dB"))
-        return DisplayReading{0.0, std::nullopt, true};
-    if (unit == Unit::StereoBalance && raw == "C") return DisplayReading{};
-    std::size_t position = 0;
-    if (raw[position] == '+' || raw[position] == '-') ++position;
-    const auto begin = position;
-    while (position < raw.size() && raw[position] >= '0' && raw[position] <= '9')
-        ++position;
-    const auto integral_digits = position - begin;
-    std::size_t fractional_digits = 0;
-    if (position < raw.size() && raw[position] == '.') {
-        const auto fractional_begin = ++position;
-        while (position < raw.size() && raw[position] >= '0' && raw[position] <= '9')
-            ++position;
-        fractional_digits = position - fractional_begin;
-        if (fractional_digits == 0) return std::nullopt;
-    }
-    if (integral_digits == 0 && fractional_digits == 0) return std::nullopt;
-    auto token = raw.substr(0, position);
-    auto suffix = raw.substr(position);
-    if (const auto offset = suffix.find_first_not_of(" \t"); offset != std::string_view::npos)
-        suffix.remove_prefix(offset);
-    else
-        suffix = {};
-    double multiplier = 1.0;
-    switch (unit) {
-    case Unit::Decibels:
-        if (suffix != "dB") return std::nullopt;
-        break;
-    case Unit::Hertz:
-        if (suffix == "kHz")
-            multiplier = 1000.0;
-        else if (suffix != "Hz")
-            return std::nullopt;
-        break;
-    case Unit::QualityFactor:
-        if (!suffix.empty() || position != raw.size()) return std::nullopt;
-        break;
-    case Unit::Percent:
-        if (suffix != "%") return std::nullopt;
-        break;
-    case Unit::StereoBalance:
-        if ((suffix != "L" && suffix != "R") || token.front() == '+' || token.front() == '-')
-            return std::nullopt;
-        if (suffix == "L") multiplier = -1.0;
-        break;
-    }
-    if (token.front() == '+') token.remove_prefix(1);
-    double amount;
-    const auto parsed = std::from_chars(token.data(), token.data() + token.size(), amount);
-    if (parsed.ec != std::errc{} || parsed.ptr != token.data() + token.size()) return std::nullopt;
-    const auto increment =
-        std::pow(10.0, -static_cast<double>(fractional_digits)) * std::abs(multiplier);
-    const auto physical = amount * multiplier;
-    if (!std::isfinite(physical) || !std::isfinite(increment) || increment <= 0.0 ||
-        ((unit == Unit::Hertz || unit == Unit::QualityFactor) && physical <= 0.0) ||
-        (unit == Unit::StereoBalance && amount <= 0.0))
-        return std::nullopt;
-    return DisplayReading{physical, increment, false};
-}
-
 std::optional<std::size_t> lookup(const json& population, std::string_view name) {
     std::optional<std::size_t> result;
     for (std::size_t i = 0; i < population.size(); ++i) {
@@ -242,6 +174,26 @@ bool modes_valid(const LiveNativeParameterCapability& entry,
                  const json& modes,
                  const json& scale_display) {
     if (!modes.is_object()) return false;
+    if (entry.device_class_name == "Drift") {
+        const bool filter = entry.parameter_original_name == "LP Freq";
+        if (modes.size() != (filter ? 3U : 2U) || !scale_display.is_null()) return false;
+        for (const auto* name : {"voice_mode", "voice_count"}) {
+            if (!modes.contains(name) || !fields(modes.at(name), {"index", "value_items", "label"}))
+                return false;
+            const auto& mode = modes.at(name);
+            const auto& items = mode.at("value_items");
+            if (!items.is_array() || items.empty() || items.size() > 64 ||
+                !integer(mode.at("index"), items.size() - 1))
+                return false;
+            std::set<std::string> unique;
+            for (const auto& item : items)
+                if (!text(item) || !unique.insert(item.get<std::string>()).second) return false;
+            if (mode.at("label") != items.at(mode.at("index").get<std::size_t>())) return false;
+        }
+        return !filter || (lookup(population, "LP Type") && modes.contains("LP Type") &&
+                           descriptor(modes.at("LP Type"), true, true) &&
+                           modes.at("LP Type").at("value_items").size() == 2);
+    }
     auto enum_mode =
         [&](std::string_view name, std::string_view label, bool off_on, bool eligible = true) {
             if (!lookup(population, name) || !modes.contains(name) ||
@@ -378,7 +330,8 @@ parse_candidate(const LomRequest& request, const json& intent, const json& value
         selected->increment.has_value() != !value.at("display_increment").is_null() ||
         (selected->increment &&
          !arithmetic_equal(*selected->increment / full_scale, value.at("display_increment"))) ||
-        (unit == Unit::Percent && physical < 0.0))
+        ((unit == Unit::Percent || unit == Unit::Milliseconds) && physical < 0.0) ||
+        (unit == Unit::Milliseconds && target < 0.0))
         return malformed();
     const auto& samples = value.at("samples");
     const std::size_t extra_calls = entry->device_class_name == "Eq8" ? 1 : 0;
@@ -407,7 +360,8 @@ parse_candidate(const LomRequest& request, const json& intent, const json& value
                       : !finite(sample.at("display_value"))) ||
             (!infinity &&
              !arithmetic_equal(reading->value / full_scale, sample.at("display_value"))) ||
-            (!infinity && unit == Unit::Percent && reading->value < 0.0))
+            (!infinity && (unit == Unit::Percent || unit == Unit::Milliseconds) &&
+             reading->value < 0.0))
             return malformed();
         std::optional<double> amount;
         if (!infinity) amount = sample.at("display_value").get<double>();

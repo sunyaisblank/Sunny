@@ -150,13 +150,16 @@ def test_cmake_exports_exact_bundle_and_reconfigures_for_late_modules(
     assert (build / "expected.sha256").read_text().strip() == expected
 
 
-def test_cmake_rejects_an_incomplete_bundle(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "missing", ["managed.py", "managed_capacity.py", "managed_devices.py", "managed_recovery.py"]
+)
+def test_cmake_rejects_an_incomplete_bundle(tmp_path: Path, missing: str) -> None:
     """Configuration must name the missing source rather than stage partial delivery."""
     cmake = shutil.which("cmake")
     if cmake is None:
         pytest.skip("CMake is required to qualify source-bundle generation")
     source = _copy_sources(tmp_path)
-    (source / "managed.py").unlink()
+    (source / missing).unlink()
     project = tmp_path / "fixture"
     project.mkdir()
     module = (_PROJECT_ROOT / "cmake" / "BridgeBundle.cmake").as_posix()
@@ -174,4 +177,17 @@ def test_cmake_rejects_an_incomplete_bundle(tmp_path: Path) -> None:
         check=False,
     )
     assert result.returncode != 0
-    assert "managed.py" in result.stderr and "incomplete" in result.stderr
+    assert missing in result.stderr and "incomplete" in result.stderr
+
+
+@pytest.mark.parametrize(
+    "missing", ["managed_capacity.py", "managed_devices.py", "managed_recovery.py"]
+)
+def test_identity_rejects_missing_managed_dependencies(
+    identity_module: ModuleType, tmp_path: Path, missing: str
+) -> None:
+    """A matching digest cannot qualify a bundle missing an essential imported helper."""
+    source = _copy_sources(tmp_path)
+    (source / missing).unlink()
+    with pytest.raises(RuntimeError, match=f"missing.*{missing}.*matching server image"):
+        identity_module.compute_source_identity(source)

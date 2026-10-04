@@ -1321,3 +1321,638 @@ def test_untouched_note_finite_fields_do_not_prove_finite_geometry(note_target: 
     # native note to revise a different note's velocity only.
     values = note_update(note_target, {"velocity": 81.0})["changes"]
     assert _proposed_notes(identity, values, 4.0)[1]["velocity"] == 81.0
+
+
+def population_request(target: Any, operation: str = "population") -> dict[str, Any]:
+    """Construct a finite mixed population revision from independently observed native IDs."""
+    request = note_update(target, {"pitch": 62, "velocity": 96.0}, operation)
+    second = target.created["result"]["note_identity"]["notes"][1]
+    request["deletions"] = [
+        {
+            "note_id": second["note_id"],
+            "expected": {k: v for k, v in second.items() if k != "note_id"},
+        }
+    ]
+    new = dict(
+        request["changes"][0]["expected"], pitch=64, start_time=2.0, duration=0.5, velocity=88.0
+    )
+    request["additions"] = [{"note_key": "e3_n0", "note": new}]
+    return request
+
+
+def test_population_revision_literal_preserves_native_id_and_opaque_fields(
+    note_target: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Delete one ID, update one retained object, and independently associate the inserted E4."""
+    target = note_target
+    calls = []
+    remove, add = target.clip.remove_notes_by_id, target.clip.add_new_notes
+
+    def remove_ids(ids: Any) -> None:
+        calls.append(("delete", tuple(ids)))
+        remove(ids)
+
+    def add_specs(specifications: Any) -> Any:
+        calls.append(("add", len(specifications)))
+        return add(specifications)
+
+    monkeypatch.setattr(target.clip, "remove_notes_by_id", remove_ids)
+    monkeypatch.setattr(target.clip, "add_new_notes", add_specs)
+    request = population_request(target)
+    result = call(target, "sunny_managed_revise_note_population", request)
+    assert result["outcome"] == "acknowledged", result
+    assert calls == [("delete", (2,)), ("add", 1)]
+    assert target.apply_calls == [(1,)]
+    assert [
+        (n["note_id"], n["pitch"], n["start_time"], n["duration"], n["velocity"])
+        for n in result["result"]["note_identity"]["notes"]
+    ] == [(1, 62, 0.0, 1.0, 96.0), (3, 64, 2.0, 0.5, 88.0)]
+    assert target.clip._user_mpe_expression == {1: {"pressure": [0.1, 0.8]}}
+    assert target.clip._user_follow_actions == {"next": True}
+    evidence = result["result"]["note_population_update"]
+    assert evidence["addition_associations"] == [{"note_key": "e3_n0", "note_id": 3}]
+    assert all(
+        evidence[k] is True
+        for k in (
+            "observed_changes_match_request",
+            "observed_deletions_absent",
+            "observed_additions_match_request",
+            "untouched_notes_preserved",
+            "retained_note_ids_preserved",
+            "observed_population_cardinality_match",
+        )
+    )
+    assert call(target, "sunny_managed_revise_note_population", request) == result
+    assert calls == [("delete", (2,)), ("add", 1)]
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "foreign_delete",
+        "same_changed_deleted",
+        "addition_overlap",
+        "duplicate_key",
+        "zero_event",
+        "ordinal_overflow",
+        "endpoint_overflow",
+        "no_changes",
+    ],
+)
+def test_population_invalid_entire_lane_before_native_write(note_target: Any, case: str) -> None:
+    """Reject malformed or colliding proposals before deletion, insertion or note setters."""
+    target = note_target
+    request = population_request(target)
+    if case == "foreign_delete":
+        request["deletions"][0]["note_id"] = 999
+    elif case == "same_changed_deleted":
+        request["deletions"] = [{"note_id": 1, "expected": request["changes"][0]["expected"]}]
+    elif case == "addition_overlap":
+        request["additions"][0]["note"].update(pitch=62, start_time=0.5)
+    elif case == "duplicate_key":
+        request["additions"].append(copy.deepcopy(request["additions"][0]))
+    elif case == "zero_event":
+        request["additions"][0]["note_key"] = "e0_n0"
+    elif case == "ordinal_overflow":
+        request["additions"][0]["note_key"] = "e3_n65536"
+    elif case == "endpoint_overflow":
+        request["additions"][0]["note"].update(start_time=1e308, duration=1e308)
+    else:
+        request.update(changes=[], deletions=[], additions=[])
+    response = target.handler.handle(
+        {
+            "bridge_protocol_version": BRIDGE_PROTOCOL_VERSION,
+            "type": "call",
+            "path": "song",
+            "name": "sunny_managed_revise_note_population",
+            "args": [request],
+        }
+    )
+    assert response["success"] is False or response["value"]["outcome"] == "declined"
+    assert target.setter_calls == [] and target.apply_calls == []
+    assert set(target.clip._notes) == {1, 2}
+
+
+@pytest.mark.parametrize("phase", ["delete", "apply", "add"])
+def test_population_partial_failures_never_replay_or_compensate(
+    note_target: Any, monkeypatch: pytest.MonkeyPatch, phase: str
+) -> None:
+    """Retain each partial phase without rerunning its token or deleting compensating objects."""
+    target = note_target
+    name = {
+        "delete": "remove_notes_by_id",
+        "apply": "apply_note_modifications",
+        "add": "add_new_notes",
+    }[phase]
+    original = getattr(target.clip, name)
+    calls = []
+
+    def fail(value: Any) -> Any:
+        calls.append(name)
+        original(value)
+        raise RuntimeError("literal native failure after " + phase)
+
+    monkeypatch.setattr(target.clip, name, fail)
+    request = population_request(target)
+    result = call(target, "sunny_managed_revise_note_population", request)
+    assert result["outcome"] == "indeterminate" and result["native_mutation_started"] is True
+    assert call(target, "sunny_managed_revise_note_population", request) == result
+    assert calls == [name]
+    assert 2 not in target.clip._notes
+    assert set(target.clip._notes) == ({1, 3} if phase == "add" else {1})
+
+
+def test_population_silent_intermediate_mismatch_stops_before_apply_or_add(
+    note_target: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A returned deletion call without the expected readback stops the remaining phases."""
+    target = note_target
+    monkeypatch.setattr(target.clip, "remove_notes_by_id", lambda ids: None)
+    result = call(target, "sunny_managed_revise_note_population", population_request(target))
+    assert result["outcome"] == "indeterminate"
+    assert "intermediate readback mismatch" in result["error"]
+    assert target.setter_calls == [] and target.apply_calls == []
+    assert set(target.clip._notes) == {1, 2}
+
+
+def test_population_final_truthful_addition_mismatch_retains_ack_evidence(
+    note_target: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Returned insertion calls retain actual mismatched values and a false comparison flag."""
+    target = note_target
+    add = target.clip.add_new_notes
+
+    def mismatched(specifications: Any) -> Any:
+        ids = add(specifications)
+        target.clip._notes[ids[0]].velocity = 87.0
+        return ids
+
+    monkeypatch.setattr(target.clip, "add_new_notes", mismatched)
+    result = call(target, "sunny_managed_revise_note_population", population_request(target))
+    assert result["outcome"] == "acknowledged", result
+    assert result["result"]["note_population_update"]["observed_additions_match_request"] is False
+    assert result["result"]["note_population_update"]["addition_associations"] == []
+    assert result["result"]["note_identity"]["notes"][1]["velocity"] == 87.0
+
+
+def test_reply_bound_accounts_for_default_ascii_wire_and_native_number_widths() -> None:
+    """Cover ASCII escaping, DEL and binary64 exponent extremes with the wire-space bound."""
+    import json
+
+    from Sunny.managed_capacity import json_wire_bound, note_array_bound
+
+    value = {
+        "unicode": "é漢𝄞\x7f\n",
+        "numbers": [-0.0, 1e308, 5e-324, -1.7976931348623157e308],
+        "bool": [True, False],
+    }
+    assert json_wire_bound(value) >= len(json.dumps(value).encode())
+    assert note_array_bound(26000, True) > note_array_bound(26000, False)
+
+
+def test_existing_id_reply_capacity_rejected_before_selection_setters_or_apply(
+    note_target: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A literal 26000-note reply exceeds the frame although read-only inspection still fits."""
+    from live_model import MidiNote, MidiNoteSpecification
+
+    target = note_target
+    record = target.registry._bindings[("project_a", "part_a")]
+    target.clip.end_marker = 100000.0
+    target.clip._loop_end = 100000.0
+    target.clip._notes = {
+        i: MidiNote(
+            i,
+            MidiNoteSpecification(
+                pitch=60,
+                start_time=i * 2.0 + 0.123456789012345,
+                duration=0.123456789012345,
+                velocity=87.12345678901234,
+                mute=False,
+                probability=0.987654321012345,
+                velocity_deviation=-12.12345678901234,
+                release_velocity=77.12345678901234,
+            ),
+        )
+        for i in range(1, 26001)
+    }
+    record["owned_note_ids"] = set(target.clip._notes)
+    target.created["result"] = target.registry._seal(record)
+    selected = []
+    monkeypatch.setattr(target.clip, "get_notes_by_id", lambda ids: selected.append(tuple(ids)))
+    request = note_update(target, {"velocity": 96.0})
+    result = call(target, "sunny_managed_update_notes", request)
+    assert result["outcome"] == "declined"
+    assert "ReplyCapacityUnavailable" in result["error"]
+    assert result["native_mutation_started"] is False
+    assert selected == [] and target.setter_calls == [] and target.apply_calls == []
+    import json
+
+    # Read-only inspection remains useful for this literal population.
+    assert len(json.dumps({"success": True, "value": observe(target)}).encode()) < 16 * 1024 * 1024
+
+
+@pytest.mark.parametrize("mode", ["delete_only", "add_only", "changes_only"])
+def test_population_single_phase_domains_preserve_other_native_content(
+    note_target: Any, mode: str
+) -> None:
+    """Use each exact real API independently without rebuilding retained notes."""
+    target = note_target
+    request = population_request(target)
+    for field in ("changes", "deletions", "additions"):
+        if (
+            field
+            != {"delete_only": "deletions", "add_only": "additions", "changes_only": "changes"}[
+                mode
+            ]
+        ):
+            request[field] = []
+    result = call(target, "sunny_managed_revise_note_population", request)
+    assert result["outcome"] == "acknowledged", result
+    assert (
+        set(target.clip._notes)
+        == {"delete_only": {1}, "add_only": {1, 2, 3}, "changes_only": {1, 2}}[mode]
+    )
+    assert target.clip._user_mpe_expression == {1: {"pressure": [0.1, 0.8]}}
+    assert target.clip._user_follow_actions == {"next": True}
+
+
+def test_population_insertions_associate_actual_values_independently_of_return_order(
+    note_target: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Reversed insertion IDs map to their actual E4/A4 values, never list positions."""
+    target = note_target
+    request = population_request(target)
+    request["additions"].append(
+        {
+            "note_key": "e4_n0",
+            "note": dict(request["additions"][0]["note"], pitch=69, start_time=3.0, velocity=91.0),
+        }
+    )
+    add = target.clip.add_new_notes
+    monkeypatch.setattr(
+        target.clip, "add_new_notes", lambda specifications: list(reversed(add(specifications)))
+    )
+    result = call(target, "sunny_managed_revise_note_population", request)
+    assert result["outcome"] == "acknowledged", result
+    evidence = result["result"]["note_population_update"]
+    assert evidence["returned_added_note_ids"] == [4, 3]
+    assert evidence["addition_associations"] == [
+        {"note_key": "e3_n0", "note_id": 3},
+        {"note_key": "e4_n0", "note_id": 4},
+    ]
+    assert evidence["observed_additions_match_request"] is True
+
+
+@pytest.mark.parametrize("ids", [[2], [3, 3], [True], [], [1 << 31]])
+def test_population_invalid_returned_ids_are_partial_and_never_replayed(
+    note_target: Any, monkeypatch: pytest.MonkeyPatch, ids: list[Any]
+) -> None:
+    """A completed insertion with unusable IDs is retained uncertainty, without compensation."""
+    target = note_target
+    add = target.clip.add_new_notes
+    calls = []
+
+    def invalid(specifications: Any) -> Any:
+        calls.append("add")
+        add(specifications)
+        return ids
+
+    monkeypatch.setattr(target.clip, "add_new_notes", invalid)
+    request = population_request(target)
+    result = call(target, "sunny_managed_revise_note_population", request)
+    assert result["outcome"] == "indeterminate", result
+    assert result["native_mutation_started"] is True
+    assert set(target.clip._notes) == {1, 3}
+    assert call(target, "sunny_managed_revise_note_population", request) == result
+    assert calls == ["add"]
+
+
+def test_population_legacy_full_readback_boundary_before_native_calls(
+    note_target: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Legacy ranged snapshots cannot establish all retained/deleted/collision identities."""
+    target = note_target
+    monkeypatch.setattr(target.clip, "get_all_notes_extended", None)
+    result = call(target, "sunny_managed_revise_note_population", population_request(target))
+    assert result["outcome"] == "declined" and result["native_mutation_started"] is False
+    assert target.setter_calls == [] and target.apply_calls == []
+    assert set(target.clip._notes) == {1, 2}
+
+
+def test_population_deletion_frees_retained_destination_before_apply(note_target: Any) -> None:
+    """Explicit removal permits C4 ID1 to move into the deleted G4 ID2 interval."""
+    target = note_target
+    request = population_request(target)
+    request["changes"][0]["updates"].update(pitch=67, start_time=2.0, duration=0.5)
+    result = call(target, "sunny_managed_revise_note_population", request)
+    assert result["outcome"] == "acknowledged", result
+    assert [
+        (n["note_id"], n["pitch"], n["start_time"])
+        for n in result["result"]["note_identity"]["notes"]
+    ] == [(1, 67, 2.0), (3, 64, 2.0)]
+
+
+def test_population_adopted_ids_do_not_grant_unapproved_population_domain(note_target: Any) -> None:
+    """Approved existing-ID/mixer authority cannot silently become insertion/deletion authority."""
+    target = note_target
+    record = target.registry._bindings[("project_a", "part_a")]
+    record["authority_origin"] = "explicit_adoption"
+    record["allowed_domains"] = ("existing_note_updates", "absent_mixer_step_lanes")
+    result = call(target, "sunny_managed_revise_note_population", population_request(target))
+    assert result["outcome"] == "declined"
+    assert "PopulationAuthorityUnavailable" in result["error"]
+    assert result["native_mutation_started"] is False
+    assert set(target.clip._notes) == {1, 2}
+    assert target.setter_calls == [] and target.apply_calls == []
+
+
+def test_ascii_escaped_complete_response_capacity_threshold_has_literal_one_byte_boundary() -> None:
+    """Bound all ASCII escapes and outer framing exactly at the wire byte threshold."""
+    import json
+
+    from Sunny.managed_capacity import (
+        MAX_MANAGED_RESPONSE_BYTES,
+        json_wire_bound,
+        require_response_capacity,
+    )
+
+    envelope = {"success": True, "value": {"literal": "é漢𝄞\x7f\n", "padding": ""}}
+    overhead = json_wire_bound(envelope)
+    envelope["value"]["padding"] = "a" * (MAX_MANAGED_RESPONSE_BYTES - overhead)
+    assert json_wire_bound(envelope) == MAX_MANAGED_RESPONSE_BYTES
+    assert len(json.dumps(envelope).encode()) == MAX_MANAGED_RESPONSE_BYTES - 1
+    assert require_response_capacity(envelope) == MAX_MANAGED_RESPONSE_BYTES
+    envelope["value"]["padding"] += "a"
+    assert len(json.dumps(envelope).encode()) == MAX_MANAGED_RESPONSE_BYTES
+    with pytest.raises(RuntimeError, match="ReplyCapacityUnavailable"):
+        require_response_capacity(envelope)
+
+
+def test_unreportable_request_rejected_before_reservation_or_native_calls(
+    target: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A compact rejection is not journal-confirmed Declined and authorizes no native retry."""
+    # The real closed request cannot contain padding; invoke the pure reservation
+    # boundary directly with an arbitrary wire-sized immutable request to exercise
+    # accounting without weakening request admission or authoring any host objects.
+    from Sunny.managed_capacity import guard_operation_reservation_capacity
+
+    huge = {
+        "name": "sunny_managed_create_clip",
+        "request": {"padding": "a" * (16 * 1024 * 1024 - 100)},
+        "document_token": "document_a",
+        "operation_id": "operation_a",
+        "request_fingerprint": "f" * 64,
+        "outcome": "pending",
+        "native_mutation_started": False,
+    }
+    with pytest.raises(RuntimeError, match="ReplyCapacityUnavailable"):
+        guard_operation_reservation_capacity(huge)
+    assert target.registry._operations == {}
+    assert len(target.live.song.tracks) == 1
+
+
+def test_partial_unicode_native_error_is_bounded_and_original_token_is_retained(
+    note_target: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Retain a reportable partial journal even when a native exception message is huge."""
+    target = note_target
+    apply = target.clip.apply_note_modifications
+
+    def failed(notes: Any) -> None:
+        apply(notes)
+        raise RuntimeError("𝄞" * 100000)
+
+    monkeypatch.setattr(target.clip, "apply_note_modifications", failed)
+    request = population_request(target)
+    result = call(target, "sunny_managed_revise_note_population", request)
+    assert result["outcome"] == "indeterminate"
+    assert len(result["error"]) == 1024
+    assert call(target, "sunny_managed_revise_note_population", request) == result
+
+
+def _capacity_creation_notes(count: int) -> list[dict[str, Any]]:
+    return [
+        {
+            "pitch": 60,
+            "start_time": i * 2.0 + 0.123456789012345,
+            "duration": 0.123456789012345,
+            "velocity": 87,
+            "mute": False,
+            "probability": 1.0,
+            "velocity_deviation": 0.0,
+            "release_velocity": 77.0,
+        }
+        for i in range(1, count + 1)
+    ]
+
+
+@pytest.mark.parametrize("count", [26000, 40000])
+def test_creation_known_reply_capacity_declines_before_track_creation(
+    target: Any, monkeypatch: pytest.MonkeyPatch, count: int
+) -> None:
+    """The input fits while immutable request plus two actual populations cannot."""
+    import json
+
+    request = intent(target, "too_large_create")
+    request["clip_end"] = 100000.0
+    request["notes"] = _capacity_creation_notes(count)
+    assert len(json.dumps(request).encode()) < 16 * 1024 * 1024
+    native_calls = []
+    monkeypatch.setattr(
+        target.live.song, "create_midi_track", lambda index: native_calls.append(index)
+    )
+    result = call(target, "sunny_managed_create_clip", request)
+    assert result["outcome"] == "declined"
+    assert "ReplyCapacityUnavailable" in result["error"]
+    assert result["native_mutation_started"] is False
+    assert result["partial_binding_retained"] is False
+    assert native_calls == [] and len(target.live.song.tracks) == 1
+    assert call(target, "sunny_managed_create_clip", request) == result
+    assert native_calls == []
+
+
+@pytest.mark.parametrize("count", [26000, 40000])
+def test_creation_frame_capacity_witness_uses_actual_native_readback(
+    target: Any, count: int
+) -> None:
+    """Measure default JSON on real model capture, not echoed authored points.
+
+    Populate only the external native-object fixture to construct the previously
+    unreportable complete acknowledgement; production capacity admission stays on.
+    All semantic/native-ID fingerprints and comparison flags are actually computed.
+    This does not qualify a Live host or establish all unknown metadata bounds.
+    """
+    import json
+
+    from live_model import MidiNote, MidiNoteSpecification
+
+    request = intent(target)
+    request["notes"] = request["notes"][:1]
+    created = call(target, "sunny_managed_create_clip", request)
+    assert created["outcome"] == "acknowledged"
+    record = target.registry._bindings[("project_a", "part_a")]
+    clip = record["clip"]
+    notes = _capacity_creation_notes(count)
+    clip._notes = {i: MidiNote(i, MidiNoteSpecification(**n)) for i, n in enumerate(notes, 1)}
+    clip.end_marker = 100000.0
+    clip._loop_end = 100000.0
+    record["requested_notes"] = [
+        {k: (v if k in ("pitch", "mute") else float(v)) for k, v in n.items()} for n in notes
+    ]
+    record["requested_clip"]["end_marker"] = 100000.0
+    actual = target.registry._seal(record)
+    assert actual["observed_notes_match_request"] is True
+    assert actual["observed_clip_properties_match_request"] is True
+    request.update(notes=notes, clip_end=100000.0)
+    journal = {
+        **created,
+        "request": request,
+        "request_fingerprint": _digest({"name": "sunny_managed_create_clip", "request": request}),
+        "result": actual,
+    }
+    actual_bytes = len(json.dumps({"success": True, "value": journal}).encode())
+    # Numeric spellings, escaped metadata and IDs1..N come from independent native
+    # capture. The literal requests remain below the16MiB frame limit.
+    assert (actual_bytes > 16 * 1024 * 1024) is (count == 40000)
+    assert len(json.dumps(request).encode()) < 16 * 1024 * 1024
+    assert len(actual["note_identity"]["notes"]) == count
+
+
+def test_creation_actual_metadata_capacity_retains_empty_partial_identity(
+    target: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Unknown new native metadata is measured before inserting any requested note."""
+    request = intent(target, "metadata_capacity")
+    request["notes"] = _capacity_creation_notes(12000)
+    request["clip_end"] = 100000.0
+    original_create = target.live.song.create_midi_track
+
+    def native_create(index: int) -> None:
+        original_create(index)
+        # Two actually exposed metadata strings total6MiB; no promised arbitrary
+        # native metadata maximum is invented in the before-creation check.
+        parameter = target.live.song.tracks[-1].mixer_device.volume
+        parameter._name = "x" * (3 * 1024 * 1024)
+        parameter._original_name = "x" * (3 * 1024 * 1024)
+
+    monkeypatch.setattr(target.live.song, "create_midi_track", native_create)
+    inserted = []
+    monkeypatch.setattr(
+        target.handler, "_add_new_notes", lambda clip, notes: inserted.append(notes)
+    )
+    result = call(target, "sunny_managed_create_clip", request)
+    assert result["outcome"] == "indeterminate"
+    assert "ReplyCapacityUnavailable" in result["error"]
+    assert result["native_mutation_started"] is True
+    assert result["partial_binding_retained"] is True
+    assert inserted == [] and len(target.live.song.tracks) == 2
+    record = target.registry._bindings[("project_a", "part_a")]
+    assert record["clip"] is not None and record["owned_note_ids"] == set()
+    assert list(record["clip"].get_all_notes_extended()) == []
+    assert call(target, "sunny_managed_create_clip", request) == result
+    assert len(target.live.song.tracks) == 2
+
+
+@pytest.mark.parametrize("count", [512, 1024])
+def test_population_associations_index_actual_values_with_linear_canonical_work(
+    note_target: Any, monkeypatch: pytest.MonkeyPatch, count: int
+) -> None:
+    """Independent disjoint notes need linear value hashing, not pairwise scans."""
+    import Sunny.managed as managed
+
+    target = note_target
+    target.clip.end_marker = 10000.0
+    target.clip._loop_end = 10000.0
+    target.created["result"] = target.registry._seal(
+        target.registry._bindings[("project_a", "part_a")]
+    )
+    payload = population_request(target)
+    payload["changes"], payload["deletions"] = [], []
+    payload["additions"] = [
+        {
+            "note_key": f"e{1000 + i}_n0",
+            "note": {
+                "pitch": 72,
+                "start_time": 4.0 + i * 2.0,
+                "duration": 0.5,
+                "velocity": 80.0,
+                "mute": False,
+                "probability": 1.0,
+                "velocity_deviation": 0.0,
+                "release_velocity": 64.0,
+            },
+        }
+        for i in range(count)
+    ]
+    native_add = target.clip.add_new_notes
+    monkeypatch.setattr(
+        target.clip,
+        "add_new_notes",
+        lambda specifications: list(reversed(native_add(specifications))),
+    )
+    canonical_calls = []
+    original = managed._canonical_bytes
+
+    def canonical(value: Any) -> bytes:
+        if type(value) is dict and set(value) == managed._NOTE_FIELDS:
+            canonical_calls.append(1)
+        return original(value)
+
+    monkeypatch.setattr(managed, "_canonical_bytes", canonical)
+    result = call(target, "sunny_managed_revise_note_population", payload)
+    assert result["outcome"] == "acknowledged", result
+    assert result["result"]["note_population_update"]["addition_associations"] == [
+        {"note_key": f"e{1000 + i}_n0", "note_id": 3 + i} for i in range(count)
+    ]
+    assert len(canonical_calls) <= 2 * count + 16
+    assert result["result"]["note_population_update"]["observed_additions_match_request"] is True
+    assert target.setter_calls == [] and target.apply_calls == []
+
+
+def test_population_hash_bucket_collision_still_requires_exact_typed_note_values(
+    note_target: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Forced equal bucket digests cannot misassociate different actual native notes."""
+    import Sunny.managed as managed
+
+    target = note_target
+    payload = population_request(target)
+    payload["changes"], payload["deletions"] = [], []
+    payload["additions"] = [
+        {
+            "note_key": "e10_n0",
+            "note": dict(payload["additions"][0]["note"], pitch=72, start_time=1.0),
+        },
+        {
+            "note_key": "e11_n0",
+            "note": dict(payload["additions"][0]["note"], pitch=76, start_time=3.0),
+        },
+    ]
+    original_hash = managed.hashlib.sha256
+
+    class Hash:
+        def __init__(self, data: bytes) -> None:
+            self.real = original_hash(data)
+
+        def digest(self) -> bytes:
+            return bytes(32)
+
+        def hexdigest(self) -> str:
+            return self.real.hexdigest()
+
+    monkeypatch.setattr(managed.hashlib, "sha256", Hash)
+    native_add = target.clip.add_new_notes
+    monkeypatch.setattr(
+        target.clip,
+        "add_new_notes",
+        lambda specifications: list(reversed(native_add(specifications))),
+    )
+    result = call(target, "sunny_managed_revise_note_population", payload)
+    assert result["outcome"] == "acknowledged", result
+    assert result["result"]["note_population_update"]["addition_associations"] == [
+        {"note_key": "e10_n0", "note_id": 3},
+        {"note_key": "e11_n0", "note_id": 4},
+    ]
+    assert result["result"]["note_population_update"]["observed_additions_match_request"] is True

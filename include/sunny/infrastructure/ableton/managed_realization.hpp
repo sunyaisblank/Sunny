@@ -171,4 +171,14 @@ make_managed_note_update_request(const ManagedBridgeContext& context,
                                  const ManagedBindingReceipt& binding,
                                  const nlohmann::json& changes);
 
+/// Whole Event additions/deletions and existing-ID changes, without recreation
+/// of retained notes. Addition note_key labels carry association, not authority.
+[[nodiscard]] sunny::core::Result<LomRequest>
+make_managed_note_population_request(const ManagedBridgeContext& context,
+                                     const std::string& operation_id,
+                                     const ManagedBindingReceipt& binding,
+                                     const nlohmann::json& changes,
+                                     const nlohmann::json& deletions,
+                                     const nlohmann::json& additions);
+
 } // namespace sunny::infrastructure

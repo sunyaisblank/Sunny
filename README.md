@@ -45,13 +45,19 @@ Live cannot represent, such as a fader above +6 dB, are refused before anything 
 
 After `workspace_save`, `project_realization_create` creates one selected Part's managed MIDI
 clip and notes with a durable dispatch fence. `project_realization_inspect` reads its actual native
-state; `project_realization_update` revises existing attacks in place while preserving native note
-IDs. These tools require the owning project's current revision. They retain receipts across server
+state; `project_realization_update` revises existing attacks and adds or deletes whole Events while
+preserving retained native note IDs. These tools require the owning project's current revision. They retain receipts across server
 restart and authored undo, detect user drift, and refuse duplicate creation. A lost reply requires
 `project_realization_reconcile`, which queries the original token without replaying the mutation.
 `project_realization_author_mix_lane` also authors a selected Part's Step panning lane when
 the native envelope is absent, then checks sampled values. Existing envelopes are preserved.
-This managed subset covers the selected clip, notes and lane; its result identifies other
+`project_realization_plan_timbre` reads explicitly selected Drift cutoff and ADSR durations in Hz
+and milliseconds. `project_realization_author_timbre` inserts or revises that source using actual
+native formatter and parameter readback. Unselected sound fields remain reported as unapplied.
+After a Live or bridge restart, `project_realization_preview_adoption` and
+`project_realization_adopt` establish explicitly approved current Clip/note authority.
+Device authority requires its separate preview/adoption pair. Saved receipts identify history;
+fresh native observations and approval establish the current objects. Each result identifies
 project domains that have not been applied.
 
 A few quick tools (`create_progression_clip`, `apply_euclidean_rhythm`, `apply_arpeggio`) write a
@@ -214,7 +220,10 @@ describes Live 12.4.5:
 | 11.0.x | Insert notes; read all pitches with note starts in `[0, generated clip end)` | Unavailable |
 | 11.1–11.x | Insert notes; read the complete Clip note population | Unavailable |
 | 12.0–12.2 | Same complete-population readback | Unavailable |
-| 12.3+ | Same complete-population readback | Version-admitted native Live devices |
+| 12.3.x and 12.4.x | Same complete-population readback | Reviewed native-device candidates |
+
+Managed project authoring admits these two Live 12 minor versions. Later versions require
+capability review before native writes.
 
 The [Clip reference](https://docs.cycling74.com/apiref/lom/clip/) dates ranged note access to
 11.0 and complete-population access to 11.1. Live 11.0 evidence includes
@@ -306,10 +315,11 @@ Max externals on macOS and Windows.
 - Documents live in the server's memory for the life of the process. Score, Timbre, Mix and Corpus
   documents can be exported separately. `workspace_save` persists their complete owning workspace;
   startup restore and `workspace_open` reopen it. Unsaved changes are lost when the process ends.
-- The one-shot project deployment tools create a fresh realization. The managed Part tools retain
-  ownership and support existing-note revision in the same bridge epoch. Adding or deleting attacks,
-  changing clip length or meter, and adopting objects after a Live/bridge restart require further
-  supported operations; saved receipts do not establish native identity by themselves.
+- The one-shot project deployment tools create a fresh realization. Managed Part tools support
+  note revision and whole Event addition/deletion; chord cardinality and Clip length/meter changes
+  still require further supported operations. Reopened objects require fresh explicit adoption.
+  Current managed device authoring covers selected Drift source controls, with remaining effects
+  and routing reported as unapplied.
 - Audio is never rendered or analysed, so nothing Sunny reports is a claim about how the result
   sounds. Loudness targets and reference comparisons are intentions, not measurements.
 - Live's current-scale setting is readable but not written.

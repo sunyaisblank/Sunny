@@ -123,11 +123,23 @@ def _policy(device_class: str, original_name: str, unit: str) -> dict[str, Any]:
         units = {"Frequency": "Hertz", "Gain": "Decibels", "Resonance": "QualityFactor"}
         if match and units[match.group(2)] == unit:
             return {"global_mode": 0, match.group(1) + " Filter On A": "On"}
+    if device_class == "Drift":
+        units = {
+            "LP Freq": "Hertz",
+            "Env 1 Attack": "Milliseconds",
+            "Env 1 Decay": "Milliseconds",
+            "Env 1 Release": "Milliseconds",
+        }
+        if units.get(original_name) == unit:
+            observed = {"voice_mode": None, "voice_count": None}
+            if original_name == "LP Freq":
+                observed["LP Type"] = None
+            return observed
     _fail("UnknownCapability", "Device/control/unit is outside the finite registry")
 
 
 def _registered_context(capability_id: str) -> tuple[str, str, str, dict[str, Any]]:
-    """Select only the 28 continuous identities in registry version 1.
+    """Select only the 32 continuous identities in registry version 2.
 
     Callers supply no descriptor or mode policy. The native observation below
     still verifies every identity and required mode against the real population.
@@ -142,6 +154,15 @@ def _registered_context(capability_id: str) -> tuple[str, str, str, dict[str, An
     if capability_id in utility:
         original_name, unit = utility[capability_id]
         return "StereoGain", original_name, unit, _policy("StereoGain", original_name, unit)
+    drift = {
+        "drift.lp.frequency": ("LP Freq", "Hertz"),
+        "drift.env.1.attack": ("Env 1 Attack", "Milliseconds"),
+        "drift.env.1.decay": ("Env 1 Decay", "Milliseconds"),
+        "drift.env.1.release": ("Env 1 Release", "Milliseconds"),
+    }
+    if capability_id in drift:
+        original_name, unit = drift[capability_id]
+        return "Drift", original_name, unit, _policy("Drift", original_name, unit)
     if capability_id == "eq8.output_gain":
         return "Eq8", "Output Gain", "Decibels", _policy("Eq8", "Output Gain", "Decibels")
     match = re.fullmatch(r"eq8\.band\.([1-8])\.(frequency|gain|q)", capability_id)
@@ -263,11 +284,13 @@ class _Observation:
             device.class_name != self.device_class
             or isinstance(device.type, bool)
             or not isinstance(device.type, int)
-            or device.type != 2
+            or device.type != (1 if self.device_class == "Drift" else 2)
             or device.is_active is not True
             or device.can_have_chains is not False
         ):
-            _fail("DeviceMismatch", "An active flat registered native audio device is required")
+            _fail(
+                "DeviceMismatch", "An active flat native device of the registered role is required"
+            )
         raw = device.parameters
         if isinstance(raw, (str, bytes, dict)):
             _fail("InvalidObservation", "Device.parameters is not a native object collection")
@@ -319,7 +342,32 @@ class _Observation:
         descriptor = _descriptor(parameter, quantized=False, eligible=True)
         modes = {}
         for name, expected in self.policy.items():
-            if name == "global_mode":
+            if self.device_class == "Drift" and name in ("voice_mode", "voice_count"):
+                index = getattr(device, name + "_index")
+                raw_items = getattr(device, name + "_list")
+                if isinstance(raw_items, (str, bytes, dict)):
+                    _fail("InvalidObservation", "Native voice property needs a label collection")
+                items = []
+                for item in raw_items:
+                    if len(items) >= 64:
+                        _fail("InvalidDomain", "Native voice property exceeds the finite limit")
+                    items.append(item)
+                if (
+                    isinstance(index, bool)
+                    or not isinstance(index, int)
+                    or not items
+                    or not 0 <= index < len(items)
+                    or any(type(item) is not str or not item for item in items)
+                    or len(set(items)) != len(items)
+                ):
+                    _fail("InvalidDomain", "Native voice index/list must be valid and unambiguous")
+                modes[name] = {"index": int(index), "value_items": items, "label": items[index]}
+            elif self.device_class == "Drift" and name == "LP Type":
+                mode = _descriptor(find(name), quantized=True, eligible=True)
+                if len(mode["value_items"]) != 2:
+                    _fail("UnsupportedMode", "Drift needs the observed two-choice LP Type domain")
+                modes[name] = mode
+            elif name == "global_mode":
                 actual = device.global_mode
                 if isinstance(actual, bool) or not isinstance(actual, int) or actual != expected:
                     _fail("UnsupportedMode", "EQ Eight requires observed native global_mode=0")
@@ -408,6 +456,7 @@ def _parse(text: Any, unit: str, *, gain_infinity: bool = False) -> tuple[Decima
     suffixes = {
         "Decibels": r"[ \t]*dB",
         "Hertz": r"[ \t]*(Hz|kHz)",
+        "Milliseconds": r"[ \t]*(ms|s)",
         "QualityFactor": "",
         "Percent": r"[ \t]*%",
         "StereoBalance": r"[ \t]*([LR])",
@@ -422,6 +471,9 @@ def _parse(text: Any, unit: str, *, gain_infinity: bool = False) -> tuple[Decima
     numeric = Decimal(token)
     increment = Decimal(1).scaleb(numeric.as_tuple().exponent)
     if unit == "Hertz" and match.group(2) == "kHz":
+        numeric *= 1000
+        increment *= 1000
+    if unit == "Milliseconds" and match.group(2) == "s":
         numeric *= 1000
         increment *= 1000
     if unit == "StereoBalance":
@@ -477,7 +529,7 @@ def resolve_native_display_value(
         if (
             admitted_tolerance < 0
             or (unit in ("Hertz", "QualityFactor") and desired <= 0)
-            or (unit == "Percent" and desired < 0)
+            or (unit in ("Percent", "Milliseconds") and desired < 0)
             or (unit == "StereoBalance" and not -1 <= desired <= 1)
         ):
             _fail("InvalidIntent", "Physical target/tolerance violates its declared unit domain")
@@ -528,8 +580,8 @@ def resolve_native_display_value(
                 )
                 if unit in ("Hertz", "QualityFactor") and physical <= 0:
                     _fail("UnsupportedDisplay", "Native display violates its positive unit domain")
-                if unit == "Percent" and physical < 0:
-                    _fail("UnsupportedDisplay", "Width display must be nonnegative")
+                if unit in ("Percent", "Milliseconds") and physical < 0:
+                    _fail("UnsupportedDisplay", "Width/time display must be nonnegative")
                 reading = (value, raw, physical, increment)
                 for previous in readings:
                     if value == previous[0] and reading[1:] != previous[1:]:
@@ -656,6 +708,7 @@ def resolve_native_display_value(
                     "Sampled monotonicity does not prove a global transfer function or search completeness.",
                     "Balance is a native displayed coordinate, not an arbitrary pan law or physical angle.",
                     "EQ Eight Scale and Adaptive Q are observed couplings, not a literal DSP response claim.",
+                    "Drift voice and LP Type modes do not qualify envelope shape, routing or modulation.",
                     "Native readback after an authorized write and reopen must be independently verified.",
                     "Version, edition, operating system, envelope and persistence qualification remain separate.",
                 ],

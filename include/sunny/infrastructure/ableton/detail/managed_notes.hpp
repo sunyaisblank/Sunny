@@ -1,8 +1,10 @@
 #pragma once
 
 #include <algorithm>
+#include <charconv>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <map>
 #include <set>
 #include <string>
@@ -109,43 +111,18 @@ inline NativeNoteMap note_map(const nlohmann::json& identity) {
     return result;
 }
 
-/// Closed full-population geometry admission. Live beats are absolute Clip
-/// quarter notes. Half-open same-pitch collisions involving a changed geometry
-/// are rejected at actual double width, with no epsilon or hidden note removal.
-inline std::optional<NativeNoteMap>
-proposed_notes(const nlohmann::json& identity, const nlohmann::json& changes, double clip_end) {
-    if (!note_identity_valid(identity) || !note_changes_valid(changes) ||
-        identity.at("entire_clip_population_observed") != true || !std::isfinite(clip_end) ||
-        clip_end <= 0.0)
-        return std::nullopt;
-    auto result = note_map(identity);
-    std::set<std::int32_t> geometry;
-    for (const auto& change : changes) {
-        const auto id = change.at("note_id").get<std::int32_t>();
-        auto found = result.find(id);
-        if (found == result.end() || managed_digest(semantic_note(found->second)) !=
-                                         managed_digest(semantic_note(change.at("expected"))))
-            return std::nullopt;
-        const auto before = found->second;
-        for (const auto& [name, value] : change.at("updates").items())
-            found->second[name] =
-                name == "pitch" || name == "mute" ? value : nlohmann::json(value.get<double>());
-        const auto& note = found->second;
-        const double start = note.at("start_time").get<double>();
-        const double end = start + note.at("duration").get<double>();
-        if (!(0.0 <= start && start < clip_end) || !std::isfinite(end)) return std::nullopt;
-        for (const auto* name : {"pitch", "start_time", "duration"})
-            if (note.at(name) != before.at(name)) geometry.insert(id);
-    }
-    if (geometry.empty()) return result;
+inline bool geometry_admissible(const nlohmann::json& identity,
+                                const NativeNoteMap& result,
+                                const std::set<std::int32_t>& geometry) {
+    if (geometry.empty()) return true;
     for (const auto& [id, note] : result) {
         (void)id;
         if (!std::isfinite(note.at("start_time").get<double>() + note.at("duration").get<double>()))
-            return std::nullopt;
+            return false;
     }
     for (const auto& note : identity.at("notes"))
         if (!std::isfinite(note.at("start_time").get<double>() + note.at("duration").get<double>()))
-            return std::nullopt;
+            return false;
     std::map<int, std::vector<const nlohmann::json*>> pitches;
     for (const auto& [id, note] : result) {
         (void)id;
@@ -160,16 +137,16 @@ proposed_notes(const nlohmann::json& identity, const nlohmann::json& changes, do
         std::ranges::sort(notes, {}, [](const auto* note) {
             return note->at("start_time").template get<double>();
         });
-        for (std::size_t i = 0; i < notes.size(); ++i)
-            for (std::size_t j = i + 1; j < notes.size(); ++j) {
-                if (notes[j]->at("start_time").get<double>() >=
-                    notes[i]->at("start_time").get<double>() +
-                        notes[i]->at("duration").get<double>())
-                    break;
-                if (geometry.contains(notes[i]->at("note_id").get<std::int32_t>()) ||
-                    geometry.contains(notes[j]->at("note_id").get<std::int32_t>()))
-                    return std::nullopt;
-            }
+        double furthest_end = -std::numeric_limits<double>::infinity();
+        double changed_end = furthest_end;
+        for (const auto* note : notes) {
+            const auto start = note->at("start_time").get<double>();
+            const bool changed = geometry.contains(note->at("note_id").get<std::int32_t>());
+            if ((changed && furthest_end > start) || changed_end > start) return false;
+            const auto end = start + note->at("duration").get<double>();
+            furthest_end = std::max(furthest_end, end);
+            if (changed) changed_end = std::max(changed_end, end);
+        }
     }
     // Batch collision atomicity is not established by the public/pinned APIs.
     // Check each destination against other retained baseline intervals too.
@@ -205,10 +182,145 @@ proposed_notes(const nlohmann::json& identity, const nlohmann::json& changes, do
             for (const auto* source : {furthest, second})
                 if (source && source->at("note_id") != target->at("note_id") &&
                     end(source) > target->at("start_time").get<double>())
-                    return std::nullopt;
+                    return false;
         }
     }
+    return true;
+}
+
+/// Closed full-population geometry admission. Live beats are absolute Clip
+/// quarter notes. Half-open same-pitch collisions involving a changed geometry
+/// are rejected at actual double width, with no epsilon or hidden note removal.
+inline std::optional<NativeNoteMap>
+proposed_notes(const nlohmann::json& identity, const nlohmann::json& changes, double clip_end) {
+    if (!note_identity_valid(identity) || !note_changes_valid(changes) ||
+        identity.at("entire_clip_population_observed") != true || !std::isfinite(clip_end) ||
+        clip_end <= 0.0)
+        return std::nullopt;
+    auto result = note_map(identity);
+    std::set<std::int32_t> geometry;
+    for (const auto& change : changes) {
+        const auto id = change.at("note_id").get<std::int32_t>();
+        auto found = result.find(id);
+        if (found == result.end() || managed_digest(semantic_note(found->second)) !=
+                                         managed_digest(semantic_note(change.at("expected"))))
+            return std::nullopt;
+        const auto before = found->second;
+        for (const auto& [name, value] : change.at("updates").items())
+            found->second[name] =
+                name == "pitch" || name == "mute" ? value : nlohmann::json(value.get<double>());
+        const auto& note = found->second;
+        const double start = note.at("start_time").get<double>();
+        const double end = start + note.at("duration").get<double>();
+        if (!(0.0 <= start && start < clip_end) || !std::isfinite(end)) return std::nullopt;
+        for (const auto* name : {"pitch", "start_time", "duration"})
+            if (note.at(name) != before.at(name)) geometry.insert(id);
+    }
+    if (!geometry_admissible(identity, result, geometry)) return std::nullopt;
     return result;
+}
+
+inline bool population_note_key(std::string_view key) {
+    if (key.empty() || key.front() != 'e') return false;
+    const auto separator = key.find("_n");
+    if (separator == std::string_view::npos || separator < 2) return false;
+    const auto event = key.substr(1, separator - 1), ordinal = key.substr(separator + 2);
+    if (event.front() == '0' || ordinal.empty() || (ordinal.size() > 1 && ordinal.front() == '0'))
+        return false;
+    std::uint64_t event_id = 0, index = 0;
+    const auto parse = [](std::string_view text, std::uint64_t& value) {
+        const auto result = std::from_chars(text.data(), text.data() + text.size(), value);
+        return result.ec == std::errc{} && result.ptr == text.data() + text.size();
+    };
+    return parse(event, event_id) && event_id > 0 && parse(ordinal, index) && index <= 65535;
+}
+
+inline bool population_request_valid(const nlohmann::json& request) {
+    for (const auto* key : {"changes", "deletions", "additions"})
+        if (!request.contains(key) || !request.at(key).is_array() || request.at(key).size() > 65536)
+            return false;
+    const auto& changes = request.at("changes");
+    if (changes.empty() && request.at("deletions").empty() && request.at("additions").empty())
+        return false;
+    if (!changes.empty() && !note_changes_valid(changes)) return false;
+    std::set<std::int32_t> ids;
+    for (const auto& change : changes)
+        ids.insert(change.at("note_id").get<std::int32_t>());
+    for (const auto& deletion : request.at("deletions")) {
+        if (!deletion.is_object() || deletion.size() != 2 || !deletion.contains("note_id") ||
+            !deletion.contains("expected") ||
+            !note_integer(deletion.at("note_id"), INT32_MIN, INT32_MAX) ||
+            !ids.insert(deletion.at("note_id").get<std::int32_t>()).second ||
+            !note_values(deletion.at("expected")))
+            return false;
+    }
+    std::set<std::string> keys;
+    for (const auto& addition : request.at("additions")) {
+        if (!addition.is_object() || addition.size() != 2 || !addition.contains("note_key") ||
+            !addition.contains("note") || !addition.at("note_key").is_string() ||
+            !population_note_key(addition.at("note_key").get_ref<const std::string&>()) ||
+            !keys.insert(addition.at("note_key").get<std::string>()).second ||
+            !note_values(addition.at("note")) ||
+            addition.at("note").at("start_time").get<double>() < 0.0)
+            return false;
+    }
+    return true;
+}
+
+/// Deletion removes only explicit retained IDs, then existing-ID updates use the
+/// same conservative intermediate guard. Additions use private arithmetic IDs
+/// solely for geometry preflight; no synthetic ID becomes native authority.
+inline std::optional<NativeNoteMap> proposed_population(const nlohmann::json& identity,
+                                                        const nlohmann::json& request,
+                                                        double clip_end) {
+    using json = nlohmann::json;
+    if (!note_identity_valid(identity) || identity.at("entire_clip_population_observed") != true ||
+        !population_request_valid(request) || !std::isfinite(clip_end) || clip_end <= 0.0)
+        return std::nullopt;
+    const auto before = note_map(identity);
+    auto retained = before;
+    for (const auto& deletion : request.at("deletions")) {
+        const auto id = deletion.at("note_id").get<std::int32_t>();
+        const auto found = retained.find(id);
+        if (found == retained.end() || managed_digest(semantic_note(found->second)) !=
+                                           managed_digest(semantic_note(deletion.at("expected"))))
+            return std::nullopt;
+        retained.erase(found);
+    }
+    if (retained.size() + request.at("additions").size() > 65536) return std::nullopt;
+    json retained_identity{{"entire_clip_population_observed", true}, {"notes", json::array()}};
+    for (const auto& [id, note] : retained) {
+        (void)id;
+        retained_identity["notes"].push_back(note);
+    }
+    std::optional<NativeNoteMap> proposed = retained;
+    if (!request.at("changes").empty())
+        proposed = proposed_notes(retained_identity, request.at("changes"), clip_end);
+    if (!proposed) return std::nullopt;
+    auto final = *proposed;
+    json current{{"entire_clip_population_observed", true}, {"notes", json::array()}};
+    for (const auto& [id, note] : *proposed) {
+        (void)id;
+        current["notes"].push_back(note);
+    }
+    std::set<std::int32_t> geometry;
+    std::int64_t synthetic = INT32_MIN;
+    for (const auto& addition : request.at("additions")) {
+        while (before.contains(static_cast<std::int32_t>(synthetic)) ||
+               final.contains(static_cast<std::int32_t>(synthetic)))
+            ++synthetic;
+        auto note = semantic_note(addition.at("note"));
+        const auto start = note.at("start_time").get<double>();
+        if (!(0.0 <= start && start < clip_end) ||
+            !std::isfinite(start + note.at("duration").get<double>()))
+            return std::nullopt;
+        const auto id = static_cast<std::int32_t>(synthetic++);
+        note["note_id"] = id;
+        final.emplace(id, std::move(note));
+        geometry.insert(id);
+    }
+    if (!geometry_admissible(current, final, geometry)) return std::nullopt;
+    return proposed;
 }
 
 } // namespace sunny::infrastructure::managed_detail

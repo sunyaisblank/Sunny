@@ -124,7 +124,10 @@ target_sources(
         infrastructure/ableton/dispatcher_test.cpp
         infrastructure/ableton/lom_protocol_test.cpp
         infrastructure/ableton/managed_realization_test.cpp
+        infrastructure/ableton/managed_devices_test.cpp
+        infrastructure/ableton/managed_recovery_test.cpp
         infrastructure/ableton/native_units_test.cpp
+        infrastructure/ableton/native_timbre_plan_test.cpp
         infrastructure/ableton/realization_store_test.cpp
         infrastructure/ableton/target_profile_test.cpp
         infrastructure/ableton/target_snapshot_test.cpp

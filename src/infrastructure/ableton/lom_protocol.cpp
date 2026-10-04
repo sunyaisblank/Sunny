@@ -18,8 +18,10 @@
 #include <sstream>
 #include <string_view>
 #include <sunny/core/timbre/live_capabilities.hpp>
+#include <sunny/infrastructure/ableton/detail/managed_devices.hpp>
 #include <sunny/infrastructure/ableton/detail/managed_notes.hpp>
 #include <sunny/infrastructure/ableton/lom_protocol.hpp>
+#include <sunny/infrastructure/ableton/managed_recovery.hpp>
 #include <sunny/infrastructure/ableton/target_profile.hpp>
 
 namespace sunny::infrastructure {
@@ -414,6 +416,15 @@ bool valid_managed_request(std::string_view name, const std::vector<json>& args)
     if (name == "sunny_managed_context") return args.empty();
     if (args.size() != 1 || !args[0].is_object()) return false;
     const auto& value = args[0];
+    if (is_one_of(name,
+                  {"sunny_managed_insert_device",
+                   "sunny_managed_update_device_parameters",
+                   "sunny_managed_preview_devices",
+                   "sunny_managed_adopt_devices"}))
+        return managed_device_detail::device_request_valid(name, value);
+    if (name == "sunny_managed_preview_adoption")
+        return managed_detail::adoption_preview_request_valid(value);
+    if (name == "sunny_managed_adopt_clip") return managed_detail::adoption_request_valid(value);
     if (!value.contains("document_token") || !managed_key(value.at("document_token"))) return false;
     if (name == "sunny_managed_operation")
         return value.size() == 2 && value.contains("operation_id") &&
@@ -433,9 +444,9 @@ bool valid_managed_request(std::string_view name, const std::vector<json>& args)
                value.at("expected_manifest").is_object() &&
                value.at("expected_manifest").contains("schema_version") &&
                json_to_int(value.at("expected_manifest").at("schema_version")) == 1;
-    const bool guarded = name == "sunny_managed_replace_clip" ||
-                         name == "sunny_managed_author_envelope" ||
-                         name == "sunny_managed_update_notes";
+    const bool guarded =
+        name == "sunny_managed_replace_clip" || name == "sunny_managed_author_envelope" ||
+        name == "sunny_managed_update_notes" || name == "sunny_managed_revise_note_population";
     if (guarded && (!value.contains("expected_content_fingerprint") ||
                     !managed_fingerprint(value.at("expected_content_fingerprint"))))
         return false;
@@ -443,6 +454,8 @@ bool valid_managed_request(std::string_view name, const std::vector<json>& args)
         return value.size() == 6 && value.contains("lane") &&
                valid_step_envelope_author(value.at("lane")) &&
                value.at("lane").at("parameter").at("kind") != "device";
+    if (name == "sunny_managed_revise_note_population")
+        return value.size() == 8 && managed_detail::population_request_valid(value);
     if (name == "sunny_managed_update_notes")
         return value.size() == 6 && value.contains("changes") &&
                managed_detail::note_changes_valid(value.at("changes"));
@@ -508,6 +521,13 @@ sunny::core::Result<void> LomProtocol::validate_request(const LomRequest& reques
                         "sunny_managed_rebind",
                         "sunny_managed_author_envelope",
                         "sunny_managed_update_notes",
+                        "sunny_managed_revise_note_population",
+                        "sunny_managed_preview_adoption",
+                        "sunny_managed_adopt_clip",
+                        "sunny_managed_insert_device",
+                        "sunny_managed_update_device_parameters",
+                        "sunny_managed_preview_devices",
+                        "sunny_managed_adopt_devices",
                         "create_scene",
                         "create_midi_track",
                         "create_return_track"}));

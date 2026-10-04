@@ -2,7 +2,9 @@
 # This identity describes source compatibility, not a qualified Live runtime.
 function(sunny_prepare_bridge_bundle source_root bundle_root identity_output)
     foreach(_required IN ITEMS
-            __init__.py build_identity.py diagnostics.py handler.py managed.py native_units.py server.py surface.py
+            __init__.py build_identity.py diagnostics.py handler.py managed.py
+            managed_capacity.py managed_devices.py managed_recovery.py
+            native_units.py server.py surface.py
             bridge_contract.json)
         if(NOT EXISTS "${source_root}/${_required}" OR IS_DIRECTORY "${source_root}/${_required}")
             message(FATAL_ERROR
