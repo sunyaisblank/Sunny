@@ -116,8 +116,8 @@ TEST_CASE("native registry is finite versioned provenance without host qualifica
     const auto& provenance = live_native_registry_provenance();
     CHECK(provenance.registry_version == 1);
     CHECK(provenance.public_lom_reference_version == LiveNativeVersion{12, 4, 5});
-    CHECK(provenance.first_candidate_version == LiveNativeVersion{12, 0, 0});
-    CHECK(provenance.last_candidate_version == LiveNativeVersion{12, 4, 5});
+    CHECK(provenance.first_candidate_version == LiveNativeVersion{12, 3, 0});
+    CHECK(provenance.last_candidate_version == LiveNativeVersion{12, 4, 65535});
     CHECK(provenance.python_source_commit == "e83d5192f321b24eb9daab843ac49a2d95d862b1");
     CHECK_FALSE(provenance.host_qualified);
     const auto entries = live_native_parameter_registry();
@@ -215,11 +215,24 @@ TEST_CASE("preflight rejects unknown version scope identity and order",
     SECTION("legacy and future coverage is unknown without modifying existing profiles") {
         for (const auto version : {LiveNativeVersion{11, 0, 0},
                                    LiveNativeVersion{11, 3, 0},
-                                   LiveNativeVersion{12, 4, 6},
+                                   LiveNativeVersion{12, 2, 65535},
                                    LiveNativeVersion{12, 5, 0},
                                    LiveNativeVersion{13, 0, 0}}) {
             device.version = version;
             check(Disposition::UnknownRegistryCoverage);
+        }
+    }
+    SECTION("all representable patches of reviewed minor versions remain candidates") {
+        for (const auto version : {LiveNativeVersion{12, 3, 0},
+                                   LiveNativeVersion{12, 3, 65535},
+                                   LiveNativeVersion{12, 4, 6},
+                                   LiveNativeVersion{12, 4, 65535}}) {
+            device.version = version;
+            const auto result = preflight_live_native_parameter(
+                "utility.gain", LiveNativeInternalValue{0.4}, device, 3);
+            REQUIRE(result.candidate);
+            CHECK(result.disposition == Disposition::CandidateReady);
+            CHECK_FALSE(result.candidate->host_qualified);
         }
     }
     SECTION("device class") {

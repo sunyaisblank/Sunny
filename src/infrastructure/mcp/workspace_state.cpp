@@ -6,6 +6,7 @@
 #include <cmath>
 #include <fstream>
 #include <limits>
+#include <random>
 #include <set>
 #include <stdexcept>
 #include <sunny/core/corpus/serialization.hpp>
@@ -30,6 +31,7 @@
 #include <windows.h>
 #else
 #include <fcntl.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #endif
 
@@ -37,6 +39,19 @@ namespace sunny::infrastructure {
 
 using json = nlohmann::json;
 using namespace sunny::core;
+
+std::string new_workspace_namespace() {
+    std::random_device entropy;
+    constexpr char hexadecimal[] = "0123456789abcdef";
+    std::string identity;
+    identity.reserve(32);
+    for (int word = 0; word < 4; ++word) {
+        const auto value = static_cast<std::uint32_t>(entropy());
+        for (int shift = 28; shift >= 0; shift -= 4)
+            identity.push_back(hexadecimal[(value >> shift) & 15U]);
+    }
+    return identity;
+}
 
 namespace {
 
@@ -53,6 +68,7 @@ struct WorkspaceView {
     std::uint64_t next_plan_id;
     std::uint64_t observed_plan_id;
     const WorkspaceNamespaceHistory& namespace_history;
+    const NativeWorkspaceMetadata& native_realization;
 };
 
 WorkspaceView view(const WorkspaceState& state) {
@@ -63,7 +79,8 @@ WorkspaceView view(const WorkspaceState& state) {
             state.project,
             state.next_plan_id,
             0,
-            state.namespace_history};
+            state.namespace_history,
+            state.native_realization};
 }
 WorkspaceView view(const McpSession& session, const WorkspaceNamespaceHistory& history) {
     return {*session.score,
@@ -73,7 +90,8 @@ WorkspaceView view(const McpSession& session, const WorkspaceNamespaceHistory& h
             *session.project,
             session.deployment->next_plan_id,
             session.deployment->plans.empty() ? 0 : session.deployment->plans.rbegin()->first,
-            history};
+            history,
+            session.realization->metadata};
 }
 WorkspaceView view(const McpSession& session) {
     return view(session, *session.namespace_history);
@@ -184,6 +202,17 @@ void counter(std::uint64_t next, std::uint64_t observed, const std::string& name
 }
 
 void validate(const WorkspaceView& state) {
+    const auto& native = state.native_realization;
+    if (native.workspace_namespace.size() != 32 ||
+        !std::all_of(
+            native.workspace_namespace.begin(), native.workspace_namespace.end(), [](char value) {
+                return (value >= '0' && value <= '9') || (value >= 'a' && value <= 'f');
+            }))
+        deny("native_realization.workspace_namespace must be 32 lowercase hexadecimal digits");
+    if (native.history_base_directory &&
+        (native.history_base_directory->empty() || native.history_base_directory->size() > 4096 ||
+         native.history_base_directory->find('\0') != std::string::npos))
+        deny("native_realization.history_base_directory must be a nonempty bounded path");
     std::uint64_t score_max = 0, profile_max = 0, timbre_effect_max = 0, preset_max = 0;
     std::uint64_t graph_max = 0, group_max = 0, aux_max = 0, mix_effect_max = 0, reference_max = 0;
     for (const auto& [id, history] : state.namespace_history.scores) {
@@ -381,6 +410,12 @@ json encode(const WorkspaceView& state) {
                      {"corpus", corpus_to_json(state.corpus.corpus)},
                      {"projects", json::array()},
                      {"namespace_history", encode_history(state.namespace_history)},
+                     {"native_realization",
+                      {{"workspace_namespace", state.native_realization.workspace_namespace},
+                       {"history_base_directory",
+                        state.native_realization.history_base_directory
+                            ? json(*state.native_realization.history_base_directory)
+                            : json(nullptr)}}},
                      {"counters",
                       {{"next_score_id", state.score.next_score_id},
                        {"next_profile_id", state.timbre.next_profile_id},
@@ -493,7 +528,17 @@ WorkspaceNamespaceHistory decode_history(const json& encoded) {
 }
 
 WorkspaceState decode(const json& document) {
-    exact_fields(document,
+    const auto version = detail::checked_integer<int>(document.at("version"), "workspace version");
+    if (version != 1 && version != WORKSPACE_SCHEMA_VERSION)
+        deny("workspace: unsupported envelope version");
+    auto canonical = document;
+    if (version == 1) {
+        if (canonical.contains("native_realization"))
+            deny("workspace version 1 cannot contain native realization metadata");
+        canonical["native_realization"] = {{"workspace_namespace", new_workspace_namespace()},
+                                           {"history_base_directory", nullptr}};
+    }
+    exact_fields(canonical,
                  {"format",
                   "version",
                   "scores",
@@ -503,13 +548,19 @@ WorkspaceState decode(const json& document) {
                   "corpus",
                   "projects",
                   "namespace_history",
+                  "native_realization",
                   "counters"},
                  "workspace");
     if (document.at("format") != "sunny-workspace") deny("workspace: unsupported format");
-    if (detail::checked_integer<int>(document.at("version"), "workspace version") !=
-        WORKSPACE_SCHEMA_VERSION)
-        deny("workspace: unsupported envelope version");
     WorkspaceState state;
+    const auto& native = canonical.at("native_realization");
+    exact_fields(native, {"workspace_namespace", "history_base_directory"}, "native_realization");
+    state.native_realization.workspace_namespace =
+        native.at("workspace_namespace").get<std::string>();
+    if (!native.at("history_base_directory").is_null())
+        state.native_realization.history_base_directory =
+            native.at("history_base_directory").get<std::string>();
+    state.native_namespace_is_new = version == 1;
     state.namespace_history = decode_history(document.at("namespace_history"));
     const auto read_documents = [&](const char* key, auto& destination, auto reader) {
         const auto& records = document.at(key);
@@ -703,6 +754,18 @@ void retain_observed_local_identities(WorkspaceState& state,
 }
 
 void publish(const McpSession& session, WorkspaceState& state) noexcept {
+    const bool same_native_namespace = session.realization->metadata.workspace_namespace ==
+                                       state.native_realization.workspace_namespace;
+    session.realization->metadata.workspace_namespace.swap(
+        state.native_realization.workspace_namespace);
+    session.realization->metadata.history_base_directory.swap(
+        state.native_realization.history_base_directory);
+    if (!same_native_namespace) {
+        session.realization->namespace_is_new = state.native_namespace_is_new;
+        session.realization->namespace_saved_durably = !state.native_namespace_is_new;
+        session.realization->store.reset();
+        session.realization->history_error.reset();
+    }
     session.score->scores.swap(state.score.scores);
     session.score->undo_stacks.swap(state.score.undo_stacks);
     session.score->project_transaction_score.reset();
@@ -800,6 +863,77 @@ class TemporaryFile {
         }
     }
 };
+
+std::optional<std::string>
+confirm_loaded_native_namespace(const std::filesystem::path& path,
+                                const NativeWorkspaceMetadata& expected) {
+#ifdef _WIN32
+    static_cast<void>(path);
+    static_cast<void>(expected);
+    return "Native namespace directory durability requires the primary POSIX Docker server";
+#else
+    TemporaryFile file, directory;
+    file.descriptor = open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    if (file.descriptor == -1) return system_failure("Cannot open native namespace workspace");
+    struct stat held {};
+    if (fstat(file.descriptor, &held) != 0)
+        return system_failure("Cannot inspect native namespace workspace");
+    if (!S_ISREG(held.st_mode)) return "Native namespace workspace must be a regular file";
+    auto parent = path.parent_path();
+    if (parent.empty()) parent = ".";
+    directory.descriptor = open(parent.c_str(), O_RDONLY | O_CLOEXEC | O_DIRECTORY);
+    if (directory.descriptor == -1)
+        return system_failure("Cannot open native namespace workspace directory");
+    const auto namespace_matches = [&]() {
+        if (lseek(file.descriptor, 0, SEEK_SET) == -1) return false;
+        std::string bytes;
+        std::array<char, 16384> buffer{};
+        while (true) {
+            const auto count = read(file.descriptor, buffer.data(), buffer.size());
+            if (count == -1 && errno == EINTR) continue;
+            if (count < 0) return false;
+            if (count == 0) break;
+            bytes.append(buffer.data(), static_cast<std::size_t>(count));
+        }
+        try {
+            const auto document = parse_bytes(bytes);
+            if (document.at("format") != "sunny-workspace" ||
+                document.at("version") != WORKSPACE_SCHEMA_VERSION)
+                return false;
+            const auto& native = document.at("native_realization");
+            if (!native.is_object() || native.size() != 2 ||
+                native.at("workspace_namespace") != expected.workspace_namespace)
+                return false;
+            const auto& base = native.at("history_base_directory");
+            // A same-namespace older snapshot may omit the operational location;
+            // the already retained current location is preserved by publication.
+            return base.is_null() ||
+                   (expected.history_base_directory && base == *expected.history_base_directory);
+        } catch (const std::exception&) {
+            return false;
+        }
+    };
+    if (!namespace_matches()) return "Native workspace namespace changed after parsing";
+    const auto synchronize = [](int descriptor) {
+        int result;
+        do {
+            result = fsync(descriptor);
+        } while (result == -1 && errno == EINTR);
+        return result == 0;
+    };
+    if (!synchronize(file.descriptor))
+        return system_failure("Native namespace workspace synchronization failed");
+    if (!synchronize(directory.descriptor))
+        return system_failure("Native namespace workspace directory synchronization failed");
+    struct stat named {};
+    if (fstatat(directory.descriptor, path.filename().c_str(), &named, AT_SYMLINK_NOFOLLOW) != 0)
+        return system_failure("Cannot recheck native namespace workspace");
+    if (!S_ISREG(named.st_mode) || named.st_dev != held.st_dev || named.st_ino != held.st_ino)
+        return "Native namespace workspace changed during synchronization";
+    if (!namespace_matches()) return "Native workspace namespace changed during synchronization";
+    return std::nullopt;
+#endif
+}
 
 FileReplacement replace_file(const std::filesystem::path& destination,
                              const std::string& bytes,
@@ -1012,14 +1146,34 @@ WorkspaceResult<json> open_workspace(const McpSession& session, const std::files
     try {
         auto state = read_workspace(path);
         if (!state) return std::unexpected(state.error());
+        std::optional<std::string> source_path = std::filesystem::absolute(path).string();
+        if (state->native_realization.workspace_namespace ==
+                session.realization->metadata.workspace_namespace &&
+            session.realization->metadata.history_base_directory) {
+            if (state->native_realization.history_base_directory &&
+                state->native_realization.history_base_directory !=
+                    session.realization->metadata.history_base_directory)
+                deny("Native namespace has conflicting history locations");
+            state->native_realization.history_base_directory =
+                session.realization->metadata.history_base_directory;
+        }
         preserve_counters(*state, view(session));
         retain_observed_local_identities(*state, session);
         auto response = summary(*state);
         response["success"] = true;
         response["operation"] = "replace";
         response["source"] = path.string();
+        auto native_error =
+            state->native_namespace_is_new
+                ? std::optional<std::string>{"Save the migrated native namespace first"}
+                : confirm_loaded_native_namespace(path, state->native_realization);
+        response["native_namespace_durability_confirmed"] = !native_error;
+        if (native_error) response["native_history_error"] = *native_error;
         static_cast<void>(response.dump());
         publish(session, *state);
+        session.realization->namespace_saved_durably = !native_error;
+        if (native_error) session.realization->history_error.swap(native_error);
+        session.realization->workspace_path.swap(source_path);
         return response;
     } catch (const std::exception& exception) {
         return std::unexpected(WorkspaceError{exception.what()});
@@ -1091,6 +1245,17 @@ recover_workspace_backup(const McpSession& session, const std::filesystem::path&
     auto state = read_workspace(backup);
     if (!state) return std::unexpected(state.error());
     try {
+        std::optional<std::string> source_path = std::filesystem::absolute(path).string();
+        if (state->native_realization.workspace_namespace ==
+                session.realization->metadata.workspace_namespace &&
+            session.realization->metadata.history_base_directory) {
+            if (state->native_realization.history_base_directory &&
+                state->native_realization.history_base_directory !=
+                    session.realization->metadata.history_base_directory)
+                deny("Native namespace has conflicting history locations");
+            state->native_realization.history_base_directory =
+                session.realization->metadata.history_base_directory;
+        }
         preserve_counters(*state, view(session));
         retain_observed_local_identities(*state, session);
         auto response = summary(*state);
@@ -1098,8 +1263,22 @@ recover_workspace_backup(const McpSession& session, const std::filesystem::path&
         response["source"] = backup.string();
         response["preview"] = !apply;
         response["file_repaired"] = false;
+        std::optional<std::string> native_error;
+        if (apply) {
+            native_error =
+                state->native_namespace_is_new
+                    ? std::optional<std::string>{"Save the migrated native namespace first"}
+                    : confirm_loaded_native_namespace(backup, state->native_realization);
+            response["native_namespace_durability_confirmed"] = !native_error;
+            if (native_error) response["native_history_error"] = *native_error;
+        }
         static_cast<void>(response.dump());
-        if (apply) publish(session, *state);
+        if (apply) {
+            publish(session, *state);
+            session.realization->namespace_saved_durably = !native_error;
+            if (native_error) session.realization->history_error.swap(native_error);
+            session.realization->workspace_path.swap(source_path);
+        }
         return response;
     } catch (const std::exception& exception) {
         return std::unexpected(WorkspaceError{exception.what()});
@@ -1108,13 +1287,22 @@ recover_workspace_backup(const McpSession& session, const std::filesystem::path&
 
 WorkspaceSaveResult save_workspace(const McpSession& session,
                                    const std::filesystem::path& path,
-                                   const WorkspaceIoFault& fault) {
+                                   const WorkspaceIoFault& fault,
+                                   const NativeWorkspaceMetadata* publication) {
     WorkspaceSaveResult result;
     try {
         auto encoded = workspace_to_json(session);
         if (!encoded) {
             result.error = encoded.error().message;
             return result;
+        }
+        if (publication) {
+            (*encoded)["native_realization"] = {
+                {"workspace_namespace", publication->workspace_namespace},
+                {"history_base_directory",
+                 publication->history_base_directory ? json(*publication->history_base_directory)
+                                                     : json(nullptr)}};
+            static_cast<void>(decode(*encoded));
         }
         const auto bytes = encoded->dump(2) + "\n";
         std::error_code exists_error;
@@ -1131,8 +1319,18 @@ WorkspaceSaveResult save_workspace(const McpSession& session,
                 return result;
             }
             bool valid_previous = false;
+            std::string backup_bytes = *previous;
             try {
-                static_cast<void>(decode(parse_bytes(*previous)));
+                const auto previous_document = parse_bytes(*previous);
+                auto previous_state = decode(previous_document);
+                if (previous_document.at("version") == 1) {
+                    // Legacy backups cannot invent a fresh native namespace after
+                    // recovery once the migrated main has dispatched native work.
+                    auto migrated_backup = encode(view(previous_state));
+                    migrated_backup["native_realization"] = encoded->at("native_realization");
+                    static_cast<void>(decode(migrated_backup));
+                    backup_bytes = migrated_backup.dump(2) + "\n";
+                }
                 valid_previous = true;
             } catch (const std::exception& exception) {
                 result.backup_status =
@@ -1142,7 +1340,7 @@ WorkspaceSaveResult save_workspace(const McpSession& session,
                 auto backup = path;
                 backup += ".bak";
                 const auto saved =
-                    replace_file(backup, *previous, WorkspaceFileRole::Backup, fault);
+                    replace_file(backup, backup_bytes, WorkspaceFileRole::Backup, fault);
                 result.backup_updated = saved.committed;
                 result.backup_status = saved.durable ? "Previous valid main file saved durably"
                                                      : "Backup durability unknown";

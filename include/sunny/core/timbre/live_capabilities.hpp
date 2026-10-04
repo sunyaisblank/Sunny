@@ -32,9 +32,11 @@ struct LiveNativeVersion {
 struct LiveNativeRegistryProvenance {
     std::uint32_t registry_version = LIVE_NATIVE_CAPABILITY_REGISTRY_VERSION;
     LiveNativeVersion public_lom_reference_version{12, 4, 5};
-    /** Registry candidate scope only; neither endpoint is a verified Python ABI floor. */
-    LiveNativeVersion first_candidate_version{12, 0, 0};
-    LiveNativeVersion last_candidate_version{12, 4, 5};
+    /** Registry candidate scope is 12.3.x/12.4.x within this version type's domain.
+     *  Patch coverage is descriptor guarded; the documentation patch is provenance,
+     *  not a verified Python ABI boundary. Future minor versions require review. */
+    LiveNativeVersion first_candidate_version{12, 3, 0};
+    LiveNativeVersion last_candidate_version{12, 4, UINT16_MAX};
     std::string public_lom_reference;
     std::string official_manual_reference;
     std::string python_source_commit;

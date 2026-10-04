@@ -16,6 +16,7 @@ import queue
 import shlex
 import subprocess
 import threading
+import time
 from fractions import Fraction
 from pathlib import Path
 from typing import Any
@@ -134,7 +135,7 @@ def bridge(request, monkeypatch):
     """Yield ``(live, client)``: a modelled Live Set behind the real bridge and an MCP client.
 
     SUNNY_MCP_COMMAND runs the server another way, such as through the Docker
-    image with host networking, so the same tests cover the container.
+    image with ordinary bridge networking, so the same tests cover the container.
     """
     command = os.environ.get("SUNNY_MCP_COMMAND")
     binary = None if command else _sunny_mcp_binary()
@@ -160,6 +161,16 @@ def bridge(request, monkeypatch):
             host=client_host,
             command=shlex.split(command) if command else None,
         )
+        # Docker Desktop may advertise a newly bound WSL port after the local
+        # listener starts. Establish readiness through read-only product calls;
+        # no musical mutation is retried or sent before the route is usable.
+        deadline = time.monotonic() + 10.0
+        while True:
+            readiness = client.call("get_ableton_session_state")
+            if readiness.get("success") is True:
+                break
+            assert time.monotonic() < deadline, readiness
+            threading.Event().wait(0.1)
         yield live, client
     finally:
         if client is not None:

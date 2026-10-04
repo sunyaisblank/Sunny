@@ -26,8 +26,9 @@ set theory and acoustics. Pitch and time arithmetic is exact: durations are rati
 overflow is checked, and the engine refuses an invalid request rather than guessing.
 
 The `sunny-mcp` program exposes theory and document workflows as MCP tools and speaks JSON-RPC on
-standard input and output. `tools/list` returns the current inventory. Some structural editing
-operations remain available only in C++. The engine is also available from Python.
+standard input and output. `tools/list` returns the current inventory. Agents can edit measures,
+parts, voices, notes, expression, Timbre profiles and Mix effects, and undo coherent project edits.
+The engine is also available from Python.
 
 ```
 AI client ──MCP (stdio)──▶ sunny-mcp ──TCP 9001──▶ Sunny Remote Script ──▶ Ableton Live
@@ -41,6 +42,17 @@ changes without touching Live. `project_apply_ableton_plan` applies that plan on
 the observed Set properties have changed in the meantime, and returns a journal of every change it attempted,
 including after a partial failure. `project_compile_to_ableton` does both in one call. Values
 Live cannot represent, such as a fader above +6 dB, are refused before anything is sent.
+
+After `workspace_save`, `project_realization_create` creates one selected Part's managed MIDI
+clip and notes with a durable dispatch fence. `project_realization_inspect` reads its actual native
+state; `project_realization_update` revises existing attacks in place while preserving native note
+IDs. These tools require the owning project's current revision. They retain receipts across server
+restart and authored undo, detect user drift, and refuse duplicate creation. A lost reply requires
+`project_realization_reconcile`, which queries the original token without replaying the mutation.
+`project_realization_author_mix_lane` also authors a selected Part's Step panning lane when
+the native envelope is absent, then checks sampled values. Existing envelopes are preserved.
+This managed subset covers the selected clip, notes and lane; its result identifies other
+project domains that have not been applied.
 
 A few quick tools (`create_progression_clip`, `apply_euclidean_rhythm`, `apply_arpeggio`) write a
 single clip into an empty clip slot without a project. They record only changes Live
@@ -146,7 +158,10 @@ The volume retains saved work when a container is replaced. After authoring, cal
 `workspace_save` with `path: "/data/workspace.sunny.json"`. The next container restores that
 file before accepting requests. Saving includes every Score, Timbre profile, Mix graph, shared
 preset, corpus record, owning project relationship, rendering configuration, and identity
-reservation. Undo history and temporary deployment plans end with the process. Changes require an
+reservation. Native realization history is saved in a separate namespace directory in the same
+volume and survives authored undo or backup recovery. Keep that directory with the workspace when
+moving saved work; a missing history directory blocks native writes. Undo history and temporary
+deployment plans end with the process. Changes require an
 explicit save; closing the client does not save them automatically.
 
 For a native server, set `SUNNY_WORKSPACE_PATH` to your saved workspace path to enable the same
@@ -163,7 +178,8 @@ authored Score, with concert pitch in MIDI and instrument-transposed written pit
 
 ## Connecting Ableton Live
 
-Live 12.4 is the primary target; Live 12.3+ has the finite supported version floors below.
+Live 12.4 is the primary target, with Live 12.3 compatibility retained. The finite operation
+version floors below also describe limited legacy use; they do not qualify an untested future release.
 Export the `Sunny` folder from the same image ID used by your MCP client, then copy that folder
 into `Remote Scripts` under your configured Live User Library. Select Sunny as a control surface
 in Live's Preferences, Link/Tempo/MIDI. For a native build, use the generated
@@ -214,7 +230,8 @@ independent evidence is supplied. No exact version/edition/OS combination has ye
 real-host qualification.
 
 Each deployment result reports capability and mapping gaps, including unsupported source
-configurations, third-party plug-ins, Group creation, and automation-envelope authoring. Static
+configurations, third-party plug-ins, Group creation, and general automation-envelope authoring.
+The managed Step panning lane has a separate guarded workflow and sampled readback. Static
 native parameter mapping currently requires explicit bindings. Temporary parameter control with
 [live.remote~](https://docs.cycling74.com/reference/live.remote~/) disables automation and does
 not author saved envelopes.
@@ -287,10 +304,12 @@ Max externals on macOS and Windows.
   documentation does not settle is listed in GitHub issue #22.
 - Known defects and their status are tracked as GitHub issues labelled `remediation`.
 - Documents live in the server's memory for the life of the process. Score, Timbre, Mix and Corpus
-  documents can be exported with `score_get_json`, `get_timbre_json`, `get_mix_json` and
-  `get_corpus_json`. Whole-project save/open and automatic persistence remain unavailable.
-- A fresh project deployment creates tracks and clips again. Reapplying edited documents requires
-  an ownership/reconciliation workflow that is not yet implemented.
+  documents can be exported separately. `workspace_save` persists their complete owning workspace;
+  startup restore and `workspace_open` reopen it. Unsaved changes are lost when the process ends.
+- The one-shot project deployment tools create a fresh realization. The managed Part tools retain
+  ownership and support existing-note revision in the same bridge epoch. Adding or deleting attacks,
+  changing clip length or meter, and adopting objects after a Live/bridge restart require further
+  supported operations; saved receipts do not establish native identity by themselves.
 - Audio is never rendered or analysed, so nothing Sunny reports is a claim about how the result
   sounds. Loudness targets and reference comparisons are intentions, not measurements.
 - Live's current-scale setting is readable but not written.

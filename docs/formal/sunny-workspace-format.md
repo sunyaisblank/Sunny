@@ -2,11 +2,12 @@
 
 ## 1. Envelope and identities
 
-The `sunny-workspace` envelope version 1 persists the authored workspace. Required fields are
+The `sunny-workspace` envelope version 2 persists the authored workspace. Required fields are
 `format`, `version`, `scores`, `timbre_profiles`, `mix_graphs`, `preset_library`, `corpus`,
-`projects`, `namespace_history`, and `counters`. Unknown envelope fields and duplicate JSON fields
-are refused. Version 1 requires the complete namespace history; it is not inferred from absent
-active documents.
+`projects`, `namespace_history`, `counters`, and `native_realization`. Unknown envelope fields and
+duplicate JSON fields are refused. Version 1 migrates through the same strict authored-state
+reader and receives a fresh native workspace namespace. Both versions require the complete
+namespace history; it is not inferred from absent active documents.
 
 The three document-store arrays contain `{id, document}` records. A positive wrapper ID equals
 the embedded root ID; store IDs are unique within their store. Nested documents use the canonical
@@ -86,7 +87,9 @@ persisted document identity and configuration.
 
 `workspace_save` first produces a validated canonical text snapshot. A supported, valid previous
 main file is preserved as `.bak`; a corrupt or unsupported previous main never overwrites the
-last valid backup. Each replacement creates an exclusive temporary file in the same directory,
+last valid backup. A version-1 previous main is backed up as a canonical version-2 envelope
+with its old authored content and the current native namespace and history location. This prevents
+backup recovery from inventing another namespace and losing existing dispatch fences. Each replacement creates an exclusive temporary file in the same directory,
 checks complete writes, synchronizes the file, atomically renames it over the destination, and
 synchronizes the directory on POSIX platforms. Temporary files are removed after pre-replacement
 failures. The platform contract follows the [POSIX filesystem synchronization rationale](https://pubs.opengroup.org/onlinepubs/9799919799/xrat/V4_xbd_chap01.html).
@@ -102,3 +105,43 @@ loads that supported snapshot transactionally without changing the main file. A 
 never silently replaced by fallback state. A subsequent explicit `workspace_save` repairs the
 main path. External sample and preset paths are preserved as authored references; this format
 does not collect the referenced assets.
+
+## 4. Native realization history
+
+`native_realization` contains exactly `workspace_namespace`, a 32-character lowercase hexadecimal
+identity, and `history_base_directory`, either null or a nonempty filesystem path. Native history
+is operational state outside authored project undo and backup snapshots. An initial public
+`workspace_save` creates its namespace directory beside the saved workspace and publishes the
+history location only after saving the authored envelope. Native mutation admission requires a
+durably saved workspace namespace and the existing, writable history store. A migrated version-1
+workspace must be saved before native authoring. Missing or corrupt existing history is refused;
+opening a workspace never silently initializes replacement history.
+
+The history directory is `history_base_directory/workspace_namespace`, with `ledger.json` and a
+lifetime single-writer lock. The ledger retains immutable desired projections, stable Score attack
+addresses, prepared requests, dispatch order, may-have-sent fences, actual receipts and observed
+bindings. Its checked temporary-write, file-sync, rename and directory-sync sequence completes
+before a one-use dispatch permit is issued. Reloading the ledger never recreates a dispatch permit.
+A crash after native mutation but before receipt persistence therefore leaves a query-only attempt.
+Uncertain or partial outcomes block another mutation of that binding until reconciliation;
+proven pre-mutation declines retain evidence without permanently preventing later explicit edits.
+
+Opening an older snapshot of the same namespace preserves the live store handle and operational
+history location. A conflicting saved location is refused before authored publication. Import
+merges authored documents into the current native namespace. Saving a copy retains the original
+history dependency; copy the referenced history directory as well when moving a workspace. The
+normal Docker volume retains both. Authored backup recovery and project undo never roll back the
+ledger. Native pointers are neither serialized nor restored, and saved receipts alone cannot
+prove ownership in a new Live bridge epoch.
+
+On open or applied backup recovery, POSIX native admission synchronizes the actual workspace
+file and its containing directory, as well as the history location. The held regular-file descriptor
+must retain the parsed native metadata and match the named inode before authorization. Failure
+leaves authored state usable but native writes unavailable; a committed save with uncertain
+durability cannot become authorized merely by reopening history in another directory.
+
+The history store checks its held directory and writer-lock identities against the named paths
+before and after reads and publication. Replacing either path revokes the stale handle's authority.
+Windows can
+inspect existing history but declines native dispatch until a supported directory-durability
+primitive is available. The primary Docker server uses the POSIX implementation on every host.

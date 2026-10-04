@@ -229,6 +229,8 @@ target_sources(
         src/infrastructure/ableton/deployment.cpp
         src/infrastructure/ableton/lom_protocol.cpp
         src/infrastructure/ableton/managed_realization.cpp
+        src/infrastructure/ableton/native_units.cpp
+        src/infrastructure/ableton/realization_store.cpp
         src/infrastructure/ableton/target_snapshot.cpp
         src/infrastructure/ableton/target_profile.cpp
         src/infrastructure/ableton/transport.cpp
@@ -251,6 +253,7 @@ target_sources(
         src/infrastructure/mcp/mix_tools.cpp
         src/infrastructure/mcp/project_tools.cpp
         src/infrastructure/mcp/project_session.cpp
+        src/infrastructure/mcp/realization_tools.cpp
         src/infrastructure/mcp/project_timeline.cpp
         src/infrastructure/mcp/workspace_state.cpp
         src/infrastructure/mcp/workspace_tools.cpp

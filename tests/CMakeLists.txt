@@ -124,6 +124,8 @@ target_sources(
         infrastructure/ableton/dispatcher_test.cpp
         infrastructure/ableton/lom_protocol_test.cpp
         infrastructure/ableton/managed_realization_test.cpp
+        infrastructure/ableton/native_units_test.cpp
+        infrastructure/ableton/realization_store_test.cpp
         infrastructure/ableton/target_profile_test.cpp
         infrastructure/ableton/target_snapshot_test.cpp
         infrastructure/ableton/transport_test.cpp
@@ -145,6 +147,7 @@ target_sources(
         infrastructure/mcp/corpus_field_availability_test.cpp
         infrastructure/mcp/session_ids_test.cpp
         infrastructure/mcp/project_session_test.cpp
+        infrastructure/mcp/realization_tools_test.cpp
         infrastructure/mcp/project_timeline_test.cpp
         infrastructure/mcp/workspace_state_test.cpp
         infrastructure/mcp/score_tools_test.cpp

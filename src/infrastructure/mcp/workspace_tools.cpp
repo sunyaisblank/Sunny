@@ -1,4 +1,5 @@
 /** Coherent workspace file operations through the serialized MCP boundary. */
+#include <sunny/infrastructure/ableton/realization_store.hpp>
 #include <sunny/infrastructure/mcp/workspace_state.hpp>
 #include <sunny/infrastructure/mcp/workspace_tools.hpp>
 
@@ -29,12 +30,45 @@ void register_workspace_tools(McpServer& server, const McpSession& session) {
         "Save all authored documents and owning bindings; preserve the previous valid file as .bak",
         path_schema(),
         [session](const json& params) {
-            const auto saved = save_workspace(session, params.at("path").get<std::string>());
+            const std::filesystem::path path(params.at("path").get<std::string>());
+            std::optional<std::string> source_path = std::filesystem::absolute(path).string();
+            auto metadata = session.realization->metadata;
+            // Establish history while the namespace is provably fresh. Once a
+            // saved namespace is restored, missing history is never initialized.
+            if (session.realization->namespace_is_new && !session.realization->store) {
+                const auto base = std::filesystem::absolute(path).parent_path();
+                auto history = RealizationStore::open(
+                    base, metadata.workspace_namespace, RealizationStoreMode::InitializeNew);
+                if (history) {
+                    session.realization->store = std::move(*history);
+                    session.realization->history_error.reset();
+                } else {
+                    session.realization->history_error = history.error().message;
+                }
+            }
+            if (session.realization->store)
+                metadata.history_base_directory =
+                    session.realization->store->directory().parent_path().string();
+            const auto saved = save_workspace(session, path, {}, &metadata);
+            if (saved.committed) {
+                session.realization->metadata.workspace_namespace.swap(
+                    metadata.workspace_namespace);
+                session.realization->metadata.history_base_directory.swap(
+                    metadata.history_base_directory);
+                session.realization->namespace_is_new = false;
+                session.realization->namespace_saved_durably = saved.durability_confirmed;
+                session.realization->workspace_path.swap(source_path);
+            }
             json response = {{"success", saved.success},
                              {"committed", saved.committed},
                              {"durability_confirmed", saved.durability_confirmed},
                              {"backup_updated", saved.backup_updated},
                              {"backup_status", saved.backup_status}};
+            response["native_history_available"] =
+                session.realization->namespace_saved_durably && session.realization->store &&
+                session.realization->store->native_writes_available();
+            if (session.realization->history_error)
+                response["native_history_error"] = *session.realization->history_error;
             if (!saved.error.empty()) response["error"] = saved.error;
             if (saved.committed && !saved.durability_confirmed)
                 response["durability_status"] =

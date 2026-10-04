@@ -73,6 +73,8 @@ _SONG_CALLS = frozenset(
         "sunny_managed_replace_clip",
         "sunny_managed_rebind",
         "sunny_managed_author_envelope",
+        "sunny_managed_update_notes",
+        "sunny_managed_sample_envelope",
     }
 )
 
@@ -531,6 +533,10 @@ def _valid_request_arguments(req_type: str, kind: str, name: str, args: list[Any
             else False
         )
     if kind == "device":
+        if name == "sunny_resolve_native_display_value":
+            from .native_units import valid_native_display_request
+
+            return len(args) == 1 and valid_native_display_request(args[0])
         if name == "sunny_get_device_parameter":
             return (
                 len(args) == 2
@@ -650,6 +656,7 @@ def _request_allowed(req_type: str, path: str, name: str, args: list[Any]) -> bo
         allowed = req_type == "call" and name in (
             "sunny_get_device_parameter",
             "sunny_set_device_parameter",
+            "sunny_resolve_native_display_value",
         )
     return allowed and _valid_request_arguments(req_type, kind, name, args)
 
@@ -782,6 +789,9 @@ class LomHandler:
                     return {"success": True, "value": self._serialise(evidence)}
                 if name == "sunny_get_device_parameter":
                     evidence = self._get_device_parameter(obj, *args)
+                    return {"success": True, "value": self._serialise(evidence)}
+                if name == "sunny_resolve_native_display_value":
+                    evidence = self._resolve_native_display_value(obj, args[0])
                     return {"success": True, "value": self._serialise(evidence)}
                 if name == "sunny_author_step_envelope":
                     acknowledgement = self._author_step_envelope(path, obj, args[0])
@@ -1001,6 +1011,62 @@ class LomHandler:
                 "structural_snapshot": "available",
             },
         }
+
+    def _resolve_native_display_value(self, device: Any, query: dict[str, Any]) -> dict[str, Any]:
+        """One read-only main-thread operation over an observed native device.
+
+        Source-candidate coverage is Live 12.3.x/12.4.x. Actual class, population,
+        modes and display evidence still determine admission; an application
+        version alone never qualifies an ABI, edition or interpreted sound.
+        """
+        from .native_units import NativeUnitError, resolve_registered_native_display_value
+
+        result = {"schema_version": 1, **query}
+        calls = 0
+
+        def version() -> tuple[int, int, int]:
+            application = self._get_application()
+            observed = tuple(
+                self._lom_integer(getattr(application, method)(), "Application version")
+                for method in ("get_major_version", "get_minor_version", "get_bugfix_version")
+            )
+            if min(observed) < 0:
+                raise NativeUnitError(
+                    "InvalidObservation", "Application version must be nonnegative"
+                )
+            return observed
+
+        try:
+            initial_version = version()
+            if initial_version[0] != 12 or initial_version[1] not in (3, 4):
+                raise NativeUnitError(
+                    "UnknownRegistryCoverage", "Native display candidates cover Live 12.3.x/12.4.x"
+                )
+            candidate = resolve_registered_native_display_value(
+                device, query["capability_id"], query["target"], query["tolerance"]
+            )
+            calls = candidate["formatter_calls"]
+            if version() != initial_version:
+                raise NativeUnitError(
+                    "HostVersionDrift", "Application version changed during observation", calls
+                )
+            return {**result, "outcome": "resolved", "candidate": candidate}
+        except NativeUnitError as error:
+            return {
+                **result,
+                "outcome": "declined",
+                "reason": error.reason,
+                "diagnostic": str(error),
+                "formatter_calls": error.formatter_calls,
+            }
+        except Exception as error:
+            return {
+                **result,
+                "outcome": "declined",
+                "reason": "ObservationUnavailable",
+                "diagnostic": "Native application observation failed: " + str(error),
+                "formatter_calls": calls,
+            }
 
     @staticmethod
     def _device_snapshot(device: Any) -> dict[str, Any]:

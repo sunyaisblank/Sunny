@@ -20,6 +20,7 @@ from .handler import (
     _lom_sequence,
     _valid_note_dictionary,
     _valid_step_envelope_author,
+    _valid_step_envelope_query,
 )
 
 MANAGED_SCHEMA_VERSION = 1
@@ -28,10 +29,12 @@ MANAGED_CALLS = frozenset(
         "sunny_managed_context",
         "sunny_managed_operation",
         "sunny_managed_observe",
+        "sunny_managed_sample_envelope",
         "sunny_managed_create_clip",
         "sunny_managed_replace_clip",
         "sunny_managed_rebind",
         "sunny_managed_author_envelope",
+        "sunny_managed_update_notes",
     }
 )
 MANAGED_READS = frozenset(
@@ -39,6 +42,7 @@ MANAGED_READS = frozenset(
         "sunny_managed_context",
         "sunny_managed_operation",
         "sunny_managed_observe",
+        "sunny_managed_sample_envelope",
     }
 )
 
@@ -117,6 +121,164 @@ def _note_key(value: dict[str, Any]) -> tuple[Any, ...]:
     return (value["start_time"], value["pitch"], json.dumps(value, sort_keys=True))
 
 
+_NOTE_FIELDS = frozenset(
+    {
+        "pitch",
+        "start_time",
+        "duration",
+        "velocity",
+        "mute",
+        "probability",
+        "velocity_deviation",
+        "release_velocity",
+    }
+)
+_UPDATE_FIELDS = _NOTE_FIELDS - {"probability", "velocity_deviation"}
+
+
+def _valid_note_value(name: str, value: Any) -> bool:
+    if name == "pitch":
+        return type(value) is int and 0 <= value <= 127
+    if name == "mute":
+        return type(value) is bool
+    if not _finite_number(value):
+        return False
+    if name == "duration":
+        return float(value) > 0.0
+    if name in ("velocity", "release_velocity"):
+        return 0.0 <= float(value) <= 127.0
+    if name == "probability":
+        return 0.0 <= float(value) <= 1.0
+    if name == "velocity_deviation":
+        return -127.0 <= float(value) <= 127.0
+    return name == "start_time"
+
+
+def _valid_note_changes(changes: Any) -> bool:
+    if type(changes) is not list or not 0 < len(changes) <= 65536:
+        return False
+    identities = set()
+    for change in changes:
+        if type(change) is not dict or set(change) != {"note_id", "expected", "updates"}:
+            return False
+        identity = change["note_id"]
+        if type(identity) is not int or not -(1 << 31) <= identity < (1 << 31):
+            return False
+        if identity in identities:
+            return False
+        identities.add(identity)
+        expected, updates = change["expected"], change["updates"]
+        if (
+            type(expected) is not dict
+            or set(expected) != _NOTE_FIELDS
+            or not all(_valid_note_value(name, value) for name, value in expected.items())
+            or type(updates) is not dict
+            or not updates
+            or not set(updates) <= _UPDATE_FIELDS
+            or not all(_valid_note_value(name, value) for name, value in updates.items())
+            or ("start_time" in updates and float(updates["start_time"]) < 0.0)
+        ):
+            return False
+    return True
+
+
+def _semantic_note(note: dict[str, Any]) -> dict[str, Any]:
+    return {
+        name: (note[name] if name in ("pitch", "mute") else float(note[name]))
+        for name in _NOTE_FIELDS
+    }
+
+
+def _proposed_notes(
+    identity: dict[str, Any], changes: list[Any], clip_end: float
+) -> dict[int, Any]:
+    """Preflight the full proposed geometry before touching any native MidiNote."""
+    if not identity["entire_clip_population_observed"]:
+        raise RuntimeError(
+            "NotePopulationUnavailable: note revisions require Live 11.1+ full readback"
+        )
+    before = {note["note_id"]: note for note in identity["notes"]}
+    proposed = copy.deepcopy(before)
+    geometry = set()
+    for change in changes:
+        note_id = change["note_id"]
+        if note_id not in before or _digest(_semantic_note(before[note_id])) != _digest(
+            _semantic_note(change["expected"])
+        ):
+            raise RuntimeError(
+                "Managed note identity/value drift: expected native note does not match"
+            )
+        for name, value in change["updates"].items():
+            proposed[note_id][name] = value if name in ("pitch", "mute") else float(value)
+        note = proposed[note_id]
+        if not all(_valid_note_value(name, note[name]) for name in _NOTE_FIELDS):
+            raise RuntimeError("Managed proposed note is outside the finite native domain")
+        if not 0.0 <= note["start_time"] < clip_end or not _finite_number(
+            note["start_time"] + note["duration"]
+        ):
+            raise RuntimeError("Managed proposed note is outside the generated marker domain")
+        if any(note[name] != before[note_id][name] for name in ("pitch", "start_time", "duration")):
+            geometry.add(note_id)
+    # No epsilon: adjacent half-open intervals are safe; any positive overlap
+    # involving a moved/resized/repitched note can trigger Live's replacement.
+    if not geometry:
+        return proposed
+    if any(
+        not _finite_number(note["start_time"] + note["duration"])
+        for population in (before, proposed)
+        for note in population.values()
+    ):
+        raise RuntimeError(
+            "NoteGeometryUnavailable: full-population interval endpoint is nonfinite"
+        )
+    by_pitch: dict[int, list[Any]] = {}
+    for note in proposed.values():
+        by_pitch.setdefault(note["pitch"], []).append(note)
+    for notes in by_pitch.values():
+        if not any(note["note_id"] in geometry for note in notes):
+            continue
+        notes.sort(key=lambda note: note["start_time"])
+        for index, first in enumerate(notes):
+            for second in notes[index + 1 :]:
+                if second["start_time"] >= first["start_time"] + first["duration"]:
+                    break
+                if first["note_id"] in geometry or second["note_id"] in geometry:
+                    raise RuntimeError(
+                        "Managed note collision: same-pitch half-open intervals overlap"
+                    )
+    # The source-observed vector API does not establish atomic collision
+    # handling for a batch. Until host-qualified, no destination may cover
+    # another retained note's baseline interval, even if that note also moves.
+    baseline: dict[int, list[Any]] = {}
+    destinations: dict[int, list[Any]] = {}
+    for note in before.values():
+        baseline.setdefault(note["pitch"], []).append(note)
+    for note_id in geometry:
+        note = proposed[note_id]
+        destinations.setdefault(note["pitch"], []).append(note)
+    for pitch, targets in destinations.items():
+        sources = sorted(baseline.get(pitch, []), key=lambda note: note["start_time"])
+        targets.sort(key=lambda note: note["start_time"] + note["duration"])
+        cursor = 0
+        furthest: list[Any] = []
+        for target in targets:
+            end = target["start_time"] + target["duration"]
+            while cursor < len(sources) and sources[cursor]["start_time"] < end:
+                furthest.append(sources[cursor])
+                furthest.sort(key=lambda note: note["start_time"] + note["duration"], reverse=True)
+                del furthest[2:]
+                cursor += 1
+            if any(
+                source["note_id"] != target["note_id"]
+                and source["start_time"] + source["duration"] > target["start_time"]
+                for source in furthest
+            ):
+                raise RuntimeError(
+                    "IntermediateCollisionUnavailable: destination covers another retained baseline note"
+                )
+    return proposed
+
+
 def valid_managed_request(name: str, args: list[Any]) -> bool:
     """Admit one closed managed operation family; malformed input never reaches Live."""
     if name == "sunny_managed_context":
@@ -133,6 +295,14 @@ def valid_managed_request(name: str, args: list[Any]) -> bool:
         return False
     if name == "sunny_managed_observe":
         return set(value) == binding_keys
+    if name == "sunny_managed_sample_envelope":
+        return set(value) == binding_keys | {"parameter", "sample_times"} and (
+            _valid_step_envelope_query(
+                {"parameter": value["parameter"], "sample_times": value["sample_times"]}
+            )
+            and len(value["sample_times"]) <= 65536
+            and value["parameter"]["kind"] in ("volume", "panning", "send")
+        )
     operation_keys = binding_keys | {"operation_id"}
     if not _key(value.get("operation_id")):
         return False
@@ -149,6 +319,12 @@ def valid_managed_request(name: str, args: list[Any]) -> bool:
             and _fingerprint(value["expected_content_fingerprint"])
             and _valid_step_envelope_author(value["lane"])
             and value["lane"]["parameter"]["kind"] in ("volume", "panning", "send")
+        )
+    if name == "sunny_managed_update_notes":
+        return (
+            set(value) == operation_keys | {"expected_content_fingerprint", "changes"}
+            and _fingerprint(value["expected_content_fingerprint"])
+            and _valid_note_changes(value["changes"])
         )
     expected = operation_keys | {
         "clip_end",
@@ -333,12 +509,31 @@ class ManagedRegistry:
                 "Entire Clip note population is unavailable outside the finite legacy range"
             )
         values = handler._midi_notes_dictionary(notes)["notes"]
+        ids = [note["note_id"] for note in values]
+        if (
+            len(set(ids)) != len(ids)
+            or any(
+                type(identity) is not int or not -(1 << 31) <= identity < (1 << 31)
+                for identity in ids
+            )
+            or any(
+                not all(_valid_note_value(name, note[name]) for name in _NOTE_FIELDS)
+                for note in values
+            )
+        ):
+            raise RuntimeError(
+                "Managed Clip returned invalid or duplicate native note identities/values"
+            )
         # IDs locate current events, while semantic values survive a possible
         # host reopen ID change. Every observed event/property remains included.
         semantic_notes = [
             {name: value for name, value in note.items() if name != "note_id"} for note in values
         ]
         semantic_notes.sort(key=_note_key)
+        identity = {
+            "entire_clip_population_observed": entire_notes,
+            "notes": sorted(values, key=lambda note: note["note_id"]),
+        }
         track_properties = {}
         for name in (
             "name",
@@ -422,6 +617,10 @@ class ManagedRegistry:
             "slot_index": slot_index,
             "manifest": manifest,
             "content_fingerprint": _digest(manifest),
+            "note_identity": identity,
+            "note_identity_fingerprint": _digest(identity),
+            "track_tag": record["track_tag"],
+            "clip_tag": record["clip_tag"],
             "structural_boundary_complete": not reasons,
             "content_boundary_complete": False,
             "unavailable_reasons": reasons
@@ -494,15 +693,73 @@ class ManagedRegistry:
             return False
         record = context["record"]
         try:
-            self._indices(record)
+            track_index, slot_index = self._indices(record)
             self._handler._step_clip_interval(clip, idle=True)
+            path = f"song/tracks/{track_index}/clip_slots/{slot_index}/clip"
+            _, selected, domain = self._handler._step_envelope_target(
+                path, clip, context["selector"]
+            )
+            observed = self._capture(record)
+            actual_manifest = copy.deepcopy(observed["manifest"])
+            # Creating only this absent lane may change the presence bit.
+            # Existing breakpoint populations remain unobserved and untouched.
+            actual_manifest["clip"]["has_envelopes"] = context["before"]["manifest"]["clip"][
+                "has_envelopes"
+            ]
+            if (
+                not self._same(track, record["track"])
+                or not self._same(clip, record["clip"])
+                or not self._same(parameter, context["parameter"])
+                or not self._same(parameter, selected)
+                or domain["automation_state"] == 2
+                or record["track"].arm is not False
+                or record["track"].implicit_arm is not False
+                or record["track"].is_frozen is not False
+                or record["track"].is_grouped is not False
+                or _digest(actual_manifest) != context["before"]["content_fingerprint"]
+                or observed["note_identity_fingerprint"]
+                != context["before"]["note_identity_fingerprint"]
+            ):
+                return False
+            envelope = clip.automation_envelope(parameter)
+            if not context["creation_authorized"]:
+                if (
+                    envelope is not None
+                    or observed["content_fingerprint"] != context["before"]["content_fingerprint"]
+                ):
+                    return False
+                context["creation_authorized"] = True
+                context["operation"]["native_mutation_started"] = True
+            elif (
+                not self._handler._envelope_valid(envelope)
+                or observed["manifest"]["clip"]["has_envelopes"] is not True
+            ):
+                return False
+            elif context["envelope"] is None:
+                context["envelope"] = envelope
+            elif not self._same(envelope, context["envelope"]):
+                return False
         except Exception:
             return False
-        return (
-            self._same(track, record["track"])
-            and self._same(clip, record["clip"])
-            and self._same(parameter, context["parameter"])
-        )
+        return True
+
+    def _require_in_place_guard(self, record: dict[str, Any], fingerprint: str) -> dict[str, Any]:
+        observation = self._capture(record)
+        if (
+            fingerprint != record.get("content_fingerprint")
+            or fingerprint != observation["content_fingerprint"]
+            or observation["note_identity_fingerprint"] != record.get("note_identity_fingerprint")
+        ):
+            raise RuntimeError("Managed content/note identity drift: preserve user edits")
+        if observation["note_identity"]["entire_clip_population_observed"] is not True:
+            raise RuntimeError("RecoveryUnavailable: entire Clip note population is unavailable")
+        self._handler._step_clip_interval(record["clip"], idle=True)
+        if any(
+            getattr(record["track"], name) is not False
+            for name in ("arm", "implicit_arm", "is_frozen", "is_grouped")
+        ):
+            raise RuntimeError("Managed Track must be unarmed, unfrozen and ungrouped")
+        return observation
 
     def dispatch(self, name: str, args: list[Any]) -> dict[str, Any]:
         """Run one managed operation on Live's main thread, retaining its outcome."""
@@ -514,6 +771,10 @@ class ManagedRegistry:
                 "document_token": self._document_token,
             }
         request = args[0]
+        if name == "sunny_managed_observe":
+            return self._observe(song, request)
+        if name == "sunny_managed_sample_envelope":
+            return self._sample_envelope(song, request)
         if request["document_token"] != self._document_token:
             return {"outcome": "unknown_epoch", "document_token": self._document_token}
         if name == "sunny_managed_operation":
@@ -528,24 +789,6 @@ class ManagedRegistry:
                 )
             )
         binding = (request["project_key"], request["binding_key"])
-        if name == "sunny_managed_observe":
-            record = self._bindings.get(binding)
-            if record is None:
-                return {"outcome": "recovery_unavailable", "ownership_retained": False}
-            if record.get("clip") is None or record.get("slot") is None:
-                matches = [
-                    index
-                    for index, track in enumerate(song.tracks)
-                    if self._same(track, record["track"])
-                ]
-                return {
-                    "outcome": "partial_binding",
-                    "ownership_retained": False,
-                    "native_handles_retained": True,
-                    "known_track_index": matches[0] if len(matches) == 1 else None,
-                    "recovery_available": False,
-                }
-            return {"outcome": "observed", "ownership_retained": True, **self._capture(record)}
         operation_id = request["operation_id"]
         fingerprint = _digest({"name": name, "request": request})
         previous = self._operations.get(operation_id)
@@ -586,14 +829,16 @@ class ManagedRegistry:
                 result = self._seal(record)
             elif name == "sunny_managed_rebind":
                 result = self._rebind(song, binding, request)
+            elif name == "sunny_managed_update_notes":
+                result = self._update_notes(binding, request, operation)
             else:
                 record = self._bindings.get(binding)
                 if record is None:
                     raise RuntimeError(
                         "RecoveryUnavailable: managed native handles were not retained"
                     )
-                self._require_guard(
-                    record, request["expected_content_fingerprint"], destructive=False
+                before = self._require_in_place_guard(
+                    record, request["expected_content_fingerprint"]
                 )
                 track_index, slot_index = self._indices(record)
                 path = f"song/tracks/{track_index}/clip_slots/{slot_index}/clip"
@@ -617,9 +862,19 @@ class ManagedRegistry:
                     for method in ("automation_envelope", "create_automation_envelope")
                 ):
                     raise RuntimeError("Native Python envelope authoring API is unavailable")
-                self._author_context = {"record": record, "parameter": parameter}
-                # Creation/insertion may mutate before returning or raising.
-                operation["native_mutation_started"] = True
+                if record["clip"].automation_envelope(parameter) is not None:
+                    raise RuntimeError(
+                        "EnvelopeRevisionUnavailable: an existing target lane is preserved"
+                    )
+                self._author_context = {
+                    "record": record,
+                    "parameter": parameter,
+                    "selector": lane["parameter"],
+                    "before": before,
+                    "operation": operation,
+                    "creation_authorized": False,
+                    "envelope": None,
+                }
                 acknowledgement = self._handler._author_step_envelope(
                     path, record["clip"], request["lane"]
                 )
@@ -638,6 +893,148 @@ class ManagedRegistry:
         finally:
             self._author_context = None
         return copy.deepcopy(operation)
+
+    def _sample_envelope(self, song: Any, request: dict[str, Any]) -> dict[str, Any]:
+        observed = self._observe(song, request)
+        if observed["outcome"] != "observed":
+            return observed
+        record = self._bindings[(request["project_key"], request["binding_key"])]
+        track_index, slot_index = self._indices(record)
+        path = f"song/tracks/{track_index}/clip_slots/{slot_index}/clip"
+        sampled = self._handler._get_step_envelope(
+            path,
+            record["clip"],
+            {"parameter": request["parameter"], "sample_times": request["sample_times"]},
+        )
+        # Resolve and capture again within the same main-thread read dispatch.
+        # No receipt/guard is refreshed, and samples are not breakpoint coverage.
+        result = self._observe(song, request)
+        if result["outcome"] == "observed":
+            result["envelope"] = sampled
+        return result
+
+    def _observe(self, song: Any, request: dict[str, Any]) -> dict[str, Any]:
+        result = {
+            "schema_version": MANAGED_SCHEMA_VERSION,
+            "context": {
+                "bridge_instance": self._bridge_instance,
+                "document_token": self._document_token,
+            },
+            "project_key": request["project_key"],
+            "binding_key": request["binding_key"],
+            "outcome": "unknown_epoch",
+            "ownership_retained": False,
+        }
+        if request["document_token"] != self._document_token:
+            return result
+        record = self._bindings.get((request["project_key"], request["binding_key"]))
+        if record is None:
+            result["outcome"] = "recovery_unavailable"
+        elif record.get("clip") is None or record.get("slot") is None:
+            matches = [
+                index
+                for index, track in enumerate(song.tracks)
+                if self._same(track, record["track"])
+            ]
+            result.update(
+                {
+                    "outcome": "partial_binding",
+                    "native_handles_retained": True,
+                    "known_track_index": matches[0] if len(matches) == 1 else None,
+                    "recovery_available": False,
+                }
+            )
+        else:
+            # Inspection observes drift; it never refreshes mutation guards.
+            result.update(
+                {
+                    "outcome": "observed",
+                    "ownership_retained": True,
+                    "observation": self._capture(record),
+                }
+            )
+        return result
+
+    def _update_notes(
+        self, binding: tuple[str, str], request: dict[str, Any], operation: dict[str, Any]
+    ) -> dict[str, Any]:
+        record = self._bindings.get(binding)
+        if record is None:
+            raise RuntimeError("RecoveryUnavailable: managed native handles were not retained")
+        before = self._capture(record)
+        if (
+            request["expected_content_fingerprint"] != record.get("content_fingerprint")
+            or request["expected_content_fingerprint"] != before["content_fingerprint"]
+            or before["note_identity_fingerprint"] != record.get("note_identity_fingerprint")
+        ):
+            raise RuntimeError("Managed content/note identity drift: preserve user edits")
+        self._handler._step_clip_interval(record["clip"], idle=True)
+        if (
+            record["track"].arm is not False
+            or record["track"].implicit_arm is not False
+            or record["track"].is_frozen is not False
+            or record["track"].is_grouped is not False
+        ):
+            raise RuntimeError("Managed Track must be unarmed, unfrozen and ungrouped")
+        proposed = _proposed_notes(
+            before["note_identity"], request["changes"], float(record["clip"].end_marker)
+        )
+        requested_ids = {change["note_id"] for change in request["changes"]}
+        if not requested_ids <= record.get("owned_note_ids", set()):
+            raise RuntimeError("Managed note identities are not retained insertion identities")
+        clip = record["clip"]
+        if not all(
+            callable(getattr(clip, name, None))
+            for name in ("get_notes_by_id", "apply_note_modifications")
+        ):
+            raise RuntimeError("Native Python note modification API is unavailable")
+        # This vector contains actual existing MidiNote objects, not new-note
+        # specifications. Native expression and other unexposed fields stay host-owned.
+        native_notes = clip.get_notes_by_id(tuple(sorted(requested_ids)))
+        actual = self._handler._midi_notes_dictionary(native_notes)["notes"]
+        expected = [
+            note for note in before["note_identity"]["notes"] if note["note_id"] in requested_ids
+        ]
+        if _digest(sorted(actual, key=lambda note: note["note_id"])) != _digest(expected):
+            raise RuntimeError("Managed native note selection changed before mutation")
+        # Validate retained identities and idle state again immediately before
+        # the first setter. Reservation is already durable in the bridge journal.
+        final = self._capture(record)
+        if (
+            request["document_token"] != self._document_token
+            or final["content_fingerprint"] != before["content_fingerprint"]
+            or final["note_identity_fingerprint"] != before["note_identity_fingerprint"]
+        ):
+            raise RuntimeError("Managed native context/population changed before mutation")
+        self._handler._step_clip_interval(clip, idle=True)
+        if record["track"].arm is not False or record["track"].implicit_arm is not False:
+            raise RuntimeError("Managed Track became armed before mutation")
+        operation["native_mutation_started"] = True
+        changes = {change["note_id"]: change for change in request["changes"]}
+        for note in native_notes:
+            for name in changes[note.note_id]["updates"]:
+                setattr(note, name, proposed[note.note_id][name])
+        clip.apply_note_modifications(native_notes)
+        result = self._seal(record)
+        after = {note["note_id"]: note for note in result["note_identity"]["notes"]}
+        previous = {note["note_id"]: note for note in before["note_identity"]["notes"]}
+        result["note_update"] = {
+            "before_manifest": before["manifest"],
+            "before_note_identity": before["note_identity"],
+            "before_note_identity_fingerprint": before["note_identity_fingerprint"],
+            "notes_submitted": len(requested_ids),
+            "observed_updates_match_request": all(
+                note_id in after and _digest(after[note_id]) == _digest(proposed[note_id])
+                for note_id in requested_ids
+            ),
+            "untouched_notes_preserved": all(
+                note_id in after and _digest(note) == _digest(after[note_id])
+                for note_id, note in previous.items()
+                if note_id not in requested_ids
+            ),
+            "note_ids_preserved": set(previous) == set(after),
+        }
+        return result
 
     def _create(
         self,
@@ -723,12 +1120,14 @@ class ManagedRegistry:
             }
             for note in request["notes"]
         ]
+        record["owned_note_ids"] = set()
         if request["notes"]:
-            self._handler._add_new_notes(clip, request["notes"])
+            record["owned_note_ids"] = set(self._handler._add_new_notes(clip, request["notes"]))
 
     def _seal(self, record: dict[str, Any]) -> dict[str, Any]:
         result = self._capture(record)
         record["content_fingerprint"] = result["content_fingerprint"]
+        record["note_identity_fingerprint"] = result["note_identity_fingerprint"]
         result["track_tag"] = record["track_tag"]
         result["clip_tag"] = record["clip_tag"]
         if "requested_notes" in record:

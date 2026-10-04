@@ -1,8 +1,8 @@
-# Sunny Managed Live Realization Foundation
+# Sunny Managed Live Realization
 
 **Managed receipt schema:** 1  
 **Bridge protocol:** 46, unreleased coordinated contract  
-**Status:** Operational offline foundation; no product MCP admission or host qualification
+**Status:** Durable MCP admission for selected Part clips, note revisions and Step panning lanes; host qualification pending
 
 Live12.4 is the primary product target, with compatible Live12.3 behavior retained.
 The exact host patch, edition and operating system remain final qualification facts.
@@ -73,6 +73,8 @@ validators before dispatch.
 | `sunny_managed_replace_clip` | Create fields plus `expected_content_fingerprint` | Default-denied while complete preservation coverage is unavailable |
 | `sunny_managed_rebind` | `expected_manifest` | Require unique tags plus exact complete persisted native content; currently RecoveryUnavailable for unobserved MPE/Follow Actions |
 | `sunny_managed_author_envelope` | `expected_content_fingerprint`, `lane` | Author the exact guarded mixer Step lane; acknowledge native calls separately from sampled readback |
+| `sunny_managed_sample_envelope` | `document_token`, `project_key`, `binding_key`, `parameter`, `sample_times` only | Read-only actual envelope samples on retained identities |
+| `sunny_managed_update_notes` | `expected_content_fingerprint`, `changes` | Revise retained native note IDs after full-population and collision preflight |
 
 Mutation common fields are `document_token`, `operation_id`, `project_key`, and
 `binding_key`. `clip_end` is finite positive Live quarter-note beats, signature
@@ -92,13 +94,15 @@ echoed intent. An acknowledgement can retain unavailable boundaries or a value
 mismatch; it is not a complete realization or playback assertion.
 
 The first managed envelope subset admits only `volume`, `panning`, or `send` selectors
-relative to that same Track. `lane` has exactly `parameter`, `interpolation:"step"`,
+relative to that same Track, and requires the selected envelope to be absent. Existing envelopes
+on other parameters and unknown Clip fields are preserved. `lane` has exactly `parameter`, `interpolation:"step"`,
 `clip_end`, and `points:[{time,value}]`. Points start at zero, increase strictly after
 floating conversion, and end before `clip_end`; positive step durations cover adjacent
 intervals and the final marker interval. Values are actual Live internal units.
 Device selectors, physical-unit conversions, curves, Arrangement clips and foreign
-objects are unsupported. The existing separate `sunny_get_step_envelope` operation
-samples actual native envelope state and is classified read-only.
+objects are unsupported. `sunny_managed_sample_envelope` resolves retained Track/Clip/Parameter identities in one
+main-thread call and returns actual samples without refreshing any mutation guard. The generic
+index-based sampler remains read-only but does not establish managed ownership.
 
 ## 3. Retained journal and uncertain outcomes
 
@@ -124,7 +128,11 @@ send, it must also durably install a may-have-sent dispatch fence. A process can
 after sending but before saving its result, so a disk-restored Prepared receipt alone
 never proves that the mutation was not sent. Recovered fenced attempts are query-only;
 authored workspace rollback, undo and backup recovery must not erase native history.
-This foundation does not implement that product store. `execute_managed_operation`
+`RealizationStore` implements that product store with a lifetime writer lock and strict ledger
+validation. The public workspace save establishes its persistent namespace and location;
+`project_realization_create` and `project_realization_update` consume a single dispatch permit
+after durable fencing. Workspace schema2 retains that location. Authored import, undo and backup
+recovery never erase the operational ledger. `execute_managed_operation`
 sends exactly once. Only a prepared or proven `NotSent` receipt allows an explicit
 same-token send. A sent uncertain, partial, foreign or malformed response remains
 indeterminate and cannot be automatically replayed. Transport exceptions conservatively
@@ -184,6 +192,42 @@ native values, save/reopen the Set and inspect native envelope persistence; a ne
 bridge must continue to decline recovery while complete content verification is
 unavailable. Those checks must not be reported as complete native aggregate deployment.
 
-Issues30 and31 remain open for owned device insertion/parameter mapping, full project
-integration, durable workspace receipt wiring, safe selective updates and complete
-saved/reopened ownership recovery. Native host qualification remains in issue22.
+The selected Part MCP workflow resolves a current owning project revision and uses the existing
+Score compiler. Attack addresses retain the source Event identity and note ordinal; tied
+continuations retain their original attack. The desired projection and addresses are fingerprinted
+and stored before dispatch. A subsequent note update uniquely associates each old desired note
+with the actual retained native note ID, and refuses ambiguous association. Creation repeated
+after an acknowledgement reports an existing binding; an unresolved attempt requires query-only
+reconciliation. Pure owner/revision validation and retained uncertainty selection precede bridge
+profile admission, so a disconnect cannot hide the original attempt token. Offline acknowledged
+creation inspection explicitly leaves current desired-content comparison unavailable. A proven no-effect decline preserves the last acknowledged binding for another
+explicit candidate. Native readback mismatch is reported as verification failure even when Live
+acknowledged its calls.
+
+Existing-ID changes admit pitch, start, duration, attack/release velocity and mute. They require
+the unchanged finite content and note-ID fingerprints, full native population, an idle unarmed
+nonlooping MIDI Session Clip, and unchanged clip length/meter. Geometry preflight checks the
+proposed entire population for finite endpoints and same-pitch half-open overlap before native
+setters. Changed destinations must also avoid other baseline notes: same-pitch start swaps remain
+unavailable until host batch atomicity is established, even when the final intervals would not overlap. The native adapter obtains detached MidiNote snapshots and passes them to
+`apply_note_modifications`; it does not substitute note dictionaries or new specifications.
+Unchanged IDs and untouched semantic fields are independently read back. Opaque MPE expression,
+Follow Actions and envelopes are preserved in place rather than claimed as observed.
+
+`project_realization_inspect` reports retained history and a separate current observation; it
+never refreshes a mutation guard. `project_realization_reconcile` looks up the exact original
+operation token and appends actual evidence without replay. An unchanged desired-note update
+also performs a fresh read-only comparison before reporting success. Attempt IDs allow inspection
+of history for retired authored Parts. No tool claims whole-project realization from this subset.
+
+`project_realization_author_mix_lane` admits only the selected Part's owning
+`channels[PartId].spatial.pan` lane with Step interpolation and the observed stereo `[-1,+1]`
+domain. Score whole-note rational positions convert explicitly to Live quarter-note time by
+multiplication by four. Readback compares each Step start and representable interval midpoint
+with its authored value at absolute tolerance `1e-6`. This proves only those samples; it never
+claims complete envelope population. A repeat preserves any existing selected envelope, including
+unsampled user edits. Linear/curve interpolation and complete envelope revision remain unavailable.
+
+Issues30 and31 remain open for owned device insertion/parameter mapping, Mix routing and
+automation integration, attack population/clip geometry revisions, and useful saved/reopened
+ownership recovery. Native host qualification remains in issue22.

@@ -126,6 +126,107 @@ def _policy(device_class: str, original_name: str, unit: str) -> dict[str, Any]:
     _fail("UnknownCapability", "Device/control/unit is outside the finite registry")
 
 
+def _registered_context(capability_id: str) -> tuple[str, str, str, dict[str, Any]]:
+    """Select only the 28 continuous identities in registry version 1.
+
+    Callers supply no descriptor or mode policy. The native observation below
+    still verifies every identity and required mode against the real population.
+    """
+    if type(capability_id) is not str:
+        _fail("InvalidIntent", "Capability ID must be a string")
+    utility = {
+        "utility.gain": ("Gain", "Decibels"),
+        "utility.balance": ("Balance", "StereoBalance"),
+        "utility.width": ("Stereo Width", "Percent"),
+    }
+    if capability_id in utility:
+        original_name, unit = utility[capability_id]
+        return "StereoGain", original_name, unit, _policy("StereoGain", original_name, unit)
+    if capability_id == "eq8.output_gain":
+        return "Eq8", "Output Gain", "Decibels", _policy("Eq8", "Output Gain", "Decibels")
+    match = re.fullmatch(r"eq8\.band\.([1-8])\.(frequency|gain|q)", capability_id)
+    if match:
+        control, unit = {
+            "frequency": ("Frequency", "Hertz"),
+            "gain": ("Gain", "Decibels"),
+            "q": ("Resonance", "QualityFactor"),
+        }[match.group(2)]
+        original_name = match.group(1) + " " + control + " A"
+        return "Eq8", original_name, unit, _policy("Eq8", original_name, unit)
+    _fail("UnknownCapability", "Capability is outside the finite continuous display registry")
+
+
+def valid_native_display_request(query: Any) -> bool:
+    """Validate the closed wire request without observing any native object."""
+    try:
+        if type(query) is not dict or set(query) != {"capability_id", "target", "tolerance"}:
+            return False
+        _registered_context(query["capability_id"])
+        _number(query["target"], "Display target")
+        return _number(query["tolerance"], "Display tolerance") >= 0
+    except NativeUnitError:
+        return False
+
+
+def resolve_registered_native_display_value(
+    device: Any, capability_id: str, target: float, tolerance: float
+) -> dict[str, Any]:
+    """Resolve an actual native population member from a closed capability ID.
+
+    This is the bridge entry point. Edition, version and main-thread admission
+    belong to the enclosing handler operation. No caller-selected name, unit,
+    policy, internal curve or native value write is accepted here.
+    """
+    try:
+        device_class, original_name, unit, policy = _registered_context(capability_id)
+        import Live
+
+        if not isinstance(device, Live.Device.Device) or device == None:  # noqa: E711
+            _fail("DeviceMismatch", "An actual valid native Device is required")
+        raw = device.parameters
+        if isinstance(raw, (str, bytes, dict)):
+            _fail("InvalidObservation", "Device.parameters is not a native object collection")
+        matches = []
+        for index, member in enumerate(raw):
+            if index >= _MAX_PARAMETERS:
+                _fail("InvalidObservation", "Device parameter population exceeds the finite limit")
+            if (
+                not isinstance(member, Live.DeviceParameter.DeviceParameter)
+                or member == None  # noqa: E711
+                or not _same(member.canonical_parent, device)
+                or type(member.name) is not str
+                or not member.name
+                or type(member.original_name) is not str
+                or not member.original_name
+            ):
+                _fail(
+                    "ParameterMismatch", "Population members require native type, parent and names"
+                )
+            if member.name == original_name or member.original_name == original_name:
+                matches.append(member)
+        if len(matches) != 1:
+            _fail(
+                "AmbiguousParameter" if matches else "ObservationUnavailable",
+                "Expected one exact native parameter identity: " + original_name,
+            )
+        return resolve_native_display_value(
+            matches[0],
+            device=device,
+            device_class_name=device_class,
+            parameter_original_name=original_name,
+            unit=unit,
+            target=target,
+            tolerance=tolerance,
+            expected_modes=policy,
+        )
+    except NativeUnitError:
+        raise
+    except Exception as error:
+        raise NativeUnitError(
+            "ObservationUnavailable", "Native observation failed: " + str(error)
+        ) from error
+
+
 class _Observation:
     def __init__(
         self,

@@ -11,10 +11,12 @@
 #include <string_view>
 #include <sunny/core/detail/serialization_integer.hpp>
 #include <sunny/core/project/validation.hpp>
+#include <sunny/infrastructure/ableton/native_units.hpp>
 #include <sunny/infrastructure/ableton/target_profile.hpp>
 #include <sunny/infrastructure/formats/ableton_project.hpp>
 #include <sunny/infrastructure/mcp/project_session.hpp>
 #include <sunny/infrastructure/mcp/project_tools.hpp>
+#include <sunny/infrastructure/mcp/realization_tools.hpp>
 #include <sunny/infrastructure/mcp/session_ids.hpp>
 #include <sunny/infrastructure/mcp/workspace_tools.hpp>
 #include <vector>
@@ -1312,6 +1314,47 @@ std::optional<ResolvedProject> resolve_stored_project(const StoredProjectDeploym
 void register_project_tools(McpServer& server, const McpSession& session, LomTransport* transport) {
     register_project_authoring_tools(server, session);
     register_workspace_tools(server, session);
+    register_project_realization_tools(server, session, transport);
+    server.register_tool(
+        "resolve_native_display_value",
+        "Read a finite native parameter's display mapping without writing to Live",
+        {{"type", "object"},
+         {"properties",
+          {{"track_index", {{"type", "integer"}, {"minimum", 0}}},
+           {"device_index", {{"type", "integer"}, {"minimum", 0}}},
+           {"capability_id", {{"type", "string"}}},
+           {"target", {{"type", "number"}}},
+           {"tolerance", {{"type", "number"}, {"minimum", 0}}}}},
+         {"required", {"track_index", "device_index", "capability_id", "target", "tolerance"}}},
+        [transport](const json& params) -> json {
+            if (!transport) return {{"success", false}, {"error", "Ableton transport unavailable"}};
+            const auto track =
+                detail::checked_integer<int>(params.at("track_index"), "track_index");
+            const auto device =
+                detail::checked_integer<int>(params.at("device_index"), "device_index");
+            const auto path = LomPath::parse("song/tracks/" + std::to_string(track) + "/devices/" +
+                                             std::to_string(device));
+            auto observed =
+                resolve_native_display_value(path,
+                                             params.at("capability_id").get<std::string>(),
+                                             params.at("target").get<double>(),
+                                             params.at("tolerance").get<double>(),
+                                             *transport);
+            if (!observed)
+                return {{"success", false},
+                        {"error", "Native display observation rejected"},
+                        {"error_code", static_cast<int>(observed.error())}};
+            return {{"success", observed->status == NativeDisplayResolutionStatus::Candidate},
+                    {"status",
+                     observed->status == NativeDisplayResolutionStatus::Candidate ? "candidate"
+                     : observed->status == NativeDisplayResolutionStatus::Declined
+                         ? "declined"
+                         : "observation_unavailable"},
+                    {"reason", observed->reason},
+                    {"diagnostic", observed->diagnostic},
+                    {"formatter_calls", observed->formatter_calls},
+                    {"evidence", observed->evidence ? *observed->evidence : json(nullptr)}};
+        });
     const auto schema =
         json{{"type", "object"},
              {"properties",

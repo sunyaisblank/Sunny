@@ -69,6 +69,7 @@ int run_server() {
     if (const char* workspace = std::getenv("SUNNY_WORKSPACE_PATH")) {
         if (*workspace == '\0') throw std::runtime_error("SUNNY_WORKSPACE_PATH must not be empty");
         const std::filesystem::path path(workspace);
+        session.realization->workspace_path = std::filesystem::absolute(path).string();
         const char* recovery = std::getenv("SUNNY_WORKSPACE_RECOVERY");
         if (recovery && std::string_view(recovery) != "backup")
             throw std::runtime_error("SUNNY_WORKSPACE_RECOVERY must be 'backup' or unset");

@@ -1,9 +1,13 @@
+#include "managed_note_update_fixture.hpp"
+
 #include <catch2/catch_test_macros.hpp>
 #include <functional>
 #include <limits>
+#include <sunny/core/score/workflows.hpp>
 #include <sunny/infrastructure/ableton/deployment.hpp>
 #include <sunny/infrastructure/ableton/detail/managed_fingerprint.hpp>
 #include <sunny/infrastructure/ableton/managed_realization.hpp>
+#include <sunny/infrastructure/formats/ableton_score.hpp>
 
 using namespace sunny::infrastructure;
 using nlohmann::json;
@@ -194,6 +198,16 @@ json journal(const LomRequest& request, std::string outcome = "acknowledged") {
     return result;
 }
 
+void attach_note_identity(json& actual) {
+    auto notes = actual.at("manifest").at("notes");
+    int id = 1;
+    for (auto& note : notes)
+        note["note_id"] = id++;
+    actual["note_identity"] = {{"entire_clip_population_observed", true}, {"notes", notes}};
+    actual["note_identity_fingerprint"] =
+        *managed_detail::managed_digest(actual.at("note_identity"));
+}
+
 class Peer final : public LomTransport {
   public:
     std::vector<LomRequest> requests;
@@ -360,6 +374,7 @@ TEST_CASE("Incomplete or envelope manifests cannot be rebound or admitted by sta
     REQUIRE(ack);
     auto binding = managed_binding_receipt(*ack);
     REQUIRE(binding);
+    attach_note_identity(binding->observation);
     REQUIRE(managed_binding_from_json(managed_binding_to_json(*binding)));
     const json lane{
         {"parameter", {{"kind", "panning"}}},
@@ -372,7 +387,7 @@ TEST_CASE("Incomplete or envelope manifests cannot be rebound or admitted by sta
         {"different_bridge", "document_a"}, "envelope_a", *binding, lane));
     binding->observation["structural_boundary_complete"] = false;
     CHECK_FALSE(make_managed_rebind_request(context, "rebind_a", *binding));
-    CHECK_FALSE(make_managed_envelope_request(context, "envelope_a", *binding, lane));
+    CHECK(make_managed_envelope_request(context, "envelope_a", *binding, lane));
     binding->observation["structural_boundary_complete"] = true;
     binding->observation["content_boundary_complete"] = true;
     CHECK_FALSE(make_managed_rebind_request(context, "rebind_a", *binding));
@@ -424,6 +439,53 @@ TEST_CASE("Managed clip projection retains existing beat conversion and explicit
     record(LomProtocol::set_property(LomPaths::clip(3, 0), "muted", true));
     CHECK_FALSE(managed_clip_projection(buffer, 3));
     CHECK_FALSE(managed_clip_projection(buffer, -1));
+}
+
+TEST_CASE("Managed projection consumes actual Score compiler typed note batches",
+          "[managed][lom][compiler]") {
+    using namespace sunny::core;
+    ScoreSpec spec;
+    spec.title = "One quarter C4";
+    spec.total_bars = 1;
+    spec.bpm = 120.0;
+    spec.key_root = {0, 0, 4};
+    spec.key_accidentals = 0;
+    PartDefinition piano;
+    piano.name = "Piano";
+    piano.instrument_type = InstrumentType::Piano;
+    piano.rendering.midi_channel = 1;
+    spec.parts.push_back(piano);
+    auto score = create_score(spec);
+    REQUIRE(score);
+    Note note;
+    note.pitch = {0, 0, 4};
+    note.velocity = {std::nullopt, 80};
+    REQUIRE(insert_note(*score, score->parts[0].id, 1, 0, Beat::zero(), note, Beat{1, 4}));
+
+    CommandBuffer recording;
+    REQUIRE(formats::compile_to_ableton(*score, recording, 480));
+    bool actual_typed_batch = false;
+    for (const auto& entry : recording.entries()) {
+        if (entry.request.property_or_method != "add_new_notes") continue;
+        REQUIRE(entry.request.args.empty());
+        REQUIRE(entry.notes.size() == 1);
+        actual_typed_batch = true;
+    }
+    REQUIRE(actual_typed_batch);
+    auto projected = managed_clip_projection(recording, 0);
+    REQUIRE(projected);
+    CHECK(projected->clip_end == 4.0);
+    CHECK(projected->signature_numerator == 4);
+    CHECK(projected->signature_denominator == 4);
+    CHECK(projected->notes == json::array({{{"pitch", 60},
+                                            {"start_time", 0.0},
+                                            {"duration", 1.0},
+                                            {"velocity", 80},
+                                            {"mute", false},
+                                            {"probability", 1.0},
+                                            {"velocity_deviation", 0.0},
+                                            {"release_velocity", 64.0}}}));
+    CHECK(make_managed_clip_request(context, "create_a", "project_a", "part_a", *projected));
 }
 
 TEST_CASE("Closed managed protocol rejects aliases, extra keys and false coverage declarations",
@@ -688,6 +750,7 @@ TEST_CASE("Managed native-start acknowledgement distinguishes mutations from rea
           "[managed][lom][observation]") {
     const auto create = prepared();
     auto initial = observation();
+    attach_note_identity(initial);
     ManagedBindingReceipt binding{context, "project_a", "part_a", initial};
     const json lane{
         {"parameter", {{"kind", "panning"}}},
@@ -775,4 +838,505 @@ TEST_CASE("Finite legacy readback remains limited acknowledged creation evidence
     CHECK(binding->observation.at("observed_notes_match_request") == true);
     CHECK(binding->observation.at("manifest").at("entire_clip_population_observed") == false);
     CHECK_FALSE(make_managed_rebind_request(context, "rebind_a", *binding));
+}
+
+namespace {
+json note_fixture() {
+    return json::parse(managed_note_update_fixture);
+}
+
+ManagedBindingReceipt native_note_binding() {
+    auto actual = observation();
+    actual["note_identity"] =
+        note_fixture().at("journal").at("result").at("note_update").at("before_note_identity");
+    actual["note_identity_fingerprint"] =
+        "f69c3ef4ce93b997267f5f27e8d2bd07545f83568525e4153304da8a1f2bb4c4";
+    return {context, "project_a", "part_a", actual};
+}
+
+ManagedOperationReceipt note_update_prepared() {
+    const auto request = LomProtocol::call_method(
+        LomPaths::song(), "sunny_managed_update_notes", {note_fixture().at("request")});
+    const auto prepared = prepare_managed_operation(context, request);
+    REQUIRE(prepared);
+    return *prepared;
+}
+
+void refresh_identity(json& observation) {
+    observation["note_identity_fingerprint"] =
+        *managed_detail::managed_digest(observation.at("note_identity"));
+}
+
+void refresh_manifest(json& observation) {
+    observation["content_fingerprint"] =
+        *managed_detail::managed_digest(observation.at("manifest"));
+}
+} // namespace
+
+TEST_CASE("Native note update matches literal Python request and independent readback receipt",
+          "[managed][lom][notes]") {
+    const auto fixture = note_fixture();
+    const auto request = make_managed_note_update_request(
+        context, "update_a", native_note_binding(), fixture.at("request").at("changes"));
+    REQUIRE(request);
+    CHECK(std::get<json>(request->args[0]).dump() == fixture.at("request").dump());
+    CHECK(LomProtocol::validate_request(*request));
+    auto prepared = prepare_managed_operation(context, *request);
+    REQUIRE(prepared);
+    Peer peer;
+    peer.responses.push_back({true, LomValue{fixture.at("journal")}, std::nullopt});
+    const auto executed = execute_managed_operation(*prepared, peer);
+    REQUIRE(executed);
+    CHECK(executed->outcome == ManagedOperationOutcome::Acknowledged);
+    CHECK_FALSE(executed->explicit_retry_safe());
+    CHECK_FALSE(execute_managed_operation(*executed, peer));
+    REQUIRE(executed->journal);
+    CHECK(executed->journal->at("request_fingerprint") ==
+          "f8b4641ff7afd9f757c5431631c4f58f21d087e8a4c4ee1bc5cc8122a4c70983");
+    const auto& evidence = executed->journal->at("result");
+    CHECK(evidence.at("content_fingerprint") ==
+          "06d4c3ea6f6055b78dc5f2a0a25c428b6cb872d0f97d066244db8c7941b5ae20");
+    CHECK(evidence.at("note_identity_fingerprint") ==
+          "61b73f065613bed3bb210f16f53e2c3ed6b02dd81f599324ad1d723516ed5c87");
+    CHECK(evidence.at("note_identity").at("notes")[0] == json{{"note_id", 1},
+                                                              {"pitch", 61},
+                                                              {"start_time", 0.25},
+                                                              {"duration", 1.5},
+                                                              {"velocity", 80.5},
+                                                              {"mute", true},
+                                                              {"probability", 1.0},
+                                                              {"velocity_deviation", 0.0},
+                                                              {"release_velocity", 45.25}});
+    CHECK(evidence.at("content_boundary_complete") == false);
+    const auto binding = managed_binding_receipt(*executed);
+    REQUIRE(binding);
+    CHECK(managed_binding_from_json(managed_binding_to_json(*binding)));
+    const auto restored = managed_receipt_from_json(managed_receipt_to_json(*executed));
+    REQUIRE(restored);
+    CHECK(restored->journal == executed->journal);
+    CHECK(peer.requests.size() == 1);
+}
+
+TEST_CASE("Managed read observation retains exact actual context tags and native population",
+          "[managed][lom][observation]") {
+    const auto raw = note_fixture().at("observation");
+    Peer peer;
+    peer.responses.push_back({true, LomValue{raw}, std::nullopt});
+    JournaledLomTransport guarded(peer, std::nullopt, {}, true);
+    const auto observed = observe_managed_binding(context, "project_a", "part_a", guarded);
+    REQUIRE(observed);
+    CHECK(observed->outcome == ManagedObservationOutcome::Observed);
+    CHECK(observed->evidence == raw);
+    const auto binding = managed_observed_binding(*observed);
+    REQUIRE(binding);
+    CHECK(binding->observation == raw.at("observation"));
+    CHECK(binding->observation.at("note_identity").at("notes")[0].at("note_id") == 1);
+    CHECK(peer.requests.size() == 1);
+    CHECK(peer.requests[0].property_or_method == "sunny_managed_observe");
+    CHECK(guarded.journal().empty());
+    CHECK_FALSE(guarded.plan_diverged());
+}
+
+TEST_CASE("Read observations reject foreign logical context and contradictory native ID evidence",
+          "[managed][lom][observation]") {
+    using Change = std::function<void(json&)>;
+    for (const Change& change : std::vector<Change>{
+             [](json& raw) { raw["project_key"] = "foreign"; },
+             [](json& raw) { raw["binding_key"] = "foreign"; },
+             [](json& raw) { raw["context"]["bridge_instance"] = "foreign"; },
+             [](json& raw) { raw["context"]["document_token"] = "foreign"; },
+             [](json& raw) { raw["ownership_retained"] = false; },
+             [](json& raw) { raw["extra"] = 1; },
+             [](json& raw) { raw["observation"]["track_tag"] = "Sunny|foreign|part_a|track"; },
+             [](json& raw) { raw["observation"].erase("note_identity"); },
+             [](json& raw) {
+                 raw["observation"]["note_identity_fingerprint"] = std::string(64, '0');
+             },
+             [](json& raw) {
+                 auto& value = raw["observation"];
+                 value["note_identity"]["notes"].push_back(value["note_identity"]["notes"][0]);
+                 refresh_identity(value);
+             },
+             [](json& raw) {
+                 auto& value = raw["observation"];
+                 value["note_identity"]["notes"][0]["pitch"] = 62;
+                 refresh_identity(value);
+             },
+             [](json& raw) {
+                 auto& value = raw["observation"];
+                 value["note_identity"]["notes"][0]["duration"] = 1;
+                 refresh_identity(value);
+             },
+             [](json& raw) {
+                 auto& value = raw["observation"];
+                 value["note_identity"]["entire_clip_population_observed"] = false;
+                 refresh_identity(value);
+             },
+             [](json& raw) {
+                 auto& value = raw["observation"];
+                 value["note_identity"]["notes"][0]["unknown"] = 1;
+                 value["note_identity"]["notes"][0].erase("duration");
+                 refresh_identity(value);
+             }}) {
+        auto raw = note_fixture().at("observation");
+        change(raw);
+        Peer peer;
+        peer.responses.push_back({true, LomValue{raw}, std::nullopt});
+        CHECK_FALSE(observe_managed_binding(context, "project_a", "part_a", peer));
+        CHECK(peer.requests.size() == 1);
+    }
+}
+
+TEST_CASE(
+    "Managed absent-lane candidate permits other envelopes without claiming complete coverage",
+    "[managed][lom][envelope]") {
+    auto binding = native_note_binding();
+    binding.observation["manifest"]["clip"]["has_envelopes"] = true;
+    binding.observation["structural_boundary_complete"] = false;
+    refresh_manifest(binding.observation);
+    REQUIRE(managed_binding_from_json(managed_binding_to_json(binding)));
+    const json lane{{"parameter", {{"kind", "volume"}}},
+                    {"clip_end", 4.0},
+                    {"interpolation", "step"},
+                    {"points", {{{"time", 0.0}, {"value", 0.25}}}}};
+    REQUIRE(make_managed_envelope_request(context, "volume_a", binding, lane));
+    CHECK(binding.observation.at("content_boundary_complete") == false);
+    auto wrong_end = lane;
+    wrong_end["clip_end"] = 8.0;
+    CHECK_FALSE(make_managed_envelope_request(context, "volume_a", binding, wrong_end));
+    for (const auto* flag : {"arm", "implicit_arm", "is_frozen", "is_grouped"}) {
+        auto bad = binding;
+        bad.observation["manifest"]["track"][flag] = true;
+        refresh_manifest(bad.observation);
+        CHECK_FALSE(make_managed_envelope_request(context, "volume_a", bad, lane));
+    }
+    auto missing_ids = binding;
+    missing_ids.observation.erase("note_identity");
+    missing_ids.observation.erase("note_identity_fingerprint");
+    CHECK_FALSE(make_managed_envelope_request(context, "volume_a", missing_ids, lane));
+}
+
+TEST_CASE("Managed envelope samples retain binding identities and actual independent values",
+          "[managed][lom][envelope]") {
+    auto raw = note_fixture().at("observation");
+    raw["observation"]["manifest"]["clip"]["has_envelopes"] = true;
+    raw["observation"]["structural_boundary_complete"] = false;
+    refresh_manifest(raw["observation"]);
+    raw["envelope"] = {{"has_envelope", true},
+                       {"parameter",
+                        {{"matched_name", "Track Panning"},
+                         {"original_name", "Track Panning"},
+                         {"minimum", -1.0},
+                         {"maximum", 1.0},
+                         {"unit", "internal"},
+                         {"state", 0},
+                         {"automation_state", 0}}},
+                       {"samples",
+                        {{{"time", 0.0}, {"value", -0.5}},
+                         {{"time", 1.0}, {"value", -0.5}},
+                         {{"time", 2.0}, {"value", 0.5}},
+                         {{"time", 3.0}, {"value", 0.5}}}}};
+    const json selector{{"kind", "panning"}};
+    const std::vector<double> times{0.0, 1.0, 2.0, 3.0};
+    Peer peer;
+    peer.responses.push_back({true, LomValue{raw}, std::nullopt});
+    JournaledLomTransport guarded(peer, std::nullopt, {}, true);
+    auto sampled =
+        sample_managed_envelope(context, "project_a", "part_a", selector, times, guarded);
+    REQUIRE(sampled);
+    CHECK(sampled->binding.outcome == ManagedObservationOutcome::Observed);
+    CHECK(sampled->evidence == raw);
+    CHECK(sampled->binding.evidence.contains("envelope") == false);
+    REQUIRE(peer.requests.size() == 1);
+    CHECK(peer.requests[0].path.to_string() == "song");
+    CHECK(peer.requests[0].property_or_method == "sunny_managed_sample_envelope");
+    CHECK(guarded.journal().empty());
+    CHECK_FALSE(guarded.plan_diverged());
+
+    using Change = std::function<void(json&)>;
+    for (const Change& change : std::vector<Change>{
+             [](json& value) { value["context"]["bridge_instance"] = "foreign"; },
+             [](json& value) { value["project_key"] = "foreign"; },
+             [](json& value) { value["binding_key"] = "foreign"; },
+             [](json& value) { value["extra"] = 1; },
+             [](json& value) { value["envelope"]["samples"].erase(0); },
+             [](json& value) { value["envelope"]["samples"][0]["time"] = 0.25; },
+             [](json& value) { value["envelope"]["samples"][0]["value"] = 1.25; },
+             [](json& value) { value["envelope"]["has_envelope"] = false; },
+             [](json& value) { value["envelope"]["parameter"]["original_name"] = "Volume"; },
+             [](json& value) { value["envelope"]["parameter"]["maximum"] = 2.0; },
+             [](json& value) { value["envelope"]["parameter"]["automation_state"] = 1; },
+             [](json& value) { value["envelope"]["parameter"]["state"] = 1; },
+             [](json& value) { value["envelope"]["samples"][0]["extra"] = 1; }}) {
+        auto bad = raw;
+        change(bad);
+        peer.responses.push_back({true, LomValue{bad}, std::nullopt});
+        CHECK_FALSE(sample_managed_envelope(context, "project_a", "part_a", selector, times, peer));
+    }
+    for (const std::vector<double>& invalid :
+         {std::vector<double>{},
+          std::vector<double>{-0.5},
+          std::vector<double>{0.0, 0.0},
+          std::vector<double>{std::numeric_limits<double>::infinity()}}) {
+        const auto calls = peer.requests.size();
+        CHECK_FALSE(
+            sample_managed_envelope(context, "project_a", "part_a", selector, invalid, peer));
+        CHECK(peer.requests.size() == calls);
+    }
+}
+
+TEST_CASE("Unavailable managed read outcomes never transfer ownership or assert missing mutations",
+          "[managed][lom][observation]") {
+    for (const auto* name : {"partial_binding", "recovery_unavailable", "unknown_epoch"}) {
+        json raw{{"schema_version", 1},
+                 {"context", {{"bridge_instance", "bridge_a"}, {"document_token", "document_a"}}},
+                 {"project_key", "project_a"},
+                 {"binding_key", "part_a"},
+                 {"outcome", name},
+                 {"ownership_retained", false}};
+        auto expected = ManagedObservationOutcome::RecoveryUnavailable;
+        if (std::string_view{name} == "partial_binding") {
+            raw["native_handles_retained"] = true;
+            raw["known_track_index"] = nullptr;
+            raw["recovery_available"] = false;
+            expected = ManagedObservationOutcome::PartialBinding;
+        } else if (std::string_view{name} == "unknown_epoch") {
+            raw["context"]["document_token"] = "new_document";
+            expected = ManagedObservationOutcome::UnknownEpoch;
+        }
+        Peer peer;
+        peer.responses.push_back({true, LomValue{raw}, std::nullopt});
+        const auto observed = observe_managed_binding(context, "project_a", "part_a", peer);
+        REQUIRE(observed);
+        CHECK(observed->outcome == expected);
+        CHECK(observed->evidence == raw);
+        CHECK_FALSE(managed_observed_binding(*observed));
+    }
+}
+
+TEST_CASE("Managed note preflight closes fields domains native expected values and full coverage",
+          "[managed][lom][notes]") {
+    const auto original = note_fixture().at("request").at("changes");
+    using Change = std::function<void(json&)>;
+    for (const Change& change : std::vector<Change>{
+             [](json& changes) { changes.clear(); },
+             [](json& changes) { changes.push_back(changes[0]); },
+             [](json& changes) { changes[0]["note_id"] = true; },
+             [](json& changes) { changes[0]["note_id"] = std::int64_t{INT32_MAX} + 1; },
+             [](json& changes) { changes[0]["extra"] = 1; },
+             [](json& changes) { changes[0]["updates"] = json::object(); },
+             [](json& changes) { changes[0]["updates"]["probability"] = 0.5; },
+             [](json& changes) { changes[0]["updates"]["velocity_deviation"] = 2.0; },
+             [](json& changes) { changes[0]["updates"]["pitch"] = 128; },
+             [](json& changes) { changes[0]["updates"]["pitch"] = true; },
+             [](json& changes) { changes[0]["updates"]["start_time"] = -0.25; },
+             [](json& changes) { changes[0]["updates"]["duration"] = 0.0; },
+             [](json& changes) {
+                 changes[0]["updates"]["duration"] = std::numeric_limits<double>::infinity();
+             },
+             [](json& changes) { changes[0]["updates"]["velocity"] = 128.0; },
+             [](json& changes) { changes[0]["updates"]["release_velocity"] = -1.0; },
+             [](json& changes) { changes[0]["updates"]["mute"] = 1; },
+             [](json& changes) { changes[0]["expected"].erase("probability"); }}) {
+        auto changes = original;
+        change(changes);
+        CHECK_FALSE(
+            make_managed_note_update_request(context, "update_a", native_note_binding(), changes));
+        auto request = note_fixture().at("request");
+        request["changes"] = changes;
+        CHECK_FALSE(LomProtocol::validate_request(
+            LomProtocol::call_method(LomPaths::song(), "sunny_managed_update_notes", {request})));
+    }
+    for (const auto& bad_context : {ManagedBridgeContext{"bridge_b", "document_a"},
+                                    ManagedBridgeContext{"bridge_a", "document_b"}})
+        CHECK_FALSE(make_managed_note_update_request(
+            bad_context, "update_a", native_note_binding(), original));
+    auto changes = original;
+    changes[0]["expected"]["velocity"] = 81.0;
+    CHECK_FALSE(
+        make_managed_note_update_request(context, "update_a", native_note_binding(), changes));
+    changes = original;
+    changes[0]["note_id"] = 3;
+    CHECK_FALSE(
+        make_managed_note_update_request(context, "update_a", native_note_binding(), changes));
+    changes = original;
+    changes[0]["updates"]["start_time"] = 4.0;
+    CHECK_FALSE(
+        make_managed_note_update_request(context, "update_a", native_note_binding(), changes));
+    auto legacy = native_note_binding();
+    legacy.observation["note_identity"]["entire_clip_population_observed"] = false;
+    legacy.observation["manifest"]["entire_clip_population_observed"] = false;
+    legacy.observation["structural_boundary_complete"] = false;
+    refresh_identity(legacy.observation);
+    refresh_manifest(legacy.observation);
+    REQUIRE(managed_binding_from_json(managed_binding_to_json(legacy)));
+    CHECK_FALSE(make_managed_note_update_request(context, "update_a", legacy, original));
+}
+
+TEST_CASE("Managed geometry checks actual half-open collisions without masking positive overlap",
+          "[managed][lom][notes]") {
+    auto binding = native_note_binding();
+    json other{{"note_id", 2},
+               {"pitch", 67},
+               {"start_time", 2.0},
+               {"duration", 0.5},
+               {"velocity", 72.0},
+               {"mute", true},
+               {"probability", 1.0},
+               {"velocity_deviation", 0.0},
+               {"release_velocity", 32.0}};
+    binding.observation["note_identity"]["notes"].push_back(other);
+    other.erase("note_id");
+    binding.observation["manifest"]["notes"].push_back(other);
+    refresh_identity(binding.observation);
+    refresh_manifest(binding.observation);
+    REQUIRE(managed_binding_from_json(managed_binding_to_json(binding)));
+    auto changes = note_fixture().at("request").at("changes");
+    for (const double start : {1.5, 2.0, 2.25}) {
+        changes[0]["updates"] = {{"pitch", 67}, {"start_time", start}, {"duration", 1.0}};
+        CHECK_FALSE(make_managed_note_update_request(context, "update_a", binding, changes));
+    }
+    for (const double start : {1.0, 2.5}) {
+        changes[0]["updates"] = {{"pitch", 67}, {"start_time", start}, {"duration", 1.0}};
+        CHECK(make_managed_note_update_request(context, "update_a", binding, changes));
+    }
+    changes[0]["updates"] = {
+        {"pitch", 67}, {"start_time", std::nextafter(1.0, 2.0)}, {"duration", 1.0}};
+    CHECK(make_managed_note_update_request(context, "update_a", binding, changes));
+    // The first endpoint sum rounds back to exactly2; this next value has a
+    // representable positive overlap at the endpoint's double precision.
+    changes[0]["updates"]["start_time"] = std::nextafter(2.0, 3.0) - 1.0;
+    CHECK_FALSE(make_managed_note_update_request(context, "update_a", binding, changes));
+    changes[0]["updates"] = {{"pitch", 62}, {"start_time", 1.0}, {"duration", 1.0}};
+    changes.push_back(
+        {{"note_id", 2}, {"expected", other}, {"updates", {{"pitch", 62}, {"start_time", 1.5}}}});
+    CHECK_FALSE(make_managed_note_update_request(context, "update_a", binding, changes));
+    // Native device/envelope populations are untouched by note-only revisions;
+    // their unavailability does not imply a destructive complete boundary.
+    binding.observation["manifest"]["devices_empty"] = false;
+    binding.observation["manifest"]["clip"]["has_envelopes"] = true;
+    binding.observation["structural_boundary_complete"] = false;
+    refresh_manifest(binding.observation);
+    changes = note_fixture().at("request").at("changes");
+    CHECK(make_managed_note_update_request(context, "update_a", binding, changes));
+    CHECK_FALSE(make_managed_rebind_request(context, "rebind_a", binding));
+}
+
+TEST_CASE("Managed note receipts recompute actual update and preservation flags rather than "
+          "echoing intent",
+          "[managed][lom][notes]") {
+    const auto prepared = note_update_prepared();
+    auto truthful = note_fixture().at("journal");
+    // A successful native apply with unchanged actual values is retained as
+    // acknowledged evidence; requested-value verification is independently false.
+    truthful["result"]["manifest"] = observation().at("manifest");
+    truthful["result"]["note_identity"] =
+        truthful.at("result").at("note_update").at("before_note_identity");
+    truthful["result"]["note_update"]["observed_updates_match_request"] = false;
+    refresh_identity(truthful["result"]);
+    refresh_manifest(truthful["result"]);
+    Peer peer;
+    peer.responses.push_back({true, LomValue{truthful}, std::nullopt});
+    const auto retained = execute_managed_operation(prepared, peer);
+    REQUIRE(retained);
+    CHECK(retained->outcome == ManagedOperationOutcome::Acknowledged);
+    CHECK(managed_binding_receipt(*retained));
+    CHECK_FALSE(retained->explicit_retry_safe());
+    using Change = std::function<void(json&)>;
+    for (const Change& change : std::vector<Change>{
+             [](json& value) { value["native_mutation_started"] = false; },
+             [](json& value) {
+                 value["result"]["note_update"]["observed_updates_match_request"] = true;
+             },
+             [](json& value) {
+                 value["result"]["note_update"]["untouched_notes_preserved"] = false;
+             },
+             [](json& value) { value["result"]["note_update"]["note_ids_preserved"] = false; },
+             [](json& value) { value["result"]["note_update"]["notes_submitted"] = 2; },
+             [](json& value) {
+                 value["result"]["note_update"]["before_note_identity_fingerprint"] =
+                     std::string(64, '0');
+             },
+             [](json& value) {
+                 value["result"]["note_update"]["before_manifest"]["clip"]["end_marker"] = 8.0;
+             },
+             [](json& value) { value["result"]["track_tag"] = "Sunny|foreign|part_a|track"; },
+             [](json& value) { value["result"]["note_update"]["extra"] = 1; }}) {
+        auto value = truthful;
+        change(value);
+        peer.responses.push_back({true, LomValue{value}, std::nullopt});
+        const auto rejected = execute_managed_operation(prepared, peer);
+        REQUIRE(rejected);
+        CHECK(rejected->outcome == ManagedOperationOutcome::Indeterminate);
+        CHECK_FALSE(rejected->explicit_retry_safe());
+    }
+    // A transport uncertainty queries the same original token exactly once.
+    peer.responses.push_back(
+        {false, std::nullopt, "Lost native reply", LomDeliveryState::SentWithoutValidResponse});
+    const auto uncertain = execute_managed_operation(prepared, peer);
+    REQUIRE(uncertain);
+    CHECK(uncertain->outcome == ManagedOperationOutcome::Indeterminate);
+    peer.responses.push_back({true, LomValue{truthful}, std::nullopt});
+    const auto reconciled = reconcile_managed_operation(*uncertain, peer);
+    REQUIRE(reconciled);
+    CHECK(reconciled->outcome == ManagedOperationOutcome::Acknowledged);
+    CHECK(peer.requests.back().property_or_method == "sunny_managed_operation");
+}
+
+TEST_CASE("Untouched finite note fields cannot establish a finite geometry endpoint",
+          "[managed][lom][notes]") {
+    auto binding = native_note_binding();
+    json other{{"note_id", 2},
+               {"pitch", 67},
+               {"start_time", 1e308},
+               {"duration", 1e308},
+               {"velocity", 72.0},
+               {"mute", false},
+               {"probability", 1.0},
+               {"velocity_deviation", 0.0},
+               {"release_velocity", 32.0}};
+    binding.observation["note_identity"]["notes"].push_back(other);
+    other.erase("note_id");
+    binding.observation["manifest"]["notes"].push_back(other);
+    refresh_identity(binding.observation);
+    refresh_manifest(binding.observation);
+    // Finite evidence is retainable. This deliberately does not prove that a
+    // real Live host admits an enormous range outside the generated markers.
+    REQUIRE(managed_binding_from_json(managed_binding_to_json(binding)));
+    auto changes = note_fixture().at("request").at("changes");
+    CHECK_FALSE(make_managed_note_update_request(context, "update_a", binding, changes));
+    changes[0]["updates"] = {{"velocity", 81.0}};
+    CHECK(make_managed_note_update_request(context, "values_a", binding, changes));
+}
+
+TEST_CASE("Managed same-pitch start swaps cannot rely on unqualified native batch atomicity",
+          "[managed][lom][notes]") {
+    auto binding = native_note_binding();
+    auto other = binding.observation["note_identity"]["notes"][0];
+    other["note_id"] = 2;
+    other["start_time"] = 2.0;
+    binding.observation["note_identity"]["notes"].push_back(other);
+    other.erase("note_id");
+    binding.observation["manifest"]["notes"].push_back(other);
+    refresh_identity(binding.observation);
+    refresh_manifest(binding.observation);
+    REQUIRE(managed_binding_from_json(managed_binding_to_json(binding)));
+    json changes = json::array();
+    for (auto actual : binding.observation["note_identity"]["notes"]) {
+        const int id = actual.at("note_id");
+        actual.erase("note_id");
+        changes.push_back({{"note_id", id},
+                           {"expected", actual},
+                           {"updates", {{"start_time", id == 1 ? 2.0 : 0.0}}}});
+    }
+    // Final [0,1)/[2,3) remain disjoint; each destination covers the other
+    // retained baseline interval. This is an admission boundary, not a host result.
+    CHECK_FALSE(make_managed_note_update_request(context, "swap", binding, changes));
+    changes[0]["updates"] = {{"pitch", 62}};
+    changes[1]["updates"] = {{"pitch", 62}};
+    CHECK(make_managed_note_update_request(context, "transpose", binding, changes));
+    // Adjacent same-pitch destinations remain safe against old/new intervals.
+    changes[0]["updates"] = {{"start_time", 1.0}};
+    changes[1]["updates"] = {{"start_time", 3.0}};
+    CHECK(make_managed_note_update_request(context, "adjacent", binding, changes));
 }

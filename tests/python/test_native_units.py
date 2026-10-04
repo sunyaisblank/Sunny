@@ -4,12 +4,25 @@ from __future__ import annotations
 
 import json
 import math
+import os
+import shlex
 import sys
+import threading
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from Sunny.native_units import NativeUnitError, resolve_native_display_value
+from live_model import LiveSet
+from Sunny import surface as surface_module
+from Sunny.handler import BRIDGE_PROTOCOL_VERSION, LomHandler
+from Sunny.native_units import (
+    NativeUnitError,
+    resolve_native_display_value,
+    resolve_registered_native_display_value,
+    valid_native_display_request,
+)
+from Sunny.surface import SunnyControlSurface
+from test_live_end_to_end import _LiveMainThread, _McpClient, _sunny_mcp_binary
 
 
 class _NativeParameter:
@@ -619,3 +632,373 @@ def test_native_identity_cannot_be_replaced_with_a_duck_typed_wrapper() -> None:
         _resolve(fixture, 0.5)
     assert raised.value.reason == "ParameterMismatch"
     assert raised.value.formatter_calls == 0
+
+
+def _handler(fixture: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, version=(12, 4, 0)):
+    """Use the actual handler and native module with an independently observed host version."""
+    application = SimpleNamespace(
+        get_major_version=lambda: version[0],
+        get_minor_version=lambda: version[1],
+        get_bugfix_version=lambda: version[2],
+    )
+    monkeypatch.setattr(
+        sys.modules["Live"],
+        "Application",
+        SimpleNamespace(get_application=lambda: application),
+        raising=False,
+    )
+    track = SimpleNamespace(devices=(fixture.device,))
+    song = SimpleNamespace(tracks=(track,), return_tracks=(track,), master_track=track)
+    return LomHandler(SimpleNamespace(song=lambda: song))
+
+
+def _wire_request(
+    capability="utility.gain", target=-6.0, tolerance=0.0, path="song/tracks/0/devices/0"
+):
+    return {
+        "bridge_protocol_version": BRIDGE_PROTOCOL_VERSION,
+        "type": "call",
+        "path": path,
+        "name": "sunny_resolve_native_display_value",
+        "args": [{"capability_id": capability, "target": target, "tolerance": tolerance}],
+    }
+
+
+@pytest.mark.parametrize("version", [(12, 3, 0), (12, 3, 65535), (12, 4, 0), (12, 4, 99)])
+@pytest.mark.parametrize(
+    "path",
+    ["song/tracks/0/devices/0", "song/return_tracks/0/devices/0", "song/master_track/devices/0"],
+)
+def test_handler_resolves_closed_capability_on_reviewed_minor_versions(monkeypatch, version, path):
+    """Reviewed minor versions retain display evidence without a native write."""
+    fixture = _target(
+        "Gain", "Decibels", lambda value: f"{-40 + 272 * value**3:.2f} dB", value=0.375
+    )
+    result = _handler(fixture, monkeypatch, version).handle(_wire_request(path=path))
+    assert result["success"] is True
+    evidence = result["value"]
+    assert set(evidence) == {
+        "schema_version",
+        "capability_id",
+        "target",
+        "tolerance",
+        "outcome",
+        "candidate",
+    }
+    assert evidence["outcome"] == "resolved"
+    assert (evidence["capability_id"], evidence["target"], evidence["tolerance"]) == (
+        "utility.gain",
+        -6.0,
+        0.0,
+    )
+    candidate = evidence["candidate"]
+    assert candidate["internal_value"] == 0.5
+    assert candidate["display"] == "-6.00 dB"
+    assert candidate["display_value"] == -6.0
+    assert candidate["descriptor"]["value"] == fixture.parameter.value == 0.375
+    assert candidate["native_knob_only"] is True and candidate["host_qualified"] is False
+    assert candidate["formatter_calls"] == len(fixture.parameter.calls) == 20
+    assert fixture.parameter.writes == 0
+
+
+@pytest.mark.parametrize("band", range(1, 9))
+@pytest.mark.parametrize(
+    "control,original,unit,oracle,target,display",
+    [
+        (
+            "frequency",
+            "Frequency",
+            "Hertz",
+            lambda value: f"{200 + 8000 * value**3:.1f} Hz",
+            1200.0,
+            "1200.0 Hz",
+        ),
+        ("gain", "Gain", "Decibels", lambda value: f"{-12 + 48 * value**2:.2f} dB", 0.0, "0.00 dB"),
+        (
+            "q",
+            "Resonance",
+            "QualityFactor",
+            lambda value: f"{0.25 + 3 * value**2:.2f}",
+            1.0,
+            "1.00",
+        ),
+    ],
+)
+def test_registered_eq_band_dispatch_derives_identity_unit_and_policy(
+    monkeypatch, band, control, original, unit, oracle, target, display
+):
+    """Every finite band ID selects its own exact native identity and gates."""
+    fixture = _target(f"{band} {original} A", unit, oracle, device_class="Eq8", value=0.375)
+    result = _handler(fixture, monkeypatch).handle(
+        _wire_request(f"eq8.band.{band}.{control}", target)
+    )
+    assert result["success"] is True
+    candidate = result["value"]["candidate"]
+    assert (
+        candidate["device_class_name"],
+        candidate["parameter_original_name"],
+        candidate["unit"],
+    ) == ("Eq8", f"{band} {original} A", unit)
+    assert candidate["internal_value"] == 0.5 and candidate["display"] == display
+    assert candidate["modes"][f"{band} Filter On A"]["label"] == "On"
+    assert candidate["eq8_scale_display"]["display"] == "100.0 %"
+    assert candidate["modes"]["Adaptive Q"]["label"] == "Off"
+    assert candidate["formatter_calls"] == 21
+    assert fixture.parameter.writes == 0
+
+
+@pytest.mark.parametrize("version", [(11, 3, 0), (12, 2, 99), (12, 5, 0), (13, 0, 0)])
+def test_handler_declines_unreviewed_minor_before_native_formatting(monkeypatch, version):
+    """Unknown minor coverage does not probe or substitute a fake mapping."""
+    fixture = _target("Gain", "Decibels", lambda value: f"{value:.2f} dB")
+    result = _handler(fixture, monkeypatch, version).handle(_wire_request())
+    assert result["success"] is True
+    assert result["value"]["outcome"] == "declined"
+    assert result["value"]["reason"] == "UnknownRegistryCoverage"
+    assert result["value"]["formatter_calls"] == 0
+    assert fixture.parameter.calls == [] and fixture.parameter.writes == 0
+
+
+@pytest.mark.parametrize(
+    "corruption,reason,calls",
+    [
+        ("locale", "UnsupportedDisplay", 1),
+        ("mode", "UnsupportedMode", 0),
+        ("alias", "AmbiguousParameter", 0),
+        ("value_drift", "ObservationDrift", 1),
+        ("wrong_class", "DeviceMismatch", 0),
+    ],
+)
+def test_handler_preserves_precise_native_decline_and_call_count(
+    monkeypatch, corruption, reason, calls
+):
+    """Malformed or drifting native observations survive as explicit declines."""
+    fixture = _target(
+        "Gain", "Decibels", lambda value: f"{-40 + 272 * value**3:.2f} dB", value=0.375
+    )
+    if corruption == "locale":
+        fixture.parameter.oracle = lambda value: "-6,00 dB"
+    elif corruption == "mode":
+        _parameter(fixture, "Mono")._value = 0.0  # On in observed reversed labels.
+    elif corruption == "alias":
+        alias = _NativeParameter("Gain")
+        alias.original_name = "Other Gain"
+        alias.canonical_parent = fixture.device
+        fixture.device.parameters += (alias,)
+    elif corruption == "value_drift":
+        fixture.parameter.callback = lambda value: setattr(fixture.parameter, "_value", 0.4)
+    else:
+        fixture.device.class_name = "PluginDevice"
+    result = _handler(fixture, monkeypatch).handle(_wire_request())
+    assert result["success"] is True
+    evidence = result["value"]
+    assert set(evidence) == {
+        "schema_version",
+        "capability_id",
+        "target",
+        "tolerance",
+        "outcome",
+        "reason",
+        "diagnostic",
+        "formatter_calls",
+    }
+    assert evidence["outcome"] == "declined" and evidence["reason"] == reason
+    assert evidence["formatter_calls"] == calls
+    assert len(fixture.parameter.calls) == calls and fixture.parameter.writes == 0
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        {"capability_id": "utility.gain", "target": -6.0, "tolerance": 0.0, "expected_modes": {}},
+        {"capability_id": "utility.gain", "target": True, "tolerance": 0.0},
+        {"capability_id": "utility.gain", "target": -6.0, "tolerance": -0.1},
+        {"capability_id": "eq8.band.1.type", "target": 1.0, "tolerance": 0.0},
+        {"capability_id": "eq8.band.0.frequency", "target": 1000.0, "tolerance": 0.0},
+    ],
+)
+def test_closed_wire_validation_rejects_caller_policy_and_noncontinuous_ids(monkeypatch, query):
+    """Protocol callers cannot override unit identities or mode admission."""
+    fixture = _target("Gain", "Decibels", lambda value: f"{value:.2f} dB")
+    request = _wire_request()
+    request["args"] = [query]
+    assert valid_native_display_request(query) is False
+    assert _handler(fixture, monkeypatch).handle(request)["success"] is False
+    assert fixture.parameter.calls == [] and fixture.parameter.writes == 0
+
+
+@pytest.mark.parametrize(
+    "capability,original,unit,device_class,oracle,target,display",
+    [
+        (
+            "utility.balance",
+            "Balance",
+            "StereoBalance",
+            "StereoGain",
+            lambda value: "C"
+            if value == 0.5
+            else f"{abs(value - 0.5) * 100:.2f}{'L' if value < 0.5 else 'R'}",
+            0.0,
+            "C",
+        ),
+        (
+            "utility.width",
+            "Stereo Width",
+            "Percent",
+            "StereoGain",
+            lambda value: f"{200 * value**2:.2f} %",
+            50.0,
+            "50.00 %",
+        ),
+        (
+            "eq8.output_gain",
+            "Output Gain",
+            "Decibels",
+            "Eq8",
+            lambda value: f"{-12 + 48 * value**2:.2f} dB",
+            0.0,
+            "0.00 dB",
+        ),
+    ],
+)
+def test_handler_selects_remaining_continuous_identities(
+    monkeypatch, capability, original, unit, device_class, oracle, target, display
+):
+    """Balance, width and global EQ output select their own native controls."""
+    fixture = _target(original, unit, oracle, device_class=device_class, value=0.375)
+    result = _handler(fixture, monkeypatch).handle(_wire_request(capability, target))
+    assert result["success"] is True and result["value"]["outcome"] == "resolved"
+    candidate = result["value"]["candidate"]
+    assert candidate["parameter_original_name"] == original and candidate["unit"] == unit
+    assert candidate["internal_value"] == 0.5 and candidate["display"] == display
+    assert fixture.parameter.value == 0.375 and fixture.parameter.writes == 0
+
+
+def test_registered_entry_point_cannot_resolve_public_alias_as_original_identity():
+    """A matching public alias cannot promote the legacy native identity."""
+    fixture = _target("Gain", "Decibels", lambda value: f"{value:.2f} dB")
+    fixture.parameter.original_name = "Gain (Legacy)"
+    with pytest.raises(NativeUnitError) as error:
+        resolve_registered_native_display_value(fixture.device, "utility.gain", 0.5, 0)
+    assert error.value.reason == "ParameterMismatch"
+    assert fixture.parameter.calls == []
+
+
+def test_handler_detects_application_version_change_during_read_only_query(monkeypatch):
+    """The enclosing operation also requires a stable observed application version."""
+    fixture = _target(
+        "Gain", "Decibels", lambda value: f"{-40 + 272 * value**3:.2f} dB", value=0.375
+    )
+    handler = _handler(fixture, monkeypatch)
+    application = sys.modules["Live"].Application.get_application()
+    fixture.parameter.callback = lambda value: setattr(application, "get_bugfix_version", lambda: 1)
+    result = handler.handle(_wire_request())
+    assert result["value"]["reason"] == "HostVersionDrift"
+    assert result["value"]["formatter_calls"] == 20
+    assert fixture.parameter.value == 0.375 and fixture.parameter.writes == 0
+
+
+@pytest.fixture
+def native_unit_bridge(monkeypatch):
+    """Use actual MCP, TCP, surface scheduler and handler against literal native oracles."""
+    command = os.environ.get("SUNNY_MCP_COMMAND")
+    binary = None if command else _sunny_mcp_binary()
+    live = LiveSet((12, 4, 0)).install(monkeypatch)
+    # Keep the existing structural model, but make this fixture's independently
+    # specified device/parameter identities the embedded native types.
+    live.module.Device.Device = _NativeDevice
+    live.module.DeviceParameter.DeviceParameter = _NativeParameter
+    live.song.create_midi_track(0)
+    bind_host = os.environ.get("SUNNY_TEST_BRIDGE_BIND_HOST", "127.0.0.1")
+    client_host = os.environ.get("SUNNY_TEST_BRIDGE_HOST", "127.0.0.1")
+    monkeypatch.setattr(surface_module, "_server_configuration", lambda: (bind_host, 0))
+    main_thread = _LiveMainThread()
+    surface = SunnyControlSurface(object())
+    surface.schedule_message = main_thread.schedule_message
+    client = None
+    try:
+        assert surface._server._ready.wait(5), "Actual bridge listener did not start"
+        client = _McpClient(
+            binary,
+            surface._server.bound_port,
+            host=client_host,
+            command=shlex.split(command) if command else None,
+        )
+        yield live.song.tracks[0], client
+    finally:
+        if client is not None:
+            client.close()
+        surface.disconnect()
+        main_thread.stop()
+
+
+@pytest.mark.parametrize(
+    "scenario", ["nonlinear_gain", "prefixed_frequency", "locale", "mode", "value_drift"]
+)
+def test_actual_mcp_transport_handler_native_display_resolution(native_unit_bridge, scenario):
+    """Literal displays cross both protocol validators and the typed C++ evidence parser."""
+    track, client = native_unit_bridge
+    capability, target = "utility.gain", -6.0
+    if scenario == "prefixed_frequency":
+        fixture = _target(
+            "7 Frequency A",
+            "Hertz",
+            lambda value: f"{(200 + 8000 * value**3) / 1000:.2f} kHz",
+            device_class="Eq8",
+            value=0.375,
+        )
+        capability, target = "eq8.band.7.frequency", 1200.0
+    else:
+        fixture = _target(
+            "Gain", "Decibels", lambda value: f"{-40 + 272 * value**3:.2f} dB", value=0.375
+        )
+    if scenario == "locale":
+        fixture.parameter.oracle = lambda value: "-6,00 dB"
+    elif scenario == "mode":
+        _parameter(fixture, "Mono")._value = 0.0
+
+    def on_format(value):
+        assert threading.current_thread().name == "LiveMainThread"
+        if scenario == "value_drift":
+            fixture.parameter._value = 0.4
+
+    for parameter in fixture.device.parameters:
+        parameter.callback = on_format
+    track._devices[:] = [fixture.device]
+    result = client.call(
+        "resolve_native_display_value",
+        track_index=0,
+        device_index=0,
+        capability_id=capability,
+        target=target,
+        tolerance=0.0,
+    )
+    assert "error" not in result, result
+    evidence = result["evidence"]
+    assert (evidence["capability_id"], evidence["target"], evidence["tolerance"]) == (
+        capability,
+        target,
+        0.0,
+    )
+    if scenario in ("nonlinear_gain", "prefixed_frequency"):
+        assert result["success"] is True and result["status"] == "candidate"
+        candidate = evidence["candidate"]
+        assert candidate["internal_value"] == 0.5
+        assert candidate["display"] == (
+            "1.20 kHz" if scenario == "prefixed_frequency" else "-6.00 dB"
+        )
+        assert candidate["display_value"] == target
+        assert candidate["descriptor"]["value"] == fixture.parameter.value == 0.375
+        assert candidate["host_qualified"] is False and candidate["native_knob_only"] is True
+        assert result["formatter_calls"] == (21 if scenario == "prefixed_frequency" else 20)
+    else:
+        expected = {
+            "locale": "UnsupportedDisplay",
+            "mode": "UnsupportedMode",
+            "value_drift": "ObservationDrift",
+        }[scenario]
+        assert result["success"] is False and result["status"] == "declined"
+        assert result["reason"] == evidence["reason"] == expected
+        assert result["formatter_calls"] == (0 if scenario == "mode" else 1)
+        assert "candidate" not in evidence
+    assert fixture.parameter.writes == 0

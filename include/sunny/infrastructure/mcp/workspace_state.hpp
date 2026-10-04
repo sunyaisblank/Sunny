@@ -9,7 +9,7 @@
 
 namespace sunny::infrastructure {
 
-inline constexpr int WORKSPACE_SCHEMA_VERSION = 1;
+inline constexpr int WORKSPACE_SCHEMA_VERSION = 2;
 
 struct WorkspaceError {
     std::string message;
@@ -25,6 +25,8 @@ struct WorkspaceState {
     CorpusSession corpus;
     ProjectSession project;
     WorkspaceNamespaceHistory namespace_history;
+    NativeWorkspaceMetadata native_realization;
+    bool native_namespace_is_new = false;
     std::uint64_t next_plan_id = 1;
 };
 
@@ -59,9 +61,11 @@ struct WorkspaceSaveResult {
 };
 
 /** Checked exclusive temp, file sync, atomic replacement, then directory sync. */
-[[nodiscard]] WorkspaceSaveResult save_workspace(const McpSession& session,
-                                                 const std::filesystem::path& path,
-                                                 const WorkspaceIoFault& fault = {});
+[[nodiscard]] WorkspaceSaveResult
+save_workspace(const McpSession& session,
+               const std::filesystem::path& path,
+               const WorkspaceIoFault& fault = {},
+               const NativeWorkspaceMetadata* publication = nullptr);
 
 /** Validate the explicit .bak source; preview does not mutate files or session. */
 [[nodiscard]] WorkspaceResult<nlohmann::json>

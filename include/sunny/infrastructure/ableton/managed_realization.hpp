@@ -2,7 +2,8 @@
  * @file managed_realization.hpp
  * @brief Tokened managed Session MIDI realization and serializable receipts.
  *
- * This finite bridge foundation has no MCP admission or host qualification.
+ * The owning-project MCP subset uses this finite bridge contract. Host
+ * qualification remains pending.
  * Persist intent and a durable may-have-sent fence BEFORE sending. A disk-restored
  * Prepared receipt alone cannot establish that a previous process never sent it.
  * Reconciliation only queries the
@@ -102,6 +103,48 @@ struct ManagedBindingReceipt {
     nlohmann::json observation;
 };
 
+enum class ManagedObservationOutcome {
+    Observed,
+    PartialBinding,
+    RecoveryUnavailable,
+    UnknownEpoch
+};
+
+/// Exact closed read-only response, including actual native note IDs and logical
+/// context. Inspection never refreshes the bridge's retained mutation guard.
+struct ManagedBindingObservation {
+    ManagedBridgeContext context;
+    std::string project_key;
+    std::string binding_key;
+    ManagedObservationOutcome outcome = ManagedObservationOutcome::RecoveryUnavailable;
+    nlohmann::json evidence;
+};
+
+[[nodiscard]] sunny::core::Result<ManagedBindingObservation>
+observe_managed_binding(const ManagedBridgeContext& expected_context,
+                        const std::string& project_key,
+                        const std::string& binding_key,
+                        LomTransport& transport);
+[[nodiscard]] sunny::core::Result<ManagedBindingReceipt>
+managed_observed_binding(const ManagedBindingObservation& observation);
+
+/// Read-only samples resolved through retained native binding identities.
+/// Evidence is the exact response wrapper. Observed responses contain envelope
+/// {has_envelope, parameter, samples}; other outcomes contain no sample evidence.
+/// Samples do not observe complete breakpoint populations or refresh guards.
+struct ManagedEnvelopeObservation {
+    ManagedBindingObservation binding;
+    nlohmann::json evidence;
+};
+
+[[nodiscard]] sunny::core::Result<ManagedEnvelopeObservation>
+sample_managed_envelope(const ManagedBridgeContext& expected_context,
+                        const std::string& project_key,
+                        const std::string& binding_key,
+                        const nlohmann::json& parameter,
+                        const std::vector<double>& sample_times,
+                        LomTransport& transport);
+
 [[nodiscard]] sunny::core::Result<ManagedBindingReceipt>
 managed_binding_receipt(const ManagedOperationReceipt& acknowledgement);
 [[nodiscard]] nlohmann::json managed_binding_to_json(const ManagedBindingReceipt& binding);
@@ -117,5 +160,15 @@ make_managed_envelope_request(const ManagedBridgeContext& context,
                               const std::string& operation_id,
                               const ManagedBindingReceipt& binding,
                               const nlohmann::json& lane);
+
+/// In-place existing-ID revisions only. Expected is the eight observed native
+/// fields; updates admits pitch/start_time/duration/velocity/mute/release_velocity.
+/// Full Live11.1+ note population and collision-free proposed geometry are
+/// required. Unknown MPE/FollowActions remain host-owned and unobserved.
+[[nodiscard]] sunny::core::Result<LomRequest>
+make_managed_note_update_request(const ManagedBridgeContext& context,
+                                 const std::string& operation_id,
+                                 const ManagedBindingReceipt& binding,
+                                 const nlohmann::json& changes);
 
 } // namespace sunny::infrastructure

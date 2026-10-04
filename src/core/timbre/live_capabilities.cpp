@@ -146,8 +146,8 @@ const LiveNativeRegistryProvenance& live_native_registry_provenance() {
     static const LiveNativeRegistryProvenance provenance{
         LIVE_NATIVE_CAPABILITY_REGISTRY_VERSION,
         {12, 4, 5},
-        {12, 0, 0},
-        {12, 4, 5},
+        {12, 3, 0},
+        {12, 4, UINT16_MAX},
         "https://docs.cycling74.com/apiref/lom/",
         "https://www.ableton.com/en/live-manual/12/live-audio-effect-reference/",
         "e83d5192f321b24eb9daab843ac49a2d95d862b1",

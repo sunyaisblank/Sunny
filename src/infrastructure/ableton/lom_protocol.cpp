@@ -17,6 +17,8 @@
 #include <set>
 #include <sstream>
 #include <string_view>
+#include <sunny/core/timbre/live_capabilities.hpp>
+#include <sunny/infrastructure/ableton/detail/managed_notes.hpp>
 #include <sunny/infrastructure/ableton/lom_protocol.hpp>
 #include <sunny/infrastructure/ableton/target_profile.hpp>
 
@@ -419,14 +421,21 @@ bool valid_managed_request(std::string_view name, const std::vector<json>& args)
     for (const auto* key : {"project_key", "binding_key"})
         if (!value.contains(key) || !managed_key(value.at(key))) return false;
     if (name == "sunny_managed_observe") return value.size() == 3;
+    if (name == "sunny_managed_sample_envelope")
+        return value.size() == 5 && value.contains("parameter") && value.contains("sample_times") &&
+               valid_step_envelope_query(json{{"parameter", value.at("parameter")},
+                                              {"sample_times", value.at("sample_times")}}) &&
+               value.at("sample_times").size() <= 65536 &&
+               value.at("parameter").at("kind") != "device";
     if (!value.contains("operation_id") || !managed_key(value.at("operation_id"))) return false;
     if (name == "sunny_managed_rebind")
         return value.size() == 5 && value.contains("expected_manifest") &&
                value.at("expected_manifest").is_object() &&
                value.at("expected_manifest").contains("schema_version") &&
                json_to_int(value.at("expected_manifest").at("schema_version")) == 1;
-    const bool guarded =
-        name == "sunny_managed_replace_clip" || name == "sunny_managed_author_envelope";
+    const bool guarded = name == "sunny_managed_replace_clip" ||
+                         name == "sunny_managed_author_envelope" ||
+                         name == "sunny_managed_update_notes";
     if (guarded && (!value.contains("expected_content_fingerprint") ||
                     !managed_fingerprint(value.at("expected_content_fingerprint"))))
         return false;
@@ -434,6 +443,9 @@ bool valid_managed_request(std::string_view name, const std::vector<json>& args)
         return value.size() == 6 && value.contains("lane") &&
                valid_step_envelope_author(value.at("lane")) &&
                value.at("lane").at("parameter").at("kind") != "device";
+    if (name == "sunny_managed_update_notes")
+        return value.size() == 6 && value.contains("changes") &&
+               managed_detail::note_changes_valid(value.at("changes"));
     if (!is_one_of(name, {"sunny_managed_create_clip", "sunny_managed_replace_clip"}) ||
         value.size() != (guarded ? 9U : 8U))
         return false;
@@ -490,10 +502,12 @@ sunny::core::Result<void> LomProtocol::validate_request(const LomRequest& reques
                         "sunny_managed_context",
                         "sunny_managed_operation",
                         "sunny_managed_observe",
+                        "sunny_managed_sample_envelope",
                         "sunny_managed_create_clip",
                         "sunny_managed_replace_clip",
                         "sunny_managed_rebind",
                         "sunny_managed_author_envelope",
+                        "sunny_managed_update_notes",
                         "create_scene",
                         "create_midi_track",
                         "create_return_track"}));
@@ -570,9 +584,11 @@ sunny::core::Result<void> LomProtocol::validate_request(const LomRequest& reques
         operation_allowed = request.type == LomRequestType::SetProperty && name == "display_value";
         break;
     case PathKind::Device:
-        operation_allowed =
-            request.type == LomRequestType::CallMethod &&
-            is_one_of(name, {"sunny_get_device_parameter", "sunny_set_device_parameter"});
+        operation_allowed = request.type == LomRequestType::CallMethod &&
+                            is_one_of(name,
+                                      {"sunny_get_device_parameter",
+                                       "sunny_set_device_parameter",
+                                       "sunny_resolve_native_display_value"});
         break;
     case PathKind::MixerDevice:
         operation_allowed = request.type == LomRequestType::SetProperty &&
@@ -699,7 +715,22 @@ sunny::core::Result<void> LomProtocol::validate_request(const LomRequest& reques
                      : name == "sunny_get_step_envelope"    ? valid_step_envelope_query(args[0])
                                                             : false);
     } else if (*kind == PathKind::Device) {
-        if (name == "sunny_get_device_parameter")
+        if (name == "sunny_resolve_native_display_value") {
+            if (args.size() == 1 && args[0].is_object() && args[0].size() == 3 &&
+                args[0].contains("capability_id") && args[0]["capability_id"].is_string() &&
+                args[0].contains("target") && finite_number(args[0]["target"]) &&
+                args[0].contains("tolerance") && finite_number(args[0]["tolerance"]) &&
+                args[0]["tolerance"].get<double>() >= 0.0) {
+                const auto registry = sunny::core::live_native_parameter_registry();
+                const auto capability =
+                    std::find_if(registry.begin(), registry.end(), [&](const auto& entry) {
+                        return entry.id == args[0]["capability_id"].get_ref<const std::string&>();
+                    });
+                valid = capability != registry.end() &&
+                        capability->kind == sunny::core::LiveNativeParameterKind::Continuous &&
+                        capability->physical_unit.has_value();
+            }
+        } else if (name == "sunny_get_device_parameter")
             valid = args.size() == 2 && args[0].is_string() &&
                     !args[0].get_ref<const std::string&>().empty() && args[1].is_string() &&
                     is_one_of(args[1].get_ref<const std::string&>(), {"value", "display_value"});

@@ -3,6 +3,7 @@
 #include <ranges>
 #include <set>
 #include <sunny/infrastructure/ableton/detail/managed_fingerprint.hpp>
+#include <sunny/infrastructure/ableton/detail/managed_notes.hpp>
 #include <sunny/infrastructure/ableton/managed_realization.hpp>
 
 namespace sunny::infrastructure {
@@ -41,7 +42,8 @@ bool mutation(const LomRequest& request) {
            (request.property_or_method == "sunny_managed_create_clip" ||
             request.property_or_method == "sunny_managed_replace_clip" ||
             request.property_or_method == "sunny_managed_rebind" ||
-            request.property_or_method == "sunny_managed_author_envelope");
+            request.property_or_method == "sunny_managed_author_envelope" ||
+            request.property_or_method == "sunny_managed_update_notes");
 }
 
 json context_json(const ManagedBridgeContext& context) {
@@ -265,6 +267,15 @@ bool manifest_valid(const json& manifest, bool& structural, bool& complete_cover
     return true;
 }
 
+bool notes_match(const json& actual, const json& requested);
+bool note_update_boundary(const json& manifest);
+
+bool identity_evidence_valid(const json& identity, const json& digest) {
+    if (!managed_detail::note_identity_valid(identity) || !fingerprint(digest)) return false;
+    const auto actual = managed_detail::managed_digest(identity);
+    return actual && digest == *actual;
+}
+
 bool observation_valid(const json& value) {
     if (!value.is_object() || !value.contains("manifest") ||
         !value.contains("content_fingerprint") || !fingerprint(value.at("content_fingerprint")) ||
@@ -291,6 +302,18 @@ bool observation_valid(const json& value) {
     for (const auto* name :
          {"observed_notes_match_request", "observed_clip_properties_match_request"})
         if (value.contains(name) && !value.at(name).is_boolean()) return false;
+    if (value.contains("note_identity") || value.contains("note_identity_fingerprint")) {
+        if (!value.contains("note_identity") || !value.contains("note_identity_fingerprint") ||
+            !identity_evidence_valid(value.at("note_identity"),
+                                     value.at("note_identity_fingerprint")) ||
+            value.at("note_identity").at("entire_clip_population_observed") !=
+                value.at("manifest").at("entire_clip_population_observed"))
+            return false;
+        json notes = json::array();
+        for (const auto& note : value.at("note_identity").at("notes"))
+            notes.push_back(managed_detail::semantic_note(note));
+        if (!notes_match(notes, value.at("manifest").at("notes"))) return false;
+    }
     const auto digest = managed_detail::managed_digest(value.at("manifest"));
     return digest && value.at("content_fingerprint") == *digest;
 }
@@ -330,10 +353,73 @@ bool result_matches_intent(const json& observation, const json& intent, std::str
     }
     if (name == "sunny_managed_rebind")
         return observation.at("manifest") == intent.at("expected_manifest");
+    if (name == "sunny_managed_update_notes") {
+        if (!observation.contains("note_identity") || !observation.contains("note_update"))
+            return false;
+        const auto& update = observation.at("note_update");
+        if (!fields(update,
+                    {"before_manifest",
+                     "before_note_identity",
+                     "before_note_identity_fingerprint",
+                     "notes_submitted",
+                     "observed_updates_match_request",
+                     "untouched_notes_preserved",
+                     "note_ids_preserved"}) ||
+            !identity_evidence_valid(update.at("before_note_identity"),
+                                     update.at("before_note_identity_fingerprint")) ||
+            !integer(update.at("notes_submitted"), 1, 65536) ||
+            update.at("notes_submitted").get<std::size_t>() != intent.at("changes").size())
+            return false;
+        for (const auto* flag :
+             {"observed_updates_match_request", "untouched_notes_preserved", "note_ids_preserved"})
+            if (!update.at(flag).is_boolean()) return false;
+        bool before_structural = false, before_complete = false;
+        if (!manifest_valid(update.at("before_manifest"), before_structural, before_complete) ||
+            !note_update_boundary(update.at("before_manifest")) ||
+            managed_detail::managed_digest(update.at("before_manifest")) !=
+                std::optional<std::string>{
+                    intent.at("expected_content_fingerprint").get<std::string>()} ||
+            update.at("before_manifest").at("entire_clip_population_observed") != true)
+            return false;
+        json before_notes = json::array();
+        for (const auto& note : update.at("before_note_identity").at("notes"))
+            before_notes.push_back(managed_detail::semantic_note(note));
+        if (!notes_match(before_notes, update.at("before_manifest").at("notes"))) return false;
+        const auto proposed = managed_detail::proposed_notes(
+            update.at("before_note_identity"),
+            intent.at("changes"),
+            update.at("before_manifest").at("clip").at("end_marker").get<double>());
+        if (!proposed ||
+            observation.at("note_identity").at("entire_clip_population_observed") != true)
+            return false;
+        const auto before = managed_detail::note_map(update.at("before_note_identity"));
+        const auto after = managed_detail::note_map(observation.at("note_identity"));
+        std::set<std::int32_t> touched;
+        for (const auto& change : intent.at("changes"))
+            touched.insert(change.at("note_id").get<std::int32_t>());
+        bool matched = true, untouched = true, ids = before.size() == after.size();
+        for (const auto& [id, note] : before) {
+            const auto found = after.find(id);
+            if (found == after.end()) {
+                ids = false;
+            }
+            if (touched.contains(id))
+                matched = matched && found != after.end() &&
+                          managed_detail::managed_digest(found->second) ==
+                              managed_detail::managed_digest(proposed->at(id));
+            else
+                untouched = untouched && found != after.end() &&
+                            managed_detail::managed_digest(found->second) ==
+                                managed_detail::managed_digest(note);
+        }
+        return update.at("observed_updates_match_request").get<bool>() == matched &&
+               update.at("untouched_notes_preserved").get<bool>() == untouched &&
+               update.at("note_ids_preserved").get<bool>() == ids;
+    }
     if (!observation.contains("acknowledgement")) return false;
     const auto& acknowledgement = observation.at("acknowledgement");
     if (!fields(acknowledgement, {"action", "steps_inserted", "parameter"}) ||
-        (acknowledgement.at("action") != "created" && acknowledgement.at("action") != "updated") ||
+        acknowledgement.at("action") != "created" ||
         !integer(
             acknowledgement.at("steps_inserted"), 1, std::numeric_limits<std::int32_t>::max()) ||
         acknowledgement.at("steps_inserted").get<std::size_t>() !=
@@ -454,7 +540,17 @@ Result<ManagedClipProjection> managed_clip_projection(const CommandBuffer& recor
     bool created = false, start = false, end = false, numerator = false, denominator = false;
     std::set<std::string> seen;
     for (const auto& entry : recording.entries()) {
-        const auto& request = entry.request;
+        auto request = entry.request;
+        // CommandBuffer::send_notes records the typed batch separately from
+        // the request arguments. Normalize through the same closed protocol
+        // used by the live transport before validating/projecting it.
+        if (request.type == LomRequestType::CallMethod &&
+            request.property_or_method == "add_new_notes" && request.args.empty()) {
+            if (!LomProtocol::validate_notes(request.path, entry.notes))
+                return std::unexpected(ErrorCode::ProtocolError);
+            request = LomProtocol::add_new_notes(request.path, entry.notes);
+        } else if (!entry.notes.empty())
+            return std::unexpected(ErrorCode::ProtocolError);
         if (!LomProtocol::validate_request(request))
             return std::unexpected(ErrorCode::ProtocolError);
         const auto path = request.path.to_string();
@@ -774,7 +870,8 @@ Result<LomRequest> make_managed_envelope_request(const ManagedBridgeContext& con
     if (!context_valid(context) || !managed_binding_from_json(managed_binding_to_json(binding)) ||
         context.document_token != binding.context.document_token ||
         context.bridge_instance != binding.context.bridge_instance ||
-        !binding.observation.at("structural_boundary_complete").get<bool>())
+        !binding.observation.contains("note_identity") ||
+        !note_update_boundary(binding.observation.at("manifest")))
         return std::unexpected(ErrorCode::ProtocolError);
     auto request = LomProtocol::call_method(
         LomPaths::song(),
@@ -785,6 +882,255 @@ Result<LomRequest> make_managed_envelope_request(const ManagedBridgeContext& con
               {"binding_key", binding.binding_key},
               {"expected_content_fingerprint", binding.observation.at("content_fingerprint")},
               {"lane", lane}}});
+    if (!LomProtocol::validate_request(request) ||
+        lane.at("clip_end").get<double>() !=
+            binding.observation.at("manifest").at("clip").at("end_marker").get<double>())
+        return std::unexpected(ErrorCode::ProtocolError);
+    return request;
+}
+
+namespace {
+Result<ManagedBindingObservation> parse_observation(const ManagedBridgeContext& expected,
+                                                    const std::string& project,
+                                                    const std::string& binding,
+                                                    const json& raw) {
+    if (!raw.is_object() || !raw.contains("schema_version") ||
+        !integer(raw.at("schema_version"), 1, 1) || !raw.contains("context") ||
+        !raw.contains("project_key") || raw.at("project_key") != project ||
+        !raw.contains("binding_key") || raw.at("binding_key") != binding ||
+        !raw.contains("outcome") || !raw.at("outcome").is_string() ||
+        !raw.contains("ownership_retained") || !raw.at("ownership_retained").is_boolean())
+        return std::unexpected(ErrorCode::ProtocolError);
+    const auto actual = parse_context(raw.at("context"));
+    if (!actual) return std::unexpected(ErrorCode::ProtocolError);
+    const bool same = actual->bridge_instance == expected.bridge_instance &&
+                      actual->document_token == expected.document_token;
+    ManagedObservationOutcome outcome;
+    const auto& name = raw.at("outcome");
+    if (name == "unknown_epoch") {
+        if (same ||
+            !fields(raw,
+                    {"schema_version",
+                     "context",
+                     "project_key",
+                     "binding_key",
+                     "outcome",
+                     "ownership_retained"}) ||
+            raw.at("ownership_retained") != false)
+            return std::unexpected(ErrorCode::ProtocolError);
+        outcome = ManagedObservationOutcome::UnknownEpoch;
+    } else if (!same)
+        return std::unexpected(ErrorCode::ProtocolError);
+    else if (name == "recovery_unavailable") {
+        if (!fields(raw,
+                    {"schema_version",
+                     "context",
+                     "project_key",
+                     "binding_key",
+                     "outcome",
+                     "ownership_retained"}) ||
+            raw.at("ownership_retained") != false)
+            return std::unexpected(ErrorCode::ProtocolError);
+        outcome = ManagedObservationOutcome::RecoveryUnavailable;
+    } else if (name == "partial_binding") {
+        if (!fields(raw,
+                    {"schema_version",
+                     "context",
+                     "project_key",
+                     "binding_key",
+                     "outcome",
+                     "ownership_retained",
+                     "native_handles_retained",
+                     "known_track_index",
+                     "recovery_available"}) ||
+            raw.at("ownership_retained") != false || raw.at("native_handles_retained") != true ||
+            raw.at("recovery_available") != false ||
+            (!raw.at("known_track_index").is_null() &&
+             !integer(raw.at("known_track_index"), 0, INT32_MAX)))
+            return std::unexpected(ErrorCode::ProtocolError);
+        outcome = ManagedObservationOutcome::PartialBinding;
+    } else if (name == "observed") {
+        if (!fields(raw,
+                    {"schema_version",
+                     "context",
+                     "project_key",
+                     "binding_key",
+                     "outcome",
+                     "ownership_retained",
+                     "observation"}) ||
+            raw.at("ownership_retained") != true || !observation_valid(raw.at("observation")) ||
+            !raw.at("observation").contains("note_identity") ||
+            raw.at("observation").at("track_tag") !=
+                "Sunny|" + project + "|" + binding + "|track" ||
+            raw.at("observation").at("clip_tag") != "Sunny|" + project + "|" + binding + "|clip")
+            return std::unexpected(ErrorCode::ProtocolError);
+        outcome = ManagedObservationOutcome::Observed;
+    } else
+        return std::unexpected(ErrorCode::ProtocolError);
+    return ManagedBindingObservation{*actual, project, binding, outcome, raw};
+}
+
+bool note_update_boundary(const json& manifest) {
+    const auto& track = manifest.at("track");
+    const auto& clip = manifest.at("clip");
+    if (manifest.at("entire_clip_population_observed") != true || track.at("arm") != false ||
+        track.at("implicit_arm") != false || track.at("is_frozen") != false ||
+        track.at("is_grouped") != false || clip.at("is_session_clip") != true ||
+        clip.at("is_arrangement_clip") != false || clip.at("is_midi_clip") != true ||
+        clip.at("is_audio_clip") != false || clip.at("looping") != false ||
+        clip.at("start_marker").get<double>() != 0.0 || clip.at("end_marker").get<double>() <= 0.0)
+        return false;
+    for (const auto* state :
+         {"is_playing", "is_recording", "is_overdubbing", "is_triggered", "will_record_on_start"})
+        if (clip.at(state) != false) return false;
+    return true;
+}
+} // namespace
+
+Result<ManagedBindingObservation> observe_managed_binding(const ManagedBridgeContext& expected,
+                                                          const std::string& project,
+                                                          const std::string& binding,
+                                                          LomTransport& transport) {
+    if (!context_valid(expected) || !key(project) || !key(binding))
+        return std::unexpected(ErrorCode::ProtocolError);
+    const auto request = LomProtocol::call_method(LomPaths::song(),
+                                                  "sunny_managed_observe",
+                                                  {json{{"document_token", expected.document_token},
+                                                        {"project_key", project},
+                                                        {"binding_key", binding}}});
+    const auto response = transport.send(request);
+    if (!response.success || !response.value || !std::holds_alternative<json>(*response.value))
+        return std::unexpected(ErrorCode::ProtocolError);
+    return parse_observation(expected, project, binding, std::get<json>(*response.value));
+}
+
+Result<ManagedBindingReceipt>
+managed_observed_binding(const ManagedBindingObservation& observation) {
+    const auto checked = parse_observation(observation.context,
+                                           observation.project_key,
+                                           observation.binding_key,
+                                           observation.evidence);
+    if (!checked || checked->outcome != ManagedObservationOutcome::Observed ||
+        observation.outcome != ManagedObservationOutcome::Observed)
+        return std::unexpected(ErrorCode::ProtocolError);
+    return managed_binding_from_json(
+        managed_binding_to_json({observation.context,
+                                 observation.project_key,
+                                 observation.binding_key,
+                                 observation.evidence.at("observation")}));
+}
+
+Result<ManagedEnvelopeObservation> sample_managed_envelope(const ManagedBridgeContext& expected,
+                                                           const std::string& project,
+                                                           const std::string& binding,
+                                                           const json& parameter,
+                                                           const std::vector<double>& times,
+                                                           LomTransport& transport) {
+    if (!context_valid(expected) || !key(project) || !key(binding))
+        return std::unexpected(ErrorCode::ProtocolError);
+    const auto request = LomProtocol::call_method(LomPaths::song(),
+                                                  "sunny_managed_sample_envelope",
+                                                  {json{{"document_token", expected.document_token},
+                                                        {"project_key", project},
+                                                        {"binding_key", binding},
+                                                        {"parameter", parameter},
+                                                        {"sample_times", times}}});
+    if (!LomProtocol::validate_request(request)) return std::unexpected(ErrorCode::ProtocolError);
+    const auto response = transport.send(request);
+    if (!response.success || !response.value || !std::holds_alternative<json>(*response.value))
+        return std::unexpected(ErrorCode::ProtocolError);
+    const auto raw = std::get<json>(*response.value);
+    auto wrapper = raw;
+    if (wrapper.is_object()) wrapper.erase("envelope");
+    const auto observed = parse_observation(expected, project, binding, wrapper);
+    if (!observed) return std::unexpected(ErrorCode::ProtocolError);
+    if (observed->outcome != ManagedObservationOutcome::Observed) {
+        if (raw != wrapper) return std::unexpected(ErrorCode::ProtocolError);
+        return ManagedEnvelopeObservation{*observed, raw};
+    }
+    if (!raw.contains("envelope") || !wrapper.at("observation").contains("note_identity"))
+        return std::unexpected(ErrorCode::ProtocolError);
+    const auto& envelope = raw.at("envelope");
+    if (!fields(envelope, {"has_envelope", "parameter", "samples"}) ||
+        !envelope.at("has_envelope").is_boolean() || !envelope.at("samples").is_array())
+        return std::unexpected(ErrorCode::ProtocolError);
+    const auto& domain = envelope.at("parameter");
+    if (!fields(domain,
+                {"matched_name",
+                 "original_name",
+                 "minimum",
+                 "maximum",
+                 "unit",
+                 "state",
+                 "automation_state"}) ||
+        !domain.at("matched_name").is_string() || !domain.at("original_name").is_string() ||
+        !finite(domain.at("minimum")) || !finite(domain.at("maximum")) ||
+        domain.at("minimum").get<double>() >= domain.at("maximum").get<double>() ||
+        domain.at("unit") != "internal" || !integer(domain.at("state"), 0, 0) ||
+        !integer(domain.at("automation_state"), 0, 2))
+        return std::unexpected(ErrorCode::ProtocolError);
+    const auto& manifest = wrapper.at("observation").at("manifest");
+    if (envelope.at("has_envelope") == true && manifest.at("clip").at("has_envelopes") != true)
+        return std::unexpected(ErrorCode::ProtocolError);
+    const auto& mixer = manifest.at("mixer");
+    const auto kind = parameter.at("kind").get<std::string>();
+    const json* actual = nullptr;
+    if (kind == "send") {
+        const auto index = parameter.at("send_index").get<std::size_t>();
+        if (index >= mixer.at("sends").size()) return std::unexpected(ErrorCode::ProtocolError);
+        actual = &mixer.at("sends")[index];
+    } else
+        actual = &mixer.at(kind);
+    if (domain.at("matched_name") != actual->at("name") ||
+        domain.at("original_name") != actual->at("original_name") ||
+        domain.at("minimum").get<double>() != actual->at("min").get<double>() ||
+        domain.at("maximum").get<double>() != actual->at("max").get<double>() ||
+        domain.at("state") != actual->at("state") ||
+        domain.at("automation_state") != actual->at("automation_state") ||
+        actual->at("is_quantized") != false || actual->at("is_enabled") != true)
+        return std::unexpected(ErrorCode::ProtocolError);
+    const auto& samples = envelope.at("samples");
+    if (samples.size() != (envelope.at("has_envelope").get<bool>() ? times.size() : 0U))
+        return std::unexpected(ErrorCode::ProtocolError);
+    const double end = manifest.at("clip").at("end_marker").get<double>();
+    for (std::size_t i = 0; i < samples.size(); ++i) {
+        const auto& sample = samples[i];
+        if (!fields(sample, {"time", "value"}) || !finite(sample.at("time")) ||
+            sample.at("time").get<double>() != times[i] || times[i] >= end ||
+            !finite(sample.at("value")) ||
+            sample.at("value").get<double>() < domain.at("minimum").get<double>() ||
+            sample.at("value").get<double>() > domain.at("maximum").get<double>())
+            return std::unexpected(ErrorCode::ProtocolError);
+    }
+    // Marker admission also applies when no lane exists and no values returned.
+    if (std::ranges::any_of(times, [end](double time) { return time >= end; }))
+        return std::unexpected(ErrorCode::ProtocolError);
+    return ManagedEnvelopeObservation{*observed, raw};
+}
+
+Result<LomRequest> make_managed_note_update_request(const ManagedBridgeContext& context,
+                                                    const std::string& operation_id,
+                                                    const ManagedBindingReceipt& binding,
+                                                    const json& changes) {
+    if (!context_valid(context) || !managed_binding_from_json(managed_binding_to_json(binding)) ||
+        context.document_token != binding.context.document_token ||
+        context.bridge_instance != binding.context.bridge_instance ||
+        !binding.observation.contains("note_identity") ||
+        !note_update_boundary(binding.observation.at("manifest")) ||
+        !managed_detail::proposed_notes(
+            binding.observation.at("note_identity"),
+            changes,
+            binding.observation.at("manifest").at("clip").at("end_marker").get<double>()))
+        return std::unexpected(ErrorCode::ProtocolError);
+    auto request = LomProtocol::call_method(
+        LomPaths::song(),
+        "sunny_managed_update_notes",
+        {json{{"document_token", context.document_token},
+              {"operation_id", operation_id},
+              {"project_key", binding.project_key},
+              {"binding_key", binding.binding_key},
+              {"expected_content_fingerprint", binding.observation.at("content_fingerprint")},
+              {"changes", changes}}});
     if (!LomProtocol::validate_request(request)) return std::unexpected(ErrorCode::ProtocolError);
     return request;
 }

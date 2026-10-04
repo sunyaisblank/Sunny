@@ -115,6 +115,25 @@ struct WorkspaceNamespaceHistory {
     std::map<std::uint64_t, std::uint64_t> project_revision_floors;
 };
 
+class RealizationStore;
+
+[[nodiscard]] std::string new_workspace_namespace();
+
+struct NativeWorkspaceMetadata {
+    std::string workspace_namespace;
+    std::optional<std::string> history_base_directory;
+};
+
+/** Operational history is outside authored undo and workspace backup snapshots. */
+struct NativeRealizationSession {
+    NativeWorkspaceMetadata metadata{new_workspace_namespace(), std::nullopt};
+    bool namespace_is_new = true;
+    bool namespace_saved_durably = false;
+    std::optional<std::string> workspace_path;
+    std::shared_ptr<RealizationStore> store;
+    std::optional<std::string> history_error;
+};
+
 struct McpSession {
     std::shared_ptr<ScoreSession> score = std::make_shared<ScoreSession>();
     std::shared_ptr<TimbreSession> timbre = std::make_shared<TimbreSession>();
@@ -125,6 +144,8 @@ struct McpSession {
         std::make_shared<WorkspaceNamespaceHistory>();
     std::shared_ptr<ProjectDeploymentSession> deployment =
         std::make_shared<ProjectDeploymentSession>();
+    std::shared_ptr<NativeRealizationSession> realization =
+        std::make_shared<NativeRealizationSession>();
 };
 
 } // namespace sunny::infrastructure

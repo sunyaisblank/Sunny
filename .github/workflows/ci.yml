@@ -164,9 +164,17 @@ jobs:
           PYTHONPATH=remote_script:python \
           python -m pytest tests/python/test_live_end_to_end.py -v --tb=short
 
+      - name: Managed native authoring and recovery through the container
+        run: |
+          SUNNY_TEST_BRIDGE_BIND_HOST=0.0.0.0 \
+          SUNNY_TEST_BRIDGE_HOST=host.docker.internal \
+          SUNNY_NATIVE_MCP_COMMAND="docker run -i --rm --user $(id -u):$(id -g) --add-host host.docker.internal:host-gateway --mount type=bind,source={workspace_dir},target=/data -e SUNNY_WORKSPACE_PATH -e SUNNY_ABLETON_HOST -e SUNNY_TCP_PORT sunny-mcp:ci" \
+          PYTHONPATH=remote_script:python \
+          python -m pytest tests/python/test_mcp_realization_workflow.py tests/python/test_mcp_realization_mismatch.py tests/python/test_mcp_mix_realization_workflow.py -v --tb=short
+
       - name: Authoring and recovery across container restarts
         run: |
-          SUNNY_WORKSPACE_MCP_COMMAND='docker run -i --rm --network none --mount type=bind,source={workspace_dir},target=/data -e SUNNY_WORKSPACE_PATH -e SUNNY_WORKSPACE_RECOVERY sunny-mcp:ci' \
+          SUNNY_WORKSPACE_MCP_COMMAND="docker run -i --rm --user $(id -u):$(id -g) --network none --mount type=bind,source={workspace_dir},target=/data -e SUNNY_WORKSPACE_PATH -e SUNNY_WORKSPACE_RECOVERY sunny-mcp:ci" \
           PYTHONPATH=remote_script:python \
           python -m pytest tests/python/test_mcp_workspace_workflow.py -v --tb=short
 

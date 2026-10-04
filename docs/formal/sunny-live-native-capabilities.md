@@ -12,9 +12,11 @@ the product target does not promote a public Max API reference to a private Pyth
 
 The registry records the public LOM reference version **12.4.5** and the Live12 Python
 source mirror commit **e83d5192f321b24eb9daab843ac49a2d95d862b1**. Its candidate scope
-is Live12.0.0 through12.4.5. These endpoints describe the registry's bounded review
-scope, not a verified Python ABI range, insertion floor, licensing matrix or host
-support statement. Earlier and later versions return `UnknownRegistryCoverage`.
+is Live 12.3.x and 12.4.x. Every patch in these reviewed minor versions is a source
+candidate guarded by exact runtime class, parameter population, modes and display
+evidence; 12.4.5 identifies the public documentation, rather than a patch ceiling.
+This is not a verified Python ABI range, licensing matrix or host support statement.
+Other minor versions, including 12.5+, return `UnknownRegistryCoverage`.
 Existing Live11 compiler paths are unaffected. The registry never promotes a target
 profile or reports a host as qualified.
 
@@ -99,15 +101,23 @@ validation. This includes dB, Hz, Q, percent and compositional stereo balance.
 The registry does not normalize internal domains to0..1 or silently apply GUI
 scales, interpolate physical mappings, clamp values or supply missing modes.
 
-The separate Python `native_units.resolve_native_display_value` helper can query
-an actual registered continuous parameter through `str_for_value`. Its bounded
+The read-only `sunny_resolve_native_display_value` Device operation accepts only
+`{capability_id,target,tolerance}` and selects one of the 28 continuous entries.
+Callers cannot supply names, descriptors or modes to bypass the registered policy.
+The handler observes the actual application version before and after resolution.
+The Python `native_units.resolve_registered_native_display_value` helper queries
+the actual registered continuous parameter through `str_for_value`. Its bounded
 64-call search retains every observed display, original/public parameter population,
 domain and required mode. It rejects unparseable/localized displays, reversals,
 drift, unreachable targets and exhausted budgets. It returns a candidate internal
 knob value and its observed display error under an explicit caller tolerance;
 display rounding does not establish an exact underlying physical value or filter
-response. This helper performs no writes and is not yet connected to product
-admission. A later authorized write must format the independently read actual
+response. EQ Eight Scale and Adaptive Q are retained unchanged in the evidence;
+the result always declares native-knob-only semantics. A decline preserves its
+reason and formatter-call count; malformed evidence fails closed. Recording-only
+transports report unavailable observations and do not send a query. This operation
+performs no writes and establishes neither ownership nor full effect admission.
+A later authorized write must format the independently read actual
 parameter value, rather than formatting its requested candidate again.
 
 ## 4. Candidate limits and later integration
