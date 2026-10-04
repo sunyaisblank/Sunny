@@ -273,8 +273,12 @@ json compact_capacity_failure(const json& original, const json& summaries, const
                 {"scope", "selected_owning_project_native_contract"},
                 {"complete_project_realization", false},
                 {"host_qualified", false}};
-    for (const auto* key : {"attempt_id", "dispatch_ordinal", "dispatch_fenced", "history_saved",
-                            "history_may_have_committed", "actual_receipt_outcome"})
+    for (const auto* key : {"attempt_id",
+                            "dispatch_ordinal",
+                            "dispatch_fenced",
+                            "history_saved",
+                            "history_may_have_committed",
+                            "actual_receipt_outcome"})
         if (original.contains(key)) output[key] = original.at(key);
     if (original.contains("state")) {
         const auto state = managed_detail::json_wire_bound(original.at("state"));

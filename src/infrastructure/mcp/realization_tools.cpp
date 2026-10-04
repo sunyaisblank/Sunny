@@ -1999,8 +1999,9 @@ json prepare_project_realization(const McpSession& session,
                     "Selected native pan envelope cannot be observed before project admission");
             const auto sampled_binding = managed_observed_binding(sampled->binding);
             if (!sampled_binding || native_observation_fields(sampled_binding->observation) !=
-                                    native_observation_fields(binding.observation))
-                throw std::runtime_error("Current pan inspection differs from the retained Part cohort");
+                                        native_observation_fields(binding.observation))
+                throw std::runtime_error(
+                    "Current pan inspection differs from the retained Part cohort");
             part["current_pan_envelope"] = sampled->evidence.at("envelope");
             const bool present = sampled->evidence.at("envelope").at("has_envelope").get<bool>();
             if (static_pan && present)
@@ -3024,7 +3025,9 @@ void register_project_realization_tools(McpServer& server,
                 auto context = managed_bridge_context(*transport);
                 if (!context) return decline("Current native context is unavailable");
                 if (cohort.size() == plan.entries.size() + 1 &&
-                    std::ranges::none_of(plan.entries, [](const auto& entry) { return !entry.final_modes.empty(); })) {
+                    std::ranges::none_of(plan.entries, [](const auto& entry) {
+                        return !entry.final_modes.empty();
+                    })) {
                     auto selected = observed_device_selections(binding);
                     for (const auto& entry : plan.entries)
                         selected.at(entry.desired_chain_index) = effect_inspection_selection(entry);
