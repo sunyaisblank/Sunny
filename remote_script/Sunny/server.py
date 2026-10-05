@@ -4,7 +4,9 @@ TCP server using length-prefixed JSON framing.
 Wire protocol:
     [4 bytes big-endian uint32: payload length] [UTF-8 JSON payload]
 
-The server accepts one client at a time (the Sunny C++ orchestrator).
+The server admits one active client (the Sunny C++ orchestrator).
+Additional clients receive a versioned busy frame and are closed without
+dispatching or queueing a request. Closing the active client releases admission.
 Each request is dispatched to the handler callback and the response
 is sent back with the same framing. The connection persists between
 requests for as long as the client keeps it open; only a frame left
@@ -19,6 +21,7 @@ import math
 import socket
 import struct
 import threading
+import time
 from collections.abc import Callable
 
 from .handler import BRIDGE_PROTOCOL_VERSION
@@ -33,6 +36,8 @@ MAX_PAYLOAD = 16 * 1024 * 1024
 # progress. Waiting between frames is the normal state of the persistent link
 # (the user may pause for any length of time) and has no deadline.
 PARTIAL_FRAME_TIMEOUT_SECONDS = 30.0
+BUSY_RESPONSE_TIMEOUT_SECONDS = 0.25
+BUSY_ERROR = "bridge_busy: Sunny accepts one active client; close the existing client and retry"
 # An idle receive wakes at this interval to re-check shutdown. Shutting the
 # socket down from another thread wakes it at once where the platform allows;
 # the interval bounds the wait where it does not.
@@ -85,6 +90,7 @@ class TcpServer:
         self._handler = handler
         self._server_socket: socket.socket | None = None
         self._client_socket: socket.socket | None = None
+        self._client_thread: threading.Thread | None = None
         self._request_in_progress = False
         self._started = False
         self._lock = threading.Lock()
@@ -133,25 +139,67 @@ class TcpServer:
                     except OSError:
                         break
 
-                    logger.info("Client connected from %s", addr)
-                    with client:
-                        with self._lock:
-                            if self._stop_requested.is_set():
-                                break
+                    with self._lock:
+                        stopped = self._stop_requested.is_set()
+                        busy = self._client_socket is not None
+                        if not stopped and not busy:
                             self._client_socket = client
-                        try:
-                            self._handle_client(client)
-                        except Exception:
-                            if not self._stop_requested.is_set():
-                                logger.exception("Client request failed")
-                        finally:
-                            with self._lock:
-                                self._client_socket = None
-                    logger.info("Client disconnected")
+                            worker = threading.Thread(
+                                target=self._serve_client,
+                                args=(client, addr),
+                                name="Sunny TCP active client",
+                                daemon=True,
+                            )
+                            self._client_thread = worker
+                    if stopped:
+                        client.close()
+                        break
+                    if busy:
+                        with client:
+                            try:
+                                client.settimeout(BUSY_RESPONSE_TIMEOUT_SECONDS)
+                                payload = json.dumps(
+                                    _versioned_response({"success": False, "error": BUSY_ERROR})
+                                ).encode("utf-8")
+                                client.sendall(struct.pack(">I", len(payload)) + payload)
+                            except OSError:
+                                pass
+                        continue
+                    try:
+                        worker.start()
+                    except RuntimeError:
+                        client.close()
+                        with self._lock:
+                            self._client_socket = None
+                            self._client_thread = None
+                        logger.exception("Could not start the native client worker")
         finally:
             self._ready.clear()
             with self._lock:
+                self._stop_requested.set()
                 self._server_socket = None
+                if self._client_socket and not self._request_in_progress:
+                    self._close_socket(self._client_socket)
+                worker = self._client_thread
+            # An already accepted request retains its definite response across
+            # shutdown. Idle/partial receives are interrupted by shutdown().
+            if worker is not None:
+                worker.join()
+
+    def _serve_client(self, client: socket.socket, addr: tuple) -> None:
+        """Own the only request worker while the listener rejects other clients."""
+        logger.info("Client connected from %s", addr)
+        try:
+            with client:
+                self._handle_client(client)
+        except Exception:
+            if not self._stop_requested.is_set():
+                logger.exception("Client request failed")
+        finally:
+            with self._lock:
+                if self._client_socket is client:
+                    self._client_socket = None
+            logger.info("Client disconnected")
 
     def shutdown(self) -> None:
         """Stop receiving work, allowing an accepted request to finish its response."""
@@ -250,7 +298,11 @@ class TcpServer:
         while not self._stop_requested.is_set():
             try:
                 first = client.recv(1)
-            except socket.timeout:
+            except socket.timeout as exc:
+                # A per-receive wake has no errno; kernel keepalive's
+                # ETIMEDOUT means the owned peer is dead and releases admission.
+                if exc.errno is not None:
+                    return None
                 continue
             except ConnectionResetError:
                 return None
@@ -262,10 +314,10 @@ class TcpServer:
         first = self._await_frame_start(client)
         if first is None:
             return None
-        # From the first byte until the response has been written, every
-        # socket operation must make progress within the partial-frame timeout.
-        client.settimeout(self._partial_frame_timeout)
-        rest = self._recv_exact(client, HEADER_SIZE - 1)
+        # One partial-frame deadline spans header and payload, so a byte trickle
+        # cannot retain admission by refreshing per-recv timeout values.
+        deadline = time.monotonic() + self._partial_frame_timeout
+        rest = self._recv_exact(client, HEADER_SIZE - 1, deadline)
         if rest is None:
             return None
         header = first + rest
@@ -274,7 +326,7 @@ class TcpServer:
         if length > MAX_PAYLOAD:
             raise ValueError(f"Payload too large: {length}")
 
-        payload = self._recv_exact(client, length)
+        payload = self._recv_exact(client, length, deadline)
         if payload is None:
             return None
 
@@ -286,13 +338,20 @@ class TcpServer:
         if len(payload) > MAX_PAYLOAD:
             raise ValueError(f"Response payload too large: {len(payload)}")
         header = struct.pack(">I", len(payload))
+        # The scheduler/Live call has its own lifecycle. Bound only the socket
+        # response write here, independently of time spent executing that call.
+        client.settimeout(self._partial_frame_timeout)
         client.sendall(header + payload)
 
     @staticmethod
-    def _recv_exact(sock: socket.socket, n: int) -> bytes | None:
+    def _recv_exact(sock: socket.socket, n: int, deadline: float) -> bytes | None:
         """Read exactly n bytes. Returns None on disconnect."""
         buf = bytearray()
         while len(buf) < n:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return None
+            sock.settimeout(remaining)
             try:
                 chunk = sock.recv(n - len(buf))
             except (socket.timeout, ConnectionResetError):

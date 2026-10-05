@@ -205,8 +205,10 @@ enum class ConnectionState : std::uint8_t { Disconnected, Connecting, Connected,
 enum class ConnectFailure : std::uint8_t {
     InvalidConfiguration, ///< a configured timeout cannot bound the exchange
     HostUnresolved,       ///< the host name has no stream address
+    ResolverUnavailable,  ///< the owned hostname resolver could not run or returned invalid data
+    Busy,                 ///< the bridge explicitly declined a second active client
     Refused,              ///< every resolved address refused the connection or was unreachable
-    TimedOut,             ///< no resolved address accepted within the connect timeout
+    TimedOut,             ///< resolution or connection exceeded the shared connect timeout
     SocketError,          ///< a local socket could not be created or configured
 };
 
@@ -241,8 +243,11 @@ struct TcpConfig {
     std::uint16_t port = 9001;
     /// Bound on one exchange, from sending the request to its complete response.
     std::chrono::milliseconds response_timeout = SUNNY_BRIDGE_RESPONSE_TIMEOUT;
-    /// Bound on one connect, across every address the host resolves to.
+    /// Bound on resolution and connect combined, across every resolved address.
     std::chrono::milliseconds connect_timeout{10000};
+    /// POSIX hostname resolution uses an owned Python 3 stdlib subprocess.
+    /// Numeric addresses need no helper. No shell or synchronous DNS fallback.
+    std::string resolver_executable = "python3";
 };
 
 /**
@@ -253,6 +258,9 @@ struct TcpConfig {
  *
  * Wire protocol: 4-byte big-endian length prefix + UTF-8 JSON payload.
  * Uses POSIX sockets; compatible with WSL2 connecting to Windows host.
+ * Hostname resolution in the supported POSIX container/WSL client requires
+ * Python 3 with its socket/JSON standard library; numeric literals bypass it.
+ * A native Windows client resolver/socket profile is not implemented here.
  *
  * The connection persists across requests. Before each request the transport
  * checks whether the peer closed the idle connection (a Remote Script reload,
@@ -312,14 +320,14 @@ class TcpTransport final : public LomTransport {
     using Deadline = std::chrono::steady_clock::time_point;
 
     enum class Receipt : std::uint8_t { Complete, DeadlineExpired, ConnectionClosed };
+    enum class IdlePeer : std::uint8_t { Quiet, Closed, UnsolicitedData };
 
     /// Pre: Connected. Post: Connected over a connection the peer has not closed,
     /// or Error. Called only between exchanges, when nothing is in flight.
     bool replace_connection_if_peer_closed();
 
-    /// True when the idle connection is readable: end of stream, an error, or
-    /// bytes nobody requested. Each leaves it unusable for request/response.
-    [[nodiscard]] bool peer_closed_idle_connection() const;
+    /// Distinguish idle EOF (safe reconnect) from a pre-admission busy reply.
+    [[nodiscard]] IdlePeer idle_peer_state() const;
 
     /// Close the socket after a failed exchange so nothing can arrive on it later.
     void abandon_connection();
@@ -330,8 +338,8 @@ class TcpTransport final : public LomTransport {
     /// Read-only, nonrecursive handshake before an ordinary request on each new socket.
     bool verify_bridge_identity();
 
-    /// Send exactly n bytes
-    bool send_all(const void* data, std::size_t n);
+    /// Send exactly n bytes before the same deadline used by receive.
+    Receipt send_all(const void* data, std::size_t n, Deadline deadline);
 
     /// Receive exactly n bytes before the deadline
     Receipt recv_all(void* data, std::size_t n, Deadline deadline);

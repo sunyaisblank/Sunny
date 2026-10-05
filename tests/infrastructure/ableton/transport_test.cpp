@@ -11,9 +11,12 @@
 #include <arpa/inet.h>
 #include <atomic>
 #include <catch2/catch_test_macros.hpp>
+#include <cerrno>
 #include <chrono>
 #include <condition_variable>
+#include <csignal>
 #include <cstdint>
+#include <fstream>
 #include <functional>
 #include <mutex>
 #include <netinet/in.h>
@@ -23,6 +26,8 @@
 #include <string>
 #include <sunny/infrastructure/ableton/transport.hpp>
 #include <sys/socket.h>
+#include <sys/stat.h>
+#include <sys/wait.h>
 #include <thread>
 #include <unistd.h>
 #include <utility>
@@ -33,11 +38,27 @@ using namespace std::chrono_literals;
 
 namespace {
 
-std::optional<std::string> read_frame(int client) {
-    const auto read_exact = [client](char* data, std::size_t size) {
+std::optional<std::string> read_frame(
+    int client,
+    std::optional<std::chrono::steady_clock::time_point> deadline = std::nullopt) {
+    const auto read_exact = [client, deadline](char* data, std::size_t size) {
         std::size_t received = 0;
         while (received < size) {
-            const auto count = ::recv(client, data + received, size - received, 0);
+            if (deadline) {
+                if (std::chrono::steady_clock::now() >= *deadline) return false;
+                pollfd descriptor{client, POLLIN, 0};
+                const auto ready = ::poll(&descriptor, 1, 10);
+                if (ready < 0 && errno == EINTR) continue;
+                if (ready < 0) return false;
+                if (ready == 0) continue;
+            }
+            const auto count = ::recv(client,
+                                      data + received,
+                                      size - received,
+                                      deadline ? MSG_DONTWAIT : 0);
+            if (deadline && count < 0 &&
+                (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK))
+                continue;
             if (count <= 0) return false;
             received += static_cast<std::size_t>(count);
         }
@@ -210,6 +231,49 @@ TcpConfig loopback_config(std::uint16_t port, std::string host = "127.0.0.1") {
 LomRequest tempo_request() {
     return LomProtocol::get_property(LomPaths::song(), "tempo");
 }
+
+/// A real exec'ed resolver fault peer; no substitute for transport process ownership.
+class ResolverPeer {
+  public:
+    explicit ResolverPeer(std::string body) {
+        char pattern[] = "/tmp/sunny-resolver-test-XXXXXX";
+        const auto descriptor = ::mkstemp(pattern);
+        REQUIRE(descriptor >= 0);
+        ::close(descriptor);
+        path_ = pattern;
+        pid_path_ = path_ + ".pid";
+        std::ofstream script(path_);
+        script << "#!/usr/bin/python3\nimport os,time,sys\n"
+               << "with open(" << nlohmann::json(pid_path_).dump()
+               << ",'w') as output: output.write(str(os.getpid()))\n"
+               << body << '\n';
+        script.close();
+        REQUIRE(::chmod(path_.c_str(), 0700) == 0);
+    }
+    ~ResolverPeer() {
+        ::unlink(path_.c_str());
+        ::unlink(pid_path_.c_str());
+    }
+    const std::string& path() const { return path_; }
+    void check_reaped() const {
+        std::ifstream input(pid_path_);
+        int identifier = 0;
+        input >> identifier;
+        REQUIRE(identifier > 0);
+        const auto alive = ::kill(identifier, 0);
+        const auto absent_errno = errno;
+        CHECK(alive == -1);
+        CHECK(absent_errno == ESRCH);
+        int status = 0;
+        const auto waited = ::waitpid(identifier, &status, WNOHANG);
+        const auto reaped_errno = errno;
+        CHECK(waited == -1);
+        CHECK(reaped_errno == ECHILD);
+    }
+
+  private:
+    std::string path_, pid_path_;
+};
 
 } // namespace
 
@@ -526,7 +590,9 @@ TEST_CASE("TcpTransport connects to an IPv6 loopback literal",
           "[bridge][transport][loopback][resolution]") {
     ScriptedPeer peer({answer_each_request_with("1")}, AF_INET6);
     if (!peer.bound()) SKIP("IPv6 loopback is unavailable on this host");
-    TcpTransport transport(loopback_config(peer.port(), "::1"));
+    auto config = loopback_config(peer.port(), "::1");
+    config.resolver_executable = "/missing/sunny-resolver";
+    TcpTransport transport(config);
     REQUIRE(transport.connect());
     CHECK(transport.send(tempo_request()).success);
 }
@@ -687,4 +753,185 @@ TEST_CASE("An uncertain read-only identity handshake never sends the caller muta
     CHECK_FALSE(transport.is_connected());
     CHECK(transport.bridge_identity_error().has_value());
     peer.wait_for_closed_sessions(1);
+}
+
+TEST_CASE("Numeric endpoints need no hostname resolver runtime",
+          "[bridge][transport][loopback][resolution]") {
+    ScriptedPeer peer({answer_each_request_with("1")});
+    auto config = loopback_config(peer.port());
+    config.resolver_executable = "/missing/sunny-resolver";
+    TcpTransport transport(config);
+    REQUIRE(transport.connect());
+    CHECK(transport.send(tempo_request()).success);
+}
+
+TEST_CASE("Docker hostname is passed literally to the isolated owned resolver",
+          "[bridge][transport][loopback][resolution]") {
+    ScriptedPeer peer({answer_each_request_with("1")});
+    ResolverPeer resolver("assert sys.argv[-2]=='host.docker.internal'\n"
+                          "assert '-I' in sys.argv and '-S' in sys.argv\n"
+                          "print('[[2,\"127.0.0.1\",0]]')");
+    auto config = loopback_config(peer.port(), "host.docker.internal");
+    config.resolver_executable = resolver.path();
+    TcpTransport transport(config);
+    REQUIRE(transport.connect());
+    CHECK(transport.send(tempo_request()).success);
+    resolver.check_reaped();
+}
+
+TEST_CASE("Resolver failures are finite and every owned resolver PID is reaped",
+          "[bridge][transport][resolution][deadline]") {
+    SECTION("missing helper differs from unresolved name") {
+        auto config = loopback_config(9001, "localhost");
+        config.resolver_executable = "/missing/sunny-resolver";
+        TcpTransport transport(config);
+        CHECK_FALSE(transport.connect());
+        CHECK(transport.last_connect_failure() == ConnectFailure::ResolverUnavailable);
+    }
+    SECTION("a stalled actual resolver shares the connection budget") {
+        ResolverPeer resolver("time.sleep(30)");
+        auto config = loopback_config(9001, "sunny-resolver-test.invalid");
+        config.resolver_executable = resolver.path();
+        config.connect_timeout = 60ms;
+        TcpTransport transport(config);
+        const auto started = std::chrono::steady_clock::now();
+        CHECK_FALSE(transport.connect());
+        CHECK(std::chrono::steady_clock::now() - started < 250ms);
+        CHECK(transport.last_connect_failure() == ConnectFailure::TimedOut);
+        resolver.check_reaped();
+    }
+    SECTION("nonzero runtime failure cannot become unresolved-name evidence") {
+        ResolverPeer resolver("sys.exit(3)");
+        auto config = loopback_config(9001, "localhost");
+        config.resolver_executable = resolver.path();
+        TcpTransport transport(config);
+        CHECK_FALSE(transport.connect());
+        CHECK(transport.last_connect_failure() == ConnectFailure::ResolverUnavailable);
+        resolver.check_reaped();
+    }
+    SECTION("a resolver's definite DNS rejection remains distinct") {
+        ResolverPeer resolver("sys.exit(2)");
+        auto config = loopback_config(9001, "localhost");
+        config.resolver_executable = resolver.path();
+        TcpTransport transport(config);
+        CHECK_FALSE(transport.connect());
+        CHECK(transport.last_connect_failure() == ConnectFailure::HostUnresolved);
+        resolver.check_reaped();
+    }
+    SECTION("malformed, wrong-family and oversized outputs decline") {
+        for (const auto* body : {"print('not JSON')",
+                                 "print('[[2,\"127.0.0.1\",true]]')",
+                                 "print('[[999,\"127.0.0.1\",0]]')",
+                                 "print('x'*17000)"}) {
+            ResolverPeer resolver(body);
+            auto config = loopback_config(9001, "localhost");
+            config.resolver_executable = resolver.path();
+            TcpTransport transport(config);
+            CHECK_FALSE(transport.connect());
+            CHECK(transport.last_connect_failure() == ConnectFailure::ResolverUnavailable);
+            resolver.check_reaped();
+        }
+    }
+}
+
+TEST_CASE("A stalled large request expires during send and is never replayed",
+          "[bridge][transport][loopback][deadline]") {
+    std::atomic<unsigned> full_requests = 0;
+    ScriptedPeer peer({[&](int client) {
+        int window = 1024;
+        ::setsockopt(client, SOL_SOCKET, SO_RCVBUF, &window, sizeof(window));
+        const auto identity = read_frame(client);
+        if (!identity || !answer_identity_request(client, *identity)) return;
+        std::this_thread::sleep_for(300ms);
+        window = 1024 * 1024;
+        ::setsockopt(client, SOL_SOCKET, SO_RCVBUF, &window, sizeof(window));
+        // A tiny receive window may continue delivering a queued fragment
+        // long after the sender closes. Bound the peer's entire drain rather
+        // than resetting SO_RCVTIMEO every time a few more bytes arrive.
+        if (read_frame(client, std::chrono::steady_clock::now() + 1s)) ++full_requests;
+    }});
+    auto config = loopback_config(peer.port());
+    config.response_timeout = 80ms;
+    TcpTransport transport(config);
+    REQUIRE(transport.connect());
+    const std::vector<LomNoteData> notes(50000, LomNoteData{60, 0.0, 1.0, 100, false});
+    REQUIRE(LomProtocol::validate_notes(LomPaths::clip(0, 0), notes));
+    const auto payload =
+        LomProtocol::serialize_request(LomProtocol::add_new_notes(LomPaths::clip(0, 0), notes));
+    REQUIRE(payload.size() > 4U * 1024U * 1024U);
+    REQUIRE(payload.size() < SUNNY_BRIDGE_MAX_WIRE_PAYLOAD);
+    const auto started = std::chrono::steady_clock::now();
+    const auto response = transport.send_notes(LomPaths::clip(0, 0), notes);
+    CHECK_FALSE(response.success);
+    CHECK(response.delivery == LomDeliveryState::NotSent);
+    REQUIRE(response.error);
+    CHECK(response.error->find("deadline expired before the request frame was complete") !=
+          std::string::npos);
+    CHECK(std::chrono::steady_clock::now() - started < 1s);
+    CHECK_FALSE(transport.is_connected());
+    CHECK_FALSE(transport.send_notes(LomPaths::clip(0, 0), notes).success);
+    peer.wait_for_closed_sessions(1);
+    CHECK(full_requests == 0);
+}
+
+TEST_CASE("Queued literal busy admission is NotSent and never reconnects or replays",
+          "[bridge][transport][loopback][busy]") {
+    std::atomic<unsigned> frames = 0;
+    std::atomic<bool> busy_sent = false;
+    ScriptedPeer peer({[&](int client) {
+        write_bytes(
+            client,
+            frame(
+                R"({"bridge_protocol_version":46,"success":false,"error":"bridge_busy: Sunny accepts one active client; close the existing client and retry"})"));
+        busy_sent = true;
+        if (read_frame(client)) ++frames;
+    }});
+    TcpTransport transport(loopback_config(peer.port()));
+    REQUIRE(transport.connect());
+    const auto ready_deadline = std::chrono::steady_clock::now() + 1s;
+    while (!busy_sent && std::chrono::steady_clock::now() < ready_deadline)
+        std::this_thread::sleep_for(1ms);
+    REQUIRE(busy_sent);
+    std::this_thread::sleep_for(10ms); // Ensure the pre-admission frame is readable on loopback.
+    const auto declined =
+        transport.send(LomProtocol::set_property(LomPaths::song(), "tempo", 140.0));
+    CHECK_FALSE(declined.success);
+    CHECK(declined.delivery == LomDeliveryState::NotSent);
+    CHECK(transport.last_connect_failure() == ConnectFailure::Busy);
+    CHECK_FALSE(transport.is_connected());
+    REQUIRE(declined.error);
+    CHECK(declined.error->find("already has an active client") != std::string::npos);
+    peer.wait_for_closed_sessions(1);
+    CHECK(frames == 0);
+}
+
+TEST_CASE("A literal malformed acknowledgment abandons the socket before any later request",
+          "[bridge][transport][loopback][indeterminate]") {
+    std::atomic<unsigned> ordinary_requests = 0;
+    ScriptedPeer peer(
+        {[&](int client) {
+             const auto identity = read_frame(client);
+             if (!identity || !answer_identity_request(client, *identity)) return;
+             if (!read_frame(client)) return;
+             ++ordinary_requests;
+             write_bytes(client,
+                         frame(R"({"bridge_protocol_version":46,"success":"yes","value":120.0})"));
+             std::this_thread::sleep_for(100ms);
+             write_bytes(client, frame(response_with_value("999.0")));
+             if (read_frame(client)) ++ordinary_requests;
+         },
+         answer_each_request_with("123.0")});
+    TcpTransport transport(loopback_config(peer.port()));
+    REQUIRE(transport.connect());
+    const auto uncertain = transport.send(tempo_request());
+    CHECK_FALSE(uncertain.success);
+    CHECK(uncertain.delivery == LomDeliveryState::SentWithoutValidResponse);
+    CHECK_FALSE(transport.is_connected());
+    CHECK(transport.send(tempo_request()).delivery == LomDeliveryState::NotSent);
+    peer.wait_for_closed_sessions(1);
+    CHECK(ordinary_requests == 1);
+    REQUIRE(transport.ensure_connected());
+    const auto fresh = transport.send(tempo_request());
+    REQUIRE(fresh.success);
+    CHECK(std::get<double>(*fresh.value) == 123.0);
 }

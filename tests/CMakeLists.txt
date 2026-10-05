@@ -171,6 +171,7 @@ target_sources(
         infrastructure/mcp/score_tools_test.cpp
         infrastructure/mcp/score_notation_tools_test.cpp
         infrastructure/mcp/server_test.cpp
+        infrastructure/mcp/request_control_test.cpp
         infrastructure/orchestrator_test.cpp
 )
 sunny_enable_warnings(sunny_infrastructure_tests)

@@ -170,17 +170,17 @@ Point your MCP client at the built server:
   "mcpServers": {
     "sunny": {
       "command": "/path/to/Sunny/.bin/sunny-mcp",
-      "env": { "SUNNY_ABLETON_HOST": "127.0.0.1", "SUNNY_TCP_PORT": "9001" }
+      "env": { "SUNNY_CONFIG_PATH": "/absolute/path/to/configuration.json" }
     }
   }
 }
 ```
 
-Without `SUNNY_ABLETON_HOST` the server runs offline: theory, document and notation tools work,
-and tools that change Live decline with an explicit error. `SUNNY_TCP_PORT` defaults to 9001.
-An explicitly configured port must be ASCII decimal 1–65535 without signs, whitespace or leading
-zeros. Invalid ports and empty host addresses refuse startup instead of selecting another endpoint.
-Under WSL2 with Live on the Windows host, use the Windows host's IP address.
+The selected schema-1 JSON below explicitly chooses offline or TCP operation and a durable
+workspace. Theory, document and notation tools work offline; Live tools decline with a precise
+connection failure. The native executable is a POSIX development option. Windows clients use the
+Docker launcher below. Existing environment settings remain an explicit legacy development
+profile when `SUNNY_CONFIG_PATH` is absent; selecting JSON together with those settings refuses.
 
 Docker is the normal delivery path. It needs Docker installed on the client machine; a native
 Sunny build is optional. MCP still travels over standard input and output, so the client starts
@@ -248,10 +248,9 @@ to the loopback bridge. Its actual machine qualification remains under
 [issue #38](https://github.com/sunyaisblank/Sunny/issues/38).
 Raw TCP across a LAN is unauthenticated and is outside the supported production profile.
 
-For a native `sunny-mcp` on the same computer as Live, `SUNNY_ABLETON_HOST=127.0.0.1` connects to
-the default loopback listener. Inside an ordinary Docker container, `127.0.0.1` refers to that
-container and does not address Live on the host. Running without `SUNNY_ABLETON_HOST` starts an
-offline authoring session. Selecting a durable workspace requires explicit configuration.
+Inside an ordinary Docker container, `127.0.0.1` refers to that container. The supported
+Windows route reaches the owned Windows SSH forward through `host.docker.internal`.
+Selecting a durable workspace requires explicit configuration.
 
 The Windows launcher requires 64-bit PowerShell 5.1+, Windows OpenSSH, a running local
 Linux/amd64 Docker Desktop engine, the verified loaded image and one named workspace volume.
@@ -300,6 +299,21 @@ preserves it if cleanup cannot be confirmed. After the original client has ended
 `SunnyClient.ps1 -Action Recover -SessionDirectory 'REPLACE_WITH_REPORTED_DIRECTORY'`.
 Recovery refuses foreign or changed scope and confirms container absence before removing its
 own temporary files. An owned listening forward alone does not prove native Live readiness.
+
+The Linux runtime includes checksum-pinned Python 3 for an owned, finite DNS helper.
+Numeric endpoints do not need that helper. Resolver unavailability, unknown host and an expired
+connection budget are separate failures. Request send and response receive share one absolute
+deadline, including write backpressure. A partial request is never replayed. A second native
+bridge client receives an immediate busy response while the admitted client retains its session.
+
+The MCP reader remains available while one worker executes tools. Cancellation reaches the
+exact active or queued request by its typed request ID; requests have a 120-second lifetime
+including queue time. Shutdown and observed input EOF revoke native admission, and EOF still
+allows local/read-only response drain. Production POSIX input/output is interruptible; unread
+stdout has a five-second output budget, and pending output is bounded to 64 MiB. A failed output
+ends the session with a nonzero status. Cancellation does not prove that an already-started
+native effect stopped. Completion of native cancellation and the remaining legacy mutation
+gateway is tracked in [issue #41](https://github.com/sunyaisblank/Sunny/issues/41).
 
 The volume retains saved work when a container is replaced. After authoring, call
 `workspace_save` with `path: "/data/workspace.sunny.json"`. The next container restores that
@@ -534,8 +548,8 @@ that probe approval. The optional `SunnyHostProbe` surface on port 9002 creates 
 native setters for selected tests; it is a mutation instrument, not a general health check.
 
 Real execution comes after the integrated release's offline gates and approved machine setup.
-Generic raw bridge mutations currently decline because they lack native document authority;
-ordinary command guards and the running-cue check remain open in
+The final-host qualification runner refuses generic raw bridge mutations while their durable
+authority gateway remains pending. Remaining generic command guards and the running-cue check stay open in
 [issue #41](https://github.com/sunyaisblank/Sunny/issues/41). Complete native authoring, saved-envelope
 reopen/recovery, visual and audible observations, and all original groups remain required in
 [issue #22](https://github.com/sunyaisblank/Sunny/issues/22). RDP installation or a connected TCP socket
