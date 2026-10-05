@@ -840,6 +840,15 @@ workspace/history and typed stage receipts instead of generic raw TCP setters. A
 has its separate explicit running-scratch approval. Review each intended probe and pass its exact
 approval; no script automatically refreshes authority or replays a lost mutation.
 
+For a managed-operation lost-reply check, run the paired `fault_proxy.py` with `--config`,
+`--drop-method` and `--log` (use `--help` for the supported methods). Point the client's production
+JSON bridge route at its loopback listener; keep the qualification configuration's `bridge_host`
+and `bridge_port` at the approved native forward. The proxy checks the original durable dispatch
+fence using a bounded, network-isolated child of the same verified image and a read-only `/data`
+bind. This preserves the image user's private history permissions when the host has a different
+UID. Failed observation withholds the native request. One matched reply is retained in the evidence
+log and withheld from the client; reconcile using the original token before any further write.
+
 The optional real-mutating two-Part smoke test is a developer final-qualification check selected
 only by the external authenticated configuration and explicit scratch approval:
 

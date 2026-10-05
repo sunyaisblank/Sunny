@@ -132,6 +132,40 @@ function New-SunnyRemotePayload([string]$Operation, $Arguments, [string]$Install
     return $lines -join "`n"
 }
 
+function Start-SunnyUtf8PipeProcess([Diagnostics.ProcessStartInfo]$Start) {
+    if ($Start.UseShellExecute -or -not $Start.RedirectStandardInput) {
+        throw 'Sunny pipe process requires redirected standard input without shell execution.'
+    }
+    $encoding = [Text.UTF8Encoding]::new($false, $true)
+    if ($null -ne $Start.GetType().GetProperty('StandardInputEncoding')) {
+        $Start.StandardInputEncoding = $encoding
+        return [Diagnostics.Process]::Start($Start)
+    }
+    # Windows PowerShell 5.1 uses .NET Framework, which constructs and
+    # AutoFlushes the input StreamWriter with Console.InputEncoding during
+    # Process.Start. Its UTF-8 BOM otherwise precedes even raw BaseStream frames.
+    $previous = [Console]::InputEncoding
+    $process = $null
+    try {
+        [Console]::InputEncoding = $encoding
+        $process = [Diagnostics.Process]::Start($Start)
+    } finally {
+        try { [Console]::InputEncoding = $previous }
+        catch {
+            if ($null -ne $process) {
+                try {
+                    if (-not $process.HasExited) {
+                        $process.Kill()
+                        if (-not $process.WaitForExit(1000)) { throw ('Owned pipe process cleanup is unconfirmed for PID ' + $process.Id) }
+                    }
+                } finally { $process.Dispose() }
+            }
+            throw
+        }
+    }
+    return $process
+}
+
 function Invoke-SunnyBoundedProcess([string]$Executable, [string[]]$Arguments, [string]$InputText, [double]$Seconds) {
     $start = [Diagnostics.ProcessStartInfo]::new()
     $start.FileName = $Executable
@@ -140,7 +174,7 @@ function Invoke-SunnyBoundedProcess([string]$Executable, [string[]]$Arguments, [
     $start.RedirectStandardInput = $true; $start.RedirectStandardOutput = $true; $start.RedirectStandardError = $true
     $start.StandardOutputEncoding = [Text.UTF8Encoding]::new($false, $true)
     $start.StandardErrorEncoding = [Text.UTF8Encoding]::new($false)
-    $process = [Diagnostics.Process]::Start($start)
+    $process = Start-SunnyUtf8PipeProcess $start
     $watch = [Diagnostics.Stopwatch]::StartNew()
     $out = [Text.StringBuilder]::new(); $err = [Text.StringBuilder]::new()
     $outBuffer = [char[]]::new(4096); $errBuffer = [char[]]::new(4096)
@@ -154,7 +188,28 @@ function Invoke-SunnyBoundedProcess([string]$Executable, [string[]]$Arguments, [
             if ($watch.Elapsed.TotalSeconds -ge $Seconds) { throw 'Remote command deadline expired; inspect status before repeating a state change.' }
             Start-Sleep -Milliseconds 10
         }
-        $null = $write.GetAwaiter().GetResult()
+        try { $null = $write.GetAwaiter().GetResult() }
+        catch {
+            $inputError = $_.Exception.Message
+            # A failed write may mean that the owned child declined its bootstrap
+            # before reading it. Retain bounded stderr within the original budget;
+            # the operation outcome is unknown and this diagnostic never retries.
+            $diagnosticEnd = [Math]::Min($Seconds, $watch.Elapsed.TotalSeconds + 1)
+            while ($null -ne $errRead -and $err.Length -lt 8192 -and $watch.Elapsed.TotalSeconds -lt $diagnosticEnd) {
+                if (-not $errRead.IsCompleted) { Start-Sleep -Milliseconds 10; continue }
+                try { $count = $errRead.GetAwaiter().GetResult() }
+                catch { break }
+                $null = $err.Append($errBuffer, 0, [Math]::Min($count, 8192 - $err.Length))
+                if ($count -le 0) { break }
+                $errRead = $process.StandardError.ReadAsync($errBuffer, 0, $errBuffer.Length)
+            }
+            $childExit = if ($process.HasExited) { [string]$process.ExitCode } else { 'not_exited' }
+            $writer = $process.StandardInput.Encoding
+            throw ('Remote input pipe failed; outcome unknown, inspect status before repeating. Owned child PID=' + $process.Id +
+                ' exit=' + $childExit + ' input_codepage=' + $writer.CodePage +
+                ' input_preamble=' + [BitConverter]::ToString($writer.GetPreamble()) +
+                '; child stderr=' + $err.ToString() + '; input error=' + $inputError)
+        }
         $process.StandardInput.Close()
         while ($null -ne $outRead -or $null -ne $errRead -or -not $process.HasExited) {
             if ($watch.Elapsed.TotalSeconds -ge $Seconds) { throw 'Remote command deadline expired; inspect status before repeating a state change.' }

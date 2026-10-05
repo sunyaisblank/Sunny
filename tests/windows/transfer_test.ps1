@@ -252,10 +252,20 @@ try {
     # The exact bootstrap + raw STDIO is exercised using an actual child powershell.
     # This proves Windows pipe/framing; it makes no SSH connection or OCI claim.
     $pipe=NewPlan 'actual pipe destination'
-    $result=Invoke-SunnyTransferExchange (Get-Process -Id $PID).Path @('-NoProfile','-NonInteractive','-EncodedCommand',(Get-SunnyTransferStarter)) $source $pipe ([IO.File]::ReadAllText($installerPath)) ([IO.File]::ReadAllText($transferPath)) 30
+    $originalInputEncoding=[Console]::InputEncoding
+    try {
+        [Console]::InputEncoding=[Text.UTF8Encoding]::new($true)
+        $bomInputEncoding=[Console]::InputEncoding
+        $result=Invoke-SunnyTransferExchange (Get-Process -Id $PID).Path @('-NoProfile','-NonInteractive','-EncodedCommand',(Get-SunnyTransferStarter)) $source $pipe ([IO.File]::ReadAllText($installerPath)) ([IO.File]::ReadAllText($transferPath)) 30
+        Check ($bomInputEncoding.Equals([Console]::InputEncoding)) 'Binary transfer changed the caller input Encoding'
+    } finally { [Console]::InputEncoding=$originalInputEncoding }
     Check ($result.status -ceq 'committed') 'Actual binary pipe exchange failed'
     Check ((Get-FileHash -LiteralPath (Join-Path $pipe.destination 'image.tar')).Hash.ToLowerInvariant() -ceq (Get-SunnyTransferHash $binary)) 'Actual pipe altered bytes'
-    $repeat=Invoke-SunnyTransferExchange (Get-Process -Id $PID).Path @('-NoProfile','-NonInteractive','-EncodedCommand',(Get-SunnyTransferStarter)) $source $pipe ([IO.File]::ReadAllText($installerPath)) ([IO.File]::ReadAllText($transferPath)) 30
+    try {
+        [Console]::InputEncoding=[Text.UTF8Encoding]::new($true)
+        $repeat=Invoke-SunnyTransferExchange (Get-Process -Id $PID).Path @('-NoProfile','-NonInteractive','-EncodedCommand',(Get-SunnyTransferStarter)) $source $pipe ([IO.File]::ReadAllText($installerPath)) ([IO.File]::ReadAllText($transferPath)) 30
+    } finally { [Console]::InputEncoding=$originalInputEncoding }
+    Check ($originalInputEncoding.Equals([Console]::InputEncoding)) 'Transfer repeat did not restore the original input Encoding'
     Check (-not $repeat.payload_required -and $repeat.status -ceq 'committed') 'Idempotent pipe sent payload'
     $passed.Add('real_windows_binary_pipe_bootstrap_and_zero_payload_repeat')
 
@@ -297,7 +307,7 @@ function Send-SunnyTransferAck($Value) {
     $start.FileName=(Get-Process -Id $PID).Path
     $start.Arguments=(@(@('-NoProfile','-NonInteractive','-EncodedCommand',(Get-SunnyTransferStarter)) | ForEach-Object { ConvertTo-SunnyWindowsArgument $_ }) -join ' ')
     $start.UseShellExecute=$false;$start.RedirectStandardInput=$true;$start.RedirectStandardOutput=$true;$start.RedirectStandardError=$true
-    $child=[Diagnostics.Process]::Start($start);$childPID=$child.Id
+    $child=Start-SunnyUtf8PipeProcess $start;$childPID=$child.Id
     try {
         $outTask=$child.StandardOutput.ReadToEndAsync();$errTask=$child.StandardError.ReadToEndAsync()
         $bootstrap=@{installer=[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes([IO.File]::ReadAllText($installerPath)));

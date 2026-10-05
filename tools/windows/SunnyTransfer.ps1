@@ -510,7 +510,7 @@ function Invoke-SunnyTransferExchange([string]$Executable,[string[]]$Arguments,[
     $start.RedirectStandardOutput=$true; $start.RedirectStandardError=$true
     $start.StandardOutputEncoding=[Text.UTF8Encoding]::new($false,$true)
     $start.StandardErrorEncoding=[Text.UTF8Encoding]::new($false)
-    $process=[Diagnostics.Process]::Start($start)
+    $process=Start-SunnyUtf8PipeProcess $start
     $watch=[Diagnostics.Stopwatch]::StartNew()
     $io=@{out=[Text.StringBuilder]::new();err=[Text.StringBuilder]::new();pending='';received=0;
         outBuffer=[char[]]::new(4096);errBuffer=[char[]]::new(4096);outTask=$null;errTask=$null}

@@ -75,7 +75,7 @@ class StdioIo final : public McpIo {
         }
         struct sigaction ignore {};
         ignore.sa_handler = SIG_IGN;
-        ::sigemptyset(&ignore.sa_mask);
+        (void)sigemptyset(&ignore.sa_mask);
         if (::sigaction(SIGPIPE, &ignore, &previous_pipe_) < 0) {
             ::fcntl(STDIN_FILENO, F_SETFL, input_flags_);
             ::fcntl(STDOUT_FILENO, F_SETFL, output_flags_);

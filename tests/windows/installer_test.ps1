@@ -361,7 +361,72 @@ try {
     $payload = New-SunnyRemotePayload 'Log' $inputData ([IO.File]::ReadAllText($script)) ([IO.File]::ReadAllText($hostScript))
     Check (-not ($payload -match '[^\x00-\x7f]')) 'Remote source transport is not ASCII-only'
     $starter = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes('[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); Invoke-Expression ([Console]::In.ReadToEnd())'))
-    $exchange = Invoke-SunnyBoundedProcess (Get-Command powershell.exe).Source @('-NoProfile', '-NonInteractive', '-EncodedCommand', $starter) $payload 10
+    $originalInputEncoding = [Console]::InputEncoding
+    try {
+        [Console]::InputEncoding = [Text.UTF8Encoding]::new($true)
+        $bomInputEncoding = [Console]::InputEncoding
+        $exchange = Invoke-SunnyBoundedProcess (Get-Command powershell.exe).Source @('-NoProfile', '-NonInteractive', '-EncodedCommand', $starter) $payload 10
+        Check ($bomInputEncoding.Equals([Console]::InputEncoding)) 'Remote startup changed the caller input Encoding'
+
+        # Use an independent raw-byte peer to observe the actual child pipe,
+        # rather than trusting the writer's encoding metadata alone.
+        $peer = @'
+$s=[Console]::OpenStandardInput();$b=[byte[]]::new(8);$p=0
+while($p-lt8){$t=$s.ReadAsync($b,$p,8-$p);if(-not$t.Wait(5000)){throw 'Prefix deadline'};$n=$t.GetAwaiter().GetResult();if($n-le0){throw 'Prefix ended'};$p+=$n}
+[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)
+[Console]::Out.WriteLine([BitConverter]::ToString($b))
+'@
+        $peerEncoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($peer))
+        foreach ($encoding in @([Text.Encoding]::GetEncoding(437), [Text.UTF8Encoding]::new($true), [Text.UTF8Encoding]::new($false))) {
+            [Console]::InputEncoding = $encoding
+            $expectedInputEncoding = [Console]::InputEncoding
+            $pipeStart = [Diagnostics.ProcessStartInfo]::new()
+            $pipeStart.FileName = (Get-Command powershell.exe).Source
+            $pipeStart.Arguments = '-NoProfile -NonInteractive -EncodedCommand ' + $peerEncoded
+            $pipeStart.UseShellExecute = $false
+            $pipeStart.RedirectStandardInput = $true; $pipeStart.RedirectStandardOutput = $true; $pipeStart.RedirectStandardError = $true
+            $pipeStart.StandardOutputEncoding = [Text.UTF8Encoding]::new($false)
+            $pipeChild = Start-SunnyUtf8PipeProcess $pipeStart
+            try {
+                Check ($expectedInputEncoding.Equals([Console]::InputEncoding)) 'Successful spawn changed the caller input Encoding'
+                Check ($pipeChild.StandardInput.Encoding.CodePage -eq 65001 -and $pipeChild.StandardInput.Encoding.GetPreamble().Length -eq 0) 'Producer writer can prepend a BOM'
+                $prefix = [byte[]]@(0x7a, 0x68, 1, 0, 0x7b, 0x22, 0x61, 0x22)
+                $write = $pipeChild.StandardInput.BaseStream.WriteAsync($prefix, 0, $prefix.Length)
+                Check ($write.Wait(5000)) 'Independent prefix write exceeded its deadline'
+                $null = $write.GetAwaiter().GetResult(); $pipeChild.StandardInput.Close()
+                Check ($pipeChild.WaitForExit(7000)) 'Independent prefix peer did not exit'
+                Check ($pipeChild.ExitCode -eq 0 -and $pipeChild.StandardOutput.ReadToEnd().Trim() -ceq '7A-68-01-00-7B-22-61-22') 'Producer altered the actual first frame bytes'
+            } finally {
+                if (-not $pipeChild.HasExited) { $pipeChild.Kill(); $null = $pipeChild.WaitForExit(1000) }
+                $pipeChild.Dispose()
+            }
+        }
+        [Console]::InputEncoding = [Text.UTF8Encoding]::new($true)
+        $failedStartEncoding = [Console]::InputEncoding
+        $missingStart = [Diagnostics.ProcessStartInfo]::new()
+        $missingStart.FileName = Join-Path $root 'no-such-owned-pipe-peer.exe'
+        $missingStart.UseShellExecute = $false; $missingStart.RedirectStandardInput = $true
+        $failedStart = $false
+        try { $null = Start-SunnyUtf8PipeProcess $missingStart } catch { $failedStart = $true }
+        Check ($failedStart -and $failedStartEncoding.Equals([Console]::InputEncoding)) 'Failed startup did not restore the caller input Encoding'
+
+        # Force an actual strict UTF-8 input write failure at the shared GetResult
+        # boundary; local Framework pipes may silently accept writes after exit.
+        # The literal peer independently emits its bootstrap refusal on stderr.
+        $declineCode = '[Console]::Error.WriteLine("SUNNY_PIPE_BOOTSTRAP_DECLINED"); exit 19'
+        $declineEncoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($declineCode))
+        $invalidInput = ('x' * 1048576) + [char]0xd800 + 'x'
+        $declined = $false
+        try {
+            $null = Invoke-SunnyBoundedProcess (Get-Command powershell.exe).Source @('-NoProfile', '-NonInteractive', '-EncodedCommand', $declineEncoded) $invalidInput 5
+        } catch {
+            $declined = $true
+            Check ($_.Exception.Message -match '(?s)outcome unknown.*Owned child PID=.*exit=19.*input_codepage=65001.*SUNNY_PIPE_BOOTSTRAP_DECLINED') 'Failed input concealed the owned child bootstrap refusal'
+            Check ($_.Exception.Message.Length -lt 10000) 'Failed input diagnostic is unbounded'
+        }
+        Check $declined 'Declining child unexpectedly accepted input'
+    } finally { [Console]::InputEncoding = $originalInputEncoding }
+    Check ($originalInputEncoding.Equals([Console]::InputEncoding)) 'Pipe witnesses did not restore the original input Encoding'
     Check ($exchange.exit_code -eq 0) ('Local literal remote payload failed: ' + $exchange.stderr)
     $reply = $exchange.stdout | ConvertFrom-Json
     Check ($reply.request_id -ceq $request -and $reply.log.messages[0] -ceq 'Sunny error literal Ω') 'Remote data quoting, Unicode, or correlation failed'
