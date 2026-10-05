@@ -64,7 +64,7 @@
       "g++",
       "git",
       "ninja-build",
-      "python3-minimal"
+      "python3"
     ],
     "runtime_packages": [
       "libstdc++6"
@@ -105,19 +105,19 @@
         "filename": "pool/main/g/gcc-14/libstdc++6_14.2.0-4ubuntu2~24.04.1_amd64.deb",
         "sha256": "a51f8de7829211db961a31f02158058ad1a95f92ac6d0a5dff6350e2821c54c0"
       },
-      "python3-minimal": {
-        "version": "3.12.3-0ubuntu2.1",
-        "suite": "noble-updates",
-        "component": "main",
-        "filename": "pool/main/p/python3-defaults/python3-minimal_3.12.3-0ubuntu2.1_amd64.deb",
-        "sha256": "9ba5dd55cdcf6121c147dc5cb87403169b5933e3a56da0de57774f2ce819cf06"
-      },
       "ninja-build": {
         "version": "1.11.1-2",
         "suite": "noble",
         "component": "universe",
         "filename": "pool/universe/n/ninja-build/ninja-build_1.11.1-2_amd64.deb",
         "sha256": "6a17f76a0f75586f1292f6c61a9b07fd0dec963baf6a102b17673f601c6b323a"
+      },
+      "python3": {
+        "version": "3.12.3-0ubuntu2.1",
+        "suite": "noble-updates",
+        "component": "main",
+        "filename": "pool/main/p/python3-defaults/python3_3.12.3-0ubuntu2.1_amd64.deb",
+        "sha256": "e691b9cc40841c41bbdc50bd794c876cb1b1801306ea27b06e9a1458180df1e9"
       }
     },
     "resolution": "Pinned base plus the signed immutable snapshot fixes transitive apt inputs; release provenance records complete installed inventories."

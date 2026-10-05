@@ -594,7 +594,7 @@ def test_locked_docker_defaults_match_machine_inputs(release_tool):
     reason="Opt in to the isolated local Docker prerequisite and public locked snapshot downloads",
 )
 def test_actual_locked_apt_recipe_before_compiling_sunny(release_tool, tmp_path):
-    """Run the actual first Docker stage only through apt, with exact package/hash readback."""
+    """Run actual apt roots and production release CLI imports before compiling Sunny."""
     executable = shutil.which("docker")
     assert executable is not None, "The authorized local Docker prerequisite needs Docker"
     environment_host = os.environ.get("DOCKER_HOST")
@@ -609,7 +609,10 @@ def test_actual_locked_apt_recipe_before_compiling_sunny(release_tool, tmp_path)
     # Use the actual production recipe through its first install, never compile
     # Sunny or copy in a test replacement of the bootstrap implementation.
     prefix = (PROJECT / "Dockerfile").read_text().split("\nWORKDIR /build", 1)[0]
-    (isolated / "Dockerfile").write_text(prefix + "\n")
+    (isolated / "Dockerfile").write_text(
+        prefix + "\nCOPY tools/release.py /release.py\nRUN python3 /release.py --help\n"
+    )
+    shutil.copyfile(PROJECT / "tools/release.py", isolated / "tools/release.py")
     shutil.copyfile(PROJECT / "tools/apt_snapshot.sh", isolated / "tools/apt_snapshot.sh")
     tag = "sunny-apt-prerequisite:" + uuid.uuid4().hex
     container = None

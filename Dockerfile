@@ -6,7 +6,7 @@ FROM ubuntu:24.04@sha256:f610ab94648195aa356059f5b41d6085c9d4d903c072430cdd1af7b
 ARG SUNNY_APT_SNAPSHOT=20261001T000000Z
 ARG SUNNY_CA_CERTIFICATES_URL=https://snapshot.ubuntu.com/ubuntu/20261001T000000Z/pool/main/c/ca-certificates/ca-certificates_20260601~24.04.1_all.deb
 ARG SUNNY_CA_CERTIFICATES_SHA256=6bac2a01979e210d9eac1d4d56747ec709ea60654744d66705dc3c36e7629e50
-ARG SUNNY_BUILD_PACKAGES="ca-certificates=20260601~24.04.1 cmake=3.28.3-1build7 g++=4:13.2.0-7ubuntu1 git=1:2.43.0-1ubuntu7.3 ninja-build=1.11.1-2 python3-minimal=3.12.3-0ubuntu2.1"
+ARG SUNNY_BUILD_PACKAGES="ca-certificates=20260601~24.04.1 cmake=3.28.3-1build7 g++=4:13.2.0-7ubuntu1 git=1:2.43.0-1ubuntu7.3 ninja-build=1.11.1-2 python3=3.12.3-0ubuntu2.1"
 ARG SUNNY_SOURCE_REVISION=unrecorded-development-build
 ARG SOURCE_DATE_EPOCH=0
 
