@@ -13,6 +13,7 @@
 #include <sunny/core/mix/serialization.hpp>
 #include <sunny/core/score/serialization.hpp>
 #include <sunny/core/timbre/serialization.hpp>
+#include <sunny/infrastructure/ableton/detail/managed_fingerprint.hpp>
 #include <sunny/infrastructure/formats/ableton_project.hpp>
 #include <tuple>
 
@@ -2006,6 +2007,8 @@ plan_project_to_ableton(const ProjectView& project,
     auto diagnostics = validate_project(project);
     if (has_error(diagnostics)) return std::unexpected(ErrorCode::ProjectValidationFailed);
 
+    auto authority = transport.capture_legacy_authority();
+    if (!authority) return std::unexpected(authority.error());
     auto target = inspect_target(transport);
     if (!target) return std::unexpected(target.error());
 
@@ -2019,6 +2022,7 @@ plan_project_to_ableton(const ProjectView& project,
     if (!part_tracks) return std::unexpected(part_tracks.error());
     AbletonProjectDeploymentPlan plan;
     plan.ppq = ppq;
+    plan.planning_authority = *authority;
     auto project_state = canonical_project_state(project);
     if (!project_state) return std::unexpected(project_state.error());
     plan.project_state = std::move(*project_state);
@@ -2085,6 +2089,40 @@ AbletonProjectDeploymentAttempt apply_project_ableton_plan(AbletonProjectDeploym
         return attempt;
     }
 
+    LegacyWorkflowRecipe recipe;
+    if (plan.planning_authority) {
+        recipe.kind = "project_deployment";
+        recipe.authority = *plan.planning_authority;
+        auto digest = managed_detail::managed_digest(
+            nlohmann::json{{"project", plan.project_state},
+                           {"ppq", plan.ppq},
+                           {"routing", plan.output_routing_binding_state}});
+        if (!digest) {
+            attempt.error = ErrorCode::ProtocolError;
+            return attempt;
+        }
+        recipe.intent_fingerprint = *digest;
+        for (const auto& mutation : plan.mutations)
+            recipe.commands.push_back({{"command", legacy_command(mutation.request)},
+                                       {"phase", static_cast<int>(mutation.phase)}});
+    } else if (!transport.records_without_execution()) {
+        attempt.error = ErrorCode::ProtocolError;
+        return attempt;
+    }
+    auto activation = transport.activate_legacy_workflow(recipe);
+    if (!activation) {
+        static_cast<void>(transport.finish_legacy_workflow(false));
+        attempt.error = activation.error();
+        return attempt;
+    }
+    struct FinishGuard {
+        LomTransport& transport;
+        bool active = true;
+        ~FinishGuard() {
+            if (active) static_cast<void>(transport.finish_legacy_workflow(false));
+        }
+    } finish{transport};
+
     auto current = inspect_target(transport);
     if (!current) {
         attempt.status = AbletonProjectDeploymentStatus::ApplyFailed;
@@ -2146,6 +2184,13 @@ AbletonProjectDeploymentAttempt apply_project_ableton_plan(AbletonProjectDeploym
     } else if (attempt.status == AbletonProjectDeploymentStatus::Completed) {
         attempt.status = AbletonProjectDeploymentStatus::PostSnapshotUnavailable;
         attempt.error = after.error();
+    }
+    finish.active = false;
+    auto finalized = transport.finish_legacy_workflow(attempt.status ==
+                                                      AbletonProjectDeploymentStatus::Completed);
+    if (!finalized && attempt.status == AbletonProjectDeploymentStatus::Completed) {
+        attempt.status = AbletonProjectDeploymentStatus::ApplyFailed;
+        attempt.error = finalized.error();
     }
     return attempt;
 }

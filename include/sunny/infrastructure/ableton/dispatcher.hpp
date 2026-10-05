@@ -49,6 +49,8 @@ class BridgeDispatcher final : public BridgeDelivery {
                                                 const std::string& workspace_namespace) override;
     /// Construct with a borrowed transport; nullptr means no host is configured
     explicit BridgeDispatcher(LomTransport* transport = nullptr) : transport_(transport) {}
+    BridgeDispatcher(LomTransport* transport, const TcpTransport* diagnostics)
+        : transport_(transport), tcp_transport_(diagnostics) {}
 
     /// Construct over a TCP transport, which can also explain a failed connection
     explicit BridgeDispatcher(TcpTransport& transport)

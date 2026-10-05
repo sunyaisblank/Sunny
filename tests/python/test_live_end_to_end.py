@@ -184,12 +184,12 @@ def bridge(request, monkeypatch, tmp_path):
             command=shlex.split(command) if command else None,
         )
         # Docker Desktop may advertise a newly bound WSL port after the local
-        # listener starts. Establish readiness through read-only product calls;
-        # no musical mutation is retried or sent before the route is usable.
+        # listener starts. The actual read-only doctor also pins this session's
+        # original native epoch before later planning or musical mutation.
         deadline = time.monotonic() + 10.0
         while True:
-            readiness = client.call("get_ableton_session_state")
-            if readiness.get("success") is True:
+            readiness = client.call("doctor_ableton")
+            if readiness.get("success") is True and readiness.get("read_only_ready") is True:
                 break
             assert time.monotonic() < deadline, readiness
             threading.Event().wait(0.1)
@@ -575,11 +575,17 @@ def test_remote_log_reports_what_happened_inside_live(bridge):
     assert log.get("success") is True, log
     assert log["truncated"] is False
     messages = [entry["message"] for entry in log["entries"]]
-    assert any("sunny_ordinary_execute: ok" in message for message in messages), messages
+    assert any(
+        message.startswith("call song sunny_ordinary_execute ")
+        and message.endswith(": acknowledged")
+        for message in messages
+    ), messages
     refusals = [
         entry
         for entry in log["entries"]
-        if entry["level"] == "WARNING" and "sunny_ordinary_prepare: declined" in entry["message"]
+        if entry["level"] == "WARNING"
+        and entry["message"].startswith("call song sunny_ordinary_prepare ")
+        and ": declined:" in entry["message"]
     ]
     assert len(refusals) == 1, messages
     sequences = [entry["sequence"] for entry in log["entries"]]

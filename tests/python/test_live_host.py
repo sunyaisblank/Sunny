@@ -1,44 +1,74 @@
-"""Final live check against a running Ableton Live (opt-in).
+"""Opt-in real Live smoke check from one verified production release.
 
-Skipped unless SUNNY_LIVE_HOST names the machine running Live with the Sunny
-Remote Script. It deploys two tracks into the open Set, so run it on an empty
-or scratch Set. SUNNY_TCP_PORT selects the port (default 9001), and
-SUNNY_MCP_COMMAND may replace the local binary, for example:
-
-    export SUNNY_LIVE_HOST=192.168.1.20
-    export SUNNY_MCP_COMMAND="docker run -i --rm -e SUNNY_ABLETON_HOST -e SUNNY_TCP_PORT sunny-mcp"
-    pytest tests/python/test_live_host.py -s
-
-The printed observations and Remote Script log cover this small deployment
-only. Issue #22 also requires explicit device/mode, runtime-type, running
-transport, routing and large-Set probes; this smoke test cannot close it.
+Set SUNNY_LIVE_QUALIFICATION_CONFIG to an external copy of the release's
+qualification configuration and SUNNY_LIVE_SCRATCH_APPROVED=1 only after
+approving its saved disposable Set and original Bridge/Document tokens.
+The exact exported POSIX developer kit supplies the production Docker client.
+This two-Part check leaves its authored material for independent observation;
+it does not satisfy the remaining 23 Live/UI/audio validation groups.
 """
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
-import shlex
+import sys
+from pathlib import Path
+from types import ModuleType
 
 import pytest
 from live_scenario import run_live_smoke
-from test_live_end_to_end import _McpClient, _sunny_mcp_binary
 
-LIVE_HOST = os.environ.get("SUNNY_LIVE_HOST")
+CONFIGURATION = os.environ.get("SUNNY_LIVE_QUALIFICATION_CONFIG")
 
 
-@pytest.mark.skipif(not LIVE_HOST, reason="set SUNNY_LIVE_HOST to run against a real Live")
-def test_project_deploys_to_a_real_live_set() -> None:
-    """Deploy the smoke project to the configured Live and print what was observed."""
-    command = os.environ.get("SUNNY_MCP_COMMAND")
-    client = _McpClient(
-        None if command else _sunny_mcp_binary(),
-        int(os.environ.get("SUNNY_TCP_PORT", "9001")),
-        host=LIVE_HOST or "",
-        command=shlex.split(command) if command else None,
+@pytest.mark.skipif(not CONFIGURATION, reason="select an external real Live qualification JSON")
+def test_project_deploys_to_a_real_live_set(monkeypatch) -> None:
+    """Verify release, original approval and scratch preconditions before any authoring."""
+    assert os.environ.get("SUNNY_LIVE_SCRATCH_APPROVED") == "1", (
+        "Explicitly approve the configured disposable scratch Set before this mutating check"
     )
-    try:
+    config = json.loads(Path(CONFIGURATION).read_text(encoding="utf-8"))
+    release = Path(config["release_directory"])
+    project = Path(__file__).resolve().parents[2]
+    specification = importlib.util.spec_from_file_location(
+        "real_live_release_verifier", project / "tools/release.py"
+    )
+    verifier = importlib.util.module_from_spec(specification)
+    exec(
+        compile((project / "tools/release.py").read_bytes(), str(specification.origin), "exec"),
+        verifier.__dict__,
+    )
+    verifier.verify_release(release, config["expected_release_manifest_sha256"])
+    # Authenticate all operator bytes before executing the image-owned kit.
+    monkeypatch.setattr(sys, "dont_write_bytecode", True)
+    kit = release / "operator/live_qualification"
+    common = ModuleType("common")
+    common.__file__ = str(kit / "common.py")
+    exec(compile((kit / "common.py").read_bytes(), common.__file__, "exec"), common.__dict__)
+    monkeypatch.setitem(sys.modules, "common", common)
+    runner = ModuleType("real_live_host_runner")
+    runner.__file__ = str(kit / "host_runner.py")
+    exec(compile((kit / "host_runner.py").read_bytes(), runner.__file__, "exec"), runner.__dict__)
+    common.verify_selected_release(config)
+    output = Path(config["evidence_directory"])
+    output.mkdir(parents=True, exist_ok=True)
+    log = output / "real-live-smoke.jsonl"
+    assert not Path(config["host_workspace"]).exists(), (
+        "Select a new disposable workspace; preserve every earlier run and its native history"
+    )
+    runner.scratch(config, log, True)
+    with common.Mcp(config, log) as client:
+        common.prime_native_session(client, config)
+        saved = client.call("workspace_save", path=config["server_workspace"])
+        assert (
+            saved.get("durability_confirmed") is True
+            and saved.get("native_history_available") is True
+        ), saved
         observed = run_live_smoke(client)
-    finally:
-        client.close()
+        saved = client.call("workspace_save", path=config["server_workspace"])
+        assert saved.get("durability_confirmed") is True, saved
+    common.record(log, "real_live_smoke_observation", observation=observed)
+    verifier.verify_release(release, config["expected_release_manifest_sha256"])
     print(json.dumps(observed, indent=2, default=str))

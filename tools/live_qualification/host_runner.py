@@ -8,7 +8,19 @@ import time
 from decimal import Decimal
 from pathlib import Path
 
-from common import Mcp, bridge_rpc, record, rpc
+sys.dont_write_bytecode = True
+
+from common import (  # noqa: E402 - preserve the release before peer imports.
+    Mcp,
+    approved_origin,
+    bridge_rpc,
+    legacy_call,
+    prime_native_session,
+    record,
+    require_primary_context,
+    rpc,
+    verify_selected_release,
+)
 
 ROOT = Path(__file__).resolve().parent
 
@@ -71,6 +83,7 @@ def scratch(config, log, approved):
     """Verify explicit approval and exact stopped host document before authoring."""
     if not approved:
         raise RuntimeError("Mutating probe requires --scratch-approved after reviewing the runbook")
+    verify_selected_release(config)
     result = diagnostic(config, log, {"op": "inventory", "track_names": []})
     name = result["set_name"].get("value", "")
     if name != config["scratch_set_name"] or not name.startswith("SUNNY_HOST_QUALIFICATION_"):
@@ -92,6 +105,7 @@ def scratch(config, log, approved):
         raise RuntimeError("Actual Live version differs from configured qualification matrix row")
     if not isinstance(result.get("document_token"), str) or not result["document_token"]:
         raise RuntimeError("Scratch probe did not identify the observed native document")
+    require_primary_context(config, result)
     return result
 
 
@@ -294,11 +308,44 @@ def selection(client, state, initial):
     }
 
 
-def apply(client, selected):
+def require_plan_origin(plan, config):
+    """Check every native context against original approval before dispatching a plan."""
+    expected = {"schema_version": 1, **approved_origin(config)}
+
+    def check(context):
+        if (
+            not isinstance(context, dict)
+            or type(context.get("schema_version")) is not int
+            or context != expected
+        ):
+            raise RuntimeError("Plan native identity differs from original scratch approval")
+
+    check(plan.get("native_context"))
+    for entry in [*plan.get("parts", []), *plan.get("retirements", [])]:
+        baseline = entry.get("native_baseline")
+        if baseline is not None:
+            check(baseline.get("context"))
+        inspection = entry.get("current_static_mixer_inspection")
+        if inspection is not None:
+            check(inspection["inspection"].get("context"))
+    for entry in plan.get("routing", []):
+        inspection = entry.get("current_send_inspection")
+        if inspection is not None:
+            check(inspection["inspection"].get("context"))
+    settings = plan.get("current_song_settings_inspection")
+    if settings is not None:
+        check(settings["inspection"].get("context"))
+
+
+def apply(client, selected, config):
     """Apply one approved coordinator plan without replaying failed phases."""
     planned = ok(client, "project_realization_plan", **selected)
-    if planned.get("mutation_dispatched") is not False:
-        raise AssertionError("Pure plan claimed native dispatch")
+    if (
+        planned.get("mutation_dispatched") is not False
+        or planned.get("authority_granted") is not False
+    ):
+        raise AssertionError("Pure plan claimed dispatch or authority")
+    require_plan_origin(planned["plan"], config)
     result = ok(
         client,
         "project_realization_apply",
@@ -741,7 +788,11 @@ def compare_saved_native(saved, current):
 def main():
     """Run only the explicitly selected command-line qualification operation."""
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--config", default=str(ROOT / "configuration.json"))
+    parser.add_argument(
+        "--config",
+        required=True,
+        help="External machine/approval JSON, outside the immutable release",
+    )
     parser.add_argument("--scratch-approved", action="store_true")
     parser.add_argument("--arguments", help="JSON file for one explicit diagnostic/bridge/MCP call")
     parser.add_argument("--tool")
@@ -780,9 +831,15 @@ def main():
             "scene_flags_same_value_set",
         ):
             observed = scratch(config, log, args.scratch_approved)
+            # Port 9002 has effects. Prove the paired primary script before
+            # issuing its independent diagnostic setter, then close cleanly.
+            with Mcp(config, log) as client:
+                prime_native_session(client, config)
             request["scratch_approved"] = True
             request["expected_set_name"] = config["scratch_set_name"]
             request["expected_document_token"] = observed["document_token"]
+            request["expected_bridge_instance"] = config["scratch_bridge_instance"]
+            request["expected_native_document_token"] = config["scratch_document_token"]
         dump(output / (log.stem + ".json"), diagnostic(config, log, request))
         return
     if args.action in ("bridge", "snapshot-timing"):
@@ -793,17 +850,32 @@ def main():
                 "sunny_get_target_snapshot",
                 "sunny_managed_context",
                 "sunny_managed_operation",
+                "sunny_ordinary_operation",
+                "sunny_legacy_operation",
                 "get_all_notes_extended",
                 "get_notes_extended",
                 "get_notes_by_id",
                 "sunny_get_step_envelope",
                 "sunny_get_remote_log",
             ):
-                raise RuntimeError(
-                    "Generic raw mutations lack document authority; use the finite qualification "
-                    "workflow after production command guards in issue #41 are qualified"
-                )
-            bridge_rpc(config, request, log)
+                scratch(config, log, args.scratch_approved)
+                if (
+                    request.get("bridge_protocol_version")
+                    != config["expected_bridge_protocol_version"]
+                ):
+                    raise ValueError("Command protocol differs from the paired release")
+                if set(request) != {"bridge_protocol_version", "type", "path", "name", "args"}:
+                    raise ValueError("Select one closed type/path/name/args command")
+                with Mcp(config, log) as client:
+                    prime_native_session(client, config)
+                    if Path(config["host_workspace"]).exists():
+                        ok(client, "workspace_open", path=config["server_workspace"])
+                    ok(client, "workspace_save", path=config["server_workspace"])
+                    command = {key: request[key] for key in ("type", "path", "name", "args")}
+                    result = legacy_call(client, config, command)
+                    record(log, "legacy_gateway_complete_receipt", result=result)
+            else:
+                bridge_rpc(config, request, log)
         else:
             if not 1 <= args.repeat <= 100:
                 raise ValueError("Bounded timing repetitions1..100")
@@ -837,6 +909,8 @@ def main():
     if args.action not in ("reconnect", "reopen-readback", "reconcile"):
         scratch(config, log, args.scratch_approved)
     with Mcp(config, log) as client:
+        if args.action not in ("reconnect", "reopen-readback", "reconcile"):
+            prime_native_session(client, config)
         schemas = client.request("tools/list", {})
         record(log, "tool_schemas", tools=schemas)
         session = ok(client, "get_ableton_session_state")
@@ -865,7 +939,7 @@ def main():
                 send_tolerance_db=config["send_tolerance_db"],
             )
             dump(state_path, state)  # owning selections saved before any native dispatch
-            result = apply(client, selection(client, state, True))
+            result = apply(client, selection(client, state, True), config)
             save_binding_state(state, result)
             state["initial_native_ids"] = independent_notes(config, log, state, revised=False)
             independent_physical(config, log, state)
@@ -889,7 +963,9 @@ def main():
             if args.action == "resume":
                 # Only after explicit original-token reconciliation; IR is already final.
                 result = apply(
-                    client, selection(client, state, not state.get("revision_authored", False))
+                    client,
+                    selection(client, state, not state.get("revision_authored", False)),
+                    config,
                 )
                 save_binding_state(state, result)
                 state["revised"] = bool(state.get("revision_authored", False))
@@ -942,7 +1018,7 @@ def main():
                 state["revision_authored"] = True
                 ok(client, "workspace_save", path=config["server_workspace"])
                 dump(state_path, state)
-                result = apply(client, selection(client, state, False))
+                result = apply(client, selection(client, state, False), config)
                 save_binding_state(state, result)
                 state["revised"] = True
                 state["final_native_ids"] = independent_notes(

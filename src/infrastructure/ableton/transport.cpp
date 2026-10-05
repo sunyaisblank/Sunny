@@ -26,6 +26,7 @@
 #include <string>
 #include <string_view>
 #include <sunny/infrastructure/ableton/transport.hpp>
+#include <sunny/infrastructure/request_control.hpp>
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <sys/wait.h>
@@ -375,6 +376,8 @@ std::string_view describe(ConnectFailure failure) noexcept {
     case ConnectFailure::Busy:
         return "the Sunny bridge already has an active client; close that client and retry "
                "explicitly";
+    case ConnectFailure::RequestRevoked:
+        return "the owning request was cancelled or expired before connection completed";
     case ConnectFailure::Refused:
         return "nothing accepted the connection; check that the Sunny control surface is "
                "active in Live and that SUNNY_TCP_PORT matches its port";
@@ -392,6 +395,8 @@ namespace {
 /// the most specific obstacle rather than whichever address was tried last.
 int failure_rank(ConnectFailure failure) noexcept {
     switch (failure) {
+    case ConnectFailure::RequestRevoked:
+        return 4;
     case ConnectFailure::TimedOut:
         return 3;
     case ConnectFailure::Refused:
@@ -412,6 +417,18 @@ int poll_milliseconds(std::chrono::steady_clock::duration remaining) noexcept {
     const auto milliseconds = std::chrono::ceil<std::chrono::milliseconds>(remaining).count();
     return static_cast<int>(
         std::clamp<std::int64_t>(milliseconds, 0, std::numeric_limits<int>::max()));
+}
+
+std::chrono::steady_clock::time_point
+request_bounded_deadline(std::chrono::steady_clock::time_point configured) {
+    const auto control = current_request_control();
+    return control ? std::min(configured, control->deadline) : configured;
+}
+
+bool request_revoked(bool read_only) {
+    const auto control = current_request_control();
+    return control && (control->stop_requested() ||
+                       (!read_only && control->input_closed.load(std::memory_order_acquire)));
 }
 
 std::string indeterminate(std::string_view reason) {
@@ -465,6 +482,7 @@ try:
 except socket.gaierror: sys.exit(2)
 except Exception: sys.exit(3)
 )py";
+    if (request_revoked(true)) return std::unexpected(ConnectFailure::RequestRevoked);
     if (std::chrono::steady_clock::now() >= deadline)
         return std::unexpected(ConnectFailure::TimedOut);
     int descriptors[2];
@@ -530,6 +548,10 @@ except Exception: sys.exit(3)
     bool exited = false, eof = false;
     auto failure = ConnectFailure::ResolverUnavailable;
     while (!exited || !eof) {
+        if (request_revoked(true)) {
+            failure = ConnectFailure::RequestRevoked;
+            break;
+        }
         const auto remaining = deadline - std::chrono::steady_clock::now();
         if (remaining <= std::chrono::steady_clock::duration::zero()) {
             failure = ConnectFailure::TimedOut;
@@ -639,7 +661,9 @@ bool TcpTransport::connect() {
     }
     // One deadline includes hostname resolution and every connect attempt.
     // Resolve afresh after a reconnect; numeric literals need no subprocess.
-    const Deadline deadline = std::chrono::steady_clock::now() + config_.connect_timeout;
+    if (request_revoked(true)) return fail(ConnectFailure::RequestRevoked);
+    const Deadline deadline =
+        request_bounded_deadline(std::chrono::steady_clock::now() + config_.connect_timeout);
     auto addresses = numeric_addresses(config_);
     if (addresses.empty()) {
         if (config_.resolver_executable.empty() || config_.resolver_executable.size() > 4096 ||
@@ -650,6 +674,7 @@ bool TcpTransport::connect() {
         addresses = std::move(*resolved);
     }
     const auto attempt = [&](const ResolvedAddress& address) -> std::optional<ConnectFailure> {
+        if (request_revoked(true)) return ConnectFailure::RequestRevoked;
         if (std::chrono::steady_clock::now() >= deadline) return ConnectFailure::TimedOut;
         SocketHandle candidate{::socket(address.storage.ss_family, SOCK_STREAM, IPPROTO_TCP)};
         if (!candidate) return ConnectFailure::SocketError;
@@ -669,10 +694,13 @@ bool TcpTransport::connect() {
             pollfd descriptor{candidate.get(), POLLOUT, 0};
             int ready = 0;
             do {
+                if (request_revoked(true)) return ConnectFailure::RequestRevoked;
+                if (std::chrono::steady_clock::now() >= deadline) return ConnectFailure::TimedOut;
                 ready = ::poll(
-                    &descriptor, 1, poll_milliseconds(deadline - std::chrono::steady_clock::now()));
-            } while (ready < 0 && errno == EINTR);
-            if (ready == 0) return ConnectFailure::TimedOut;
+                    &descriptor,
+                    1,
+                    std::min(50, poll_milliseconds(deadline - std::chrono::steady_clock::now())));
+            } while (ready == 0 || (ready < 0 && errno == EINTR));
             if (ready < 0) return ConnectFailure::SocketError;
             int socket_error = 0;
             socklen_t error_size = sizeof(socket_error);
@@ -700,7 +728,9 @@ bool TcpTransport::connect() {
         }
         if (!failure || failure_rank(*attempt_failure) > failure_rank(*failure))
             failure = attempt_failure;
-        if (*attempt_failure == ConnectFailure::TimedOut) break;
+        if (*attempt_failure == ConnectFailure::TimedOut ||
+            *attempt_failure == ConnectFailure::RequestRevoked)
+            break;
     }
     return fail(failure.value_or(ConnectFailure::HostUnresolved));
 }
@@ -743,13 +773,14 @@ bool TcpTransport::replace_connection_if_peer_closed() {
         // The native listener may reject a second client before it reads any
         // request. Consume only that exact small envelope; unexpected data
         // never causes a reconnect or an ordinary request to be sent.
-        const Deadline deadline = std::chrono::steady_clock::now() + config_.response_timeout;
+        const Deadline deadline =
+            request_bounded_deadline(std::chrono::steady_clock::now() + config_.response_timeout);
         std::uint32_t length = 0;
         bool rejected_busy = false;
-        if (recv_all(&length, sizeof(length), deadline) == Receipt::Complete &&
+        if (recv_all(&length, sizeof(length), deadline, true) == Receipt::Complete &&
             ntohl(length) <= 1024) {
             std::string payload(ntohl(length), '\0');
-            if (recv_all(payload.data(), payload.size(), deadline) == Receipt::Complete) {
+            if (recv_all(payload.data(), payload.size(), deadline, true) == Receipt::Complete) {
                 const auto response = LomProtocol::deserialize_response(payload);
                 rejected_busy = response && !response->success && response->error &&
                                 *response->error == bridge_busy_error;
@@ -763,18 +794,21 @@ bool TcpTransport::replace_connection_if_peer_closed() {
     return connect();
 }
 
-TcpTransport::Receipt TcpTransport::send_all(const void* data, std::size_t n, Deadline deadline) {
+TcpTransport::Receipt
+TcpTransport::send_all(const void* data, std::size_t n, Deadline deadline, bool read_only) {
     const auto* ptr = static_cast<const char*>(data);
     std::size_t sent = 0;
     while (sent < n) {
+        if (request_revoked(read_only)) return Receipt::RequestRevoked;
         const auto remaining = deadline - std::chrono::steady_clock::now();
         if (remaining <= std::chrono::steady_clock::duration::zero())
             return Receipt::DeadlineExpired;
         pollfd descriptor{socket_->get(), POLLOUT, 0};
-        const auto ready = ::poll(&descriptor, 1, poll_milliseconds(remaining));
+        const auto ready = ::poll(&descriptor, 1, std::min(50, poll_milliseconds(remaining)));
         if (ready < 0 && errno == EINTR) continue;
-        if (ready == 0) return Receipt::DeadlineExpired;
+        if (ready == 0) continue;
         if (ready < 0) return Receipt::ConnectionClosed;
+        if (request_revoked(read_only)) return Receipt::RequestRevoked;
         auto r = ::send(socket_->get(), ptr + sent, n - sent, MSG_NOSIGNAL);
         if (r < 0 && (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)) continue;
         if (r <= 0) return Receipt::ConnectionClosed;
@@ -783,17 +817,19 @@ TcpTransport::Receipt TcpTransport::send_all(const void* data, std::size_t n, De
     return Receipt::Complete;
 }
 
-TcpTransport::Receipt TcpTransport::recv_all(void* data, std::size_t n, Deadline deadline) {
+TcpTransport::Receipt
+TcpTransport::recv_all(void* data, std::size_t n, Deadline deadline, bool read_only) {
     auto* ptr = static_cast<char*>(data);
     std::size_t received = 0;
     while (received < n) {
+        if (request_revoked(read_only)) return Receipt::RequestRevoked;
         const auto remaining = deadline - std::chrono::steady_clock::now();
         if (remaining <= std::chrono::steady_clock::duration::zero())
             return Receipt::DeadlineExpired;
         pollfd descriptor{socket_->get(), POLLIN, 0};
-        const int ready = ::poll(&descriptor, 1, poll_milliseconds(remaining));
+        const int ready = ::poll(&descriptor, 1, std::min(50, poll_milliseconds(remaining)));
         if (ready < 0 && errno == EINTR) continue;
-        if (ready == 0) return Receipt::DeadlineExpired;
+        if (ready == 0) continue;
         if (ready < 0) return Receipt::ConnectionClosed;
         const auto r = ::recv(socket_->get(), ptr + received, n - received, 0);
         if (r < 0 && (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)) continue;
@@ -808,9 +844,10 @@ bool TcpTransport::verify_bridge_identity() {
     if (bridge_identity_error_) return false;
     const auto response = send_and_receive(LomProtocol::serialize_request(LomProtocol::call_method(
                                                LomPaths::song(), "sunny_get_target_profile", {})),
-                                           false);
+                                           false,
+                                           true);
     const auto fail = [this](std::string reason) {
-        if (last_connect_failure_ == ConnectFailure::Busy)
+        if (last_connect_failure_ == ConnectFailure::Busy || request_revoked(true))
             bridge_identity_error_ = std::move(reason);
         else
             bridge_identity_error_ = std::move(reason) +
@@ -842,7 +879,18 @@ bool TcpTransport::verify_bridge_identity() {
     return true;
 }
 
-LomResponse TcpTransport::send_and_receive(const std::string& json_payload, bool require_identity) {
+LomResponse TcpTransport::send_and_receive(const std::string& json_payload,
+                                           bool require_identity,
+                                           bool read_only) {
+    if (request_revoked(read_only)) {
+        abandon_connection();
+        return LomResponse{
+            false,
+            std::nullopt,
+            std::string{
+                "owning request cancelled, expired or input closed before native frame entry"},
+            LomDeliveryState::NotSent};
+    }
     if (json_payload.size() > SUNNY_BRIDGE_MAX_WIRE_PAYLOAD) {
         return LomResponse{
             false, std::nullopt, std::string{"request too large"}, LomDeliveryState::NotSent};
@@ -863,14 +911,15 @@ LomResponse TcpTransport::send_and_receive(const std::string& json_payload, bool
 
     // The response deadline starts with the send, so it bounds the whole
     // exchange rather than each receive.
-    const Deadline deadline = std::chrono::steady_clock::now() + config_.response_timeout;
+    const Deadline deadline =
+        request_bounded_deadline(std::chrono::steady_clock::now() + config_.response_timeout);
 
     // Send: 4-byte big-endian length + payload
     std::uint32_t len = static_cast<std::uint32_t>(json_payload.size());
     std::uint32_t net_len = htonl(len);
 
-    auto sent = send_all(&net_len, sizeof(net_len), deadline);
-    if (sent == Receipt::Complete) sent = send_all(json_payload.data(), len, deadline);
+    auto sent = send_all(&net_len, sizeof(net_len), deadline, read_only);
+    if (sent == Receipt::Complete) sent = send_all(json_payload.data(), len, deadline, read_only);
     if (sent != Receipt::Complete) {
         // The frame never completed and the peer dispatches only complete
         // frames; closing the socket abandons the fragment, so it cannot run.
@@ -878,7 +927,9 @@ LomResponse TcpTransport::send_and_receive(const std::string& json_payload, bool
         return LomResponse{
             false,
             std::nullopt,
-            std::string{sent == Receipt::DeadlineExpired
+            std::string{sent == Receipt::RequestRevoked
+                            ? "owning request revoked before the request frame was complete"
+                        : sent == Receipt::DeadlineExpired
                             ? "exchange deadline expired before the request frame was complete"
                             : "send failed before the request frame was complete"},
             LomDeliveryState::NotSent};
@@ -886,17 +937,19 @@ LomResponse TcpTransport::send_and_receive(const std::string& json_payload, bool
 
     const auto undelivered = [this](Receipt receipt) {
         abandon_connection();
-        const auto reason = receipt == Receipt::DeadlineExpired
-                                ? "no complete response within " +
-                                      std::to_string(config_.response_timeout.count()) + " ms"
-                                : std::string{"the connection closed before the response"};
+        const auto reason =
+            receipt == Receipt::RequestRevoked
+                ? std::string{"owning request revoked after the complete frame was sent"}
+            : receipt == Receipt::DeadlineExpired
+                ? std::string{"no complete response before the shared exchange/request deadline"}
+                : std::string{"the connection closed before the response"};
         return LomResponse{
             false, std::nullopt, indeterminate(reason), LomDeliveryState::SentWithoutValidResponse};
     };
 
     // Receive: 4-byte big-endian length + payload
     std::uint32_t resp_net_len = 0;
-    if (const auto receipt = recv_all(&resp_net_len, sizeof(resp_net_len), deadline);
+    if (const auto receipt = recv_all(&resp_net_len, sizeof(resp_net_len), deadline, read_only);
         receipt != Receipt::Complete) {
         return undelivered(receipt);
     }
@@ -911,7 +964,7 @@ LomResponse TcpTransport::send_and_receive(const std::string& json_payload, bool
     }
 
     std::string response_data(resp_len, '\0');
-    if (const auto receipt = recv_all(response_data.data(), resp_len, deadline);
+    if (const auto receipt = recv_all(response_data.data(), resp_len, deadline, read_only);
         receipt != Receipt::Complete) {
         return undelivered(receipt);
     }
@@ -934,7 +987,8 @@ LomResponse TcpTransport::send_and_receive(const std::string& json_payload, bool
 }
 
 LomResponse TcpTransport::send(const LomRequest& request) {
-    if (!LomProtocol::validate_request(request)) {
+    const auto classification = LomProtocol::classify_request(request);
+    if (!classification) {
         return LomResponse{false,
                            std::nullopt,
                            std::string{"request outside Sunny bridge protocol v"} +
@@ -945,11 +999,45 @@ LomResponse TcpTransport::send(const LomRequest& request) {
         return LomResponse{
             false, std::nullopt, std::string{"not connected"}, LomDeliveryState::NotSent};
     }
+    const bool requires_origin = classification->requires_native_origin;
+    const bool drain = classification->read_only && !requires_origin;
+    if (request_revoked(drain)) {
+        abandon_connection();
+        return LomResponse{false,
+                           std::nullopt,
+                           "owning request revoked before native transmission",
+                           LomDeliveryState::NotSent};
+    }
+    if (requires_origin) {
+        const auto control = current_request_control();
+        if (!control || !control->native_origin || !valid_native_origin(*control->native_origin)) {
+            return LomResponse{
+                false,
+                std::nullopt,
+                "native admission requires an immutable original epoch; run doctor_ableton first",
+                LomDeliveryState::NotSent};
+        }
+        const auto& origin = classification->native_origin;
+        if (!origin) {
+            return LomResponse{false,
+                               std::nullopt,
+                               "raw native mutation requires prepared scope authority",
+                               LomDeliveryState::NotSent};
+        }
+        if (origin->document_token != control->native_origin->document_token ||
+            (origin->bridge_instance &&
+             *origin->bridge_instance != control->native_origin->bridge_instance)) {
+            return LomResponse{false,
+                               std::nullopt,
+                               "native frame epoch differs from immutable request admission",
+                               LomDeliveryState::NotSent};
+        }
+    }
     const bool diagnostic = request.type == LomRequestType::CallMethod &&
                             request.path.to_string() == "song" &&
                             (request.property_or_method == "sunny_get_target_profile" ||
                              request.property_or_method == "sunny_get_remote_log");
-    return send_and_receive(LomProtocol::serialize_request(request), !diagnostic);
+    return send_and_receive(LomProtocol::serialize_request(request), !diagnostic, drain);
 }
 
 LomResponse TcpTransport::send_notes(const LomPath& clip_path,
@@ -966,8 +1054,11 @@ LomResponse TcpTransport::send_notes(const LomPath& clip_path,
             false, std::nullopt, std::string{"not connected"}, LomDeliveryState::NotSent};
     }
 
-    return send_and_receive(
-        LomProtocol::serialize_request(LomProtocol::add_new_notes(clip_path, notes)));
+    if (request_revoked(false)) abandon_connection();
+    return LomResponse{false,
+                       std::nullopt,
+                       "raw native note mutation requires prepared scope authority",
+                       LomDeliveryState::NotSent};
 }
 
 bool TcpTransport::is_connected() const {

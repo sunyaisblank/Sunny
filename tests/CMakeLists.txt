@@ -123,6 +123,8 @@ target_sources(
     PRIVATE
         infrastructure/runtime_configuration_test.cpp
         infrastructure/ableton/ordinary_clip_test.cpp
+        infrastructure/ableton/legacy_authority_test.cpp
+        infrastructure/ableton/authority_transport_test.cpp
         infrastructure/ableton/dispatcher_test.cpp
         infrastructure/ableton/lom_protocol_test.cpp
         infrastructure/ableton/managed_realization_test.cpp

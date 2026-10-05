@@ -83,7 +83,7 @@ def test_second_clients_receive_literal_busy_without_dispatch_or_later_queue(in_
                         send(extra, {"forbidden": index})
                         started = time.monotonic()
                         assert receive(extra) == {
-                            "bridge_protocol_version": 46,
+                            "bridge_protocol_version": 47,
                             "success": False,
                             "error": (
                                 "bridge_busy: Sunny accepts one active client; "

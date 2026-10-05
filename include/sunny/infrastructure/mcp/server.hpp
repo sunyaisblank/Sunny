@@ -152,6 +152,9 @@ class McpServer {
      */
     [[nodiscard]] nlohmann::json process_request(const nlohmann::json& message);
 
+    /** A live, successful doctor may publish a pin for future admissions only. */
+    [[nodiscard]] bool publish_native_origin(const NativeOrigin& origin);
+
   private:
     struct ToolEntry {
         McpToolDef definition;
@@ -168,6 +171,7 @@ class McpServer {
     std::map<std::string, std::shared_ptr<RequestControl>> controls_;
     bool session_stopped_ = false;
     bool input_revoked_ = false;
+    std::optional<NativeOrigin> native_origin_;
 
     std::shared_ptr<RequestControl> admit_request(const nlohmann::json& message);
     void retire_request(const std::shared_ptr<RequestControl>& control);

@@ -1,5 +1,5 @@
 {
-  "bridge_protocol_version": 46,
+  "bridge_protocol_version": 47,
   "type": "call",
   "path": "song",
   "name": "sunny_get_target_profile",

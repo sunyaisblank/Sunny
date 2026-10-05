@@ -36,8 +36,8 @@ PAGE = json.loads(
 @pytest.mark.parametrize(
     "literal",
     [
-        '{"bridge_protocol_version":46,"name":"session_record","path":"song","type":"get"}',
-        '{"bridge_protocol_version":46,"name":"record_mode","path":"song","type":"get"}',
+        '{"bridge_protocol_version":47,"name":"session_record","path":"song","type":"get"}',
+        '{"bridge_protocol_version":47,"name":"record_mode","path":"song","type":"get"}',
     ],
 )
 def test_minimal_doctor_flags_are_literal_read_only_protocol(literal, monkeypatch):
@@ -461,9 +461,9 @@ def test_real_stdio_tcp_doctor_polls_without_snapshot_or_mutation(native_boundar
         "sunny_managed_context",
     ]  # The second profile is the existing TCP source-pairing handshake.
     assert [json.loads(frame) for frame in surface._doctor_wire_responses[3:6]] == [
-        {"success": True, "value": True, "bridge_protocol_version": 46},
-        {"success": True, "value": False, "bridge_protocol_version": 46},
-        {"success": True, "value": False, "bridge_protocol_version": 46},
+        {"success": True, "value": True, "bridge_protocol_version": 47},
+        {"success": True, "value": False, "bridge_protocol_version": 47},
+        {"success": True, "value": False, "bridge_protocol_version": 47},
     ]
     assert all(request["name"] == "sunny_get_remote_log" for request in requests[7:])
     assert all(

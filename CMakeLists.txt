@@ -244,6 +244,8 @@ target_sources(
     PRIVATE
         src/infrastructure/runtime_configuration.cpp
         src/infrastructure/ableton/ordinary_clip.cpp
+        src/infrastructure/ableton/legacy_authority.cpp
+        src/infrastructure/ableton/authority_transport.cpp
         src/infrastructure/ableton/dispatcher.cpp
         src/infrastructure/ableton/deployment.cpp
         src/infrastructure/ableton/lom_protocol.cpp

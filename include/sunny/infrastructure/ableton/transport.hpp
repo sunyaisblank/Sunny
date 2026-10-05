@@ -27,6 +27,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <sunny/infrastructure/ableton/legacy_authority.hpp>
 #include <sunny/infrastructure/ableton/lom_protocol.hpp>
 #include <sunny/infrastructure/ableton/target_profile.hpp>
 #include <sunny/infrastructure/ableton/target_snapshot.hpp>
@@ -51,6 +52,18 @@ inline constexpr std::size_t SUNNY_BRIDGE_MAX_WIRE_PAYLOAD = 16U * 1024U * 1024U
 class LomTransport {
   public:
     virtual ~LomTransport() = default;
+
+    [[nodiscard]] virtual sunny::core::Result<std::optional<LegacyPlanningAuthority>>
+    capture_legacy_authority() {
+        if (records_without_execution()) return std::optional<LegacyPlanningAuthority>{};
+        return std::unexpected(sunny::core::ErrorCode::ProtocolError);
+    }
+    [[nodiscard]] virtual sunny::core::Result<void>
+    activate_legacy_workflow(const LegacyWorkflowRecipe&) {
+        if (records_without_execution()) return {};
+        return std::unexpected(sunny::core::ErrorCode::ProtocolError);
+    }
+    [[nodiscard]] virtual sunny::core::Result<void> finish_legacy_workflow(bool) { return {}; }
 
     /// Send a request and wait for a response
     [[nodiscard]] virtual LomResponse send(const LomRequest& request) = 0;
@@ -206,6 +219,7 @@ enum class ConnectFailure : std::uint8_t {
     InvalidConfiguration, ///< a configured timeout cannot bound the exchange
     HostUnresolved,       ///< the host name has no stream address
     ResolverUnavailable,  ///< the owned hostname resolver could not run or returned invalid data
+    RequestRevoked,       ///< cancellation or the owning request lifetime forbids further work
     Busy,                 ///< the bridge explicitly declined a second active client
     Refused,              ///< every resolved address refused the connection or was unreachable
     TimedOut,             ///< resolution or connection exceeded the shared connect timeout
@@ -319,7 +333,12 @@ class TcpTransport final : public LomTransport {
     class SocketHandle;
     using Deadline = std::chrono::steady_clock::time_point;
 
-    enum class Receipt : std::uint8_t { Complete, DeadlineExpired, ConnectionClosed };
+    enum class Receipt : std::uint8_t {
+        Complete,
+        DeadlineExpired,
+        ConnectionClosed,
+        RequestRevoked
+    };
     enum class IdlePeer : std::uint8_t { Quiet, Closed, UnsolicitedData };
 
     /// Pre: Connected. Post: Connected over a connection the peer has not closed,
@@ -333,16 +352,18 @@ class TcpTransport final : public LomTransport {
     void abandon_connection();
 
     /// Send a length-prefixed frame and receive the response
-    LomResponse send_and_receive(const std::string& json_payload, bool require_identity = true);
+    LomResponse send_and_receive(const std::string& json_payload,
+                                 bool require_identity = true,
+                                 bool read_only = false);
 
     /// Read-only, nonrecursive handshake before an ordinary request on each new socket.
     bool verify_bridge_identity();
 
     /// Send exactly n bytes before the same deadline used by receive.
-    Receipt send_all(const void* data, std::size_t n, Deadline deadline);
+    Receipt send_all(const void* data, std::size_t n, Deadline deadline, bool read_only = false);
 
     /// Receive exactly n bytes before the deadline
-    Receipt recv_all(void* data, std::size_t n, Deadline deadline);
+    Receipt recv_all(void* data, std::size_t n, Deadline deadline, bool read_only = false);
 
     /// Transition state and notify callback
     void set_state(ConnectionState new_state);

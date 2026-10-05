@@ -18,7 +18,7 @@ function NewRelease([string]$Name, [string]$Body, [string]$Digit) {
     $bridge = Join-Path $directory 'native\Sunny'
     [IO.Directory]::CreateDirectory($bridge) | Out-Null
     WriteText (Join-Path $bridge '__init__.py') $Body
-    WriteText (Join-Path $bridge 'bridge_contract.json') '{"bridge_protocol_version":46,"target_snapshot_schema_version":35}'
+    WriteText (Join-Path $bridge 'bridge_contract.json') '{"bridge_protocol_version":47,"target_snapshot_schema_version":35}'
     WriteText (Join-Path $bridge 'source.sha256') ($Digit * 64)
     WriteText (Join-Path $directory 'image.tar') ('fixture archive ' + $Name)
     $files = [ordered]@{}
@@ -41,7 +41,7 @@ function NewRelease([string]$Name, [string]$Body, [string]$Digit) {
         release_manifest_schema_version = 1; product = @{ name = 'Sunny'; version = 'fixture' }
         source = @{ revision = ($Digit * 40); source_date_epoch = 1 }
         image = @{ platform = 'linux/amd64'; local_immutable_id = ('sha256:' + ($Digit * 64)); archive = 'image.tar' }
-        bridge = @{ source_sha256 = ($Digit * 64); contract = @{ bridge_protocol_version = 46; target_snapshot_schema_version = 35 }; files = $files }
+        bridge = @{ source_sha256 = ($Digit * 64); contract = @{ bridge_protocol_version = 47; target_snapshot_schema_version = 35 }; files = $files }
         files = $payload
     }
     $manifestPath = Join-Path $directory 'release.json'
@@ -52,7 +52,7 @@ function HealthFixture($Paths, [string]$Kind = 'valid') {
     $state = Read-SunnyState $Paths
     $now = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() / 1000.0
     $request = [Guid]::NewGuid().ToString('N')
-    $identity = @{ protocol_version = 46; source_sha256 = $state.active.bridge_source_sha256 }
+    $identity = @{ protocol_version = 47; source_sha256 = $state.active.bridge_source_sha256 }
     $doctor = @{
         schema_version = 1; request_id = $request; observed_at = $now
         success = $true; read_only_ready = $true
@@ -69,7 +69,7 @@ function HealthFixture($Paths, [string]$Kind = 'valid') {
     }
     if ($Kind -eq 'stale') { $doctor.observed_at = $now - 600 }
     if ($Kind -eq 'future') { $doctor.observed_at = $now + 600 }
-    if ($Kind -eq 'mismatch') { $doctor.observed_bridge = @{ protocol_version = 46; source_sha256 = ('f' * 64) } }
+    if ($Kind -eq 'mismatch') { $doctor.observed_bridge = @{ protocol_version = 47; source_sha256 = ('f' * 64) } }
     if ($Kind -eq 'uncorrelated') { $doctor.request_id = ('f' * 32) }
     if ($Kind -eq 'incomplete') { $doctor.checks = @($doctor.checks[0]) }
     if ($Kind -eq 'boolean') { $doctor.native_state.record_mode = 'false' }

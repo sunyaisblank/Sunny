@@ -73,6 +73,26 @@ def require(condition: bool, message: str) -> None:
         raise ValueError(message)
 
 
+def check_buildkit_metadata(metadata: dict, image: dict) -> None:
+    """Correlate reported fields without inventing a config digest omitted by Buildx."""
+    require(isinstance(metadata, dict), "BuildKit metadata requires an object")
+    digest = metadata.get("containerimage.digest")
+    require(
+        isinstance(digest, str)
+        and DIGEST.fullmatch(digest)
+        and digest in (image["oci_index_digest"], image["oci_manifest_digest"]),
+        "BuildKit OCI digest differs from archive",
+    )
+    if "containerimage.config.digest" in metadata:
+        config = metadata["containerimage.config.digest"]
+        require(
+            isinstance(config, str)
+            and DIGEST.fullmatch(config)
+            and config == image["oci_config_digest"],
+            "BuildKit config digest differs from archive",
+        )
+
+
 def bridge_info(root: Path) -> dict:
     """Independently verify the generated adapter's source stream and contract."""
     digest = hashlib.sha256(b"sunny-remote-script-v1\n")
@@ -614,15 +634,7 @@ def export_image(image_id: str, output: Path, metadata: Path | None = None) -> d
         )
         if metadata:
             buildkit = json.loads(metadata.read_text())
-            require(
-                buildkit["containerimage.digest"]
-                in (image["oci_index_digest"], image["oci_manifest_digest"]),
-                "BuildKit OCI digest differs from archive",
-            )
-            require(
-                buildkit["containerimage.config.digest"] == image["oci_config_digest"],
-                "BuildKit config digest differs from archive",
-            )
+            check_buildkit_metadata(buildkit, image)
             shutil.copyfile(metadata, temporary / "provenance" / "buildkit-metadata.json")
         manifest = {
             "release_manifest_schema_version": 1,
@@ -718,15 +730,7 @@ def verify_release(root: Path, expected_sha256: str | None = None) -> dict:
     metadata = root / "provenance" / "buildkit-metadata.json"
     if metadata.exists():
         buildkit = json.loads(metadata.read_text())
-        require(
-            buildkit["containerimage.digest"]
-            in (image["oci_index_digest"], image["oci_manifest_digest"]),
-            "BuildKit OCI digest differs from archive",
-        )
-        require(
-            buildkit["containerimage.config.digest"] == image["oci_config_digest"],
-            "BuildKit config digest differs from archive",
-        )
+        check_buildkit_metadata(buildkit, image)
     require(
         manifest["qualification"]
         == {
@@ -815,11 +819,21 @@ def build_release(output: Path, tag: str) -> dict:
         )
         arguments.append(str(context))
         run(*arguments, timeout=3600)
-        digest = json.loads(metadata.read_text())["containerimage.digest"]
+        buildkit = json.loads(metadata.read_text())
+        digest = buildkit.get("containerimage.digest")
+        require(
+            isinstance(digest, str) and DIGEST.fullmatch(digest), "Missing BuildKit image digest"
+        )
+        config = buildkit.get("containerimage.config.digest")
+        if "containerimage.config.digest" in buildkit:
+            require(
+                isinstance(config, str) and DIGEST.fullmatch(config),
+                "Invalid BuildKit config digest",
+            )
         image = json.loads(run("docker", "image", "inspect", tag))[0]
         require(
-            image["Id"]
-            in (digest, json.loads(metadata.read_text())["containerimage.config.digest"]),
+            image["Id"] in (digest, config)
+            or (image.get("Descriptor") or {}).get("digest") == digest,
             "Tag changed after build; export the immutable build result",
         )
         return export_image(image["Id"], output, metadata)

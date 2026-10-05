@@ -10,6 +10,7 @@ from typing import Any
 
 from .managed import _digest, _fingerprint, _key
 from .managed_capacity import guard_managed_response_capacity, require_response_capacity
+from .native_control import check_native_peer, native_call
 from .native_mixer_units import _MixerObservation, resolve_native_mixer_display_value
 from .native_units import _parse
 
@@ -792,10 +793,12 @@ class ManagedMixer:
                         "StaticMixerUnavailable: current handles/untouched state changed before setter"
                     )
                 self._admit(record, desired)
+                check_native_peer()
                 progress["started_fields"].append(name)
                 operation["native_mutation_started"] = True
                 if name in ("volume", "pan"):
-                    setattr(
+                    native_call(
+                        setattr,
                         getattr(
                             record["track"].mixer_device,
                             "volume" if name == "volume" else "panning",
@@ -804,7 +807,7 @@ class ManagedMixer:
                         targets[name],
                     )
                 else:
-                    setattr(record["track"], name, targets[name])
+                    native_call(setattr, record["track"], name, targets[name])
                 progress["returned_fields"].append(name)
                 after, handles = self._snapshot(record, request)
                 if not self._same_cohort(handles, retained["cohort"]) or not self._untouched(

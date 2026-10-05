@@ -15,6 +15,7 @@ from typing import Any
 
 from .managed import _digest, _fingerprint, _key
 from .managed_capacity import guard_managed_response_capacity
+from .native_control import check_native_peer, native_call
 from .native_units import (
     NativeUnitError,
     _parse,
@@ -721,9 +722,10 @@ class ManagedDevices:
                 raise RuntimeError("Native Python Track.insert_device API is unavailable")
             self._capacity(operation, before, before, initial, [], True)
             old = state["handles"]
+            check_native_peer()
             operation["native_mutation_started"] = True
             try:
-                method(declared["browser_name"], len(old))
+                native_call(method, declared["browser_name"], len(old))
             finally:
                 actual = tuple(self.registry._handler._device_chain(record["track"]))
                 created = [
@@ -781,8 +783,11 @@ class ManagedDevices:
             ):
                 raise RuntimeError("Native Clip/Track state changed before a parameter setter")
             self._context(request, version)
+            check_native_peer()
             operation["native_mutation_started"] = True
-            item["parameter"].value = float(item["candidate"]["internal_value"])
+            native_call(
+                setattr, item["parameter"], "value", float(item["candidate"]["internal_value"])
+            )
             readback = self._readback(item["parameter"], item["candidate"])
             readbacks.append({"capability_id": item["intent"]["capability_id"], **readback})
             if not readback["matches_intent"]:

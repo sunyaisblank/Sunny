@@ -146,8 +146,31 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build image
-        run: docker build -t sunny-mcp:ci .
+      - name: Build and verify the paired release
+        run: |
+          python3 tools/release.py build --tag sunny-mcp:ci \
+            --output "${{ runner.temp }}/sunny-ci-release" \
+            > "${{ runner.temp }}/sunny-release-report.json"
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          report = json.loads((Path(os.environ['RUNNER_TEMP']) / 'sunny-release-report.json').read_text())
+          with open(os.environ['GITHUB_ENV'], 'a') as stream:
+              stream.write('SUNNY_CI_RELEASE_SHA256=' + report['release_manifest_sha256'] + '\n')
+              stream.write('SUNNY_RELEASE_VOLUME_IMAGE=' + report['manifest']['image']['local_immutable_id'] + '\n')
+          PY
+
+      - name: Verify full image-owned release inventory
+        run: |
+          python3 "${{ runner.temp }}/sunny-ci-release/operator/live_qualification/verify_artifacts.py" \
+            --release "${{ runner.temp }}/sunny-ci-release" \
+            --expected-manifest-sha256 "$SUNNY_CI_RELEASE_SHA256"
+
+      - name: Verify image-owned qualification package
+        run: >-
+          python3 tools/export_live_qualification.py
+          --image-id "$SUNNY_RELEASE_VOLUME_IMAGE"
+          --output "${{ runner.temp }}/sunny-ci-release.zip"
 
       - name: Answer MCP offline
         run: |
@@ -169,6 +192,11 @@ jobs:
           SUNNY_MCP_COMMAND="docker run -i --rm --add-host host.docker.internal:host-gateway -e SUNNY_ABLETON_HOST -e SUNNY_TCP_PORT sunny-mcp:ci" \
           PYTHONPATH=remote_script:python \
           python -m pytest tests/python/test_live_end_to_end.py -v --tb=short
+
+      - name: Preserve project data across owned container death and volume restore
+        env:
+          SUNNY_RELEASE_VOLUME_TESTS: '1'
+        run: python -m pytest tests/python/test_release_volume_lifecycle.py -v --tb=short
 
       - name: Managed native authoring and recovery through the container
         run: |
@@ -210,6 +238,24 @@ jobs:
           SUNNY_WORKSPACE_MCP_COMMAND="docker run -i --rm --user $(id -u):$(id -g) --network none --mount type=bind,source={workspace_dir},target=/data -e SUNNY_WORKSPACE_PATH -e SUNNY_WORKSPACE_RECOVERY sunny-mcp:ci" \
           PYTHONPATH=remote_script:python \
           python -m pytest tests/python/test_mcp_workspace_workflow.py tests/python/test_mcp_native_timbre_plan.py -v --tb=short
+
+  # Actual PowerShell/NTFS transition witnesses do not require Live, SSH or Python on operator PCs.
+  windows-lifecycle:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install test driver
+        run: python -m pip install pytest
+      - name: Exercise Windows installation, transfer and owned doctor recovery
+        run: >-
+          python -m pytest
+          tests/python/test_windows_installer.py
+          tests/python/test_windows_transfer.py
+          tests/python/test_windows_doctor.py
+          -v --tb=short
 
   # Python linting
   lint:

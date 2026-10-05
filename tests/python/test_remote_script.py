@@ -15,6 +15,7 @@ import socket
 import struct
 import threading
 import time
+import uuid
 from types import SimpleNamespace
 
 import pytest
@@ -47,6 +48,9 @@ from Sunny.handler import (
     LomHandler,
     _request_allowed,
 )
+from Sunny.legacy import NativeGraph
+from Sunny.managed import ManagedRegistry, _digest
+from Sunny.native_control import PeerControl, peer_scope
 from Sunny.server import TcpServer
 from Sunny.surface import (
     DEFAULT_BIND_HOST,
@@ -290,8 +294,110 @@ def _call(handler, path, name, *args):
     return _request(handler, "call", path, name, *args)
 
 
-def _set(handler, path, name, value):
-    return _request(handler, "set", path, name, value)
+def _native_journal(handler, command):
+    """Run one native-authority unit operation on the real registry and live peer.
+
+    Each independent adapter check explicitly captures a fresh original scope.
+    This does not model the C++ durable workflow or MCP reader admission; those
+    have separate integration fixtures. Never reinterpret an outer success as
+    acknowledgement, or execute again after a partial native outcome.
+    """
+    registry = ManagedRegistry(handler._surface)
+    authorized = LomHandler(handler._surface, managed_registry=registry)
+    registry.attach_handler(authorized)
+    left, right = socket.socketpair()
+    left.settimeout(1.0)
+    right.settimeout(1.0)
+    peer = PeerControl(left)
+    peer.phase("native")
+
+    def native_frame(name, *args):
+        # The production server serializes a handler's outer response as
+        # length-prefixed JSON. Exercise that real encoding/decoding boundary
+        # so native IntEnum facts become plain wire integers without relaxing
+        # the caller's scalar assertions. The owned peer sees no pipelined
+        # input: replies flow from its native socket to the opposite socket.
+        response = _call(authorized, "song", name, *args)
+        _send_frame(left, _versioned(response))
+        received = _recv_frame(right)
+        assert received.pop("bridge_protocol_version") == BRIDGE_PROTOCOL_VERSION
+        return received
+
+    try:
+        with peer_scope(peer):
+            context = native_frame("sunny_managed_context")
+            assert context["success"], context
+            captured = native_frame("sunny_legacy_scope", {**context["value"], "scope_id": None})
+            assert captured["success"], captured
+            scope = captured["value"]
+            assert scope["outcome"] == "ready", scope
+            original = {
+                key: scope[key]
+                for key in ("schema_version", "bridge_instance", "document_token", "scope_id")
+            }
+            intent = {
+                **original,
+                "workflow_id": uuid.uuid4().hex,
+                "operation_id": uuid.uuid4().hex,
+                "ordinal": 1,
+                "graph_revision": 0,
+                "command": command,
+            }
+            prepared = native_frame("sunny_legacy_prepare", intent)
+            assert prepared["success"], prepared
+            journal = prepared["value"]
+            token = {
+                **{key: value for key, value in intent.items() if key != "command"},
+                "fingerprint": _digest(intent),
+            }
+            assert all(journal[key] == value for key, value in token.items())
+            assert journal["started_calls"] == journal["returned_calls"] == 0
+            assert journal["native_mutation_started"] is False
+            if journal["outcome"] == "prepared":
+                executed = native_frame("sunny_legacy_execute", token)
+                assert executed["success"], executed
+                journal = executed["value"]
+                assert journal["outcome"] in {"acknowledged", "partial", "declined"}, journal
+                if journal["outcome"] == "acknowledged":
+                    assert journal["native_mutation_started"] is True
+                    assert journal["started_calls"] == journal["returned_calls"] >= 1
+                    assert journal["result"]["graph_revision"] >= 0
+                    assert journal["error"] is None
+            else:
+                assert journal["outcome"] == "declined", journal
+            # Query only: a failed or ambiguous execution never gains a retry.
+            assert native_frame("sunny_legacy_operation", token) == {
+                "success": True,
+                "value": journal,
+            }
+            finished = native_frame("sunny_legacy_finish", original)
+            assert finished["success"] and finished["value"]["outcome"] == "closed"
+            return journal
+    finally:
+        registry._legacy.close()
+        peer.close()
+        left.close()
+        right.close()
+
+
+def _native_request(handler, request):
+    """Expose the original adapter value only after a typed acknowledgement."""
+    command = {key: request[key] for key in ("type", "path", "name", "args")}
+    journal = _native_journal(handler, command)
+    if journal["outcome"] == "acknowledged":
+        return {"success": True, "value": journal["result"]["value"]}
+    assert journal["result"] is None
+    return {"success": False, "error": journal["error"]}
+
+
+def _native_call(handler, path, name, *args):
+    return _native_request(
+        handler, {"type": "call", "path": path, "name": name, "args": list(args)}
+    )
+
+
+def _native_set(handler, path, name, value):
+    return _native_request(handler, {"type": "set", "path": path, "name": name, "args": [value]})
 
 
 def _wire_note(pitch, start_time, duration, velocity=100, release_velocity=64.0):
@@ -368,7 +474,7 @@ def test_add_new_notes_passes_midi_note_specifications_and_reads_back_midi_notes
         _wire_note(64, 1.0 / 3.0, 2.0 / 3.0, velocity=90, release_velocity=23.0),
     ]
 
-    response = _call(handler, clip_path, "add_new_notes", {"notes": notes})
+    response = _native_call(handler, clip_path, "add_new_notes", {"notes": notes})
     assert response == {"success": True, "value": [1, 2]}
     assert all(type(note_id) is int for note_id in response["value"])
     assert [
@@ -414,7 +520,7 @@ def test_note_readback_rejects_malformed_host_notes(live, monkeypatch):
     _, clip = _midi_track_with_clip(live)
     handler = LomHandler(live.surface)
     clip_path = "song/tracks/0/clip_slots/0/clip"
-    assert _call(handler, clip_path, "add_new_notes", {"notes": [_wire_note(60, 0.0, 1.0)]})[
+    assert _native_call(handler, clip_path, "add_new_notes", {"notes": [_wire_note(60, 0.0, 1.0)]})[
         "success"
     ]
     note = clip.get_all_notes_extended()[0]
@@ -433,9 +539,20 @@ def test_note_readback_rejects_malformed_host_notes(live, monkeypatch):
         setattr(note, field, original)
 
     monkeypatch.setattr(clip, "add_new_notes", lambda specifications: None)
-    response = _call(handler, clip_path, "add_new_notes", {"notes": [_wire_note(62, 1.0, 1.0)]})
-    assert response["success"] is False
-    assert "note IDs" in response["error"]
+    journal = _native_journal(
+        handler,
+        {
+            "type": "call",
+            "path": clip_path,
+            "name": "add_new_notes",
+            "args": [{"notes": [_wire_note(62, 1.0, 1.0)]}],
+        },
+    )
+    assert journal["outcome"] == "partial"
+    assert journal["native_mutation_started"] is True
+    assert journal["started_calls"] == journal["returned_calls"] == 1
+    assert journal["result"] is None
+    assert journal["error"] == "Clip.add_new_notes returned no note IDs"
 
 
 @pytest.mark.parametrize("version", [(11, 0, 0), (11, 1, 0), (12, 3, 5)])
@@ -452,7 +569,10 @@ def test_versioned_note_population_readback_keeps_finite_range_coverage(version,
         _wire_note(62, 4.0, 1.0),
         _wire_note(64, 8.0, 1.0),
     ]
-    assert _call(handler, path, "add_new_notes", {"notes": notes})["value"] == [1, 2, 3, 4, 5]
+    # Internal ABI setup deliberately includes starts outside the original
+    # four-beat range. This is not a physical or prepared-authority writer;
+    # the 11.0 gateway separately forbids such unobserved additions.
+    assert handler._add_new_notes(clip, notes) == [1, 2, 3, 4, 5]
     query = {
         "return": NOTE_FIELDS,
         "from_pitch": 0,
@@ -514,14 +634,14 @@ def test_handler_enforces_get_set_call_algebra_without_silent_noops(live):
     assert no_value["success"] is False
     assert "outside Sunny bridge protocol" in no_value["error"]
 
-    assert _set(handler, "song", "tempo", 137.5) == {
+    assert _native_set(handler, "song", "tempo", 137.5) == {
         "success": True,
         "value": {"property": "tempo", "requested": 137.5, "observed": 137.5},
     }
     assert live.song.tempo == 137.5
 
     live.song.scenes[0].enable_launch_overrides(128.0, 7, 8)
-    assert _set(handler, "song/scenes/0", "time_signature_enabled", False) == {
+    assert _native_set(handler, "song/scenes/0", "time_signature_enabled", False) == {
         "success": True,
         "value": {"property": "time_signature_enabled", "requested": False, "observed": False},
     }
@@ -537,23 +657,26 @@ def test_structural_calls_return_no_private_host_object(live):
     """Live returns the created Track or Scene; the adapter reports success, not the object."""
     handler = LomHandler(live.surface)
 
-    assert _call(handler, "song", "create_midi_track", -1) == {"success": True, "value": None}
-    assert _call(handler, "song", "create_midi_track", 0) == {"success": True, "value": None}
-    assert _call(handler, "song", "create_return_track") == {"success": True, "value": None}
-    assert _call(handler, "song", "create_scene", 0) == {"success": True, "value": None}
+    assert _native_call(handler, "song", "create_midi_track", -1) == {
+        "success": True,
+        "value": None,
+    }
+    assert _native_call(handler, "song", "create_midi_track", 0) == {"success": True, "value": None}
+    assert _native_call(handler, "song", "create_return_track") == {"success": True, "value": None}
+    assert _native_call(handler, "song", "create_scene", 0) == {"success": True, "value": None}
     assert [track.name for track in live.song.tracks] == ["1-MIDI", "1-MIDI"]
     assert len(live.song.scenes) == 2
     assert all(len(track.clip_slots) == 2 for track in live.song.tracks)
     assert all(len(track.mixer_device.sends) == 1 for track in live.song.tracks)
 
-    assert _call(handler, "song/tracks/0/clip_slots/0", "create_clip", 4.0) == {
+    assert _native_call(handler, "song/tracks/0/clip_slots/0", "create_clip", 4.0) == {
         "success": True,
         "value": None,
     }
-    occupied = _call(handler, "song/tracks/0/clip_slots/0", "create_clip", 4.0)
+    occupied = _native_call(handler, "song/tracks/0/clip_slots/0", "create_clip", 4.0)
     assert occupied["success"] is False
     assert "not empty" in occupied["error"]
-    assert _call(handler, "song/tracks/0/clip_slots/0", "delete_clip") == {
+    assert _native_call(handler, "song/tracks/0/clip_slots/0", "delete_clip") == {
         "success": True,
         "value": None,
     }
@@ -575,7 +698,7 @@ def test_mixer_enum_assignment_reads_back_as_plain_integers(live):
         ("song/tracks/0", "arm", False),
         ("song/tracks/0", "implicit_arm", False),
     ):
-        response = _set(handler, path, property_name, value)
+        response = _native_set(handler, path, property_name, value)
         assert response == {
             "success": True,
             "value": {"property": property_name, "requested": value, "observed": value},
@@ -606,7 +729,7 @@ def test_generated_return_gate_uses_exact_boolean_and_stereo_pan_readback(live):
         ("song/return_tracks/0/mixer_device/track_activator", "value", 1.0),
         ("song/return_tracks/0/mixer_device/panning", "value", 0.25),
     ):
-        assert _set(handler, path, property_name, value) == {
+        assert _native_set(handler, path, property_name, value) == {
             "success": True,
             "value": {"property": property_name, "requested": value, "observed": value},
         }
@@ -631,7 +754,7 @@ def test_generated_main_gate_uses_exact_activator_and_centered_stereo_pan_readba
         ("song/master_track/mixer_device", "panning_mode", 0),
         ("song/master_track/mixer_device/panning", "value", 0.0),
     ):
-        assert _set(handler, path, property_name, value) == {
+        assert _native_set(handler, path, property_name, value) == {
             "success": True,
             "value": {"property": property_name, "requested": value, "observed": value},
         }
@@ -646,11 +769,11 @@ def test_mixer_display_value_writes_fader_and_send_levels(live):
     track = live.song.create_midi_track(-1)
     handler = LomHandler(live.surface)
 
-    assert _set(handler, "song/tracks/0/mixer_device/volume", "display_value", -6.0) == {
+    assert _native_set(handler, "song/tracks/0/mixer_device/volume", "display_value", -6.0) == {
         "success": True,
         "value": {"property": "display_value", "requested": -6.0, "observed": -6.0},
     }
-    assert _set(handler, "song/tracks/0/mixer_device/sends/0", "display_value", -12.0) == {
+    assert _native_set(handler, "song/tracks/0/mixer_device/sends/0", "display_value", -12.0) == {
         "success": True,
         "value": {"property": "display_value", "requested": -12.0, "observed": -12.0},
     }
@@ -664,7 +787,7 @@ def test_clip_groove_clear_uses_null_object_assignment_and_exact_readback(live):
     clip.groove = Groove()
     handler = LomHandler(live.surface)
 
-    assert _set(handler, "song/tracks/0/clip_slots/0/clip", "groove", None) == {
+    assert _native_set(handler, "song/tracks/0/clip_slots/0/clip", "groove", None) == {
         "success": True,
         "value": {"property": "groove", "requested": None, "observed": None},
     }
@@ -687,7 +810,7 @@ def test_clip_launch_tuple_is_assigned_with_exact_scalar_readback(live):
         ("legato", False),
         ("velocity_amount", 0.0),
     ):
-        response = _set(handler, "song/tracks/0/clip_slots/0/clip", property_name, value)
+        response = _native_set(handler, "song/tracks/0/clip_slots/0/clip", property_name, value)
         assert response == {
             "success": True,
             "value": {"property": property_name, "requested": value, "observed": value},
@@ -698,15 +821,86 @@ def test_clip_launch_tuple_is_assigned_with_exact_scalar_readback(live):
     assert clip.launch_quantization == Quantization.q_no_q
 
 
-def test_clip_envelope_clear_returns_exact_absence_evidence(live):
-    """The adapter maps the public destructive call to one closed Boolean observation."""
+def test_internal_clip_envelope_clear_adapter_returns_exact_absence_evidence(live):
+    """Unit-test retained dispatch's ABI, without granting prepared authority.
+
+    Existing opaque envelope content cannot be authorized by the native
+    gateway. Its refusal/preservation and an authorized empty Clip success
+    are tested independently below; this direct phase is only adapter unit
+    execution on a real graph, not a native permit or physical wire path.
+    """
     _, clip = _midi_track_with_clip(live)
     clip.add_envelope("Track Volume")
     handler = LomHandler(live.surface)
+    registry = ManagedRegistry(live.surface)
+    registry.attach_handler(handler)
+    left, right = socket.socketpair()
+    peer = PeerControl(left)
+    peer.phase("native")
+    phases = []
 
-    response = _call(handler, "song/tracks/0/clip_slots/0/clip", "sunny_clear_all_envelopes")
-    assert response == {"success": True, "value": {"has_envelopes": False}}
+    def adapter_phase(label, callback, *args):
+        phases.append(label)
+        return callback(*args)
+
+    try:
+        with peer_scope(peer):
+            graph = NativeGraph(registry)
+            try:
+                value = handler.handle_retained(
+                    {
+                        "type": "call",
+                        "path": "song/tracks/0/clip_slots/0/clip",
+                        "name": "sunny_clear_all_envelopes",
+                        "args": [],
+                    },
+                    graph,
+                    phase=adapter_phase,
+                )
+            finally:
+                graph.close()
+    finally:
+        registry._legacy.close()
+        peer.close()
+        left.close()
+        right.close()
+    assert value == {"has_envelopes": False}
+    assert type(value["has_envelopes"]) is bool
+    assert phases == ["clear_envelopes"]
     assert clip.has_envelopes is False
+
+
+def test_authorized_empty_clip_envelope_clear_has_literal_absence_evidence(live):
+    """The actual native gateway acknowledges the useful fresh-Clip primitive."""
+    _, clip = _midi_track_with_clip(live)
+    response = _native_call(
+        LomHandler(live.surface), "song/tracks/0/clip_slots/0/clip", "sunny_clear_all_envelopes"
+    )
+    assert response == {"success": True, "value": {"has_envelopes": False}}
+    assert type(response["value"]["has_envelopes"]) is bool
+    assert clip.has_envelopes is False
+
+
+def test_native_clear_refuses_and_preserves_existing_opaque_envelopes(live):
+    """An adapter's ability to clear does not establish complete content authority."""
+    _, clip = _midi_track_with_clip(live)
+    clip.add_envelope("Track Volume")
+    before = set(clip._envelopes)
+    journal = _native_journal(
+        LomHandler(live.surface),
+        {
+            "type": "call",
+            "path": "song/tracks/0/clip_slots/0/clip",
+            "name": "sunny_clear_all_envelopes",
+            "args": [],
+        },
+    )
+    assert journal["outcome"] == "declined"
+    assert journal["started_calls"] == journal["returned_calls"] == 0
+    assert journal["native_mutation_started"] is False
+    assert journal["error"] == "Complete existing envelope content authority is unavailable"
+    assert clip.has_envelopes is True
+    assert clip._envelopes == before == {"Track Volume"}
 
 
 def test_handler_requires_current_protocol_envelope_and_rejects_reflection_before_lom_access(
@@ -740,6 +934,66 @@ def test_handler_requires_current_protocol_envelope_and_rejects_reflection_befor
         "success": False,
         "error": "Request contains unknown fields",
     }
+
+
+@pytest.mark.parametrize("registered", [False, True])
+@pytest.mark.parametrize(
+    ("kind", "path", "name", "args"),
+    [
+        ("set", "song", "tempo", [137.5]),
+        ("set", "song/scenes/0", "name", ["Verse"]),
+        ("set", "song/tracks/0", "mute", [False]),
+        ("set", "song/tracks/0/mixer_device/panning", "value", [0.25]),
+        ("set", "song/tracks/0/clip_slots/0/clip", "groove", [None]),
+        ("call", "song", "create_midi_track", [-1]),
+        ("call", "song", "create_return_track", []),
+        ("call", "song", "create_scene", [0]),
+        ("call", "song", "sunny_set_cue", [16.0, "Verse"]),
+        ("call", "song/tracks/0", "insert_device", ["Operator", 0]),
+        ("call", "song/tracks/0/clip_slots/0", "create_clip", [4.0]),
+        ("call", "song/tracks/0/clip_slots/0", "delete_clip", []),
+        (
+            "call",
+            "song/tracks/0/clip_slots/0/clip",
+            "add_new_notes",
+            [{"notes": [_wire_note(60, 0.0, 1.0)]}],
+        ),
+        ("call", "song/tracks/0/clip_slots/0/clip", "sunny_clear_all_envelopes", []),
+        (
+            "call",
+            "song/tracks/0/devices/0",
+            "sunny_set_device_parameter",
+            ["Filter Freq", 0.5, "value", 0.0, 1.0],
+        ),
+        (
+            "call",
+            "song/tracks/0",
+            "sunny_set_output_routing_type",
+            [_type_route("Master", RoutingTypeCategory.master)],
+        ),
+    ],
+)
+def test_raw_current_protocol_mutations_refuse_before_native_access(
+    live, monkeypatch, registered, kind, path, name, args
+):
+    """A closed musical command cannot bypass authority by using its raw frame."""
+    assert _request_allowed(kind, path, name, args)
+    reached = []
+
+    def unexpected_song(self):
+        reached.append(True)
+        raise AssertionError("Raw mutation must be refused before reaching Live")
+
+    monkeypatch.setattr(live.surface.__class__, "song", unexpected_song)
+    registry = ManagedRegistry(live.surface) if registered else None
+    handler = LomHandler(live.surface, managed_registry=registry)
+    if registry:
+        registry.attach_handler(handler)
+    assert _request(handler, kind, path, name, *args) == {
+        "success": False,
+        "error": "Raw native mutation requires prepared scope authority",
+    }
+    assert reached == []
 
 
 def test_current_protocol_operation_algebra_covers_compilers_without_open_ended_lom_access():
@@ -1007,7 +1261,7 @@ def test_sunny_set_cue_creates_named_cue_and_restores_playhead(live):
     song.current_song_time = 9.0
     handler = LomHandler(live.surface)
 
-    assert _call(handler, "song", "sunny_set_cue", 16.0, "Verse") == {
+    assert _native_call(handler, "song", "sunny_set_cue", 16.0, "Verse") == {
         "success": True,
         "value": {
             "action": "created",
@@ -1020,7 +1274,7 @@ def test_sunny_set_cue_creates_named_cue_and_restores_playhead(live):
     assert song.current_song_time == 9.0
     assert [(cue.time, cue.name) for cue in song.cue_points] == [(16.0, "Verse")]
 
-    assert _call(handler, "song", "sunny_set_cue", 16.0, "Chorus") == {
+    assert _native_call(handler, "song", "sunny_set_cue", 16.0, "Chorus") == {
         "success": True,
         "value": {
             "action": "updated",
@@ -1063,7 +1317,10 @@ def test_sunny_set_device_parameter_requires_exact_enabled_parameter(live):
         "automation_state": 0,
     }
 
-    assert handler.handle(request) == {"success": True, "value": {**observation, "requested": 0.25}}
+    assert _native_request(handler, request) == {
+        "success": True,
+        "value": {**observation, "requested": 0.25},
+    }
     assert parameter.value == 0.25
     observation_request = _versioned(
         {
@@ -1102,11 +1359,11 @@ def test_sunny_set_device_parameter_requires_exact_enabled_parameter(live):
     assert disabled["success"] is True
     assert disabled["value"]["is_enabled"] is False
     assert disabled["value"]["state"] == 2
-    refused = handler.handle(request)
+    refused = _native_request(handler, request)
     assert refused["success"] is False
     assert "disabled" in refused["error"]
     restore(parameter, "is_enabled")
-    refused = handler.handle(request)
+    refused = _native_request(handler, request)
     assert refused["success"] is False
     assert "cannot be changed" in refused["error"]
     restore(parameter, "state")
@@ -1126,22 +1383,26 @@ def test_sunny_set_device_parameter_requires_exact_enabled_parameter(live):
     restore(parameter, "is_quantized")
 
     request["args"] = ["Dry/Wet", 0.375, "display_value", 0.0, 1.0]
-    response = handler.handle(request)
+    response = _native_request(handler, request)
     assert response["success"] is True
     assert response["value"]["property"] == "display_value"
     assert response["value"]["observed"] == 0.375
     assert parameter.display_value == 0.375
 
     request["args"] = ["Dry/Wet", 0.75, "value", 0.0, 2.0]
-    response = handler.handle(request)
+    response = _native_request(handler, request)
     assert response["success"] is False
     assert "does not match expected" in response["error"]
     assert parameter.value == 0.375
 
     request["args"] = ["Unknown", 0.5, "value", 0.0, 1.0]
-    response = handler.handle(request)
+    # Keep the exact private adapter lookup error, independently of the
+    # earlier closed gateway's retained-target refusal.
+    with pytest.raises(RuntimeError, match="not found"):
+        handler._set_device_parameter(track.devices[1], *request["args"])
+    response = _native_request(handler, request)
     assert response["success"] is False
-    assert "not found" in response["error"]
+    assert response["error"] == "Retained device parameter is absent or ambiguous"
 
     request["args"] = ["Dry/Wet", 0.5, "not_a_lom_property", 0.0, 1.0]
     response = handler.handle(request)
@@ -1157,7 +1418,7 @@ def test_sunny_set_device_parameter_reports_post_write_automation_override(live)
     parameter.start_automation_playback()
     handler = LomHandler(live.surface)
 
-    response = _call(
+    response = _native_call(
         handler,
         "song/tracks/0/devices/0",
         "sunny_set_device_parameter",
@@ -1178,7 +1439,7 @@ def test_insert_device_returns_exact_identity_type_and_activity_evidence(live):
     track = live.song.create_midi_track(-1)
     handler = LomHandler(live.surface)
 
-    response = _call(handler, "song/tracks/0", "insert_device", "Operator", 0)
+    response = _native_call(handler, "song/tracks/0", "insert_device", "Operator", 0)
     assert response == {
         "success": True,
         "value": {
@@ -1202,7 +1463,7 @@ def test_insert_device_returns_exact_identity_type_and_activity_evidence(live):
     assert type(response["value"]["type"]) is int
     assert [device.name for device in LomHandler._device_chain(track)] == ["Operator"]
 
-    unknown = _call(handler, "song/tracks/0", "insert_device", "Not A Device")
+    unknown = _native_call(handler, "song/tracks/0", "insert_device", "Not A Device")
     assert unknown["success"] is False
     assert "Unknown" in unknown["error"]
 
@@ -1233,6 +1494,10 @@ def test_sunny_set_device_parameter_rejects_ambiguous_name_without_mutation(live
         DeviceParameter("Cutoff", original_name="Filter Frequency"),
         DeviceParameter("Filter Frequency", original_name="Frequency"),
     )
+    for parameter in parameters:
+        # These independent fixture parameters still have native Device
+        # parents; replacing the population must not invent orphan targets.
+        inject(parameter, "canonical_parent", device)
     inject(device, "parameters", parameters)
     handler = LomHandler(live.surface)
 
@@ -1240,7 +1505,12 @@ def test_sunny_set_device_parameter_rejects_ambiguous_name_without_mutation(live
         ("sunny_set_device_parameter", ("Filter Frequency", 0.5, "value", 0.0, 1.0)),
         ("sunny_get_device_parameter", ("Filter Frequency", "value")),
     ):
-        response = _call(handler, "song/tracks/0/devices/0", name, *args)
+        if name == "sunny_set_device_parameter":
+            with pytest.raises(RuntimeError, match="ambiguous"):
+                handler._set_device_parameter(device, *args)
+            response = _native_call(handler, "song/tracks/0/devices/0", name, *args)
+        else:
+            response = _call(handler, "song/tracks/0/devices/0", name, *args)
         assert response["success"] is False
         assert "ambiguous" in response["error"]
     assert [parameter.value for parameter in parameters] == [0.0, 0.0]
@@ -1278,7 +1548,7 @@ def test_output_routing_is_selected_from_advertised_objects_in_two_stages(live):
     track_in = _channel_route("Track In")
     advertised_types = {"available_output_routing_types": [master, external, return_a, return_b]}
 
-    response = _call(handler, "song/tracks/0", "sunny_set_output_routing_type", return_a)
+    response = _native_call(handler, "song/tracks/0", "sunny_set_output_routing_type", return_a)
     assert response == {
         "success": True,
         "value": {
@@ -1292,8 +1562,10 @@ def test_output_routing_is_selected_from_advertised_objects_in_two_stages(live):
     }
     assert track.output_routing_type.attached_object is song.return_tracks[0]
 
-    assert _call(handler, "song/tracks/0", "sunny_set_output_routing_type", external)["success"]
-    channel = _call(
+    assert _native_call(handler, "song/tracks/0", "sunny_set_output_routing_type", external)[
+        "success"
+    ]
+    channel = _native_call(
         handler,
         "song/tracks/0",
         "sunny_set_output_routing_channel",
@@ -1314,20 +1586,44 @@ def test_output_routing_is_selected_from_advertised_objects_in_two_stages(live):
     # An identifier naming an advertised route with another category is not that route.
     impostor = {"display_name": "Master", "identifier": return_a["identifier"]}
     for requested in (_type_route("C-Return", RoutingTypeCategory.track), impostor):
-        unavailable = _call(handler, "song/tracks/0", "sunny_set_output_routing_type", requested)
-        assert unavailable["success"] is False
-        assert "not in available_output_routing_types" in unavailable["error"]
+        # Internal adapter lookup and native preparation enforce the same
+        # negative operation at distinct boundaries, with distinct errors.
+        with pytest.raises(RuntimeError, match="not in available_output_routing_types"):
+            handler._set_output_routing_type(track, requested)
+        unavailable = _native_journal(
+            handler,
+            {
+                "type": "call",
+                "path": "song/tracks/0",
+                "name": "sunny_set_output_routing_type",
+                "args": [requested],
+            },
+        )
+        assert unavailable["outcome"] == "declined"
+        assert unavailable["started_calls"] == unavailable["returned_calls"] == 0
+        assert unavailable["error"] == "Original advertised routing target is absent or ambiguous"
     assert track.output_routing_type.display_name == "Ext. Out"
 
     track.output_routing_type = track.available_output_routing_types[0]
-    changed = _call(
-        handler, "song/tracks/0", "sunny_set_output_routing_channel", external, _channel_route("1")
+    with pytest.raises(RuntimeError, match="changed before channel mutation"):
+        handler._set_output_routing_channel(track, external, _channel_route("1"))
+    changed = _native_journal(
+        handler,
+        {
+            "type": "call",
+            "path": "song/tracks/0",
+            "name": "sunny_set_output_routing_channel",
+            "args": [external, _channel_route("1")],
+        },
     )
-    assert changed["success"] is False
-    assert "changed before channel mutation" in changed["error"]
+    assert changed["outcome"] == "declined"
+    assert changed["started_calls"] == changed["returned_calls"] == 0
+    assert changed["error"] == "Original advertised routing target is absent or ambiguous"
     assert track.output_routing_channel.display_name == "Track In"
 
-    returned = _call(handler, "song/return_tracks/1", "sunny_set_output_routing_type", return_a)
+    returned = _native_call(
+        handler, "song/return_tracks/1", "sunny_set_output_routing_type", return_a
+    )
     assert returned["success"] is True
     assert song.return_tracks[1].output_routing_type.attached_object is song.return_tracks[0]
 
@@ -1343,7 +1639,7 @@ def test_output_routing_mutation_refuses_ambiguous_advertised_routes(live):
     track.insert_device("Operator")
     handler = LomHandler(live.surface)
 
-    response = _call(
+    response = _native_call(
         handler,
         "song/tracks/0",
         "sunny_set_output_routing_type",

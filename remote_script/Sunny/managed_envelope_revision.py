@@ -16,6 +16,7 @@ from .managed_capacity import (
     note_array_bound,
     require_response_capacity,
 )
+from .native_control import check_native_peer, native_call
 
 PREVIEW_METHOD = "sunny_managed_preview_envelope_replacement"
 REPLACE_METHOD = "sunny_managed_replace_envelope"
@@ -360,10 +361,11 @@ class ManagedEnvelopeRevision:
             return actual
 
         def native(name: str, function: Any, *args: Any) -> Any:
+            check_native_peer()
             progress["started_calls"].append(name)
             operation["native_mutation_started"] = True
             try:
-                result = function(*args)
+                result = native_call(function, *args)
             except Exception:
                 try:
                     progress["last_observation"] = registry._capture(record)

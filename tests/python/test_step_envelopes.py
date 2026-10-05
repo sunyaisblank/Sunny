@@ -8,7 +8,10 @@ from __future__ import annotations
 
 import copy
 import math
+import socket
 import threading
+import uuid
+from collections.abc import Iterator
 from types import SimpleNamespace
 from typing import Any
 
@@ -24,12 +27,21 @@ from live_model import (
     inject,
 )
 from Sunny.handler import BRIDGE_PROTOCOL_VERSION, LomHandler, _request_allowed
+from Sunny.managed import ManagedRegistry, _digest
+from Sunny.native_control import PeerControl, peer_scope
 
 CLIP_PATH = "song/tracks/0/clip_slots/0/clip"
 DEVICE_PARAMETER = {"kind": "device", "device_index": 0, "parameter_name": "Dry/Wet"}
 
 
 def _request(handler: LomHandler, name: str, payload: dict[str, Any]) -> dict[str, Any]:
+    if name == "sunny_author_step_envelope":
+        return _author_request(handler, payload)
+    return _raw_request(handler, name, payload)
+
+
+def _raw_request(handler: LomHandler, name: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """Use the physical protocol entry for reads and explicit unauthorized-write checks."""
     return handler.handle(
         {
             "bridge_protocol_version": BRIDGE_PROTOCOL_VERSION,
@@ -39,6 +51,79 @@ def _request(handler: LomHandler, name: str, payload: dict[str, Any]) -> dict[st
             "args": [payload],
         }
     )
+
+
+def _gateway(handler: LomHandler, name: str, payload: dict[str, Any] | None) -> dict[str, Any]:
+    """Send the actual closed native authority methods, retaining inner outcomes."""
+    return handler.handle(
+        {
+            "bridge_protocol_version": BRIDGE_PROTOCOL_VERSION,
+            "type": "call",
+            "path": "song",
+            "name": name,
+            "args": [] if payload is None else [payload],
+        }
+    )
+
+
+def _author_request(handler: LomHandler, payload: dict[str, Any]) -> dict[str, Any]:
+    """Run scope/prepare/execute once; normalize only the real terminal result for assertions."""
+    context = _gateway(handler, "sunny_managed_context", None)
+    assert context["success"], context
+    captured = _gateway(handler, "sunny_legacy_scope", {**context["value"], "scope_id": None})
+    assert captured["success"], captured
+    scope = captured["value"]
+    if scope["outcome"] != "ready":
+        return {"success": False, "error": scope["error"], "scope": scope}
+    origin = {
+        key: scope[key]
+        for key in ("schema_version", "bridge_instance", "document_token", "scope_id")
+    }
+    request = {
+        **origin,
+        "workflow_id": uuid.uuid4().hex,
+        "operation_id": uuid.uuid4().hex,
+        "ordinal": 1,
+        "graph_revision": 0,
+        "command": {
+            "type": "call",
+            "path": CLIP_PATH,
+            "name": "sunny_author_step_envelope",
+            "args": [payload],
+        },
+    }
+    try:
+        prepared = _gateway(handler, "sunny_legacy_prepare", request)
+        if not prepared["success"]:
+            return prepared
+        journal = prepared["value"]
+        correlation = None
+        if journal["outcome"] == "prepared":
+            correlation = {
+                **{key: value for key, value in request.items() if key != "command"},
+                "fingerprint": _digest(request),
+            }
+            executed = _gateway(handler, "sunny_legacy_execute", correlation)
+            assert executed["success"], executed
+            journal = executed["value"]
+        result = {"journal": journal, "token": correlation}
+        if journal["outcome"] == "acknowledged":
+            return {**result, "success": True, "value": journal["result"]["value"]}
+        return {**result, "success": False, "error": journal["error"]}
+    finally:
+        finished = _gateway(handler, "sunny_legacy_finish", origin)
+        assert finished["success"], finished
+
+
+def _new_handler(target: SimpleNamespace, authorizer: Any) -> LomHandler:
+    """Attach an explicit source-contract authorizer to the actual registry/handler composition."""
+    registry = ManagedRegistry(target.live.surface)
+    handler = LomHandler(
+        target.live.surface, envelope_authorizer=authorizer, managed_registry=registry
+    )
+    registry.attach_handler(handler)
+    target.registries.append(registry)
+    return handler
 
 
 def _lane(selector: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -62,8 +147,8 @@ def _query(times: list[float], selector: dict[str, Any] | None = None) -> dict[s
 
 
 @pytest.fixture
-def target(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
-    """Create explicit source-contract objects and an identity-only authorizer."""
+def target(monkeypatch: pytest.MonkeyPatch) -> Iterator[SimpleNamespace]:
+    """Use actual protocol47 authority with explicit source-contract objects and authorizer."""
     live = LiveSet(midi_tracks=1, return_tracks=1, python_envelope_api=True).install(monkeypatch)
     track = live.song.tracks[0]
     track.insert_device("Compressor")
@@ -78,14 +163,27 @@ def target(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
         calls.append((resolved_track, resolved_clip, resolved_parameter, threading.get_ident()))
         return resolved_track is track and resolved_clip is clip and resolved_parameter is parameter
 
-    return SimpleNamespace(
+    state = SimpleNamespace(
         live=live,
         track=track,
         clip=clip,
         parameter=parameter,
         authorizations=calls,
-        handler=LomHandler(live.surface, envelope_authorizer=authorize),
+        registries=[],
     )
+    state.handler = _new_handler(state, authorize)
+    left, right = socket.socketpair()
+    peer = PeerControl(left)
+    peer.phase("native")
+    try:
+        with peer_scope(peer):
+            yield state
+    finally:
+        for registry in state.registries:
+            registry._legacy.close()
+        peer.close()
+        left.close()
+        right.close()
 
 
 def test_author_creates_native_steps_and_query_samples_independent_values(
@@ -105,6 +203,9 @@ def test_author_creates_native_steps_and_query_samples_independent_values(
     assert acknowledgement["value"]["action"] == "created"
     assert acknowledgement["value"]["steps_inserted"] == 3
     assert set(acknowledgement["value"]) == {"action", "steps_inserted", "parameter"}
+    assert acknowledgement["journal"]["outcome"] == "acknowledged"
+    assert acknowledgement["journal"]["started_calls"] == 4
+    assert acknowledgement["journal"]["returned_calls"] == 4
     assert inserted == [(0.0, 1.0, 0.25), (1.0, 1.5, 0.8), (2.5, 1.5, 0.15)]
     assert target.parameter.value == 0.0  # No temporary parameter control.
     assert len(target.authorizations) == 4  # Creation plus each returned insert call.
@@ -150,7 +251,7 @@ def test_default_and_non_boolean_authorizers_deny_before_creation(
 ) -> None:
     """Production defaults and truthy substitutes cannot establish ownership."""
     for authorizer in (None, lambda *_: False, lambda *_: 1, lambda *_: "owned"):
-        handler = LomHandler(target.live.surface, envelope_authorizer=authorizer)
+        handler = _new_handler(target, authorizer)
         response = _request(handler, "sunny_author_step_envelope", _lane())
         assert not response["success"]
         assert "not authorized" in response["error"]
@@ -174,6 +275,7 @@ def test_existing_lane_is_updated_without_clearing_another_parameter(
     response = _request(target.handler, "sunny_author_step_envelope", _lane())
     assert response["success"], response
     assert response["value"]["action"] == "updated"
+    assert response["journal"]["started_calls"] == response["journal"]["returned_calls"] == 3
     assert target.clip.automation_envelope(target.parameter) is own
     assert own.value_at_time(0.25) == 0.25
     assert target.clip.automation_envelope(pan) is other
@@ -190,9 +292,9 @@ def test_mixer_bindings_use_same_track_objects_and_internal_domains(
     """Bind real mixer parameters without assuming display or normalized units."""
     mixer = target.track.mixer_device
     parameter = mixer.sends[0] if selector["kind"] == "send" else getattr(mixer, selector["kind"])
-    handler = LomHandler(
-        target.live.surface,
-        envelope_authorizer=lambda track, clip, resolved: (
+    handler = _new_handler(
+        target,
+        lambda track, clip, resolved: (
             track is target.track and clip is target.clip and resolved is parameter
         ),
     )
@@ -299,7 +401,8 @@ def test_foreign_canonical_parent_is_rejected_before_authorization(
         inject(target.track.devices[0], "canonical_parent", foreign)
     response = _request(target.handler, "sunny_author_step_envelope", _lane())
     assert not response["success"]
-    assert "target track" in response["error"]
+    assert response["scope"]["outcome"] == "declined"
+    assert "Native target parent differs from the retained graph" in response["error"]
     assert target.clip.has_envelopes is False
     assert not target.authorizations
 
@@ -332,12 +435,19 @@ def test_authorization_is_rechecked_before_each_native_write(
         calls.append((track, clip, parameter))
         return len(calls) <= 2  # Permit creation and first interval only.
 
-    handler = LomHandler(target.live.surface, envelope_authorizer=authorize)
+    handler = _new_handler(target, authorize)
     response = _request(handler, "sunny_author_step_envelope", _lane())
     assert not response["success"]
     assert "not authorized" in response["error"]
     assert len(calls) == 3
     assert target.clip.has_envelopes is True
+    assert response["journal"]["outcome"] == "partial"
+    assert response["journal"]["native_mutation_started"] is True
+    assert response["journal"]["started_calls"] == response["journal"]["returned_calls"] == 2
+    for method in ("sunny_legacy_operation", "sunny_legacy_execute"):
+        recovered = _gateway(handler, method, response["token"])
+        assert recovered == {"success": True, "value": response["journal"]}
+    assert len(calls) == 3
     sampled = _request(handler, "sunny_get_step_envelope", _query([0.25, 1.25]))
     assert sampled["value"]["samples"] == [
         {"time": 0.25, "value": 0.25},
@@ -363,6 +473,13 @@ def test_native_failure_after_partial_insertion_is_not_claimed_as_acknowledged(
     assert not response["success"]
     assert "host failed after insertion" in response["error"]
     assert "value" not in response
+    assert attempted == [0.0, 1.0]
+    assert response["journal"]["outcome"] == "partial"
+    assert response["journal"]["started_calls"] == 3
+    assert response["journal"]["returned_calls"] == 2
+    for method in ("sunny_legacy_operation", "sunny_legacy_execute"):
+        recovered = _gateway(target.handler, method, response["token"])
+        assert recovered == {"success": True, "value": response["journal"]}
     assert attempted == [0.0, 1.0]
     assert target.clip.automation_envelope(target.parameter).value_at_time(1.25) == 0.8
 
@@ -545,3 +662,40 @@ def test_model_clear_is_parameter_specific_and_all_clear_includes_native_envelop
     assert target.clip.has_envelopes is True
     target.clip.clear_all_envelopes()
     assert target.clip.has_envelopes is False
+
+
+def test_protocol47_raw_envelope_write_is_rejected_before_resolution(
+    target: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Physical admission requires authority even with a valid lane and selected authorizer."""
+    assert _request_allowed("call", CLIP_PATH, "sunny_author_step_envelope", [_lane()])
+    monkeypatch.setattr(
+        target.handler, "_resolve_path", lambda _path: pytest.fail("raw target resolution")
+    )
+    response = _raw_request(target.handler, "sunny_author_step_envelope", _lane())
+    assert response == {
+        "success": False,
+        "error": "Raw native mutation requires prepared scope authority",
+    }
+    assert target.clip.has_envelopes is False and not target.authorizations
+
+
+def test_author_ack_query_and_duplicate_execute_preserve_one_native_effect_sequence(
+    target: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One ACK retains its original token after finish; later calls never recreate or reinsert."""
+    original = AutomationEnvelope.insert_step
+    effects = []
+
+    def insert(envelope: AutomationEnvelope, start: float, duration: float, value: float) -> None:
+        effects.append((start, duration, value))
+        original(envelope, start, duration, value)
+
+    monkeypatch.setattr(AutomationEnvelope, "insert_step", insert)
+    response = _request(target.handler, "sunny_author_step_envelope", _lane())
+    assert response["success"], response
+    for method in ("sunny_legacy_operation", "sunny_legacy_execute"):
+        recovered = _gateway(target.handler, method, response["token"])
+        assert recovered == {"success": True, "value": response["journal"]}
+    assert effects == [(0.0, 1.0, 0.25), (1.0, 1.5, 0.8), (2.5, 1.5, 0.15)]
+    assert len(target.authorizations) == 4

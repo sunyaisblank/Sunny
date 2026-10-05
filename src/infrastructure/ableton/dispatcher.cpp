@@ -11,6 +11,7 @@
 #include <cstdlib>
 #include <string>
 #include <string_view>
+#include <sunny/infrastructure/ableton/detail/managed_fingerprint.hpp>
 #include <sunny/infrastructure/ableton/dispatcher.hpp>
 
 namespace sunny::infrastructure {
@@ -110,6 +111,50 @@ DispatchReport BridgeDispatcher::dispatch(const std::vector<BridgeMessage>& mess
         return report;
     }
 
+    LegacyWorkflowRecipe recipe;
+    for (const auto& message : messages) {
+        sunny::core::Result<LomRequest> request =
+            std::unexpected(sunny::core::ErrorCode::FormatError);
+        if (message.type == BridgeMessageType::AddNotes) {
+            auto notes = to_note_data(message.notes);
+            if (notes) request = LomProtocol::add_new_notes(LomPath::parse(message.path), *notes);
+        } else
+            request = to_lom_request(message);
+        if (!request || !LomProtocol::validate_request(*request)) {
+            report.failed = messages.size();
+            report.errors.push_back("Invalid closed bridge batch; nothing sent");
+            return report;
+        }
+        if (!LomProtocol::is_read_only_request(*request))
+            recipe.commands.push_back({{"command", legacy_command(*request)}, {"phase", 0}});
+    }
+    const bool workflow = !recipe.commands.empty();
+    if (workflow) {
+        auto authority = transport_->capture_legacy_authority();
+        if (!authority) {
+            report.failed = messages.size();
+            report.errors.push_back("Original batch graph capture declined");
+            return report;
+        }
+        if (*authority) {
+            recipe.kind = "bridge_messages";
+            recipe.authority = **authority;
+            auto digest = managed_detail::managed_digest(recipe.commands);
+            if (!digest) {
+                report.failed = messages.size();
+                report.errors.push_back("Batch digest unavailable");
+                return report;
+            }
+            recipe.intent_fingerprint = *digest;
+        }
+        if (!transport_->activate_legacy_workflow(recipe)) {
+            report.failed = messages.size();
+            report.errors.push_back("Durable batch workflow activation declined");
+            static_cast<void>(transport_->finish_legacy_workflow(false));
+            return report;
+        }
+    }
+
     for (const auto& msg : messages) {
         if (report.failed > 0) {
             // Stop at the first failure: each message relies on the effects of
@@ -145,7 +190,13 @@ DispatchReport BridgeDispatcher::dispatch(const std::vector<BridgeMessage>& mess
             ++report.sent;
         } else {
             ++report.failed;
-            report.indeterminate = response.delivery == LomDeliveryState::SentWithoutValidResponse;
+            report.indeterminate =
+                response.delivery == LomDeliveryState::SentWithoutValidResponse ||
+                (response.legacy_receipt &&
+                 (response.legacy_receipt->outcome == LegacyOperationOutcome::Partial ||
+                  response.legacy_receipt->outcome == LegacyOperationOutcome::Indeterminate ||
+                  response.legacy_receipt->outcome == LegacyOperationOutcome::UnknownEpoch ||
+                  response.legacy_receipt->outcome == LegacyOperationOutcome::UnknownOperation));
             report.errors.push_back(msg.path + ": " + response.error.value_or("unknown error"));
         }
     }
@@ -153,6 +204,11 @@ DispatchReport BridgeDispatcher::dispatch(const std::vector<BridgeMessage>& mess
     if (report.failed > 1) {
         report.errors.push_back(std::to_string(report.failed - 1) +
                                 " later message(s) not sent after the failure");
+    }
+    if (workflow && !transport_->finish_legacy_workflow(report.failed == 0)) {
+        ++report.failed;
+        report.errors.push_back(
+            "Batch native evidence retained but durable workflow finalization failed");
     }
     return report;
 }

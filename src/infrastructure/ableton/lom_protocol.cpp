@@ -24,6 +24,7 @@
 #include <sunny/infrastructure/ableton/detail/managed_mixer.hpp>
 #include <sunny/infrastructure/ableton/detail/managed_notes.hpp>
 #include <sunny/infrastructure/ableton/detail/managed_routing.hpp>
+#include <sunny/infrastructure/ableton/legacy_authority.hpp>
 #include <sunny/infrastructure/ableton/lom_protocol.hpp>
 #include <sunny/infrastructure/ableton/managed_recovery.hpp>
 #include <sunny/infrastructure/ableton/managed_song_settings.hpp>
@@ -515,6 +516,14 @@ bool valid_managed_request(std::string_view name, const std::vector<json>& args)
 } // namespace
 
 sunny::core::Result<void> LomProtocol::validate_request(const LomRequest& request) {
+    if (request.property_or_method.starts_with("sunny_legacy_")) {
+        const auto* payload =
+            request.args.size() == 1 ? std::get_if<json>(&request.args.front()) : nullptr;
+        if (request.type == LomRequestType::CallMethod && request.path.to_string() == "song" &&
+            payload && legacy_request_valid(request.property_or_method, *payload))
+            return {};
+        return std::unexpected(sunny::core::ErrorCode::ProtocolError);
+    }
     const auto kind = path_kind(request.path);
     if (!kind || request.property_or_method.empty())
         return std::unexpected(sunny::core::ErrorCode::ProtocolError);
@@ -826,6 +835,104 @@ sunny::core::Result<void> LomProtocol::validate_request(const LomRequest& reques
     }
     return valid ? sunny::core::Result<void>{}
                  : std::unexpected(sunny::core::ErrorCode::ProtocolError);
+}
+
+sunny::core::Result<LomRequestClassification>
+LomProtocol::classify_request(const LomRequest& request) {
+    try {
+        if (!validate_request(request))
+            return std::unexpected(sunny::core::ErrorCode::ProtocolError);
+        const auto& name = request.property_or_method;
+        const bool read = request.type == LomRequestType::GetProperty ||
+                          (request.type == LomRequestType::CallMethod &&
+                           is_one_of(name,
+                                     {"get_notes_by_id",
+                                      "get_notes_extended",
+                                      "get_all_notes_extended",
+                                      "sunny_get_target_profile",
+                                      "sunny_get_target_snapshot",
+                                      "sunny_get_scene_count",
+                                      "sunny_get_track_count",
+                                      "sunny_get_return_track_count",
+                                      "sunny_get_remote_log",
+                                      "sunny_get_device_count",
+                                      "sunny_get_device_parameter",
+                                      "sunny_get_step_envelope",
+                                      "sunny_resolve_native_display_value",
+                                      "sunny_managed_context",
+                                      "sunny_managed_operation",
+                                      "sunny_managed_observe",
+                                      "sunny_managed_sample_envelope",
+                                      "sunny_managed_preview_adoption",
+                                      "sunny_managed_preview_devices",
+                                      "sunny_managed_inspect_devices",
+                                      "sunny_managed_preview_song_settings",
+                                      "sunny_managed_inspect_song_settings",
+                                      "sunny_managed_preview_envelope_replacement",
+                                      "sunny_managed_preview_static_mixer",
+                                      "sunny_managed_inspect_static_mixer",
+                                      "sunny_managed_routing_candidates",
+                                      "sunny_managed_inspect_send",
+                                      "sunny_managed_preview_routing",
+                                      "sunny_managed_preview_group",
+                                      "sunny_ordinary_operation",
+                                      "sunny_legacy_operation",
+                                      "sunny_legacy_read"}));
+        const bool requires_origin =
+            !read || (request.type == LomRequestType::CallMethod &&
+                      is_one_of(name,
+                                {"sunny_managed_preview_adoption",
+                                 "sunny_managed_preview_devices",
+                                 "sunny_managed_preview_song_settings",
+                                 "sunny_managed_preview_envelope_replacement",
+                                 "sunny_managed_preview_static_mixer",
+                                 "sunny_managed_preview_routing",
+                                 "sunny_managed_preview_group"}));
+        LomRequestClassification classified{read, requires_origin, std::nullopt};
+        if (!requires_origin || request.type != LomRequestType::CallMethod ||
+            request.path.to_string() != "song" || request.args.size() != 1 ||
+            !(name.starts_with("sunny_managed_") || name.starts_with("sunny_ordinary_") ||
+              name.starts_with("sunny_legacy_")))
+            return classified;
+        const auto* value = std::get_if<json>(&request.args.front());
+        const auto valid_id = [](const json& id) {
+            if (!id.is_string()) return false;
+            const auto& text = id.get_ref<const std::string&>();
+            return text.size() == 32 && std::ranges::all_of(text, [](char c) {
+                       return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+                   });
+        };
+        if (!value || !value->contains("document_token") || !valid_id(value->at("document_token")))
+            return classified;
+        NativeFrameOrigin origin{value->at("document_token").get<std::string>(), std::nullopt};
+        if (value->contains("bridge_instance")) {
+            if (!valid_id(value->at("bridge_instance"))) return classified;
+            origin.bridge_instance = value->at("bridge_instance").get<std::string>();
+        } else if (!name.starts_with("sunny_managed_")) {
+            return classified;
+        }
+        classified.native_origin = std::move(origin);
+        return classified;
+    } catch (...) {
+        return std::unexpected(sunny::core::ErrorCode::ProtocolError);
+    }
+}
+
+bool LomProtocol::is_read_only_request(const LomRequest& request) noexcept {
+    const auto classified = classify_request(request);
+    return classified && classified->read_only;
+}
+
+bool LomProtocol::requires_native_origin(const LomRequest& request) noexcept {
+    const auto classified = classify_request(request);
+    return classified && classified->requires_native_origin;
+}
+
+sunny::core::Result<NativeFrameOrigin> LomProtocol::native_frame_origin(const LomRequest& request) {
+    auto classified = classify_request(request);
+    if (!classified || !classified->native_origin)
+        return std::unexpected(sunny::core::ErrorCode::ProtocolError);
+    return std::move(*classified->native_origin);
 }
 
 sunny::core::Result<void> LomProtocol::validate_notes(const LomPath& clip_path,

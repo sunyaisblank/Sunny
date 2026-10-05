@@ -412,6 +412,7 @@ void McpServer::run(McpIo& io) {
             throw std::logic_error("MCP session already has active requests");
         session_stopped_ = false;
         input_revoked_ = false;
+        native_origin_.reset();
         running_.store(true);
     }
     struct Entry {
@@ -665,11 +666,56 @@ std::shared_ptr<RequestControl> McpServer::admit_request(const nlohmann::json& m
     const auto key = id.dump();
     std::lock_guard control_lock(control_mutex_);
     if (controls_.contains(key)) throw std::invalid_argument("Duplicate active request ID");
-    auto control = std::make_shared<RequestControl>(key, message["method"].get<std::string>());
+    const auto method = message["method"].get<std::string>();
+    std::string tool_name;
+    auto origin = native_origin_;
+    if (method == "tools/call" && message.contains("params") && message["params"].is_object()) {
+        const auto& params = message["params"];
+        if (params.contains("name") && params["name"].is_string())
+            tool_name = params["name"].get<std::string>();
+        if (tool_name == "legacy_ableton_request") {
+            // This closed gateway carries the caller's retained original pair.
+            // Invalid explicit authority cannot fall back to session readiness.
+            origin.reset();
+            if (params.contains("arguments") && params["arguments"].is_object()) {
+                const auto& arguments = params["arguments"];
+                if (arguments.size() == 3 && arguments.contains("command") &&
+                    arguments.contains("bridge_instance") &&
+                    arguments["bridge_instance"].is_string() &&
+                    arguments.contains("document_token") &&
+                    arguments["document_token"].is_string()) {
+                    NativeOrigin explicit_origin{arguments["bridge_instance"].get<std::string>(),
+                                                 arguments["document_token"].get<std::string>()};
+                    if (valid_native_origin(explicit_origin)) origin = std::move(explicit_origin);
+                }
+            }
+        }
+    }
+    auto control =
+        std::make_shared<RequestControl>(key,
+                                         method,
+                                         std::chrono::steady_clock::now() + MCP_REQUEST_TIMEOUT,
+                                         std::move(origin),
+                                         std::move(tool_name));
     control->cancelled.store(session_stopped_, std::memory_order_release);
     control->input_closed.store(input_revoked_, std::memory_order_release);
     controls_.emplace(key, control);
     return control;
+}
+
+bool McpServer::publish_native_origin(const NativeOrigin& origin) {
+    if (!valid_native_origin(origin)) return false;
+    const auto control = current_request_control();
+    if (!control || control->method != "tools/call" || control->tool_name != "doctor_ableton")
+        return false;
+    std::lock_guard control_lock(control_mutex_);
+    const auto found = controls_.find(control->identity);
+    if (session_stopped_ || input_revoked_ || found == controls_.end() ||
+        found->second != control || control->stop_requested() ||
+        control->input_closed.load(std::memory_order_acquire))
+        return false;
+    native_origin_ = origin;
+    return true;
 }
 
 void McpServer::retire_request(const std::shared_ptr<RequestControl>& control) {

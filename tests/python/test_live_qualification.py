@@ -89,7 +89,7 @@ def configuration(server):
     return {
         "bridge_host": "127.0.0.1",
         "bridge_port": server.bound_port,
-        "expected_bridge_protocol_version": 46,
+        "expected_bridge_protocol_version": 47,
     }
 
 
@@ -121,7 +121,7 @@ def test_shipped_read_requests_reach_the_production_handler(common, running_brid
     }
     scene = json.loads((KIT / "requests" / "scene0-read.json").read_text())
     response = common.bridge_rpc(config, scene, log)
-    assert response["bridge_protocol_version"] == 46 and response["success"] is True
+    assert response["bridge_protocol_version"] == 47 and response["success"] is True
     assert response["value"]["song"]["scenes"][0]["name"] == "Literal scene witness"
     assert response["value"]["song"]["scenes"][0]["tempo_enabled"] is False
     assert received == [profile, scene]
@@ -145,7 +145,13 @@ def test_missing_wrong_and_rejected_requests_cannot_be_successful_observations(
         assert response["success"] is False
         assert "Unsupported bridge protocol version" in response["error"]
     assert len(received) == 2
-    rejected = {"bridge_protocol_version": 46, "type": "get", "path": "song", "name": "nonexistent"}
+    rejected = {
+        "bridge_protocol_version": 47,
+        "type": "call",
+        "path": "song/tracks/999/devices/0",
+        "name": "sunny_get_device_parameter",
+        "args": ["Gain", "value"],
+    }
     with pytest.raises(RuntimeError, match="Preserve evidence"):
         common.bridge_rpc(config, rejected, log)
     assert len(received) == 3
@@ -180,7 +186,7 @@ def test_snapshot_timing_cli_validates_a_successful_actual_wire_response(running
     )
     assert result.returncode == 0, result.stderr
     assert len(received) == 1
-    assert received[0]["bridge_protocol_version"] == 46
+    assert received[0]["bridge_protocol_version"] == 47
     evidence = list((tmp_path / "evidence").glob("*.jsonl"))
     rows = [json.loads(line) for line in evidence[0].read_text().splitlines()]
     response = next(row["response"] for row in rows if row["kind"] == "tcp_response")
@@ -198,11 +204,15 @@ def probe(monkeypatch):
     live = ModuleType("Live")
     live.Track = SimpleNamespace(Track=SimpleNamespace(monitoring_states=SimpleNamespace(OFF=71)))
     monkeypatch.setitem(sys.modules, "Live", live)
+    import builtins
+
+    monkeypatch.delattr(builtins, "_sunny_primary_qualification_registrations_v1", raising=False)
     module = load_module("qualification_probe_test", KIT / "SunnyHostProbe" / "probe.py")
     instance = module.HostProbe.__new__(module.HostProbe)
     instance._constructor_thread = threading.get_ident()
     instance._document_song = None
     instance._document_token = None
+    instance._mutations = []
     return instance
 
 
@@ -223,10 +233,18 @@ def scratch_song(name="SUNNY_HOST_QUALIFICATION_LITERAL"):
 
 def authorization(probe, song):
     """Bind explicit scratch approval to one observed document and exact name."""
+    from Sunny.managed import ManagedRegistry
+    from Sunny.native_qualification import observe_primary_context, register_primary
+
+    probe._test_primary_registry = ManagedRegistry(SimpleNamespace(song=lambda: song))
+    assert register_primary(probe._test_primary_registry)
+    primary = observe_primary_context(song)
     return {
         "scratch_approved": True,
         "expected_set_name": song.name,
         "expected_document_token": probe._observe_document(song),
+        "expected_bridge_instance": primary["bridge_instance"],
+        "expected_native_document_token": primary["document_token"],
     }
 
 
@@ -263,7 +281,13 @@ def test_missing_approval_token_or_exact_name_is_refused(probe):
     song = scratch_song()
     probe.song = lambda: song
     request = authorization(probe, song)
-    for key in ("scratch_approved", "expected_set_name", "expected_document_token"):
+    for key in (
+        "scratch_approved",
+        "expected_set_name",
+        "expected_document_token",
+        "expected_bridge_instance",
+        "expected_native_document_token",
+    ):
         invalid = dict(request)
         del invalid[key]
         with pytest.raises(RuntimeError, match="exact observed"):
@@ -301,3 +325,126 @@ def test_missing_monitoring_observation_does_not_grant_mutation(probe):
     del song.tracks[0].current_monitoring_state
     with pytest.raises(RuntimeError, match="input monitoring"):
         probe._scratch(request)
+
+
+@pytest.mark.parametrize("revocation", ["playing", "document", "monitoring", "getter"])
+def test_diagnostic_scene_stops_after_approval_changes(probe, revocation):
+    """A first setter or getter cannot authorize a later setter after original approval ends."""
+    song = scratch_song()
+    current = [song]
+    calls = []
+
+    def revoke():
+        if revocation in ("playing", "getter"):
+            song.is_playing = True
+        elif revocation == "document":
+            current[0] = scratch_song()
+        else:
+            song.tracks[0].current_monitoring_state = 0
+
+    class Scene:
+        name = "SUNNY_HOST_PROBE_SCENE"
+
+        @property
+        def tempo_enabled(self):
+            if revocation == "getter":
+                revoke()
+            return False
+
+        @tempo_enabled.setter
+        def tempo_enabled(self, value):
+            calls.append(("tempo_enabled", value, song.is_playing))
+            revoke()
+
+        @property
+        def time_signature_enabled(self):
+            return False
+
+        @time_signature_enabled.setter
+        def time_signature_enabled(self, value):
+            calls.append(("time_signature_enabled", value, song.is_playing))
+
+    song.scenes = [Scene()]
+    probe.song = lambda: current[0]
+    request = {"op": "scene_flags_same_value_set", **authorization(probe, song)}
+    with pytest.raises(RuntimeError, match="preserve native state.*do not replay"):
+        probe._dispatch(request)
+    assert calls == ([] if revocation == "getter" else [("tempo_enabled", False, False)])
+    assert len(probe._mutations) == 1
+    assert probe._mutations[0]["started"] is (revocation != "getter")
+    assert probe._mutations[0]["returned"] is (revocation != "getter")
+    assert "error" in probe._mutations[0]
+
+
+def test_created_track_can_only_receive_its_retained_first_monitoring_off_phase(probe):
+    """The precise new-Track exception permits valid setup while preserving all original OFFs."""
+    song = scratch_song()
+    probe.song = lambda: song
+    original = tuple(song.tracks)
+    request = {"op": "note_shapes", **authorization(probe, song)}
+    created = SimpleNamespace(current_monitoring_state=1)
+    song.tracks.append(created)
+    with pytest.raises(RuntimeError, match="input monitoring"):
+        probe._scratch(request)
+    probe._native_phase(
+        request,
+        "new_track_monitoring_off",
+        lambda: setattr(created, "current_monitoring_state", 71),
+        new_monitoring_target=(created, original),
+    )
+    assert probe._scratch(request) is song
+    assert original[0].current_monitoring_state == created.current_monitoring_state == 71
+    assert probe._mutations[0]["started"] is True and probe._mutations[0]["returned"] is True
+    song.tracks.append(SimpleNamespace(current_monitoring_state=71))
+    with pytest.raises(RuntimeError, match="original Track cohort"):
+        probe._native_phase(
+            request,
+            "new_track_monitoring_off",
+            lambda: pytest.fail("Unexpected population must not enter a setter"),
+            new_monitoring_target=(created, original),
+        )
+    assert probe._mutations[1]["started"] is False
+
+
+def test_monitoring_getter_cannot_revoke_stopped_approval_then_enter_a_setter(probe):
+    """Close the observation join after an OFF getter reenters and starts transport."""
+    song = scratch_song()
+    probe.song = lambda: song
+    request = {"op": "display_same_value_set", **authorization(probe, song)}
+
+    class Track:
+        @property
+        def current_monitoring_state(self):
+            song.is_playing = True
+            return 71
+
+    song.tracks = [Track()]
+    with pytest.raises(RuntimeError, match="Stop transport.*do not replay"):
+        probe._native_phase(
+            request, "display_value", lambda: pytest.fail("Revoked approval entered a setter")
+        )
+    assert probe._mutations[0]["started"] is False
+    assert probe._mutations[0]["returned"] is False
+
+
+@pytest.mark.parametrize("flag", ["is_playing", "session_record", "record_mode"])
+def test_unobserved_transport_flag_never_authorizes_a_diagnostic_setter(probe, flag):
+    """Missing typed False is an unmet scratch precondition, not stopped evidence."""
+    song = scratch_song()
+    probe.song = lambda: song
+    request = authorization(probe, song)
+    setattr(song, flag, None)
+    with pytest.raises(RuntimeError, match="Stop transport"):
+        probe._scratch(request)
+
+
+@pytest.mark.parametrize("host", ["0.0.0.0", "192.0.2.1", "localhost", "::1"])
+def test_effect_capable_probe_cannot_expose_plain_tcp_outside_numeric_loopback(
+    probe, monkeypatch, host
+):
+    """Reject the unsupported endpoint before constructing native surface or socket state."""
+    endpoint = probe.__class__.__init__.__globals__["endpoint"]
+    monkeypatch.setenv("SUNNY_PROBE_BIND_HOST", host)
+    monkeypatch.delenv("SUNNY_PROBE_PORT", raising=False)
+    with pytest.raises(ValueError):
+        endpoint()

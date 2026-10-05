@@ -13,6 +13,7 @@ from typing import Any
 
 from .managed import _digest, _fingerprint, _key
 from .managed_capacity import guard_managed_response_capacity, require_response_capacity
+from .native_control import check_native_peer, native_call
 
 INSPECTION_METHOD = "sunny_managed_inspect_song_settings"
 PREVIEW_METHOD = "sunny_managed_preview_song_settings"
@@ -595,9 +596,10 @@ class ManagedSongSettings:
             after, actual = before, before_binding
             for index, name in enumerate(changed):
                 # The exact native Song object is retained; no index/name lookup or seek.
+                check_native_peer()
                 operation["song_settings_progress"]["started_fields"].append(name)
                 operation["native_mutation_started"] = True
-                setattr(song, name, request["desired"][name])
+                native_call(setattr, song, name, request["desired"][name])
                 returned = operation["song_settings_progress"]["returned_fields"]
                 returned.append(name)
                 after, actual = capture_phase()

@@ -13,6 +13,7 @@ from typing import Any
 
 from .handler import _finite_number, _valid_note_dictionary
 from .managed import _digest, _semantic_note
+from .native_control import check_native_peer, native_call
 
 CALLS = frozenset({"sunny_ordinary_prepare", "sunny_ordinary_execute", "sunny_ordinary_operation"})
 _CONTEXT = {"schema_version", "bridge_instance", "document_token", "operation_id"}
@@ -310,9 +311,10 @@ class OrdinaryClips:
         journal, binding, action = record["journal"], record["binding"], record["request"]["action"]
 
         def call(callback: Any, *args: Any) -> Any:
+            check_native_peer()
             journal["native_mutation_started"] = True
             journal["started_calls"] += 1
-            result = callback(*args)
+            result = native_call(callback, *args)
             journal["returned_calls"] += 1
             return result
 

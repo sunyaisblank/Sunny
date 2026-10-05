@@ -29,6 +29,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <sunny/infrastructure/ableton/authority_transport.hpp>
 #include <sunny/infrastructure/ableton/dispatcher.hpp>
 #include <sunny/infrastructure/ableton/transport.hpp>
 #include <sunny/infrastructure/mcp/core_tools.hpp>
@@ -84,17 +85,17 @@ int run_server(const sunny::infrastructure::ClientRuntimeConfiguration& configur
         }
     }
 
-    std::unique_ptr<TcpTransport> transport;
+    std::unique_ptr<TcpTransport> physical_transport;
     if (configuration.transport) {
         const auto& config = *configuration.transport;
-        transport = std::make_unique<TcpTransport>(config);
-        if (transport->connect()) {
+        physical_transport = std::make_unique<TcpTransport>(config);
+        if (physical_transport->connect()) {
             std::cerr << "sunny-mcp: connected to Ableton at " << config.host << ":" << config.port
                       << "\n";
         } else {
             std::cerr << "sunny-mcp: could not connect to Ableton at " << config.host << ":"
                       << config.port;
-            if (const auto failure = transport->last_connect_failure())
+            if (const auto failure = physical_transport->last_connect_failure())
                 std::cerr << " (" << describe(*failure) << ")";
             std::cerr << "; each Ableton tool call will try to connect again\n";
         }
@@ -103,9 +104,9 @@ int run_server(const sunny::infrastructure::ClientRuntimeConfiguration& configur
                   << "(theory and IR tools available, Ableton tools decline)\n";
     }
 
-    // The TCP overload lets offline declines name the actual connection failure.
-    BridgeDispatcher dispatcher = transport ? BridgeDispatcher(*transport) : BridgeDispatcher();
-    dispatcher.set_ordinary_store_provider([&session](bool mutation) {
+    // Every native writer consults the current serialized session, including
+    // after workspace open/recovery. Restored history never grants dispatch.
+    const auto store_provider = [&session](bool mutation) {
         auto& runtime = *session.realization;
         if (mutation && !runtime.namespace_saved_durably)
             throw std::runtime_error("Save this workspace durably before native authoring");
@@ -128,7 +129,18 @@ int run_server(const sunny::infrastructure::ClientRuntimeConfiguration& configur
             throw std::runtime_error(runtime.store->blocked_reason().value_or(
                 "Native history cannot fence a write durably"));
         return runtime.store;
-    });
+    };
+    std::unique_ptr<AuthorityLomTransport> transport;
+    if (physical_transport) {
+        transport = std::make_unique<AuthorityLomTransport>(
+            *physical_transport, store_provider, [&session] {
+                return session.realization->metadata.workspace_namespace;
+            });
+    }
+    // The physical peer supplies diagnostics only; all requests pass through
+    // the same authority wrapper used by project and realization tools.
+    BridgeDispatcher dispatcher(transport.get(), physical_transport.get());
+    dispatcher.set_ordinary_store_provider(store_provider);
 
     register_sunny_tools(server, orchestrator, dispatcher);
     register_timbre_tools(server, session.timbre);

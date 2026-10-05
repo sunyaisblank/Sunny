@@ -361,7 +361,19 @@ void register_sunny_tools(McpServer& server,
             {{"type", "string"},
              {"description",
               "string (optional, 1..64 ASCII letters/digits/_.- for correlation)"}}}}}},
-        [&dispatcher](const json& parameters) { return ableton_doctor(dispatcher, parameters); });
+        [&server, &dispatcher](const json& parameters) {
+            auto report = ableton_doctor(dispatcher, parameters);
+            if (report.value("success", false) && report.value("read_only_ready", false) &&
+                report.contains("session") && report["session"].is_object()) {
+                const auto& session = report["session"];
+                // ableton_doctor validated these exact typed fields in two
+                // matching observations; publication cannot edit queued work.
+                static_cast<void>(server.publish_native_origin(
+                    {session.at("bridge_instance").get<std::string>(),
+                     session.at("document_token").get<std::string>()}));
+            }
+            return report;
+        });
 
     // =========================================================================
     // create_progression_clip

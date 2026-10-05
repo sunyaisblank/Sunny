@@ -44,7 +44,7 @@ try {
     [IO.Directory]::CreateDirectory((Join-Path $source 'native\Sunny')) | Out-Null
     [IO.Directory]::CreateDirectory((Join-Path $source 'installer\windows')) | Out-Null
     WriteText (Join-Path $source 'native\Sunny\__init__.py') '# literal expected source'
-    WriteText (Join-Path $source 'native\Sunny\bridge_contract.json') '{"bridge_protocol_version":46,"target_snapshot_schema_version":35}'
+    WriteText (Join-Path $source 'native\Sunny\bridge_contract.json') '{"bridge_protocol_version":47,"target_snapshot_schema_version":35}'
     WriteText (Join-Path $source 'native\Sunny\source.sha256') ('a'*64)
     [byte[]]$binary=[byte[]]::new(2097285)
     for ($i=0;$i -lt $binary.Length;$i++) { $binary[$i]=[byte](($i*37+129)%256) }
@@ -60,7 +60,7 @@ try {
     }
     $manifest=@{release_manifest_schema_version=1;product=@{name='Sunny';version='fixture'};source=@{revision=('a'*40)};
         image=@{platform='linux/amd64';local_immutable_id=('sha256:'+('a'*64))};
-        bridge=@{source_sha256=('a'*64);contract=@{bridge_protocol_version=46;target_snapshot_schema_version=35};files=$bridge};files=$files}
+        bridge=@{source_sha256=('a'*64);contract=@{bridge_protocol_version=47;target_snapshot_schema_version=35};files=$bridge};files=$files}
     WriteText (Join-Path $source 'release.json') ($manifest | ConvertTo-Json -Depth 8)
     $manifestHash=(Get-FileHash -LiteralPath (Join-Path $source 'release.json') -Algorithm SHA256).Hash.ToLowerInvariant()
     $plan=NewPlan 'fresh destination Café with spaces'

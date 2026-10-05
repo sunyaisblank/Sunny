@@ -273,6 +273,7 @@ def test_known_mandatory_unsupported_selection_refuses_before_any_native_fence(
     """Expose Root-ready selectors through real owning tools; no coordinator schema assumed."""
     workflow = whole_public_workflow
     with workflow.process() as client:
+        readiness_calls = list(workflow.managed_calls)
         selected = author_complete_portfolio(client, workflow)
         if counterexample == "tap_conflict":
             _send(client, selected["aux"], channel=2, pre=True, level=-24.0)
@@ -305,7 +306,7 @@ def test_known_mandatory_unsupported_selection_refuses_before_any_native_fence(
             result
         )
         assert _attempts(workflow) == []
-        assert workflow.managed_calls == []
+        assert workflow.managed_calls == readiness_calls
         assert workflow.native_return_calls == [] and workflow.native_route_calls == []
         assert workflow.native_device_insertions == [] and workflow.native_apply_calls == []
         assert len(workflow.live.song.tracks) == 1 and len(workflow.live.song.return_tracks) == 1

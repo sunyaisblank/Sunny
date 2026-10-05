@@ -59,7 +59,7 @@ def _bridge(root: Path, module_bytes: bytes = b"VALUE = 23\n", native_schema=1) 
     (root / "__init__.py").write_bytes(module_bytes)
     _json(
         root / "bridge_contract.json",
-        {"bridge_protocol_version": 46, "target_snapshot_schema_version": 35},
+        {"bridge_protocol_version": 47, "target_snapshot_schema_version": 35},
     )
     (root / "configuration.py").write_bytes(
         (
@@ -94,6 +94,7 @@ def _make_release(
     native_schema=1,
     compiled_schema=1,
     legacy_environment=None,
+    operator_files: dict[str, bytes] | None = None,
 ) -> dict:
     root.mkdir()
     bridge = _bridge(root / "native/Sunny", native_schema=native_schema)
@@ -105,6 +106,10 @@ def _make_release(
     operator = root / "operator"
     operator.mkdir()
     (operator / "doctor.py").write_bytes(b"# synthetic same-image doctor CLI\n")
+    for relative, data in (operator_files or {}).items():
+        target = operator / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(data)
     lock = json.loads((PROJECT / "release/build-inputs.json").read_text())
     base_tar = _tar({"etc/os-release": b"synthetic fixture\n"})
     base_layer = gzip.compress(base_tar, mtime=0)
@@ -998,3 +1003,42 @@ def test_production_image_cannot_bake_legacy_workspace_environment(release_tool,
     trusted = _hash((root / "release.json").read_bytes())
     with pytest.raises(ValueError, match="ambiguous legacy runtime"):
         release_tool.verify_release(root, trusted)
+
+
+def test_buildkit_missing_config_digest_uses_the_independently_hashed_archive(
+    release_tool, tmp_path
+):
+    """Omitted config metadata stays absent while independent OCI graph checks remain."""
+    root = tmp_path / "release"
+    manifest = _make_release(root, release_tool)
+    if manifest is None:
+        manifest = json.loads((root / "release.json").read_text())
+    metadata = root / "provenance/buildkit-metadata.json"
+    _json(metadata, {"containerimage.digest": manifest["image"]["oci_index_digest"]})
+    original = metadata.read_bytes()
+    _refresh_inventory(root, release_tool)
+    trusted = _hash((root / "release.json").read_bytes())
+    verified = release_tool.verify_release(root, trusted)
+    assert verified["image"]["oci_config_digest"] == manifest["image"]["oci_config_digest"]
+    assert metadata.read_bytes() == original
+    assert "containerimage.config.digest" not in json.loads(metadata.read_bytes())
+
+
+@pytest.mark.parametrize("value", [None, 42, [], ["sha256:" + "a" * 64], "", "sha256:" + "f" * 64])
+def test_buildkit_present_config_digest_must_be_typed_and_match_the_archive(
+    release_tool, tmp_path, value
+):
+    """Omission is supported; a supplied wrong or loosely typed identity still refuses."""
+    root = tmp_path / "release"
+    _make_release(root, release_tool)
+    manifest = json.loads((root / "release.json").read_text())
+    _json(
+        root / "provenance/buildkit-metadata.json",
+        {
+            "containerimage.digest": manifest["image"]["oci_index_digest"],
+            "containerimage.config.digest": value,
+        },
+    )
+    _refresh_inventory(root, release_tool)
+    with pytest.raises(ValueError, match="BuildKit config digest differs"):
+        release_tool.verify_release(root, _hash((root / "release.json").read_bytes()))

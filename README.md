@@ -31,14 +31,19 @@ parts, voices, notes, expression, Timbre profiles and Mix effects, and undo cohe
 The engine is also available from Python.
 
 ```
-AI client ──MCP (stdio)──▶ sunny-mcp ──TCP 9001──▶ Sunny Remote Script ──▶ Ableton Live
+AI client ──MCP (stdio)──▶ sunny-mcp ──approved local route──▶ Sunny Remote Script ──▶ Ableton Live
                              │
                              └── theory engine and documents (no Live needed)
 ```
 
+Before native authoring, save the workspace durably and run a fresh `doctor_ableton` in that
+same MCP session to establish its original bridge/Set identity. Reconnect or a historical receipt
+does not grant new mutation authority. The lifecycle and recovery rules below apply to every
+native workflow.
+
 Documents reach Live only as a project: a Score, one Timbre profile for each of its parts, and a
 Mix graph. `project_plan_to_ableton` records a snapshot of the Live Set and the exact list of
-changes without touching Live. `project_apply_ableton_plan` applies that plan once, refuses if
+changes without musical mutation. `project_apply_ableton_plan` applies that plan once, refuses if
 the observed Set properties have changed in the meantime, and returns a journal of every change it attempted,
 including after a partial failure. `project_compile_to_ableton` does both in one call. Values
 Live cannot represent, such as a fader above +6 dB, are refused before anything is sent.
@@ -161,64 +166,133 @@ make help
 
 Source files are listed explicitly in CMake, so re-run the configure step after adding one.
 
-## Using it with an AI client
+## Delivery and supported profiles
 
-Point your MCP client at the built server:
+Docker is the normal MCP delivery path. Live and its Sunny Remote Script remain native on the
+Live PC. The intended primary profile is a Windows 11 client with 64-bit Windows PowerShell
+5.1/.NET, Windows OpenSSH and a local Docker Desktop Linux/amd64 engine, paired with Windows
+Live 12.4.5 Suite. The normal Windows operator needs no installed Python interpreter.
 
-```json
-{
-  "mcpServers": {
-    "sunny": {
-      "command": "/path/to/Sunny/.bin/sunny-mcp",
-      "env": { "SUNNY_CONFIG_PATH": "/absolute/path/to/configuration.json" }
-    }
-  }
-}
-```
+| Profile | Available implementation | Qualification boundary |
+|---|---|---|
+| Windows client, Linux/amd64 Docker Desktop, native Windows Live 12.4.5 Suite | Verified release, managed installer, transfer, stdio launcher, doctor and recovery | Final integrated release, both actual hosts, UI and audio remain pending |
+| Live 12.3.x | Finite managed-authoring compatibility retained | Exact patch, edition, installed devices and host remain unqualified |
+| Live 11 | Limited legacy note operations | Version-specific runtime types and real-host behaviour remain unqualified |
+| POSIX native executable or developer Python tooling | Source build, offline tools, direct diagnostics and qualification kit | Development profile; does not replace the Windows operator |
 
-The selected schema-1 JSON below explicitly chooses offline or TCP operation and a durable
-workspace. Theory, document and notation tools work offline; Live tools decline with a precise
-connection failure. The native executable is a POSIX development option. Windows clients use the
-Docker launcher below. Existing environment settings remain an explicit legacy development
-profile when `SUNNY_CONFIG_PATH` is absent; selecting JSON together with those settings refuses.
+The Windows operator requires physical local NTFS paths and the current user's actual User
+Library. UNC or linked installation trees, shared-network project volumes, Windows containers,
+ARM release images and future Live versions are outside this production profile. Paths may contain
+spaces and Unicode; Docker bind-mount paths in these examples must not contain commas.
 
-Docker is the normal delivery path. It needs Docker installed on the client machine; a native
-Sunny build is optional. MCP still travels over standard input and output, so the client starts
-the container itself:
+Current source exposes 197 MCP tools, bridge protocol 47 and target snapshot schema 35. Treat
+`release.json`, its bridge contract and actual `tools/list` as the selected artifact's authority.
+A version-floor capability claim is not proof of edition, licensing, installed devices, native
+acceptance or sound. No exact host/version combination has completed all final qualification gates.
+Intermediate OCI networking, paired-bridge and volume-restore witnesses do not qualify the final
+protocol-47 release. The acceptance and evidence boundaries are tracked in
+[the lifecycle contract](https://github.com/sunyaisblank/Sunny/issues/36),
+[distribution](https://github.com/sunyaisblank/Sunny/issues/37),
+[Windows operation](https://github.com/sunyaisblank/Sunny/issues/38),
+[diagnostics](https://github.com/sunyaisblank/Sunny/issues/40) and
+[native authority and transport](https://github.com/sunyaisblank/Sunny/issues/41).
 
-Build a paired candidate from a clean committed checkout with Python 3.10+ and Docker Buildx:
+Complete independent local preparation first. Manual, separately approved two-way SSH setup and
+verification on the two actual machines is the last setup stage. Approval or working access in one
+direction does not establish the other. Sunny never installs keys, accepts a changed host key,
+enables sshd, changes firewall or persistent execution policy, stops Live, or changes licensing. A remote
+command below is a final-stage procedure after that setup, not permission to establish access.
+
+## The paired offline release
+
+A maintainer builds a release from a clean committed checkout with Python 3.10+ and Docker Buildx:
 
 ```bash
 python3 tools/release.py build --output /new/path/sunny-release --tag sunny-mcp:local-release
 python3 tools/release.py verify --release /new/path/sunny-release \
-  --expected-manifest-sha256 REPLACE_WITH_RECORDED_MANIFEST_SHA256
+  --expected-manifest-sha256 REPLACE_WITH_SEPARATELY_RETAINED_MANIFEST_SHA256
 ```
 
-Keep the printed manifest checksum separately. The directory contains `image.tar`, the exact
-`native/Sunny` bridge, a Windows installer, the doctor CLI, dependency inventories and `release.json`.
-The build freezes its committed source and pins the Ubuntu platform image, dated apt snapshot and
-dependency commits in `release/build-inputs.json`. It records actual compiler/package inputs;
-this does not promise byte-identical output from independent compilers. Ordinary `docker build`
-remains a development route and does not produce the verified release directory.
+Retain the printed lowercase `release.json` SHA256 independently of the transferred directory.
+The release contains `image.tar`, exact `native/Sunny` bytes, `installer/windows/` operators,
+`operator/doctor.py`, `operator/release.py`, the entire `operator/live_qualification/` kit,
+locked build inputs, dependency inventories and `release.json`. The producer freezes committed
+source, pins the Ubuntu platform digest, signed dated apt snapshot, package versions/hashes and
+dependency revisions in `release/build-inputs.json`, and records actual compiler inputs. This
+closes release inputs; it does not promise byte-identical compiler output on every machine.
+An ordinary development `docker build` does not produce this verified release unit.
 
-For offline transfer, copy that whole directory and verify it against the retained manifest hash.
-On the destination client, load it from a matching checkout:
+Use the trusted source verifier for initial full inventory/pairing verification. Execute packaged
+operators only after their bytes have been authenticated against that independently retained
+manifest. The read-only POSIX/Python verifier can then run from the selected release without a
+Docker daemon:
 
 ```bash
-python3 tools/release.py load --release /path/to/sunny-release \
-  --expected-manifest-sha256 REPLACE_WITH_RECORDED_MANIFEST_SHA256
+python3 /path/to/release/operator/release.py verify --release /path/to/release \
+  --expected-manifest-sha256 REPLACE_WITH_SEPARATELY_RETAINED_MANIFEST_SHA256
+python3 /path/to/release/operator/release.py load --release /path/to/release \
+  --expected-manifest-sha256 REPLACE_WITH_SEPARATELY_RETAINED_MANIFEST_SHA256
 ```
 
-Use its printed
-`loaded_image_local_immutable_id` when launching MCP. The manifest distinguishes the producing
-store's local ID, archived OCI index/manifest/config digests, and any registry digest. A tag or a
-local Docker ID is insufficient evidence of registry publication. Publication is pending an approved
-destination; current manifests explicitly retain production and native qualification as pending.
+Use the returned `loaded_image_local_immutable_id` on that destination Docker store. OCI index,
+manifest and config digests, the producer's local image ID and a registry manifest digest are
+different identities. Never substitute a tag or describe a local ID as a published registry digest.
+Publication remains pending an explicitly approved registry destination, visibility and retention.
+The manifest's qualification fields remain pending until the required evidence exists.
 
-Production configuration is external UTF-8 JSON with `configuration_schema_version: 1`.
-Both consumers reject unknown fields, duplicate keys, future versions, malformed endpoints and
-ambiguous mixing with legacy environment variables before opening a workspace or socket.
-For an offline client, save this as an external file such as `C:\Sunny Configuration\offline.json`:
+On a normal Windows client, verify the independently retained manifest checksum and archive
+checksum before loading; no Python is needed. The following uses the manifest only as data and
+selects the destination store's actual immutable ID:
+
+```powershell
+$ReleaseDirectory = 'D:\Sunny Release'
+$ManifestSHA = 'REPLACE_WITH_SEPARATELY_RETAINED_LOWERCASE_SHA256'
+$DockerContext = 'desktop-linux'
+$manifestPath = Join-Path $ReleaseDirectory 'release.json'
+if ((Get-FileHash -LiteralPath $manifestPath -Algorithm SHA256).Hash.ToLowerInvariant() -cne $ManifestSHA) {
+  throw 'Release manifest checksum mismatch.'
+}
+$manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+foreach ($row in $manifest.files) {
+  $file = Join-Path $ReleaseDirectory $row.path.Replace('/', '\')
+  if ((Get-Item -LiteralPath $file).Length -ne $row.bytes -or
+      (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash.ToLowerInvariant() -cne $row.sha256) {
+    throw ('Release payload checksum mismatch: ' + $row.path)
+  }
+}
+$archiveRow = @($manifest.files | Where-Object { $_.path -ceq 'image.tar' })
+$archivePath = Join-Path $ReleaseDirectory 'image.tar'
+if ($archiveRow.Count -ne 1 -or (Get-Item -LiteralPath $archivePath).Length -ne $archiveRow[0].bytes -or
+    (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash.ToLowerInvariant() -cne $archiveRow[0].sha256) {
+  throw 'Image archive checksum mismatch.'
+}
+docker --context $DockerContext image load --input $archivePath
+if ($LASTEXITCODE -ne 0) { throw 'Image load failed.' }
+$ImageId = $null
+foreach ($identity in @($manifest.image.local_immutable_id, $manifest.image.oci_config_digest,
+                       $manifest.image.oci_manifest_digest) | Select-Object -Unique) {
+  $text = docker --context $DockerContext image inspect $identity 2>$null
+  if ($LASTEXITCODE -eq 0) { $ImageId = ($text | ConvertFrom-Json)[0].Id; break }
+}
+if (-not $ImageId) { throw 'The loaded image exposed no verified immutable identity.' }
+```
+
+This checksum/load step does not prove native readiness. The verified Windows operators also
+check the complete release payload and paired bridge, and client `Plan` checks the loaded image,
+revision, Linux/amd64 platform and compiled configuration before its first SSH connection.
+Keep the original reviewed candidate and its evidence unchanged; adding a new operator beside an
+older release does not make it part of that release. Do not edit or create evidence/configuration
+files inside the immutable release tree.
+
+## External runtime configuration and MCP
+
+Production configuration is separate UTF-8 JSON, selected by `SUNNY_CONFIG_PATH`. Schema 1 has
+small `client` and `native` role sections. Both consumers reject duplicate or unknown fields,
+future schemas, invalid endpoints and mixed legacy variables before workspace, logger or socket
+effects. Configuration is bounded to 64 KiB/depth 8; ports are integers 1..65535. The native server
+uses AF_INET and permits only an explicit numeric IPv4 loopback bind in production.
+
+For offline authoring, create an external file such as `C:\Sunny Configuration\offline.json`:
 
 ```json
 {
@@ -230,32 +304,59 @@ For an offline client, save this as an external file such as `C:\Sunny Configura
 }
 ```
 
+Validate using the exact loaded image, without network or project-volume access:
+
+```powershell
+$ClientConfig = 'C:\Sunny Configuration\offline.json'
+docker --context $DockerContext run --rm --pull=never --network none `
+  --mount "type=bind,source=$ClientConfig,target=/run/sunny/configuration.json,readonly" `
+  $ImageId --validate-config /run/sunny/configuration.json
+if ($LASTEXITCODE -ne 0) { throw 'Configuration validation failed.' }
+```
+
+For a simple offline MCP client, use an explicit named volume and immutable image:
+
 ```json
 {
   "mcpServers": {
     "sunny": {
       "command": "docker",
-      "args": ["run", "-i", "--rm", "--pull=never", "--mount", "type=volume,source=sunny-data,target=/data", "--mount", "type=bind,source=C:\\Sunny Configuration\\offline.json,target=/run/sunny/configuration.json,readonly", "--env", "SUNNY_CONFIG_PATH=/run/sunny/configuration.json", "sha256:REPLACE_WITH_LOADED_IMAGE_ID"]
+      "args": ["--context", "desktop-linux", "run", "-i", "--rm", "--pull=never", "--network", "none", "--mount", "type=volume,source=sunny-data,target=/data", "--mount", "type=bind,source=C:\\Sunny Configuration\\offline.json,target=/run/sunny/configuration.json,readonly", "--env", "SUNNY_CONFIG_PATH=/run/sunny/configuration.json", "sha256:REPLACE_WITH_DESTINATION_IMAGE_ID"]
     }
   }
 }
 ```
 
-This launches an offline authoring session. Each MCP client owns one container's stdio; do not
-share one unattended stdin among clients or add a TTY. Live remains native. The remote production
-profile uses the Windows `installer/windows/SunnyClient.ps1` launcher and an approved SSH route
-to the loopback bridge. Its actual machine qualification remains under
-[issue #38](https://github.com/sunyaisblank/Sunny/issues/38).
-Raw TCP across a LAN is unauthenticated and is outside the supported production profile.
+Theory, document and notation tools work offline; native tools report unavailable Live. Each
+MCP client owns one container's stdin/stdout. Do not add a TTY or share unattended stdin between
+clients. Durable operation depends on the configured workspace under the named volume; an
+unconfigured ephemeral launch is not a production persistence profile.
 
-Inside an ordinary Docker container, `127.0.0.1` refers to that container. The supported
-Windows route reaches the owned Windows SSH forward through `host.docker.internal`.
-Selecting a durable workspace requires explicit configuration.
+For the selected remote profile, save another external configuration with both roles:
 
-The Windows launcher requires 64-bit PowerShell 5.1+, Windows OpenSSH, a running local
-Linux/amd64 Docker Desktop engine, the verified loaded image and one named workspace volume.
-Keep SSH credentials and verified known-host entries outside the release. A separate connection
-file has exactly these fields:
+```json
+{
+  "configuration_schema_version": 1,
+  "client": {
+    "transport": {"mode": "tcp", "host": "host.docker.internal", "port": 49001},
+    "workspace": {"path": "/data/workspace.sunny.json", "recovery": "none"}
+  },
+  "native": {"bridge": {"bind_host": "127.0.0.1", "port": 9001}}
+}
+```
+
+Choose a free local forward port. `127.0.0.1` inside a container refers to that container;
+`host.docker.internal` reaches the operator-owned Windows loopback SSH forward on Docker Desktop.
+The launcher requires the workspace file directly under `/data`. It captures the external config
+before validation so an edit cannot redirect that session between validation and native connection.
+On the Live PC, select the external native configuration in Live's process environment with
+`SUNNY_CONFIG_PATH` and restart Live deliberately. Addresses and library paths are configuration
+data, not compiled machine defaults. Credentials and SSH connection data stay outside this JSON.
+
+## Windows Run, transfer and installation
+
+The separate connection file contains exactly these scalar fields, using existing approved keys
+and verified known-host entries outside the release:
 
 ```json
 {
@@ -268,293 +369,502 @@ file has exactly these fields:
 }
 ```
 
-The launcher never registers access or accepts a changed host key. Directional approval from
-the Live PC to the client does not establish client-to-Live access. Set up the required direction
-manually after independent preparation and checks.
+The profile requires an explicit local Windows account and a local Docker Desktop named-pipe
+context. Remove inherited Sunny runtime variables and `DOCKER_HOST`, `DOCKER_CONTEXT`,
+`DOCKER_TLS_VERIFY` or `DOCKER_CERT_PATH` before the explicit launcher; it refuses ambiguous
+settings. Local script execution must already be permitted by machine policy. Docker daemon access
+and trusted local code have substantial local authority: protect the machine, daemon and external
+SSH files. Loopback binding and durable receipts do not authenticate an untrusted local process.
+Plain bridge TCP across a LAN, arbitrary wrappers and unattended HTTP/services are outside this profile.
 
-For the remote runtime configuration, use both roles. Set `client.transport` to
-`{"mode":"tcp","host":"host.docker.internal","port":49001}` and keep its workspace under
-`/data`. Set `native` to `{"bridge":{"bind_host":"127.0.0.1","port":9001}}`.
-The local forward port is configurable; choose a free port. Supply the native configuration
-to Live through its process environment's `SUNNY_CONFIG_PATH`, then restart Live deliberately.
-No host address or library location is compiled into either component.
-
-```powershell
-$client = 'D:\Sunny Release\installer\windows\SunnyClient.ps1'
-& $client -Action Plan -ConnectionFile 'C:\Sunny Configuration\connection.json' `
-  -ConfigurationFile 'C:\Sunny Configuration\runtime.json' -WorkspaceVolume sunny-data `
-  -ReleaseDirectory 'D:\Sunny Release' -ExpectedManifestSHA256 $hash -ImageId $loadedImageId
-# Use the same arguments with -Action Run as the MCP client command.
-```
-
-`Plan` verifies the local release, image and compiled configuration using an isolated container;
-it does not start SSH or mount project data. `Run` starts an owned Windows loopback-only SSH
-forward, verifies its listening process, then starts one attached Sunny container with inherited
-MCP handles. Its normal stdout contains protocol messages only. Tunnel loss closes the session.
-Cleanup removes only containers with the exact per-session owner, name and original daemon;
-it preserves the project volume. A private Windows job closes owned SSH and Docker client
-processes when the launcher ends. Abrupt interruption can leave a daemon container, especially
-during preflight. The launcher prints a recovery directory to stderr before validation and
-preserves it if cleanup cannot be confirmed. After the original client has ended, run
-`SunnyClient.ps1 -Action Recover -SessionDirectory 'REPLACE_WITH_REPORTED_DIRECTORY'`.
-Recovery refuses foreign or changed scope and confirms container absence before removing its
-own temporary files. An owned listening forward alone does not prove native Live readiness.
-
-The Linux runtime includes checksum-pinned Python 3 for an owned, finite DNS helper.
-Numeric endpoints do not need that helper. Resolver unavailability, unknown host and an expired
-connection budget are separate failures. Request send and response receive share one absolute
-deadline, including write backpressure. A partial request is never replayed. A second native
-bridge client receives an immediate busy response while the admitted client retains its session.
-
-The MCP reader remains available while one worker executes tools. Cancellation reaches the
-exact active or queued request by its typed request ID; requests have a 120-second lifetime
-including queue time. Shutdown and observed input EOF revoke native admission, and EOF still
-allows local/read-only response drain. Production POSIX input/output is interruptible; unread
-stdout has a five-second output budget, and pending output is bounded to 64 MiB. A failed output
-ends the session with a nonzero status. Cancellation does not prove that an already-started
-native effect stopped. Completion of native cancellation and the remaining legacy mutation
-gateway is tracked in [issue #41](https://github.com/sunyaisblank/Sunny/issues/41).
-
-The volume retains saved work when a container is replaced. After authoring, call
-`workspace_save` with `path: "/data/workspace.sunny.json"`. The next container restores that
-file before accepting requests. Saving includes every Score, Timbre profile, Mix graph, shared
-preset, corpus record, owning project relationship, rendering configuration, and identity
-reservation. Native realization history is saved in a separate namespace directory in the same
-volume and survives authored undo or backup recovery. Keep that directory with the workspace when
-moving saved work; a missing history directory blocks native writes. Undo history and temporary
-deployment plans end with the process. Changes require an
-explicit save; closing the client does not save them automatically.
-
-The realization ledger reads schema 1 and writes schema 2 when publishing a new ordinary attempt.
-Migration preserves existing managed records and keeps ordinary attempts separately. Older
-binaries cannot read schema 2. Before a version rollback, stop the writer and restore a retained
-compatible workspace together with its complete realization namespace; copying only an authored
-`.bak` does not roll operational history back. Backup/recovery never grants replay authority.
-
-Each process reserves its configured workspace and backup before restoring or accepting requests.
-A second process using those files exits with a workspace writer admission error. Save, open and
-applied backup recovery also reserve their destinations; independent workspace files can run
-separately. Stop the owning client before replacing its container or restoring its data. OS locks
-release when the process exits, including a crash. Keep the stable hidden `.sunny-writer.lock`
-sidecars: deleting or replacing them revokes publication and requires a restart. Parent-directory
-aliases resolve to the same ownership. Final workspace symlinks and hardlinks are refused because
-atomic replacement would split their identities. The Linux process behavior is tested; native
-Windows locking and the final released Docker volume profile still require qualification.
-
-For a native server, set `SUNNY_WORKSPACE_PATH` to your saved workspace path to enable the same
-startup restore. `workspace_open` replaces authored state only after complete validation;
-`workspace_import` refuses identity collisions. If the main file is corrupt, startup reports the
-error and exits. Explicitly set `SUNNY_WORKSPACE_RECOVERY=backup` to restore the supported `.bak`,
-then call `workspace_save` to repair the main file and remove the recovery setting. Recovery never
-silently replaces the main file. Sample and external preset paths are retained; their files must
-also be available to a later container.
-
-`score_export_midi` returns an actual type-0 Standard MIDI File as `midi_base64`, along with its
-compilation loss report. `score_compile_to_musicxml` returns notation XML. Both use the same
-authored Score, with concert pitch in MIDI and instrument-transposed written pitch in MusicXML.
-
-## Connecting Ableton Live
-
-Live 12.4 is the primary target, with Live 12.3 compatibility retained. The finite operation
-version floors below also describe limited legacy use; they do not qualify an untested future release.
-Install the `native/Sunny` folder from the same verified release used by your MCP client into
-`Remote Scripts` under your configured Live User Library. Select Sunny as a control surface
-in Live's Preferences, Link/Tempo/MIDI. For a native build, use the generated
-`.bin/remote_script/Sunny` folder from that build. Restart or reload the control surface after
-replacing the folder.
-
-The default legacy environment profile listens on TCP 9001 at `127.0.0.1`. Versioned native
-configuration requires an explicit numeric IPv4 loopback address and port; IPv6 native binding is
-unsupported by its current AF_INET server. Keep the plain native command port off the LAN.
-The legacy variables remain available for existing local development, but a non-loopback bind
-is outside the selected production profile.
-
-Keep the default `127.0.0.1` binding for local operation and the selected SSH route. One bridge
-client is served at a time; close another connected Sunny client before starting a replacement.
-Remote access approval and effective forwarding/firewall scope are final machine setup steps.
-
-The Windows release installer supports PowerShell 5.1+, the current user and a physical local NTFS
-User Library. Supply the existing path shown in Live Settings > Library; it does not guess a default
-folder, change Control Surface settings, stop Live, create SSH trust, or alter firewall settings.
-Preview before installation:
+After all independent preparation and the final manual two-way SSH setup, select the same explicit
+arguments for client preflight and the AI client's ordinary stdio command:
 
 ```powershell
-$installer = 'D:\Sunny Release\installer\windows\Sunny.ps1'
-$library = 'D:\Actual User Library'
-$release = 'D:\Sunny Release'
-$hash = 'REPLACE_WITH_VERIFIED_MANIFEST_SHA256'
-& $installer -Action Plan -UserLibraryPath $library -ReleaseDirectory $release -ExpectedManifestSHA256 $hash
-# Save Sets and quit Live before Install, Rollback, Recover or Uninstall.
-& $installer -Action Install -UserLibraryPath $library -ReleaseDirectory $release -ExpectedManifestSHA256 $hash
+$ConnectionFile = 'C:\Sunny Configuration\connection.json'
+$ClientConfig = 'C:\Sunny Configuration\runtime.json'
+$WorkspaceVolume = 'sunny-data'
+$client = Join-Path $ReleaseDirectory 'installer\windows\SunnyClient.ps1'
+$clientArgs = @{
+  ConnectionFile=$ConnectionFile; ReleaseDirectory=$ReleaseDirectory
+  ExpectedManifestSHA256=$ManifestSHA; ImageId=$ImageId
+  ConfigurationFile=$ClientConfig; WorkspaceVolume=$WorkspaceVolume; DockerContext=$DockerContext
+}
+& $client -Action Plan @clientArgs
+# Configure the MCP client to launch this same script with -Action Run and these arguments.
 ```
 
-Install verifies the whole release, stages only its bridge, and records ownership and an atomic state
-commit under `Remote Scripts/.sunny-managed`. An identical rerun makes no backup. Unknown or edited
-Sunny content is preserved and reported. `Status` reads the recorded state. `Recover` restores the
-old release before commit or finishes the new release after commit, including partial transfer and
-cleanup failures. Updates use `Install` with the new verified directory. `Rollback` exchanges the
-recorded active and previous releases. `Uninstall` removes the managed active script, reports the
-retained backup, and leaves user Sets, settings, unrelated scripts and management state intact.
-Remove Sunny from its Control Surface slot manually after uninstall.
+The MCP command is 64-bit `powershell.exe` (use its absolute executable path if client PATH resolves
+a different build) with `-NoProfile -NonInteractive -File
+PATH_TO_SunnyClient.ps1 -Action Run` and the same named arguments. For example, substitute the
+selected values into this client configuration; the manifest checksum and immutable image are
+literal arguments, not environment variables:
 
-After starting Live and selecting Sunny with Input/Output None, export a doctor result from the
-configured route. `Confirm -DoctorReport PATH` accepts only fresh correlated read-only readiness
-for the active source/protocol with successful launcher cleanup. Verify that route refers to this host and library before confirming;
-the report cannot establish that association itself. A further forward update cannot retire the
-older backup until confirmation. Rollback and uninstall stay available. Confirmation does not
-qualify sound, licences or musical mutations. These transitions have isolated Windows filesystem
-tests; real-host deployment, cross-user profiles and sudden power loss remain qualification gates.
+```json
+{
+  "mcpServers": {
+    "sunny": {
+      "command": "powershell.exe",
+      "args": [
+        "-NoProfile",
+        "-NonInteractive",
+        "-File",
+        "D:\\Sunny Release\\installer\\windows\\SunnyClient.ps1",
+        "-Action",
+        "Run",
+        "-ConnectionFile",
+        "C:\\Sunny Configuration\\connection.json",
+        "-ReleaseDirectory",
+        "D:\\Sunny Release",
+        "-ExpectedManifestSHA256",
+        "REPLACE_WITH_RETAINED_LOWERCASE_SHA256",
+        "-ImageId",
+        "sha256:REPLACE_WITH_DESTINATION_IMAGE_ID",
+        "-ConfigurationFile",
+        "C:\\Sunny Configuration\\runtime.json",
+        "-WorkspaceVolume",
+        "sunny-data",
+        "-DockerContext",
+        "desktop-linux"
+      ]
+    }
+  }
+}
+```
 
-Protocol version 46 and a SHA256 of all bundled Python sources must match the server. The first
-ordinary request on each connection checks the bridge's source identity; reconnects check again.
-A mismatch refuses that request before sending it and names the expected/observed identity.
-Install the bridge from the correct image and reload it. Profile and Remote Script log queries
-remain available to diagnose the mismatch. Source identity proves matching Sunny code; it does
-not establish exact-host native API or playback qualification. The script runs inside Live's
-own Python and retains the finite legacy Live 11 behaviour and Python 3.7 syntax compatibility.
+`Plan` verifies local release/image/configuration
+through a network-disabled container, starts no SSH and mounts no project data. `Run` owns one
+loopback-only SSH forward and attached Sunny container; stdout is protocol only. Tunnel loss ends
+the session without replay. Normal cleanup checks exact container ID/name/owner and original daemon,
+and preserves the project volume. Private jobs close owned local processes; abrupt interruption
+can still leave a daemon container. Keep its printed recovery directory and ownership receipt.
+After the recorded client ends, run `SunnyClient.ps1 -Action Recover -SessionDirectory PATH`. Recovery uses the receipt's original
+Docker context/daemon and refuses changed or foreign scope before removal.
 
-Sunny's operation choices follow the version floors in the official
-[Live Object Model reference](https://docs.cycling74.com/apiref/lom/), whose current reference
-describes Live 12.4.5:
+Transfer requires this release's exact `SunnyTransfer.ps1` hash in `release.json`, a new explicit
+destination and an existing physical NTFS parent on the Live PC. It never installs Sunny or starts Live:
 
-| Live version | Note insertion and readback | Native device insertion |
+```powershell
+$transfer = Join-Path $ReleaseDirectory 'installer\windows\SunnyTransfer.ps1'
+$RemoteRelease = 'D:\Sunny Releases\release-REPLACE_WITH_REVISION'
+$transferArgs = @{
+  ConnectionFile=$ConnectionFile; ReleaseDirectory=$ReleaseDirectory
+  ExpectedManifestSHA256=$ManifestSHA; DestinationDirectory=$RemoteRelease; TimeoutSeconds=600
+}
+& $transfer -Action Plan @transferArgs
+& $transfer -Action Transfer @transferArgs
+& $transfer -Action Status @transferArgs
+```
+
+`Plan` checks local data and connection prerequisites without SSH. Transfer admits at most 512
+files/4 GiB in authenticated 1 MiB chunks, stages all bytes and returns a correlated committed
+receipt. An identical committed rerun sends no payload. After interruption, retain the same source,
+manifest checksum and destination; run `Status`, then `Recover`. Recovery verifies existing source
+prefixes before resuming. `Clean` removes only proved journal-owned unfinished staging with matching
+bytes; it preserves committed, foreign or edited data. Do not delete journals or lease files to bypass
+refusal. Deadlines surround reads and filesystem phases; physical synchronous disk stalls are not
+preemptible by this script. Injected write/rename/permission failures do not qualify physical disk
+saturation or power loss.
+
+Install into the current user's actual User Library shown in Live Settings > Library. Save Sets
+and quit Live deliberately before Install, Rollback, Recover or Uninstall. Local operation uses the
+verified release's `Sunny.ps1`; it never guesses the library, stops Live or changes Control Surface
+settings. Remote operation uses fixed `SunnyRemote.ps1` operations with encoded JSON data:
+
+```powershell
+$admin = Join-Path $ReleaseDirectory 'installer\windows\SunnyRemote.ps1'
+$adminArgs = @{
+  ConnectionFile=$ConnectionFile; ReleaseDirectory=$ReleaseDirectory
+  ExpectedManifestSHA256=$ManifestSHA; UserLibraryPath='D:\Actual User Library'
+}
+& $admin -Action Info @adminArgs
+& $admin -Action Plan @adminArgs -RemoteReleaseDirectory $RemoteRelease
+& $admin -Action Install @adminArgs -RemoteReleaseDirectory $RemoteRelease
+& $admin -Action Status @adminArgs
+```
+
+For local installation, use `Sunny.ps1 -Action Plan`, then `-Action Install`, supplying
+`-UserLibraryPath`, `-ReleaseDirectory` and `-ExpectedManifestSHA256`. The complete release is
+verified, only the bridge is staged, and ownership plus the atomic state commit live under
+`Remote Scripts/.sunny-managed`. Identical installation creates no new backup. Unknown or edited
+Sunny content is preserved. A missing remote acknowledgment requires `Status`/installer `Recover`
+before repeating a change: recovery restores the prior release before commit or completes the new
+release after commit. Transfer, installer, client and doctor recovery own different resources.
+
+Start Live deliberately and select Sunny in Preferences > Link/Tempo/MIDI with Input/Output None.
+Run the matching read-only doctor, then `Confirm`. Local Confirm takes `-DoctorReport`; remote
+Confirm takes `-RemoteDoctorReport`, naming the fresh report already on the Live PC. Arrange its
+approved final-stage manual copy and verify its hash separately. Whole-release Transfer is not an
+arbitrary report transfer. Confirm requires fresh correlated schema-1 readiness, selected active
+source/protocol and successful launcher cleanup. Check the host/library association yourself;
+the report alone cannot establish it. Confirmation is not sound or musical qualification.
+
+A further forward `Install` cannot retire the recorded previous release before confirmation.
+`Rollback` exchanges active/previous managed bridge files with Live closed; it does not downgrade
+project data. `Uninstall` removes the managed active bridge, reports the retained backup and leaves
+user Sets, settings, unrelated scripts and management state intact. Remove Sunny's Control Surface
+slot manually afterward. Keep full compatible release/data backups until replacement lifecycle
+checks have passed. Cross-user deployment and real-host power-loss recovery remain unqualified.
+
+## Native authority, failures and persistence
+
+Protocol 47 and the versioned SHA256 of bundled bridge Python sources must match the MCP binary.
+The first ordinary request on every connection checks pairing; reconnect checks again. Mismatched
+mutations decline before dispatch. Read-only profile/log routes remain available for diagnosis.
+Pairing proves matching Sunny code, not native capability or playback acceptance.
+
+Run fresh `doctor_ableton` in the same authoring MCP session before native preparation. It anchors
+that session to the observed bridge instance and Set document token. Each queued request retains
+its original admission epoch; a changed Set or bridge cannot inherit it. There is no automatic
+refresh of native authority and no mutation replay after reconnect, timeout, cancellation or a
+lost reply. Managed and ordinary tools use their durable attempt tokens. The legacy gateway records
+workflow/stage fences and typed receipts before native effects; expert generic commands use
+`legacy_ableton_request`, with `legacy_ableton_history` and `legacy_ableton_reconcile` for original-token
+queries. Direct raw TCP mutation is outside this path. After native identity changes, inspect and
+explicitly run a new read-only doctor/adoption workflow; a historical receipt is query authority,
+not permission to dispatch again. An unresolved attempt remains uncertain until its original-token
+query supplies admissible evidence.
+
+The reader stays available while one worker runs tools. Typed request-ID cancellation reaches
+active/queued work; requests have a 120-second lifetime including queue time. Shutdown and observed
+stdin EOF revoke native admission, while EOF permits bounded local/read-only response drain.
+Unread stdout has a five-second budget and pending output is at most 64 MiB; output failure ends
+the session unsuccessfully. TCP resolution, connect, send/backpressure and receive have finite
+budgets; partial requests are never replayed. A second native client receives busy while the
+admitted client retains the bridge. The runtime's pinned Python 3 serves an owned bounded resolver
+helper; it is separate from client Windows requirements. Cancellation or timeout does not prove
+an already-started musical effect stopped, and synchronous kernel/Live calls cannot be promised
+preemptible. Preserve uncertain receipts and stop subsequent phases rather than retrying setters.
+
+Authored documents remain in memory until an explicit `workspace_save`. Save to the configured
+`/data/workspace.sunny.json`; the next container restores it before accepting requests. Saved work
+includes all document types, owning relationships, shared presets, corpus records, rendering
+configuration and identity reservations. Native realization history is a separate namespace in
+the same volume and survives authored undo and `.bak` recovery. Keep the namespace and workspace
+together; missing history blocks native writes. Process-local undo stacks and temporary plans do
+not survive restart. Samples and external preset files must also be backed up separately.
+
+Every process reserves its configured workspace and backup before restore/admission. A second
+writer is refused; open/save/applied recovery reserve their destinations too. Independent workspace
+paths remain independent. Stop the owner before replacing a container or restoring data. OS locks
+release after exit/crash. Keep stable hidden `.sunny-writer.lock` sidecars; replacement/deletion revokes
+publication until restart. Parent-directory aliases share ownership, while final-file symlinks and
+hardlinks are refused because atomic replacement splits their identities. Separate Linux-process
+and intermediate named-volume witnesses exist; final-image and native Windows writer behaviour
+remain qualification boundaries. See [writer admission](https://github.com/sunyaisblank/Sunny/issues/39).
+
+### Schema migration and rollback
+
+| Stored contract | Current supported reader/publication |
+|---|---|
+| Production configuration | Schema 1; explicit legacy-environment migration into a new file |
+| Authored workspace | Reads versions 1/2; saves version 2 |
+| Realization ledger | Reads schemas 1/2/3; publishes schema 2 without legacy workflows, schema 3 with them |
+| Bridge / target snapshot | Protocol 47 / schema 35; paired build required |
+| Managed installer and Confirm report | Independent schema 1 contracts |
+
+Opening an older supported ledger reads it without rewriting. A later publication migrates its
+stored representation while preserving managed/ordinary records and original tokens; schema 3 adds
+legacy workflow/stage history. Never edit a schema number backward or drop fields to placate an older
+binary. Before upgrading, stop the writer, retain the original workspace snapshot and complete
+native namespace together, and test migration on a copied volume. An older image may not read newer
+history. For software rollback, pair that old image and bridge with the compatible pre-upgrade
+configuration and full restored volume; retain the newer volume for original-token investigation.
+Bridge `Rollback` alone is not a data migration. Restoring authored work or `.bak` alone cannot
+rewind the ledger or undo effects already performed in Live. Recheck readiness and current-object
+adoption before resuming native writes.
+
+Production startup recovery is explicit `client.workspace.recovery: "backup"`. A corrupt main file
+normally fails startup; backup mode validates the supported `.bak` and restores authored state into
+memory without silently repairing the main file. Review it, `workspace_save` explicitly to repair
+the main file, then return recovery to `"none"`. It does not replace the realization ledger.
+`workspace_open` validates before replacing authored state; `workspace_import` refuses identity
+collisions. Neither operation is a replay permission.
+
+Legacy environment mode is a migration/development input only when `SUNNY_CONFIG_PATH` is absent.
+On the matching POSIX native executable, use `sunny-mcp --migrate-config NEW_OUTPUT`. The exported
+standalone `native/Sunny/configuration.py --migrate-legacy NEW_OUTPUT` needs an operator Python
+interpreter and produces the native role. Both create a new file exclusively and preserve old
+settings/data. Deliberately combine required roles and validate with the exact image's
+`--validate-config PATH` before selection. Migration refuses an unsafe native non-loopback bind.
+Remove all five legacy variables (`SUNNY_ABLETON_HOST`, `SUNNY_TCP_PORT`, `SUNNY_WORKSPACE_PATH`,
+`SUNNY_WORKSPACE_RECOVERY`, `SUNNY_BIND_HOST`) when selecting JSON; there is no merge or implicit
+schema downgrade. The normal Windows launch does not require these developer migration tools.
+
+### Stopped-writer Docker backup and restore
+
+Save explicitly, close every writer on the volume and confirm its container ended before copying.
+An active-write copy is not a consistent backup. Retain the whole volume: workspace, `.bak`, hidden
+writer sidecars and every realization namespace. Also retain the matching immutable release,
+manifest checksum, external configuration and external samples/presets. Use the verified image's
+`tar` as a short-lived network-disabled utility; these commands require an existing backup directory
+and do not start MCP or Live:
+
+```powershell
+$backup = 'D:\Sunny Backups'
+$stem = 'sunny-data-' + [Guid]::NewGuid().ToString('N')
+$partial = $stem + '.tar.incomplete'
+$archive = $stem + '.tar'
+docker --context $DockerContext volume inspect $WorkspaceVolume
+if ($LASTEXITCODE -ne 0) { throw 'The source volume is missing.' }
+docker --context $DockerContext run --rm --pull=never --network none --user 0:0 `
+  --entrypoint tar --mount "type=volume,source=$WorkspaceVolume,target=/data,readonly" `
+  --mount "type=bind,source=$backup,target=/backup" $ImageId `
+  --numeric-owner -C /data -cf "/backup/$partial" .
+if ($LASTEXITCODE -ne 0) { throw 'Backup failed; preserve the incomplete archive.' }
+Move-Item -LiteralPath (Join-Path $backup $partial) -Destination (Join-Path $backup $archive)
+$archiveHash = (Get-FileHash -LiteralPath (Join-Path $backup $archive) -Algorithm SHA256).Hash.ToLowerInvariant()
+```
+
+Retain that checksum separately with the release/image/configuration identities. Restore only your
+trusted verified archive into a new volume, preserving the original and its newest receipts:
+
+```powershell
+$expectedArchiveHash = 'REPLACE_WITH_SEPARATELY_RECORDED_LOWERCASE_ARCHIVE_SHA256'
+if ((Get-FileHash -LiteralPath (Join-Path $backup $archive) -Algorithm SHA256).Hash.ToLowerInvariant() -cne $expectedArchiveHash) {
+  throw 'Backup checksum mismatch.'
+}
+$restored = 'sunny-data-restore-' + [Guid]::NewGuid().ToString('N')
+docker --context $DockerContext volume create $restored
+if ($LASTEXITCODE -ne 0) { throw 'Restore volume creation failed.' }
+docker --context $DockerContext run --rm --pull=never --network none --user 0:0 `
+  --entrypoint tar --mount "type=volume,source=$restored,target=/data,volume-nocopy" `
+  --mount "type=bind,source=$backup,target=/backup,readonly" $ImageId `
+  --numeric-owner --same-owner --same-permissions -C /data -xf "/backup/$archive"
+if ($LASTEXITCODE -ne 0) { throw 'Restore failed; preserve both volumes and partial state.' }
+```
+
+Numeric ownership preserves Sunny UID/GID 1001. Use the same `/data` path; moving only the workspace
+can break its recorded history location. Start exactly one offline MCP against the new volume and
+read back authored documents, namespace and history diagnostics before selecting it in the launcher.
+Keep the old volume until complete lifecycle checks pass. Restored fences stay query-only; reconcile
+original tokens and establish fresh native authority rather than repeating musical mutations.
+Container removal, installer uninstall and scoped recovery never delete the project volume.
+
+## Read-only Windows diagnosis
+
+Use the exact release's `installer/windows/SunnyDoctor.ps1`, trusted manifest checksum, image,
+external configuration and volume. The release must actually contain this doctor and its Sunny,
+SunnyRemote and SunnyClient helpers with the recorded hashes. The doctor captures verified bytes,
+admits its process suspended into a private Windows job, records its identity before resume, and
+uses the normal launcher. It needs Windows PowerShell 5.1/.NET, Docker Desktop and existing approved
+OpenSSH files; no Windows Python interpreter is required.
+
+Save work and close the ordinary authoring MCP first. Diagnosis starts its own client and does not
+take another writer's lease or force-stop it. After the approved final route setup:
+
+```powershell
+$doctor = Join-Path $ReleaseDirectory 'installer\windows\SunnyDoctor.ps1'
+& $doctor -Action Diagnose @clientArgs -TimeoutSeconds 60 -CleanupSeconds 20
+# Add -ExportPath 'D:\Sunny Diagnostics\new-report.json' only for deliberate retention.
+```
+
+The default makes initialize, ping, tool discovery and one fresh correlated `doctor_ableton` call.
+It observes paired source/protocol, stable bridge/Set identity and typed playing/recording flags;
+it takes no full Set snapshot, calls no musical tool and does not probe port 9002. Readiness also
+requires a normal protocol-only close and independently confirmed owned job/container absence on
+the original daemon. A report created on the client is not already a file on the Live PC. Export
+for Confirm deliberately, arrange its manual copy and verify the hash. This closes the diagnostic
+session; authoring still requires its own fresh doctor admission.
+
+`-PollSeconds 0` leaves `logs:null`. For a finite stream observation add `-PollSeconds 15
+-PollInterval 0.25`. Duration is at most 60 seconds within the existing total maximum of 120 seconds;
+cleanup has its own 5..30-second budget. Only `get_ableton_remote_log` runs in the same owned session.
+Pages require fresh typed epochs, contiguous entries and consistent reset/gap/watermark flags.
+Empty pages back off to five seconds; pagination advances immediately. At most 1,000 requests,
+1,000 entries/page, 1,000 retained rows and 384 KiB of row JSON are admitted. The last valid cursor
+and reset/gap/stale/omission facts remain visible after later progress. Lost/malformed/unavailable
+pages, remaining pagination or exhausted bounds make readiness false; an uncertain request is not
+retried. The native ring retains its latest 1,000 records and restarts change its stream identity.
+Legacy logs without freshness/epoch metadata remain unavailable evidence.
+
+Messages are absent by default. `-IncludeMessages` requires a positive poll duration and deliberately
+retains redacted text. Logger names as well as messages may reveal project content; redaction does
+not prove all content was removed. Export is opt-in, creates a new file exclusively and refuses
+more than 1 MiB before creation. Raw native errors and captured stderr are not exported.
+
+If cleanup is uncertain, retain the exact printed doctor recovery directory and durable receipt.
+After the recorded doctor/client processes have ended, use the same trusted release:
+
+```powershell
+& $doctor -Action Recover -SessionDirectory $DoctorRecoveryDirectory `
+  -ReleaseDirectory $ReleaseDirectory -ExpectedManifestSHA256 $ManifestSHA -CleanupSeconds 30
+```
+
+Recovery refuses active recorded identities, changed daemon/owner, altered helpers and foreign
+content. It removes only proved owned containers and temporary state, confirms absence, and
+preserves the project volume. If scope was never captured, retain evidence rather than infer
+ownership from a directory name. A deadline never grants permission to retry a musical action.
+
+When the native bridge did not load, `SunnyHost.ps1 -Action Info` reads local host/process evidence.
+`-Action Log -LogPath PATH_TO_ACTUAL_Log.txt` returns metadata and matching counts from at most
+64 KiB of that explicit physical native log. Partial lines/rotation are reported incomplete;
+malformed complete UTF-8 fails. `-IncludeMessages` deliberately includes at most 100 selected,
+redacted lines; project content may remain. `SunnyRemote.ps1 -Action Info`/`Log` expose those fixed
+read-only operations over the approved final SSH connection. In-bridge logging shares the command
+channel and cannot diagnose a missing bridge or service another request while one is running.
+MCP diagnostics go to stderr; container logs do not replace independent native evidence.
+
+The release's `operator/doctor.py` is a separate POSIX/developer option requiring Python. It admits
+direct attached `docker run -i` with explicit external JSON or supported POSIX native commands,
+owns its container label/CID and exact daemon, and has finite protocol/poll/cleanup budgets.
+Windows native commands, arbitrary wrappers including SunnyClient, `docker exec`, detached and TTY
+launches are refused by that Python CLI. Normal Windows operators use SunnyDoctor instead.
+
+Local Windows fixtures cover literal MCP pipes, strict receipts, suspended/job/descendant cleanup,
+UTF-8 and original JSON surrogate checks, NTFS link/permission refusals, finite polling/retention,
+exclusive export and actual local Docker orphan recovery while preserving a foreign container and
+named-volume sentinel. They do not exercise real SSH/Live, physical disk saturation/power loss or
+preemption of synchronous kernel/Live stalls. A doctor pass cannot qualify musical effects,
+installed libraries, licences, sound or the original 23 groups.
+
+## Native capability limits
+
+Managed authoring admits Live 12.3/12.4 only; later versions need review before writes. The bridge
+retains Python 3.7 syntax compatibility and limited Live 11 behaviour inside Live's own Python.
+Operation choices follow the official [Live Object Model reference](https://docs.cycling74.com/apiref/lom/):
+
+| Live version | Note insertion/readback | Native device insertion |
 |---|---|---|
 | Before 11.0 | Note intent retained; insertion unavailable | Unavailable |
-| 11.0.x | Insert notes; read all pitches with note starts in `[0, generated clip end)` | Unavailable |
-| 11.1–11.x | Insert notes; read the complete Clip note population | Unavailable |
-| 12.0–12.2 | Same complete-population readback | Unavailable |
-| 12.3.x and 12.4.x | Same complete-population readback | Reviewed native-device candidates |
+| 11.0.x | Insert notes; read starts in `[0, generated clip end)` | Unavailable |
+| 11.1–12.2 | Complete Clip note population | Unavailable |
+| 12.3.x / 12.4.x | Complete Clip note population | Reviewed candidates, exact host still pending |
 
-Managed project authoring admits these two Live 12 minor versions. Later versions require
-capability review before native writes.
+The [Clip API](https://docs.cycling74.com/apiref/lom/clip/) distinguishes ranged access (11.0) from
+complete-population access (11.1). Live 11.0 reports `observed_time_span` and
+`entire_clip_population_observed:false`; out-of-range notes remain unobserved. The original ranged
+observation remains fixed during a workflow. Additive insertion verifies the native returned note
+IDs and observed notes; destructive note or envelope changes require complete-population evidence.
+An explicitly owned new empty Clip may still receive its selected authored envelope. Snapshots omit notes
+on every version, so snapshot equality cannot prove note-content stability. Live 11 has
+[take lanes](https://www.ableton.com/en/live-manual/11/comping/); an unavailable observation cannot
+establish absence. [Track.insert_device](https://docs.cycling74.com/apiref/lom/track/) has a 12.3 floor
+and placement restrictions. Max for Live, actual installed devices and licensing need host evidence.
 
-The [Clip reference](https://docs.cycling74.com/apiref/lom/clip/) dates ranged note access to
-11.0 and complete-population access to 11.1. Live 11.0 evidence includes
-`observed_time_span` and sets `entire_clip_population_observed` to false: notes outside the query
-remain unobserved. Snapshots omit notes on every version, so snapshot equality cannot establish
-note-content stability. Live 11 already has [take lanes](https://www.ableton.com/en/live-manual/11/comping/);
-this adapter's unavailable Live-11 take-lane observation cannot establish their absence.
+Deployment reports unsupported third-party/source intent, Group creation, general envelope
+creation and unselected domains. Finite managed controls use native formatter/readback rather than
+normalized-knob equivalence. Guarded Step panning is sampled evidence, not complete breakpoint or
+DSP equivalence. [live.remote~](https://docs.cycling74.com/reference/live.remote~/) temporarily disables
+automation; it does not author saved envelopes. Audio is neither rendered nor analysed.
 
-[Track.insert_device](https://docs.cycling74.com/apiref/lom/track/) has a Live 12.3 floor and
-native-device placement restrictions. Version eligibility does not establish edition, licensing,
-installed devices, or exact-host acceptance. Max for Live availability remains unknown until
-independent evidence is supplied. No exact version/edition/OS combination has yet passed Sunny's
-real-host qualification.
+`score_export_midi` returns type-0 Standard MIDI File bytes in `midi_base64` and a loss report.
+`score_compile_to_musicxml` returns notation XML from the same authored Score, using concert pitch
+for MIDI and instrument-transposed written pitch for MusicXML.
 
-Each deployment result reports capability and mapping gaps, including unsupported source
-configurations, third-party plug-ins, Group creation, and general automation-envelope authoring.
-The managed Step panning lane has a separate guarded workflow and sampled readback. Static
-legacy native parameter mapping uses explicit bindings; the finite managed source/effect tools
-resolve physical values from actual native formatter observations. Temporary parameter control with
-[live.remote~](https://docs.cycling74.com/reference/live.remote~/) disables automation and does
-not author saved envelopes.
+## Maintenance and final qualification
 
-## Live testing
+Maintainers update the base digest, signed dated package snapshot, exact package hashes/versions
+and dependency commits together in `release/build-inputs.json`; review upstream/security and
+compatibility changes before each release. Never patch a running production container or replace
+locked indexes with mutable fallbacks. Rebuild a clean committed source revision, verify image and
+exported native/operator bytes against the archive, and repeat affected config/protocol/persistence/
+recovery checks. Native API or operating-profile changes require new host evidence. Retain the
+previous compatible release, external config and whole stopped-writer backup until replacement
+health/lifecycle checks pass. Breaking changes require an explicit migration and rollback constraint.
 
-Development and CI need no Ableton. A real Live Set is checked last, from any machine that can
-reach the one running Live:
-
-1. Install the matching bridge as above and establish the approved route to its loopback listener.
-   Keep transport/access setup separate from proof that the loaded script responds.
-2. Open an empty or scratch Set: the check adds two tracks.
-3. On the testing machine, run the check through the local build or the Docker image:
-
-   ```bash
-   export SUNNY_LIVE_HOST=REPLACE_WITH_APPROVED_FORWARDED_ENDPOINT
-   export SUNNY_MCP_COMMAND="docker run -i --rm -e SUNNY_ABLETON_HOST -e SUNNY_TCP_PORT sunny-mcp"
-   pytest tests/python/test_live_host.py -s
-   ```
-
-The check deploys a small two-part project, reads selected properties back, and prints what it
-observed. The same scenario runs against the offline Live model in every CI build. This smoke
-check covers one workflow; the independent device, Python runtime-type, routing, transport,
-reconnect, persistence, and large-Set probes in
-[issue #22](https://github.com/sunyaisblank/Sunny/issues/22) require additional host checks.
-
-When something goes wrong inside Live, `get_ableton_remote_log` returns the Remote Script's own
-records: every request with its outcome, every refusal and every error, numbered so a client can
-poll for newer records with `after_sequence`. Pass the returned `stream_id` on later calls as well
-as `next_sequence`. A bridge restart changes the stream identity and reports `reset`; lost retained
-records report `truncated`. `observed_at` timestamps each read. `has_more` indicates another page,
-and `next_sequence` advances only through delivered records. Pages fit the native 16 MiB wire
-limit, including Unicode escaping. The last 1,000 records remain in memory inside Live.
-Sequence-only reads from an older bridge remain available for mismatch diagnosis; their missing
-epoch and freshness metadata is explicitly unavailable.
-
-This log route needs a working bridge and shares its command channel. It cannot diagnose a script
-that never loaded or service a second request while the first remains in progress. `sunny-mcp`
-writes its own diagnostics to standard error. Docker logs cover container output.
-`installer/windows/SunnyHost.ps1 -Action Info` reads local host and process evidence without a
-bridge. `-Action Log -LogPath 'REPLACE_WITH_ACTUAL_NATIVE_Log.txt'` reads at most 64 KiB from that
-explicit physical log and returns metadata and matching line counts by default. Unfinished
-lines are omitted and reported incomplete; malformed complete UTF-8 lines fail explicitly.
-`-IncludeMessages` deliberately includes at most 100 selected, redacted lines; project content
-may still remain. It never exports automatically or changes log bytes.
-
-For an approved remote connection, `SunnyRemote.ps1` accepts `Info` and `Log` through the same
-separate connection file and verified release. Its fixed operations also include `Status`,
-`Install`, `Recover`, `Rollback`, `Uninstall` and `Confirm`. Arguments cross as encoded JSON data;
-the remote operator source is captured from the checksum-verified release. Installation requires
-the full release already transferred to its explicit destination. No operation creates SSH trust,
-stops Live, or changes security settings. Remote operation deadlines are finite; a missing
-acknowledgment requires status/recovery before repeating a filesystem change. The actual two-PC
-path remains a final qualification step under the
-[operating lifecycle contract](https://github.com/sunyaisblank/Sunny/issues/36).
-
-`doctor_ableton` observes paired source/protocol, current bridge/Set tokens, and three transport
-booleans with a second identity check. It does not collect a Set snapshot or mutate Live. The CLI
-also checks actual process launch, stdio initialization and tool inventory, with a finite deadline:
-
-```bash
-python3 tools/doctor.py --timeout 30 --cleanup-timeout 10 --poll-seconds 5 --export /new/path/diagnosis.json -- \
-  docker run -i --rm --mount type=volume,source=sunny-data,target=/data sha256:REPLACE_WITH_IMAGE_ID
-```
-
-The release copy is `operator/doctor.py`. Add the configured bridge route to the launch arguments
-when diagnosing Live; an offline launch reports a precise bridge failure. Polling validates epochs,
-gaps and page bounds, backs off on failures, and records incomplete/stale outcomes. Export is opt-in,
-exclusive and bounded to 1 MiB, with credential redaction and no automatic project-content capture.
-After diagnosis, a separate cleanup budget verifies that its owned processes and any launched
-container are gone. Direct attached `docker run -i` is supported on Linux and Windows; the CLI
-assigns a private container ID file and ownership label, checks the daemon identity, and removes
-only its own container. On Linux, a private supervisor also reaps owned native child processes.
-Windows standalone native launches and Docker wrappers, `exec`, detached or TTY launches are
-currently unsupported by this CLI. Failed cleanup makes the report unsuccessful and leaves
-its ownership identifier for scoped recovery. Installer confirmation requires successful cleanup.
-Reported version-floor capabilities remain claims for later host qualification. Image identity,
-installed host/library, audio, licences and independent host logs need their own evidence.
-
-The maintained final-host tooling is in `tools/live_qualification/`. Its `obligations.json` retains
-all 23 original validation groups, their required evidence and applicability. Local toolkit tests
-do not mark those groups passed. Export the tooling with the exact bridge from a retained image:
+The qualification kit is developer POSIX Python tooling, not a Python prerequisite for Windows
+operation. The image owns every kit byte and its read-only release verifier. Exporting now wraps the
+exact complete offline release tree, including image archive and operators:
 
 ```bash
 python3 tools/export_live_qualification.py \
-  --image-id sha256:REPLACE_WITH_COMPLETE_IMAGE_ID \
+  --image-id sha256:REPLACE_WITH_COMPLETE_IMMUTABLE_IMAGE_ID \
   --output /new/path/Sunny-qualification.zip
 ```
 
-The export uses an unstarted container, records image architecture and available revision metadata,
-checks the exported source identity, and includes file checksums. It neither starts Live nor installs
-anything. This qualification package is a transport artifact; the coherent production release and
-its registry digest remain separate acceptance requirements.
+The unstarted-container export does not contact Live or install anything. Retain the returned ZIP
+checksum and separate release manifest checksum. Extract to a new directory; the ZIP root is
+`release/`. Verify the full immutable unit before qualification, using its image-owned helper:
 
-Configure the exported `qualification/configuration.json` with the exact image, current tool count,
-machine endpoints, Live version/edition and new evidence/workspace locations. Start with
-`python host_runner.py inventory` from that directory. Mutations require explicit scratch approval,
-the exact configured Set name, the observed native document token, stopped transport/recording, and
-input monitoring Off on every Track. A different Set, including one with the same name, cannot inherit
-that probe approval. The optional `SunnyHostProbe` surface on port 9002 creates notes and performs
-native setters for selected tests; it is a mutation instrument, not a general health check.
+```bash
+python3 /path/to/release/operator/live_qualification/verify_artifacts.py \
+  --release /path/to/release \
+  --expected-manifest-sha256 REPLACE_WITH_SEPARATELY_RETAINED_MANIFEST_SHA256
+cp /path/to/release/operator/live_qualification/configuration.json /external/path/qualification.json
+```
 
-Real execution comes after the integrated release's offline gates and approved machine setup.
-The final-host qualification runner refuses generic raw bridge mutations while their durable
-authority gateway remains pending. Remaining generic command guards and the running-cue check stay open in
-[issue #41](https://github.com/sunyaisblank/Sunny/issues/41). Complete native authoring, saved-envelope
-reopen/recovery, visual and audible observations, and all original groups remain required in
-[issue #22](https://github.com/sunyaisblank/Sunny/issues/22). RDP installation or a connected TCP socket
-does not establish audio readiness. The full lifecycle requirements, grouped findings and evidence
-index are in [issue #36](https://github.com/sunyaisblank/Sunny/issues/36).
+The retained original `candidate.json` verification mode remains available for its original
+candidate evidence; it is not the final full-release verifier. Never edit the configuration template,
+obligations or evidence inside the immutable release. Configure the external copy with the selected
+release directory/manifest checksum, source revision/hash, protocol/snapshot, actual immutable image,
+actual tool count, host versions/edition/OS/licences, approved forwarded endpoints, explicit MCP argv
+and new disposable workspace/evidence locations. Use the `release.py load` destination canonical
+image ID only when it is one of the fully verified release graph's local, OCI index, manifest or
+config identities. Tags and inferred labels do not substitute for that graph. Cross-store identity
+unit fixtures are not a real cross-store daemon witness. Production runtime JSON and this
+qualification configuration are separate contracts, even though each currently uses version 1.
+
+The final kit launch must be direct `docker run -i --rm --pull=never`, with that selected immutable
+image as its actual final image argument and no trailing command override. Bind one existing
+external production JSON file read-only at `/run/sunny/configuration.json`, set exactly
+`SUNNY_CONFIG_PATH=/run/sunny/configuration.json`, and bind the configured existing disposable
+`host_mount_directory` writable at `/data`. The following argv illustrates that separate developer
+profile; substitute the exact paths and verified ID in the external configuration:
+
+```json
+[
+  "docker", "run", "-i", "--rm", "--pull=never",
+  "--mount", "type=bind,source=/external/path/runtime.json,target=/run/sunny/configuration.json,readonly",
+  "--mount", "type=bind,source=/external/path/disposable qualification data,target=/data",
+  "--env", "SUNNY_CONFIG_PATH=/run/sunny/configuration.json",
+  "sha256:REPLACE_WITH_VERIFIED_GRAPH_IMAGE_ID"
+]
+```
+
+Executable/operator overlays, extra mounts, entrypoint or container-command changes, legacy/env-file
+selectors, user/workdir overrides and host networking are declined before launch. This POSIX kit
+profile does not wrap SunnyClient or establish SSH; use the separately approved forwarded endpoint.
+
+Finish local gates on the integrated release first: real stdio and ordinary Docker networking,
+resolver/unavailable/busy/wrong-pairing/deadline cases, restart, separate-process writer refusal on a
+named volume, and stopped-writer backup/new-volume restore with literal authored/history readback.
+Then manually establish and verify both approved SSH directions as the last machine setup step.
+Record actual host identities and loopback-only native/forwarding scope before transfer/install/doctor.
+
+Use a separately saved unique scratch Set named `SUNNY_HOST_QUALIFICATION_...`. Record its original
+bridge instance and Set document token (`scratch_bridge_instance`/`scratch_document_token`) from
+independent current read-only evidence; these original B/D identities are mandatory. The same name
+on another Set is insufficient. Stop transport/recording and turn input monitoring Off on every Track
+before ordinary mutating probes. Start with the explicit external configuration:
+
+```bash
+python3 /path/to/release/operator/live_qualification/host_runner.py \
+  --config /external/path/qualification.json inventory
+```
+
+The optional `SunnyHostProbe` on port 9002 is a separately installed mutation instrument for finite
+host-only probes, not a health service. Its scratch approval must refer to the same primary B/D.
+Reviewed mutating kit requests use the C++ `legacy_ableton_request` authority gateway, durable
+workspace/history and typed stage receipts instead of generic raw TCP setters. A running-cue probe
+has its separate explicit running-scratch approval. Review each intended probe and pass its exact
+approval; no script automatically refreshes authority or replays a lost mutation.
+
+The optional real-mutating two-Part smoke test is a developer final-qualification check selected
+only by the external authenticated configuration and explicit scratch approval:
+
+```bash
+SUNNY_LIVE_QUALIFICATION_CONFIG=/external/path/qualification.json \
+SUNNY_LIVE_SCRATCH_APPROVED=1 \
+python3 -m pytest tests/python/test_live_host.py -s
+```
+
+It authenticates the full paired release and image-owned kit, actual Docker/source contracts and
+original B/D through a current doctor. It requires the same named stopped scratch Song, recording
+and input monitoring Off, a new disposable workspace, and native history saved before and after
+authoring. It leaves the authored material for independent observation and verifies that the release
+inventory stayed unchanged. Old `SUNNY_LIVE_HOST`/legacy command settings no longer select native
+writes. This smoke check does not satisfy the remaining musical/UI/audio obligations.
+
+Complete transfer, install, fresh doctor, Confirm, author/revise, reconnect/lost-reply reconciliation,
+update/failed-update recovery, compatible rollback and uninstall without losing user data/history.
+Retain all 23 original groups in the image-owned `obligations.json`, including native runtime types,
+independent note/control readback, saved-envelope reopen/recovery, visual/audible observations and
+RDP connect/disconnect audio readiness. Local tests, an owned forward and a doctor pass do not mark
+these groups passed. Keep evidence outside the release and against the exact artifacts/hosts in
+[native qualification issue #22](https://github.com/sunyaisblank/Sunny/issues/22) and
+[the lifecycle evidence contract](https://github.com/sunyaisblank/Sunny/issues/36). A blocked prerequisite
+stays pending; final release/publication claims wait for the full required evidence and approved destination.
 
 ## Python
 
@@ -585,8 +895,11 @@ the resulting Set: notes in beats, tracks, devices, mixer values, routing and th
 for both Live 11 and Live 12.
 
 Expected values in tests come from the relevant standard or a hand derivation, never from the
-code under test. CI builds and tests on Linux and macOS, runs the end-to-end tests, and builds the
-Max externals on macOS and Windows.
+code under test. CI defines Linux/macOS engine and end-to-end checks, a locked release producer →
+archive verifier → same-image full-release ZIP gate, named-volume crash/restore checks, actual
+Windows installer/transfer/doctor fixtures, and Max builds on macOS/Windows. These workflow
+definitions are not a claim that the current changes have run successfully in CI. Local source/model
+and Windows fixture results remain distinct from final released-image and native-host evidence.
 
 ## Limitations
 
@@ -614,7 +927,10 @@ Max externals on macOS and Windows.
 |---|---|
 | `include/sunny/`, `src/` | C++ engine: `core` (theory and documents), `render`, `max`, `infrastructure` (formats, MCP, Ableton bridge) |
 | `apps/` | The `sunny-mcp` entry point |
-| `remote_script/Sunny/` | The Ableton Live Remote Script and the shared bridge contract |
+| `remote_script/Sunny/` | The native Live Remote Script, configuration consumer and shared bridge contract |
+| `release/`, `tools/release.py`, `Dockerfile` | Locked paired image/native/operator release producer and verifier |
+| `tools/windows/` | Managed Windows installation, transfer, stdio launcher, doctor and scoped recovery |
+| `tools/live_qualification/` | Developer POSIX final-host kit and all 23 original obligations |
 | `python/sunny/` | Python package |
 | `max-package/` | Max externals, help patchers and reference pages |
 | `tests/` | C++ and Python tests, mirroring the source layout |

@@ -1,9 +1,11 @@
 """Finite direct Python host observations; install only for final scratch-host review.
 
-No eval, arbitrary paths, implicit retries, object deletion, parameter remapping,
-Sunny registry imports or save automation. Port9002 is independent of Sunny9001.
+No eval, arbitrary paths, implicit retries, object deletion, parameter remapping
+or save automation. Port9002 observes Live independently; its scratch setters
+also require the primary surface's passive same-Song identity join.
 """
 
+import ipaddress
 import json
 import math
 import os
@@ -30,6 +32,16 @@ NOTE_FIELDS = (
 MAX_BYTES = 16 * 1024 * 1024
 PREFIX = "SUNNY_HOST_QUALIFICATION_"
 TRACK_PREFIX = "SUNNY_HOST_PROBE_"
+
+
+def endpoint():
+    """Keep this effect-capable diagnostic instrument behind an approved loopback forward."""
+    host = os.environ.get("SUNNY_PROBE_BIND_HOST", "127.0.0.1")
+    address = ipaddress.IPv4Address(host)
+    port = int(os.environ.get("SUNNY_PROBE_PORT", "9002"))
+    if not address.is_loopback or not 1 <= port <= 65535:
+        raise ValueError("Diagnostic probe requires a numeric IPv4 loopback and port 1..65535")
+    return str(address), port
 
 
 def typename(value):
@@ -78,6 +90,7 @@ class HostProbe(ControlSurface):
 
     def __init__(self, c_instance):
         """Initialize the single process or native probe without granting mutation authority."""
+        bind = endpoint()
         super().__init__(c_instance)
         self._constructor_thread = threading.get_ident()
         self._stop = threading.Event()
@@ -90,12 +103,7 @@ class HostProbe(ControlSurface):
         self._socket_errors_lock = threading.Lock()
         self._server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self._server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self._server.bind(
-            (
-                os.environ.get("SUNNY_PROBE_BIND_HOST", "127.0.0.1"),
-                int(os.environ.get("SUNNY_PROBE_PORT", "9002")),
-            )
-        )
+        self._server.bind(bind)
         self._server.listen(1)
         self._server.settimeout(1)
         self._worker = threading.Thread(
@@ -137,9 +145,24 @@ class HostProbe(ControlSurface):
                     phase = {"started": False, "cancelled": False}
                     lock = threading.Lock()
 
-                    def callback():
+                    def callback(
+                        request=request,
+                        done=done,
+                        response=response,
+                        phase=phase,
+                        lock=lock,
+                        started=started,
+                        socket_thread=socket_thread,
+                    ):
                         with lock:
-                            if phase["cancelled"]:
+                            if phase["cancelled"] or phase["started"]:
+                                return
+                            if self._stop.is_set():
+                                phase["cancelled"] = True
+                                response.update(
+                                    success=False, error="Diagnostic probe stopped before start"
+                                )
+                                done.set()
                                 return
                             phase["started"] = True
                         try:
@@ -150,7 +173,12 @@ class HostProbe(ControlSurface):
                             result = self._dispatch(request)
                             response.update(success=True, result=result)
                         except Exception as exc:
-                            response.update(success=False, error=repr(exc))
+                            response.update(
+                                success=False,
+                                error=repr(exc),
+                                mutation_log=list(self._mutations),
+                                action="Preserve native state and original approval; do not replay",
+                            )
                         finally:
                             response["dispatch"] = {
                                 "constructor_thread": self._constructor_thread,
@@ -191,7 +219,7 @@ class HostProbe(ControlSurface):
             self._document_token = uuid.uuid4().hex
         return self._document_token
 
-    def _scratch(self, request):
+    def _scratch(self, request, new_monitoring_target=None):
         song = self.song()
         current_token = self._observe_document(song)
         if (
@@ -204,11 +232,88 @@ class HostProbe(ControlSurface):
             raise RuntimeError(
                 "Native mutation requires approval for the exact observed scratch document"
             )
-        if song.is_playing or song.session_record or song.record_mode:
+        from Sunny.native_qualification import observe_primary_context
+
+        primary = observe_primary_context(song)
+        if (
+            request.get("expected_bridge_instance") != primary["bridge_instance"]
+            or request.get("expected_native_document_token") != primary["document_token"]
+        ):
+            raise RuntimeError(
+                "Native mutation requires primary approval for the exact observed scratch document"
+            )
+        if any(
+            getattr(song, flag) is not False
+            for flag in ("is_playing", "session_record", "record_mode")
+        ):
             raise RuntimeError("Stop transport and recording before diagnostic mutations")
-        if self._monitoring_observation(song).get("all_off") is not True:
+        if new_monitoring_target is None:
+            monitoring = self._monitoring_observation(song)
+        else:
+            # Only the just-created, retained Track may need its first OFF
+            # assignment. Every original Track must still be present and OFF.
+            track, original = new_monitoring_target
+            current = tuple(song.tracks)
+            if (
+                len(current) != len(original) + 1
+                or not (current[-1] is track or current[-1] == track)
+                or any(not (a is b or a == b) for a, b in zip(current[:-1], original))
+            ):
+                raise RuntimeError("Diagnostic creation changed the original Track cohort")
+            off = Live.Track.Track.monitoring_states.OFF
+            monitoring = {"all_off": all(t.current_monitoring_state == off for t in current[:-1])}
+        if monitoring.get("all_off") is not True:
             raise RuntimeError("Disable input monitoring on all scratch Tracks before mutations")
+        # Monitoring observations can invoke native callbacks. Close the
+        # observation join again before authorizing the actual effect.
+        current = self.song()
+        if (
+            not (current is song or current == song)
+            or self._observe_document(current) != request["expected_document_token"]
+            or current.name != request["expected_set_name"]
+            or observe_primary_context(current) != primary
+        ):
+            raise RuntimeError("Original scratch identity changed during diagnostic observations")
+        if any(
+            getattr(current, flag) is not False
+            for flag in ("is_playing", "session_record", "record_mode")
+        ):
+            raise RuntimeError("Stop transport and recording before diagnostic mutations")
         return song
+
+    def _native_phase(self, request, phase, action, new_monitoring_target=None, postcheck=True):
+        """Revalidate original approval at each actual effect; retain truthful partial phases."""
+        if threading.get_ident() != self._constructor_thread:
+            raise RuntimeError("Wrong callback thread; no native diagnostic phase entered")
+        if len(self._mutations) >= 1000:
+            raise RuntimeError("Diagnostic phase evidence is full; preserve it, do not replay")
+        entry = {
+            "op": request["op"],
+            "phase": phase,
+            "document_token": request.get("expected_document_token"),
+            "bridge_instance": request.get("expected_bridge_instance"),
+            "native_document_token": request.get("expected_native_document_token"),
+            "started": False,
+            "returned": False,
+        }
+        self._mutations.append(entry)
+        try:
+            self._scratch(request, new_monitoring_target)
+            entry["started"] = True
+            result = action()
+            entry["returned"] = True
+            if postcheck:
+                self._scratch(request)
+            return result
+        except Exception as exc:
+            entry["error"] = repr(exc)[:1024]
+            raise RuntimeError(
+                "Diagnostic phase "
+                + phase
+                + " failed: "
+                + repr(exc)
+                + "; preserve native state and original approval; do not replay"
+            ) from exc
 
     @staticmethod
     def _monitoring_observation(song):
@@ -280,12 +385,20 @@ class HostProbe(ControlSurface):
     def _inventory(self, selected_names):
         song = self.song()
         app = Live.Application.get_application()
+        try:
+            from Sunny.native_qualification import observe_primary_context
+
+            primary = observe_primary_context(song)
+        except Exception:
+            primary = None
         result = {
             "version": app.get_version_string(),
             "python_runtime": __import__("sys").version,
             "set_name": field(song, "name"),
             "set_file": field(song, "file_path"),
             "document_token": self._observe_document(song),
+            "primary_context": primary,
+            "primary_context_error": None if primary else "primary_context_unavailable",
             "input_monitoring": self._monitoring_observation(song),
             "song": {
                 key: field(song, key)
@@ -492,19 +605,33 @@ class HostProbe(ControlSurface):
             if not song.scenes:
                 raise RuntimeError("Scene0 must already exist")
             before = tuple(song.tracks)
-            song.create_midi_track(-1)
+            self._native_phase(
+                request, "create_track", lambda: song.create_midi_track(-1), postcheck=False
+            )
             created = [track for track in song.tracks if track not in before]
             if len(created) != 1:
                 raise RuntimeError("Unknown create outcome; inspect manually, do not replay")
             track = created[0]
-            track.name = tag
-            track.current_monitoring_state = Live.Track.Track.monitoring_states.OFF
-            track.clip_slots[0].create_clip(4.0)
+            self._native_phase(
+                request,
+                "new_track_monitoring_off",
+                lambda: setattr(
+                    track, "current_monitoring_state", Live.Track.Track.monitoring_states.OFF
+                ),
+                new_monitoring_target=(track, before),
+            )
+            self._native_phase(request, "track_name", lambda: setattr(track, "name", tag))
+            self._native_phase(request, "create_clip", lambda: track.clip_slots[0].create_clip(4.0))
             clip = track.clip_slots[0].clip
-            clip.name = tag
-            clip.looping = False
-            clip.start_marker = 0.0
-            clip.end_marker = 4.0
+            for key, value in (
+                ("name", tag),
+                ("looping", False),
+                ("start_marker", 0.0),
+                ("end_marker", 4.0),
+            ):
+                self._native_phase(
+                    request, "clip_" + key, lambda k=key, v=value: setattr(clip, k, v)
+                )
             requested = [
                 (0, 0.0, 0.25),
                 (60, 1.0 / 3.0, 1.0 / 3.0),
@@ -525,8 +652,9 @@ class HostProbe(ControlSurface):
                 )
                 for p, t, d in requested
             )
-            returned = clip.add_new_notes(specifications)
-            self._mutations.append({"op": name, "track_name": tag, "requested": requested})
+            returned = self._native_phase(
+                request, "add_notes", lambda: clip.add_new_notes(specifications)
+            )
             result = {
                 "track_name": tag,
                 "requested": requested,
@@ -612,13 +740,9 @@ class HostProbe(ControlSurface):
             result = {}
             for key in ("tempo_enabled", "time_signature_enabled"):
                 result[key] = {"before": field(scene, key)}
-                try:
-                    current = getattr(scene, key)
-                    self._mutations.append({"op": name, "property": key, "started": True})
-                    setattr(scene, key, current)
-                    result[key]["after"] = field(scene, key)
-                except Exception as exc:
-                    result[key]["setter_error"] = repr(exc)
+                current = getattr(scene, key)
+                self._native_phase(request, key, lambda k=key, v=current: setattr(scene, k, v))
+                result[key]["after"] = field(scene, key)
             return result
         if name == "envelope_samples":
             song = self.song()
@@ -649,8 +773,7 @@ class HostProbe(ControlSurface):
         if name == "clear_groove":
             _, clip = self._owned_probe_clip(request)
             before = {"groove": field(clip, "groove"), "has_groove": field(clip, "has_groove")}
-            clip.groove = None
-            self._mutations.append({"op": name, "track_name": request["track_name"]})
+            self._native_phase(request, "groove_none", lambda: setattr(clip, "groove", None))
             return {
                 "before": before,
                 "after": {"groove": field(clip, "groove"), "has_groove": field(clip, "has_groove")},
@@ -660,8 +783,9 @@ class HostProbe(ControlSurface):
             parameter = self._parameter(track, "volume")
             before = field(parameter, "display_value")
             value = parameter.display_value  # actual getter type, no fabricated unit conversion
-            parameter.display_value = value
-            self._mutations.append({"op": name, "track_name": track.name})
+            self._native_phase(
+                request, "display_value", lambda: setattr(parameter, "display_value", value)
+            )
             return {"before": before, "after": field(parameter, "display_value")}
         raise ValueError("Unknown diagnostic operation; no eval or generic native mutation")
 

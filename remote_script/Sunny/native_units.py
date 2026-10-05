@@ -225,7 +225,12 @@ def valid_native_display_request(query: Any) -> bool:
 
 
 def resolve_registered_native_display_value(
-    device: Any, capability_id: str, target: float, tolerance: float
+    device: Any,
+    capability_id: str,
+    target: float,
+    tolerance: float,
+    *,
+    retained_parameters: Any = None,
 ) -> dict[str, Any]:
     """Resolve an actual native population member from a closed capability ID.
 
@@ -239,7 +244,7 @@ def resolve_registered_native_display_value(
 
         if not isinstance(device, Live.Device.Device) or device == None:  # noqa: E711
             _fail("DeviceMismatch", "An actual valid native Device is required")
-        raw = device.parameters
+        raw = device.parameters if retained_parameters is None else retained_parameters
         if isinstance(raw, (str, bytes, dict)):
             _fail("InvalidObservation", "Device.parameters is not a native object collection")
         matches = []

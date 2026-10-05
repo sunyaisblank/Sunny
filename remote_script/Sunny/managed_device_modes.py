@@ -6,6 +6,7 @@ import copy
 from typing import Any
 
 from .managed_capacity import guard_managed_response_capacity
+from .native_control import check_native_peer, native_call
 from .native_units import registered_native_mode_context
 
 
@@ -187,8 +188,9 @@ def apply_device_modes(
 
     for item in properties:
         guard()
+        check_native_peer()
         operation["native_mutation_started"] = True
-        device.global_mode = 0
+        native_call(setattr, device, "global_mode", 0)
         actual = helper.capture(record)["device_identity"]
         _check_change(baseline, actual, index, global_mode=0)
         baseline = actual
@@ -203,8 +205,9 @@ def apply_device_modes(
         current = _admit(helper, device, item["intent"])
         if current["parameter"] is not parameter and current["parameter"] != parameter:
             raise RuntimeError("Retained native mode parameter identity changed")
+        check_native_peer()
         operation["native_mutation_started"] = True
-        parameter.value = item["target_internal"]
+        native_call(setattr, parameter, "value", item["target_internal"])
         actual = helper.capture(record)["device_identity"]
         active = (
             item["intent"]["label"] == "On"

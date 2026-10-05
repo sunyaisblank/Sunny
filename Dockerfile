@@ -25,6 +25,7 @@ COPY src ./src
 COPY release/build-inputs.json ./release/build-inputs.json
 COPY tools/release.py ./tools/release.py
 COPY tools/doctor.py ./tools/doctor.py
+COPY tools/live_qualification ./tools/live_qualification
 COPY tools/windows ./tools/windows
 COPY remote_script/Sunny ./remote_script/Sunny
 COPY python/sunny/__init__.py ./python/sunny/__init__.py
@@ -69,6 +70,8 @@ COPY --from=builder /build/.bin/remote_script/Sunny /opt/sunny/remote-script/Sun
 COPY --from=builder /build/.bin/release/ /opt/sunny/release/
 COPY --from=builder /build/tools/windows/ /opt/sunny/installer/windows/
 COPY --from=builder /build/tools/doctor.py /opt/sunny/operator/doctor.py
+COPY --from=builder /build/tools/release.py /opt/sunny/operator/release.py
+COPY --from=builder /build/tools/live_qualification/ /opt/sunny/operator/live_qualification/
 
 USER sunny
 ENTRYPOINT ["sunny-mcp"]

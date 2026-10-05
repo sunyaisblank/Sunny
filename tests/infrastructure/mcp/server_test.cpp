@@ -85,7 +85,7 @@ json call_tool(McpServer& server, const std::string& name, const json& arguments
 class DoctorTransport final : public LomTransport {
   public:
     json profile = json::parse(
-        R"({"bridge_protocol_version":46,"adapter":{"name":"Sunny Remote Script","runtime":"control_surface_python","contract":"version_coupled_private","source_sha256":"SOURCE"},"live":{"version":{"major":12,"minor":4,"bugfix":5,"string":"12.4.5"}},"capabilities":{"clip_add_new_notes":"available","track_insert_device_native":"available","automation_envelope_authoring":"unavailable","group_track_creation":"unavailable","arbitrary_browser_loading":"unavailable","structural_snapshot":"available","max_for_live":"unknown"}})");
+        R"({"bridge_protocol_version":47,"adapter":{"name":"Sunny Remote Script","runtime":"control_surface_python","contract":"version_coupled_private","source_sha256":"SOURCE"},"live":{"version":{"major":12,"minor":4,"bugfix":5,"string":"12.4.5"}},"capabilities":{"clip_add_new_notes":"available","track_insert_device_native":"available","automation_envelope_authoring":"unavailable","group_track_creation":"unavailable","arbitrary_browser_loading":"unavailable","structural_snapshot":"available","max_for_live":"unknown"}})");
     json context = json::parse(
         R"({"schema_version":1,"bridge_instance":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","document_token":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"})");
     bool connected = true;
@@ -108,7 +108,7 @@ class DoctorTransport final : public LomTransport {
         if (request.property_or_method == fail_property)
             return {false, std::nullopt, "password=NEVER_EXPORT_NATIVE_ERROR_OR_SET_CONTENT"};
         return *LomProtocol::deserialize_response(
-            R"({"bridge_protocol_version":46,"success":true,"value":false})");
+            R"({"bridge_protocol_version":47,"success":true,"value":false})");
     }
     LomResponse send_notes(const LomPath&, const std::vector<LomNoteData>&) override {
         FAIL("Doctor cannot send note mutations");
@@ -138,12 +138,12 @@ TEST_CASE("Doctor performs only six minimal reads in one freshly observed sessio
            json{{"major", 12}, {"minor", 4}, {"bugfix", 5}}));
     CHECK(report.dump().find("OMIT_VERSION_SUFFIX") == std::string::npos);
     const std::vector<std::string> expected = {
-        R"({"bridge_protocol_version":46,"name":"sunny_get_target_profile","path":"song","type":"call"})",
-        R"({"bridge_protocol_version":46,"name":"sunny_managed_context","path":"song","type":"call"})",
-        R"({"bridge_protocol_version":46,"name":"is_playing","path":"song","type":"get"})",
-        R"({"bridge_protocol_version":46,"name":"session_record","path":"song","type":"get"})",
-        R"({"bridge_protocol_version":46,"name":"record_mode","path":"song","type":"get"})",
-        R"({"bridge_protocol_version":46,"name":"sunny_managed_context","path":"song","type":"call"})"};
+        R"({"bridge_protocol_version":47,"name":"sunny_get_target_profile","path":"song","type":"call"})",
+        R"({"bridge_protocol_version":47,"name":"sunny_managed_context","path":"song","type":"call"})",
+        R"({"bridge_protocol_version":47,"name":"is_playing","path":"song","type":"get"})",
+        R"({"bridge_protocol_version":47,"name":"session_record","path":"song","type":"get"})",
+        R"({"bridge_protocol_version":47,"name":"record_mode","path":"song","type":"get"})",
+        R"({"bridge_protocol_version":47,"name":"sunny_managed_context","path":"song","type":"call"})"};
     CHECK(transport.wire == expected);
     const auto previous_time = report.at("observed_at").get<double>();
     transport.connected = false;
@@ -165,6 +165,11 @@ TEST_CASE("Doctor declines mismatches, invalid sessions, lost reads and Set chan
     BridgeDispatcher dispatcher(&transport);
     McpServer server;
     register_sunny_tools(server, orchestrator, dispatcher);
+    server.register_tool(
+        "observe_origin", "Observe publication only", json::object(), [](const json&) {
+            const auto control = current_request_control();
+            return json{{"origin_present", control && control->native_origin.has_value()}};
+        });
     std::string expected;
     std::size_t calls = 0;
     SECTION("Source mismatch stays diagnosable and prevents readiness reads") {
@@ -199,6 +204,7 @@ TEST_CASE("Doctor declines mismatches, invalid sessions, lost reads and Set chan
     CHECK(report.at("checks").back().at("code") == expected);
     CHECK(report.dump().find("NEVER_EXPORT_NATIVE_ERROR_OR_SET_CONTENT") == std::string::npos);
     CHECK(transport.wire.size() == calls);
+    CHECK(call_tool(server, "observe_origin", json::object(), 2).at("origin_present") == false);
 }
 
 TEST_CASE("Doctor rejects unsafe request correlations before native access", "[mcp][doctor]") {
@@ -233,7 +239,7 @@ TEST_CASE("Remote log MCP preserves sequence API and forwards explicit stream cu
     REQUIRE(transport.requests.size() == 1);
     CHECK(
         LomProtocol::serialize_request(transport.requests.back()) ==
-        R"({"args":[0],"bridge_protocol_version":46,"name":"sunny_get_remote_log","path":"song","type":"call"})");
+        R"({"args":[0],"bridge_protocol_version":47,"name":"sunny_get_remote_log","path":"song","type":"call"})");
     transport.page["entries"][0]["sequence"] = 2;
     transport.page["next_sequence"] = 2;
     transport.page["has_more"] = false;
@@ -246,7 +252,7 @@ TEST_CASE("Remote log MCP preserves sequence API and forwards explicit stream cu
     CHECK(second.at("entries")[0]["sequence"] == 2);
     CHECK(
         LomProtocol::serialize_request(transport.requests.back()) ==
-        R"({"args":[1,"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],"bridge_protocol_version":46,"name":"sunny_get_remote_log","path":"song","type":"call"})");
+        R"({"args":[1,"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],"bridge_protocol_version":47,"name":"sunny_get_remote_log","path":"song","type":"call"})");
 
     transport.page["entries"][0]["sequence"] = 1;
     transport.page["next_sequence"] = 1;
@@ -1094,7 +1100,7 @@ TEST_CASE("all public tools advertise object-shaped JSON Schemas", "[mcp][tools]
     auto response =
         server.process_request({{"jsonrpc", "2.0"}, {"method", "tools/list"}, {"id", 30}});
     const auto& tools = response["result"]["tools"];
-    REQUIRE(tools.size() == 193);
+    REQUIRE(tools.size() == 197);
     for (const auto& tool : tools) {
         CAPTURE(tool["name"]);
         const auto& schema = tool["inputSchema"];

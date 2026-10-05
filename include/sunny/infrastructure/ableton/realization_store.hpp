@@ -8,13 +8,14 @@
 #include <memory>
 #include <string>
 #include <sunny/core/score/types.hpp>
+#include <sunny/infrastructure/ableton/legacy_authority.hpp>
 #include <sunny/infrastructure/ableton/managed_realization.hpp>
 #include <sunny/infrastructure/ableton/ordinary_clip.hpp>
 #include <vector>
 
 namespace sunny::infrastructure {
 
-inline constexpr int REALIZATION_STORE_SCHEMA_VERSION = 2;
+inline constexpr int REALIZATION_STORE_SCHEMA_VERSION = 3;
 inline constexpr std::size_t REALIZATION_STORE_MAX_BYTES = 64 * 1024 * 1024;
 inline constexpr std::size_t REALIZATION_STORE_MAX_ATTEMPTS = 4096;
 inline constexpr std::size_t REALIZATION_STORE_MAX_EVIDENCE = 64;
@@ -106,6 +107,44 @@ class OrdinaryDispatchPermit {
     std::optional<OrdinaryClipReceipt> prepared_;
 };
 
+struct LegacyStoredChild {
+    LegacyOperationReceipt prepared;
+    std::vector<LegacyOperationReceipt> evidence;
+};
+struct LegacyStoredWorkflow {
+    std::string workflow_id;
+    LegacyWorkflowRecipe recipe;
+    std::string state = "unresolved";
+    std::optional<std::string> disposition = std::nullopt;
+    std::vector<LegacyStoredChild> children;
+};
+class LegacyDispatchPermit {
+  public:
+    LegacyDispatchPermit(LegacyDispatchPermit&& other) noexcept
+        : prepared_(std::move(other.prepared_)) {
+        other.prepared_.reset();
+    }
+    LegacyDispatchPermit& operator=(LegacyDispatchPermit&& other) noexcept {
+        if (this != &other) {
+            prepared_ = std::move(other.prepared_);
+            other.prepared_.reset();
+        }
+        return *this;
+    }
+    LegacyDispatchPermit(const LegacyDispatchPermit&) = delete;
+    LegacyDispatchPermit& operator=(const LegacyDispatchPermit&) = delete;
+    [[nodiscard]] std::optional<LegacyOperationReceipt> take_prepared() noexcept {
+        auto result = std::move(prepared_);
+        prepared_.reset();
+        return result;
+    }
+
+  private:
+    friend class RealizationStore;
+    explicit LegacyDispatchPermit(LegacyOperationReceipt value) : prepared_(std::move(value)) {}
+    std::optional<LegacyOperationReceipt> prepared_;
+};
+
 /** Caller serializes access. Holds a lifetime process lock on
  * <existing durable base_directory>/<32hex namespace>/.lock.
  * InitializeNew requires a wholly new namespace directory. OpenExisting refuses
@@ -143,6 +182,27 @@ class RealizationStore {
     [[nodiscard]] bool native_writes_available() const noexcept;
     [[nodiscard]] const std::optional<std::string>& blocked_reason() const noexcept;
     [[nodiscard]] RealizationStoreResult<std::string> new_attempt_id() const;
+    [[nodiscard]] const std::map<std::string, LegacyStoredWorkflow>&
+    legacy_workflows() const noexcept;
+    [[nodiscard]] bool has_unresolved_legacy_workflow() const noexcept;
+    [[nodiscard]] RealizationStoreResult<void> fence_legacy_workflow(
+        const std::string&, const LegacyWorkflowRecipe&, const RealizationStoreIoFault& fault = {});
+    [[nodiscard]] RealizationStoreResult<LegacyDispatchPermit>
+    fence_legacy_child(const std::string&,
+                       const LegacyOperationReceipt&,
+                       const RealizationStoreIoFault& fault = {});
+    [[nodiscard]] RealizationStoreResult<void>
+    append_legacy_evidence(const std::string&,
+                           const LegacyOperationReceipt&,
+                           const RealizationStoreIoFault& fault = {});
+    [[nodiscard]] RealizationStoreResult<void> finalize_legacy_workflow(
+        const std::string&, bool completed, const RealizationStoreIoFault& fault = {});
+    // An explicit operator disposition acknowledges retained partial/unknown state.
+    // It issues no dispatch permit and does not erase any original evidence.
+    [[nodiscard]] RealizationStoreResult<void>
+    dispose_legacy_workflow(const std::string&,
+                            const std::string& retained_state,
+                            const RealizationStoreIoFault& fault = {});
 
     // Reject duplicate membership and any non-Prepared original intent. Never
     // overwrite/delete.

@@ -11,6 +11,7 @@ import copy
 from typing import Any
 
 from .managed_capacity import note_array_bound, require_response_capacity
+from .native_control import check_native_peer, native_call
 
 GEOMETRY_METHOD = "sunny_managed_update_clip_geometry"
 GEOMETRY_PROPERTIES = ("end_marker", "signature_numerator", "signature_denominator")
@@ -220,10 +221,12 @@ class ManagedGeometry:
         actual = before
         expected = {k: before["manifest"]["clip"][k] for k in GEOMETRY_PROPERTIES}
         for name in properties:
+            check_native_peer()
             progress["started_properties"].append(name)
             operation["native_mutation_started"] = True
             try:
-                setattr(
+                native_call(
+                    setattr,
                     record["clip"],
                     name,
                     float(geometry[name]) if name == "end_marker" else geometry[name],

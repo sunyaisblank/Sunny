@@ -7,13 +7,24 @@ original-token journal queries pass normally. No Live API or permissive host mod
 """
 
 import argparse
+import ipaddress
 import json
 import socket
-import struct
+import sys
 import threading
+import time
 from pathlib import Path
 
-from common import record, recv_frame
+sys.dont_write_bytecode = True
+
+from common import (  # noqa: E402 - preserve the release before peer imports.
+    addresses,
+    record,
+    recv_frame,
+    remaining,
+    seconds,
+    send_bytes_frame,
+)
 
 MANAGED_MUTATIONS = frozenset(
     {
@@ -99,27 +110,40 @@ def main():
     )
     parser.add_argument("--log", required=True)
     args = parser.parse_args()
+    try:
+        listener_address = ipaddress.IPv4Address(args.listen_host)
+    except ipaddress.AddressValueError:
+        parser.error("Fault proxy requires a numeric IPv4 loopback and port 1..65535")
+    if not listener_address.is_loopback or not 1 <= args.listen_port <= 65535:
+        parser.error("Fault proxy requires a numeric IPv4 loopback and port 1..65535")
     config = json.loads(Path(args.config).read_text())
+    session_deadline = time.monotonic() + seconds(config.get("mcp_session_timeout", 1800), 3600)
+    frame_budget = seconds(config.get("mcp_timeout", 120), 120)
     dropped = False
     stop = threading.Event()
     with socket.socket() as listener:
         listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        listener.bind((args.listen_host, args.listen_port))
+        listener.bind((str(listener_address), args.listen_port))
         listener.listen(1)
         print("Fault proxy ready: one matched reply only; Ctrl-C stops", flush=True)
-        while not stop.is_set():
-            incoming, _ = listener.accept()
+        while not stop.is_set() and time.monotonic() < session_deadline:
+            listener.settimeout(min(0.25, remaining(session_deadline)))
+            try:
+                incoming, _ = listener.accept()
+            except TimeoutError:
+                continue
+            deadline = min(session_deadline, time.monotonic() + frame_budget)
+            endpoint = addresses(config["bridge_host"], config["bridge_port"], deadline)[0]
             with (
                 incoming,
-                socket.create_connection(
-                    (config["bridge_host"], config["bridge_port"]), timeout=35
-                ) as outgoing,
+                socket.socket(socket.AF_INET, socket.SOCK_STREAM) as outgoing,
             ):
-                incoming.settimeout(None)
-                outgoing.settimeout(180)
+                outgoing.settimeout(remaining(deadline))
+                outgoing.connect(endpoint)
                 while True:
                     try:
-                        request_bytes = recv_frame(incoming)
+                        deadline = min(session_deadline, time.monotonic() + frame_budget)
+                        request_bytes = recv_frame(incoming, deadline)
                         request = json.loads(request_bytes)
                         payload = request.get("args", [{}])[0] if request.get("args") else {}
                         token = payload.get("operation_id") if isinstance(payload, dict) else None
@@ -134,8 +158,8 @@ def main():
                                 entry=fenced,
                             )
                         record(args.log, "forward_once", request=request)
-                        outgoing.sendall(struct.pack(">I", len(request_bytes)) + request_bytes)
-                        response = recv_frame(outgoing)
+                        send_bytes_frame(outgoing, request_bytes, deadline)
+                        response = recv_frame(outgoing, deadline)
                         record(
                             args.log,
                             "actual_host_response",
@@ -152,8 +176,8 @@ def main():
                             )
                             incoming.shutdown(socket.SHUT_RDWR)
                             break
-                        incoming.sendall(struct.pack(">I", len(response)) + response)
-                    except (EOFError, ConnectionError):
+                        send_bytes_frame(incoming, response, deadline)
+                    except (EOFError, ConnectionError, TimeoutError):
                         break
 
 

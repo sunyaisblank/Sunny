@@ -31,6 +31,7 @@ from .managed_capacity import (
     guard_note_response_capacity,
     guard_operation_reservation_capacity,
 )
+from .native_control import check_native_peer, native_call
 
 MANAGED_SCHEMA_VERSION = 1
 MANAGED_CALLS = frozenset(
@@ -575,6 +576,7 @@ class ManagedRegistry:
         self._reset_helpers()
 
     def _reset_helpers(self) -> None:
+        from .legacy import LegacyAuthority
         from .managed_devices import ManagedDevices
         from .managed_envelope_revision import ManagedEnvelopeRevision
         from .managed_geometry import ManagedGeometry
@@ -592,6 +594,7 @@ class ManagedRegistry:
         self._song_settings = ManagedSongSettings(self)
         self._envelope_revision = ManagedEnvelopeRevision(self)
         self._ordinary = OrdinaryClips(self)
+        self._legacy = LegacyAuthority(self)
 
     def attach_handler(self, handler: Any) -> None:
         """Supply the existing adapter; all callbacks still run on its Live dispatch."""
@@ -609,6 +612,7 @@ class ManagedRegistry:
             self._song = song
         elif not self._same(self._song, song):
             self._ordinary.close()
+            self._legacy.close()
             self._song = song
             self._document_token = uuid.uuid4().hex
             self._bindings.clear()
@@ -621,6 +625,11 @@ class ManagedRegistry:
         """Select the helper only after refreshing the shared document epoch."""
         self._ensure_document()
         return self._ordinary.dispatch(name, args[0])
+
+    def dispatch_legacy(self, name: str, args: list[Any]) -> dict[str, Any]:
+        """Use the common main-thread epoch and shared operation-ID domain."""
+        self._ensure_document()
+        return self._legacy.dispatch(name, args[0])
 
     @staticmethod
     def _tags(project: str, binding: str) -> tuple[str, str]:
@@ -1005,6 +1014,7 @@ class ManagedRegistry:
                 ):
                     return False
                 context["creation_authorized"] = True
+                check_native_peer()
                 context["operation"]["native_mutation_started"] = True
             elif (
                 not self._handler._envelope_valid(envelope)
@@ -1189,8 +1199,9 @@ class ManagedRegistry:
                     )
                 self._require_guard(record, request["expected_content_fingerprint"])
                 guard_creation_response_capacity(operation)
+                check_native_peer()
                 operation["native_mutation_started"] = True
-                record["slot"].delete_clip()
+                native_call(record["slot"].delete_clip)
                 record["clip"] = None
                 self._fill_clip(record, request, operation)
                 result = self._seal(record)
@@ -1385,12 +1396,13 @@ class ManagedRegistry:
         self._handler._step_clip_interval(clip, idle=True)
         if record["track"].arm is not False or record["track"].implicit_arm is not False:
             raise RuntimeError("Managed Track became armed before mutation")
+        check_native_peer()
         operation["native_mutation_started"] = True
         changes = {change["note_id"]: change for change in request["changes"]}
         for note in native_notes:
             for name in changes[note.note_id]["updates"]:
-                setattr(note, name, proposed[note.note_id][name])
-        clip.apply_note_modifications(native_notes)
+                native_call(setattr, note, name, proposed[note.note_id][name])
+        native_call(clip.apply_note_modifications, native_notes)
         result = self._seal(record)
         after = {note["note_id"]: note for note in result["note_identity"]["notes"]}
         previous = {note["note_id"]: note for note in before["note_identity"]["notes"]}
@@ -1478,6 +1490,7 @@ class ManagedRegistry:
         retained = {i: n for i, n in previous.items() if i not in deleted}
 
         def start(name: str) -> None:
+            check_native_peer()
             operation["native_mutation_started"] = True
             progress["started_calls"].append(name)
 
@@ -1499,21 +1512,21 @@ class ManagedRegistry:
 
         if deleted:
             start("remove_notes_by_id")
-            clip.remove_notes_by_id(tuple(sorted(deleted)))
+            native_call(clip.remove_notes_by_id, tuple(sorted(deleted)))
             progress["returned_calls"].append("remove_notes_by_id")
             require_population(retained)
         if changed:
             start("apply_note_modifications")
             for note in selected:
                 for name in changed[note.note_id]["updates"]:
-                    setattr(note, name, proposed[note.note_id][name])
-            clip.apply_note_modifications(selected)
+                    native_call(setattr, note, name, proposed[note.note_id][name])
+            native_call(clip.apply_note_modifications, selected)
             progress["returned_calls"].append("apply_note_modifications")
             require_population(proposed)
         added_ids = []
         if specifications:
             start("add_new_notes")
-            added_ids = list(clip.add_new_notes(specifications))
+            added_ids = list(native_call(clip.add_new_notes, specifications))
             progress["returned_calls"].append("add_new_notes")
             progress["returned_added_note_ids"] = added_ids
             if (
@@ -1606,9 +1619,10 @@ class ManagedRegistry:
             )
         guard_creation_response_capacity(operation)
         before = tuple(song.tracks)
+        check_native_peer()
         operation["native_mutation_started"] = True
         try:
-            song.create_midi_track(-1)
+            native_call(song.create_midi_track, -1)
         finally:
             created = [
                 track for track in song.tracks if not any(self._same(track, old) for old in before)
@@ -1625,9 +1639,9 @@ class ManagedRegistry:
         record = self._bindings.get(binding)
         if record is None or len(song.tracks) != len(before) + 1:
             raise RuntimeError("Native Track creation did not yield one unique new identity")
-        record["track"].name = track_tag
-        record["track"].arm = False
-        record["track"].implicit_arm = False
+        native_call(setattr, record["track"], "name", track_tag)
+        native_call(setattr, record["track"], "arm", False)
+        native_call(setattr, record["track"], "implicit_arm", False)
         record["slot"] = record["track"].clip_slots[0]
         self._fill_clip(record, request, operation)
         self._devices.retain_created_track_authority(record)
@@ -1638,25 +1652,25 @@ class ManagedRegistry:
         self, record: dict[str, Any], request: dict[str, Any], operation: dict[str, Any]
     ) -> None:
         try:
-            record["slot"].create_clip(float(request["clip_end"]))
+            native_call(record["slot"].create_clip, float(request["clip_end"]))
         finally:
             if record["slot"].has_clip:
                 record["clip"] = record["slot"].clip
         clip = record["clip"]
         if clip is None:
             raise RuntimeError("Native Clip creation did not return an occupied slot")
-        clip.name = record["clip_tag"]
-        clip.looping = False
-        clip.start_marker = 0.0
-        clip.end_marker = float(request["clip_end"])
-        clip.signature_numerator = request["signature_numerator"]
-        clip.signature_denominator = request["signature_denominator"]
-        clip.launch_mode = 0
-        clip.launch_quantization = 1
-        clip.legato = False
-        clip.velocity_amount = 0.0
-        clip.muted = False
-        clip.groove = None
+        native_call(setattr, clip, "name", record["clip_tag"])
+        native_call(setattr, clip, "looping", False)
+        native_call(setattr, clip, "start_marker", 0.0)
+        native_call(setattr, clip, "end_marker", float(request["clip_end"]))
+        native_call(setattr, clip, "signature_numerator", request["signature_numerator"])
+        native_call(setattr, clip, "signature_denominator", request["signature_denominator"])
+        native_call(setattr, clip, "launch_mode", 0)
+        native_call(setattr, clip, "launch_quantization", 1)
+        native_call(setattr, clip, "legato", False)
+        native_call(setattr, clip, "velocity_amount", 0.0)
+        native_call(setattr, clip, "muted", False)
+        native_call(setattr, clip, "groove", None)
         record["requested_clip"] = {
             "end_marker": float(request["clip_end"]),
             "signature_numerator": request["signature_numerator"],

@@ -171,12 +171,12 @@ class NativeWorkflow:
         )
         try:
             # Docker/WSL may make the route visible after listener startup.
-            # Establish readiness only through bounded read-only product calls;
-            # no native mutation is sent or retried while the route is pending.
+            # The real read-only doctor pins the original native epoch for this
+            # process; restarts obtain readiness before any new native mutation.
             deadline = time.monotonic() + 10.0
             while True:
-                readiness = client.call("get_ableton_session_state")
-                if readiness.get("success") is True:
+                readiness = client.call("doctor_ableton")
+                if readiness.get("success") is True and readiness.get("read_only_ready") is True:
                     break
                 assert time.monotonic() < deadline, readiness
                 threading.Event().wait(0.1)

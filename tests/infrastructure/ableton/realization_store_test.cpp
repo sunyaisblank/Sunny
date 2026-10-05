@@ -755,7 +755,7 @@ TEST_CASE("Strict realization codec blocks corrupt foreign duplicate and incompl
     value["workspace_namespace"] = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     invalid.push_back(value);
     value = valid;
-    value["schema_version"] = 3;
+    value["schema_version"] = 4;
     invalid.push_back(value);
     value = valid;
     value["unknown"] = 1;

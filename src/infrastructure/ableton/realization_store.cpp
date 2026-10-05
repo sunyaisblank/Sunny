@@ -176,9 +176,129 @@ void validate_terminal_history(const RealizationStoredAttempt& attempt) {
             retained = journal;
     }
 }
+json workflow_json(const LegacyStoredWorkflow& w) {
+    json children = json::array();
+    for (const auto& child : w.children) {
+        json evidence = json::array();
+        for (const auto& r : child.evidence)
+            evidence.push_back(legacy_receipt_to_json(r));
+        children.push_back({{"prepared", legacy_receipt_to_json(child.prepared)},
+                            {"dispatch_state", "may_have_sent"},
+                            {"evidence", evidence}});
+    }
+    return {{"workflow_id", w.workflow_id},
+            {"recipe", legacy_recipe_to_json(w.recipe)},
+            {"state", w.state},
+            {"disposition", w.disposition ? json(*w.disposition) : json{}},
+            {"children", children}};
+}
+bool child_acknowledged(const LegacyStoredChild& c) {
+    return std::ranges::any_of(c.evidence, [](const auto& r) {
+        return r.outcome == LegacyOperationOutcome::Acknowledged;
+    });
+}
+bool child_no_effect(const LegacyStoredChild& c) {
+    const bool definite = std::ranges::any_of(c.evidence, [](const auto& r) {
+        return r.outcome == LegacyOperationOutcome::Declined ||
+               (r.outcome == LegacyOperationOutcome::NotSent &&
+                (r.stage == LegacyOperationStage::Prepare ||
+                 r.stage == LegacyOperationStage::Execute));
+    });
+    const bool effect = std::ranges::any_of(c.evidence, [](const auto& r) {
+        return r.outcome == LegacyOperationOutcome::Acknowledged ||
+               r.outcome == LegacyOperationOutcome::Partial;
+    });
+    return definite && !effect;
+}
+void validate_workflow(const LegacyStoredWorkflow& w, const std::string& ns) {
+    if (!hex(w.workflow_id, 32) || !legacy_recipe_from_json(legacy_recipe_to_json(w.recipe)) ||
+        w.recipe.authority.workspace_namespace != ns ||
+        w.children.size() > w.recipe.commands.size())
+        deny("legacy workflow: immutable recipe/namespace mismatch");
+    if (w.state != "unresolved" && w.state != "completed" && w.state != "not_applied" &&
+        w.state != "disposed")
+        deny("legacy workflow: unsupported state");
+    if (w.state == "disposed") {
+        if (!w.disposition || w.disposition->empty() || w.disposition->size() > 4096)
+            deny("legacy workflow: explicit retained-state disposition required");
+    } else if (w.disposition)
+        deny("legacy workflow: unexpected disposition");
+    unsigned revision = w.recipe.authority.graph_revision;
+    for (std::size_t i = 0; i < w.children.size(); ++i) {
+        const auto& c = w.children[i];
+        const auto& r = c.prepared;
+        if (!legacy_receipt_from_json(legacy_receipt_to_json(r)) ||
+            r.outcome != LegacyOperationOutcome::Prepared ||
+            r.intent.at("workflow_id") != w.workflow_id || r.intent.at("ordinal") != i + 1 ||
+            r.intent.at("graph_revision") != revision ||
+            managed_detail::managed_digest(r.intent.at("command")) !=
+                managed_detail::managed_digest(w.recipe.commands.at(i).at("command")))
+            deny("legacy child: original recipe/ordinal/revision mismatch");
+        for (const auto& [key, value] : w.recipe.authority.scope.items())
+            if (r.intent.at(key) != value) deny("legacy child: original planning scope changed");
+        if (c.evidence.size() > REALIZATION_STORE_MAX_EVIDENCE)
+            deny("legacy evidence capacity exhausted");
+        std::optional<json> terminal;
+        for (const auto& e : c.evidence) {
+            if (!legacy_receipt_from_json(legacy_receipt_to_json(e)) ||
+                managed_detail::managed_digest(e.intent) !=
+                    managed_detail::managed_digest(r.intent) ||
+                e.outcome == LegacyOperationOutcome::Prepared)
+                deny("legacy evidence: immutable intent or closed codec mismatch");
+            if (e.journal && (e.outcome == LegacyOperationOutcome::Acknowledged ||
+                              e.outcome == LegacyOperationOutcome::Declined ||
+                              e.outcome == LegacyOperationOutcome::Partial)) {
+                if (terminal && *terminal != *e.journal)
+                    deny("legacy evidence: conflicting terminal journal");
+                terminal = e.journal;
+            } else if (terminal && e.outcome == LegacyOperationOutcome::NativePrepared)
+                deny("legacy preparation after terminal journal");
+        }
+        if (terminal && terminal->at("outcome") == "acknowledged")
+            revision = terminal->at("result").at("graph_revision").get<unsigned>();
+        else if (i + 1 < w.children.size())
+            deny("legacy continuation requires acknowledged predecessor");
+    }
+    if (w.state == "completed" && (w.children.size() != w.recipe.commands.size() ||
+                                   !std::ranges::all_of(w.children, child_acknowledged)))
+        deny("legacy completion requires entire acknowledged recipe");
+    if (w.state == "not_applied" && !std::ranges::all_of(w.children, child_no_effect))
+        deny("legacy not_applied requires definitive zero native effects");
+}
+LegacyStoredWorkflow decode_workflow(const json& v, const std::string& ns) {
+    exact(v, {"workflow_id", "recipe", "state", "disposition", "children"}, "legacy workflow");
+    auto recipe = legacy_recipe_from_json(v.at("recipe"));
+    if (!recipe) deny("legacy recipe codec rejected value");
+    LegacyStoredWorkflow w;
+    w.workflow_id = v.at("workflow_id").get<std::string>();
+    w.recipe = *recipe;
+    w.state = v.at("state").get<std::string>();
+    if (!v.at("disposition").is_null()) w.disposition = v.at("disposition").get<std::string>();
+    if (!v.at("children").is_array() || v.at("children").size() > 4096)
+        deny("legacy child capacity exhausted");
+    for (const auto& child : v.at("children")) {
+        exact(child, {"prepared", "dispatch_state", "evidence"}, "legacy child");
+        auto prepared = legacy_receipt_from_json(child.at("prepared"));
+        if (!prepared || child.at("dispatch_state") != "may_have_sent" ||
+            !child.at("evidence").is_array() ||
+            child.at("evidence").size() > REALIZATION_STORE_MAX_EVIDENCE)
+            deny("legacy child: invalid fence");
+        LegacyStoredChild c{*prepared, {}};
+        for (const auto& evidence : child.at("evidence")) {
+            auto r = legacy_receipt_from_json(evidence);
+            if (!r) deny("legacy evidence codec rejected value");
+            c.evidence.push_back(*r);
+        }
+        w.children.push_back(std::move(c));
+    }
+    validate_workflow(w, ns);
+    return w;
+}
+
 json ledger_json(const std::string& ns,
                  const std::map<std::string, RealizationStoredAttempt>& attempts,
-                 const std::map<std::string, OrdinaryStoredAttempt>& ordinary) {
+                 const std::map<std::string, OrdinaryStoredAttempt>& ordinary,
+                 const std::map<std::string, LegacyStoredWorkflow>& legacy) {
     json records = json::array();
     for (const auto& [id, attempt] : attempts) {
         static_cast<void>(id);
@@ -204,11 +324,18 @@ json ledger_json(const std::string& ns,
                                     {"dispatch_state", "may_have_sent"},
                                     {"evidence", evidence}});
     }
-    return {{"format", "sunny-realization-ledger"},
-            {"schema_version", REALIZATION_STORE_SCHEMA_VERSION},
-            {"workspace_namespace", ns},
-            {"attempts", records},
-            {"ordinary_attempts", ordinary_records}};
+    json legacy_records = json::array();
+    for (const auto& [id, w] : legacy) {
+        static_cast<void>(id);
+        legacy_records.push_back(workflow_json(w));
+    }
+    json document{{"format", "sunny-realization-ledger"},
+                  {"schema_version", legacy.empty() ? 2 : REALIZATION_STORE_SCHEMA_VERSION},
+                  {"workspace_namespace", ns},
+                  {"attempts", records},
+                  {"ordinary_attempts", ordinary_records}};
+    if (!legacy.empty()) document["legacy_workflows"] = std::move(legacy_records);
+    return document;
 }
 
 void validate_ordinary_history(const OrdinaryStoredAttempt& attempt) {
@@ -250,7 +377,8 @@ json parse(const std::string& bytes) {
 std::map<std::string, RealizationStoredAttempt>
 decode(const std::string& bytes,
        const std::string& ns,
-       std::map<std::string, OrdinaryStoredAttempt>* ordinary = nullptr) {
+       std::map<std::string, OrdinaryStoredAttempt>* ordinary = nullptr,
+       std::map<std::string, LegacyStoredWorkflow>* legacy = nullptr) {
     const auto document = parse(bytes);
     const auto schema =
         sunny::core::detail::checked_integer<int>(document.at("schema_version"), "schema_version");
@@ -259,6 +387,15 @@ decode(const std::string& bytes,
     else if (schema == 2)
         exact(document,
               {"format", "schema_version", "workspace_namespace", "attempts", "ordinary_attempts"},
+              "ledger");
+    else if (schema == 3)
+        exact(document,
+              {"format",
+               "schema_version",
+               "workspace_namespace",
+               "attempts",
+               "ordinary_attempts",
+               "legacy_workflows"},
               "ledger");
     else
         deny("Unsupported realization ledger schema; retain the older snapshot for software "
@@ -334,7 +471,7 @@ decode(const std::string& bytes,
         result.emplace(intent.attempt_id, std::move(attempt));
     }
     std::map<std::string, OrdinaryStoredAttempt> ordinary_result;
-    if (schema == 2) {
+    if (schema >= 2) {
         const auto& ordinary_records = document.at("ordinary_attempts");
         if (!ordinary_records.is_array() ||
             ordinary_records.size() + records.size() > REALIZATION_STORE_MAX_ATTEMPTS)
@@ -368,6 +505,35 @@ decode(const std::string& bytes,
             ordinary_result.emplace(id, std::move(attempt));
         }
     }
+    std::map<std::string, LegacyStoredWorkflow> legacy_result;
+    if (schema == 3) {
+        const auto& workflows = document.at("legacy_workflows");
+        if (!workflows.is_array() || workflows.size() > 4096)
+            deny("legacy workflow capacity exhausted");
+        std::set<std::string> ids;
+        for (const auto& [id, record] : result) {
+            static_cast<void>(record);
+            ids.insert(id);
+        }
+        for (const auto& [id, record] : ordinary_result) {
+            static_cast<void>(record);
+            ids.insert(id);
+        }
+        std::string previous_id;
+        for (const auto& encoded : workflows) {
+            auto w = decode_workflow(encoded, ns);
+            if (w.workflow_id <= previous_id || !ids.insert(w.workflow_id).second)
+                deny("legacy workflow identity collision/order");
+            previous_id = w.workflow_id;
+            for (const auto& child : w.children)
+                if (!ids.insert(child.prepared.intent.at("operation_id").get<std::string>()).second)
+                    deny("legacy operation identity collision");
+            legacy_result.emplace(w.workflow_id, std::move(w));
+        }
+        if (ids.size() - legacy_result.size() > REALIZATION_STORE_MAX_ATTEMPTS)
+            deny("combined ledger identity capacity exhausted");
+    }
+    if (legacy) *legacy = std::move(legacy_result);
     if (ordinary) *ordinary = std::move(ordinary_result);
     return result;
 }
@@ -396,6 +562,27 @@ struct RealizationStore::Impl {
     fs::path path;
     std::map<std::string, RealizationStoredAttempt> attempts;
     std::map<std::string, OrdinaryStoredAttempt> ordinary_attempts;
+    std::map<std::string, LegacyStoredWorkflow> legacy_workflows;
+    std::set<std::string> fresh_workflows;
+    bool identity_exists(const std::string& id) const {
+        if (attempts.contains(id) || ordinary_attempts.contains(id) ||
+            legacy_workflows.contains(id))
+            return true;
+        for (const auto& [key, w] : legacy_workflows) {
+            static_cast<void>(key);
+            for (const auto& c : w.children)
+                if (c.prepared.intent.at("operation_id") == id) return true;
+        }
+        return false;
+    }
+    std::size_t identity_count() const {
+        auto count = attempts.size() + ordinary_attempts.size();
+        for (const auto& [key, w] : legacy_workflows) {
+            static_cast<void>(key);
+            count += w.children.size();
+        }
+        return count;
+    }
     std::string disk_bytes;
     std::optional<std::string> blocked;
 #ifdef _WIN32
@@ -478,11 +665,14 @@ struct RealizationStore::Impl {
             throw;
         }
     }
-    RealizationStoreResult<void> write(std::map<std::string, RealizationStoredAttempt> candidate,
-                                       const RealizationStoreIoFault& fault,
-                                       bool initialize = false,
-                                       std::optional<std::map<std::string, OrdinaryStoredAttempt>>
-                                           ordinary_candidate = std::nullopt) {
+    RealizationStoreResult<void>
+    write(std::map<std::string, RealizationStoredAttempt> candidate,
+          const RealizationStoreIoFault& fault,
+          bool initialize = false,
+          std::optional<std::map<std::string, OrdinaryStoredAttempt>> ordinary_candidate =
+              std::nullopt,
+          std::optional<std::map<std::string, LegacyStoredWorkflow>> legacy_candidate =
+              std::nullopt) {
         bool committed = false;
         try {
             if (blocked) deny(*blocked);
@@ -491,6 +681,7 @@ struct RealizationStore::Impl {
             static_cast<void>(fault);
             static_cast<void>(initialize);
             static_cast<void>(ordinary_candidate);
+            static_cast<void>(legacy_candidate);
             deny("Native realization writes unsupported: confirmed directory durability is "
                  "unavailable on Windows");
 #else
@@ -498,7 +689,10 @@ struct RealizationStore::Impl {
             if (!initialize) verify_unchanged();
             auto candidate_ordinary =
                 ordinary_candidate ? std::move(*ordinary_candidate) : ordinary_attempts;
-            auto encoded = ledger_json(ns, candidate, candidate_ordinary).dump(2) + "\n";
+            auto candidate_legacy =
+                legacy_candidate ? std::move(*legacy_candidate) : legacy_workflows;
+            auto encoded =
+                ledger_json(ns, candidate, candidate_ordinary, candidate_legacy).dump(2) + "\n";
             // Validate the actual text/private candidate before touching disk.
             static_cast<void>(decode(encoded, ns));
             const auto inject = [&](RealizationStoreIoPhase phase) {
@@ -552,6 +746,7 @@ struct RealizationStore::Impl {
             committed = true;
             attempts.swap(candidate);
             ordinary_attempts.swap(candidate_ordinary);
+            legacy_workflows.swap(candidate_legacy);
             disk_bytes.swap(encoded);
             inject(RealizationStoreIoPhase::DirectorySync);
             if (!synchronize(directory_fd))
@@ -641,7 +836,8 @@ RealizationStore::open(const fs::path& base,
         if (impl->lock == INVALID_HANDLE_VALUE)
             deny("Realization namespace is locked or its lock history is missing");
         impl->disk_bytes = impl->read();
-        impl->attempts = decode(impl->disk_bytes, ns, &impl->ordinary_attempts);
+        impl->attempts =
+            decode(impl->disk_bytes, ns, &impl->ordinary_attempts, &impl->legacy_workflows);
         impl->blocked = "Native realization writes unsupported: confirmed directory durability is "
                         "unavailable on Windows";
 #else
@@ -663,7 +859,8 @@ RealizationStore::open(const fs::path& base,
             committed = true;
         } else {
             impl->disk_bytes = impl->read();
-            impl->attempts = decode(impl->disk_bytes, ns, &impl->ordinary_attempts);
+            impl->attempts =
+                decode(impl->disk_bytes, ns, &impl->ordinary_attempts, &impl->legacy_workflows);
         }
         // A warm reopen must not bypass a prior namespace-parent sync failure.
         if (fault && fault(RealizationStoreIoPhase::ParentDirectorySync))
@@ -699,7 +896,7 @@ const OrdinaryStoredAttempt* RealizationStore::find_ordinary(const std::string& 
     return found == impl_->ordinary_attempts.end() ? nullptr : &found->second;
 }
 bool RealizationStore::native_writes_available() const noexcept {
-    return !impl_->blocked;
+    return !impl_->blocked && !has_unresolved_legacy_workflow();
 }
 const std::optional<std::string>& RealizationStore::blocked_reason() const noexcept {
     return impl_->blocked;
@@ -717,8 +914,7 @@ RealizationStoreResult<std::string> RealizationStore::new_attempt_id() const {
                 value.push_back(digits[byte >> 4]);
                 value.push_back(digits[byte & 15]);
             }
-            if (!impl_->attempts.contains(value) && !impl_->ordinary_attempts.contains(value))
-                return value;
+            if (!impl_->identity_exists(value)) return value;
         }
         deny("Opaque realization attempt-ID collisions exhausted retry bound");
     } catch (const std::exception& error) {
@@ -730,11 +926,11 @@ RealizationStore::fence(const RealizationAttemptIntent& intent,
                         const RealizationStoreIoFault& fault) {
     try {
         if (impl_->blocked) deny(*impl_->blocked);
-        if (impl_->attempts.contains(intent.attempt_id) ||
-            impl_->ordinary_attempts.contains(intent.attempt_id))
+        if (has_unresolved_legacy_workflow())
+            deny("Unresolved native workflow blocks fresh musical writes");
+        if (impl_->identity_exists(intent.attempt_id))
             deny("Realization attempt already exists; disk-restored fences are query-only");
-        if (impl_->attempts.size() + impl_->ordinary_attempts.size() >=
-            REALIZATION_STORE_MAX_ATTEMPTS)
+        if (impl_->identity_count() >= REALIZATION_STORE_MAX_ATTEMPTS)
             deny("Realization attempt capacity exhausted");
         validate_intent(intent, impl_->ns);
         auto candidate = impl_->attempts;
@@ -822,10 +1018,11 @@ RealizationStore::fence_ordinary(const OrdinaryClipReceipt& prepared,
     try {
         if (impl_->blocked) deny(*impl_->blocked);
         const auto id = prepared.intent.at("operation_id").get<std::string>();
-        if (impl_->attempts.contains(id) || impl_->ordinary_attempts.contains(id))
+        if (has_unresolved_legacy_workflow())
+            deny("Unresolved native workflow blocks fresh musical writes");
+        if (impl_->identity_exists(id))
             deny("Ordinary attempt already fenced; restored records are query-only");
-        if (impl_->attempts.size() + impl_->ordinary_attempts.size() >=
-            REALIZATION_STORE_MAX_ATTEMPTS)
+        if (impl_->identity_count() >= REALIZATION_STORE_MAX_ATTEMPTS)
             deny("Realization attempt capacity exhausted");
         OrdinaryStoredAttempt attempt{prepared, impl_->ordinary_attempts.size() + 1, {}};
         validate_ordinary_history(attempt);
@@ -867,4 +1064,130 @@ RealizationStore::append_ordinary_evidence(const std::string& id,
         return std::unexpected(RealizationStoreError{error.what()});
     }
 }
+const std::map<std::string, LegacyStoredWorkflow>&
+RealizationStore::legacy_workflows() const noexcept {
+    return impl_->legacy_workflows;
+}
+bool RealizationStore::has_unresolved_legacy_workflow() const noexcept {
+    return std::ranges::any_of(impl_->legacy_workflows, [](const auto& entry) {
+        return entry.second.state == "unresolved";
+    });
+}
+RealizationStoreResult<void>
+RealizationStore::fence_legacy_workflow(const std::string& id,
+                                        const LegacyWorkflowRecipe& recipe,
+                                        const RealizationStoreIoFault& fault) {
+    try {
+        if (impl_->blocked) deny(*impl_->blocked);
+        if (has_unresolved_legacy_workflow())
+            deny("An unresolved native workflow blocks fresh musical writes; inspect "
+                 "original-token history");
+        if (impl_->identity_exists(id) || !hex(id, 32) ||
+            impl_->legacy_workflows.size() >= REALIZATION_STORE_MAX_ATTEMPTS)
+            deny("Legacy workflow identity/capacity unavailable");
+        LegacyStoredWorkflow w;
+        w.workflow_id = id;
+        w.recipe = recipe;
+        validate_workflow(w, impl_->ns);
+        auto candidate = impl_->legacy_workflows;
+        candidate.emplace(id, std::move(w));
+        // Allocate the in-process capability before durable publication. Reopens never fill it.
+        impl_->fresh_workflows.insert(id);
+        const auto written =
+            impl_->write(impl_->attempts, fault, false, std::nullopt, std::move(candidate));
+        if (!written) {
+            impl_->fresh_workflows.erase(id);
+            return std::unexpected(written.error());
+        }
+        return {};
+    } catch (const std::exception& e) {
+        return std::unexpected(RealizationStoreError{e.what()});
+    }
+}
+RealizationStoreResult<LegacyDispatchPermit> RealizationStore::fence_legacy_child(
+    const std::string& id, const LegacyOperationReceipt& r, const RealizationStoreIoFault& fault) {
+    try {
+        if (impl_->blocked) deny(*impl_->blocked);
+        if (!impl_->fresh_workflows.contains(id) || !impl_->legacy_workflows.contains(id))
+            deny("Restored workflows are query-only and cannot issue dispatch permits");
+        const auto operation = r.intent.at("operation_id").get<std::string>();
+        if (impl_->identity_exists(operation) ||
+            impl_->identity_count() >= REALIZATION_STORE_MAX_ATTEMPTS)
+            deny("Legacy child identity/capacity unavailable");
+        auto candidate = impl_->legacy_workflows;
+        auto& w = candidate.at(id);
+        if (w.state != "unresolved") deny("Finalized workflow cannot dispatch");
+        w.children.push_back({r, {}});
+        validate_workflow(w, impl_->ns);
+        LegacyDispatchPermit permit(r);
+        const auto written =
+            impl_->write(impl_->attempts, fault, false, std::nullopt, std::move(candidate));
+        if (!written) return std::unexpected(written.error());
+        return permit;
+    } catch (const std::exception& e) {
+        return std::unexpected(RealizationStoreError{e.what()});
+    }
+}
+RealizationStoreResult<void> RealizationStore::append_legacy_evidence(
+    const std::string& id, const LegacyOperationReceipt& r, const RealizationStoreIoFault& fault) {
+    try {
+        if (impl_->blocked) deny(*impl_->blocked);
+        auto candidate = impl_->legacy_workflows;
+        auto& w = candidate.at(id);
+        const auto ordinal = r.intent.at("ordinal").get<unsigned>();
+        if (!ordinal || ordinal > w.children.size()) deny("Original legacy child is absent");
+        auto& evidence = w.children.at(ordinal - 1).evidence;
+        if (!evidence.empty() &&
+            legacy_receipt_to_json(evidence.back()) == legacy_receipt_to_json(r)) {
+            impl_->verify_unchanged();
+            return {};
+        }
+        evidence.push_back(r);
+        validate_workflow(w, impl_->ns);
+        return impl_->write(impl_->attempts, fault, false, std::nullopt, std::move(candidate));
+    } catch (const std::exception& e) {
+        return std::unexpected(RealizationStoreError{e.what()});
+    }
+}
+RealizationStoreResult<void> RealizationStore::finalize_legacy_workflow(
+    const std::string& id, bool completed, const RealizationStoreIoFault& fault) {
+    try {
+        if (impl_->blocked) deny(*impl_->blocked);
+        auto candidate = impl_->legacy_workflows;
+        auto& w = candidate.at(id);
+        if (w.state != "unresolved") deny("Workflow already finalized");
+        if (completed)
+            w.state = "completed";
+        else if (std::ranges::all_of(w.children, child_no_effect))
+            w.state = "not_applied";
+        // Uncertain/known partial prefixes remain unresolved, even if all observed children acked.
+        validate_workflow(w, impl_->ns);
+        auto result =
+            impl_->write(impl_->attempts, fault, false, std::nullopt, std::move(candidate));
+        impl_->fresh_workflows.erase(id);
+        return result;
+    } catch (const std::exception& e) {
+        return std::unexpected(RealizationStoreError{e.what()});
+    }
+}
+RealizationStoreResult<void> RealizationStore::dispose_legacy_workflow(
+    const std::string& id, const std::string& retained, const RealizationStoreIoFault& fault) {
+    try {
+        if (impl_->blocked) deny(*impl_->blocked);
+        auto candidate = impl_->legacy_workflows;
+        auto& w = candidate.at(id);
+        if (w.state != "unresolved")
+            deny("Only unresolved original workflows accept explicit disposition");
+        w.state = "disposed";
+        w.disposition = retained;
+        validate_workflow(w, impl_->ns);
+        auto result =
+            impl_->write(impl_->attempts, fault, false, std::nullopt, std::move(candidate));
+        impl_->fresh_workflows.erase(id);
+        return result;
+    } catch (const std::exception& e) {
+        return std::unexpected(RealizationStoreError{e.what()});
+    }
+}
+
 } // namespace sunny::infrastructure

@@ -633,6 +633,7 @@ struct AbletonProjectDeploymentPlan {
     AbletonProjectCompilationResult preview;
     std::vector<AbletonPlannedMutation> mutations;
     bool consumed = false;
+    std::optional<LegacyPlanningAuthority> planning_authority = std::nullopt;
 };
 
 enum class AbletonProjectDeploymentStatus : std::uint8_t {

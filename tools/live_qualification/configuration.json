@@ -1,13 +1,16 @@
 {
-  "candidate_metadata": "COPY_FINAL_ARTIFACT_DIRECTORY/candidate.json",
+  "release_directory": "COPY_VERIFIED_OFFLINE_RELEASE_DIRECTORY",
+  "expected_release_manifest_sha256": null,
   "expected_commit": null,
   "expected_bridge_source_sha256": "REPLACE_WITH_EXPORTED_RELEASE_SOURCE_SHA256",
-  "expected_mcp_tool_count": null,
-  "bridge_host": "REPLACE_WITH_LIVE_MACHINE_OR_PROXY_IP",
+  "expected_mcp_tool_count": 197,
+  "bridge_host": "REPLACE_WITH_APPROVED_FORWARD_OR_PROXY_HOST",
   "bridge_port": 9001,
-  "diagnostic_host": "REPLACE_WITH_LIVE_MACHINE_IP",
+  "diagnostic_host": "REPLACE_WITH_SEPARATELY_APPROVED_DIAGNOSTIC_FORWARD_HOST",
   "diagnostic_port": 9002,
   "scratch_set_name": "SUNNY_HOST_QUALIFICATION_REPLACE_WITH_UNIQUE_RUN",
+  "scratch_bridge_instance": null,
+  "scratch_document_token": null,
   "host_live_version": null,
   "host_edition": null,
   "host_os": null,
@@ -15,14 +18,15 @@
   "docker_engine": null,
   "image_local_immutable_id": null,
   "mcp_command": [
-    "REPLACE_WITH_BINARY_OR_DOCKER_ARGV"
+    "REPLACE_WITH_COMPLETE_PRODUCTION_JSON_IMMUTABLE_DOCKER_ARGV"
   ],
   "host_workspace": "REPLACE_NEW_DISPOSABLE_HOST_DIRECTORY/workspace.json",
   "server_workspace": "/data/workspace.json",
   "host_mount_directory": "REPLACE_NEW_DISPOSABLE_HOST_DIRECTORY",
   "server_mount_prefix": "/data",
   "evidence_directory": "REPLACE_NEW_DISPOSABLE_HOST_DIRECTORY/evidence",
-  "mcp_timeout": 180,
+  "mcp_timeout": 120,
+  "mcp_session_timeout": 1800,
   "snapshot_observation_timeout": 35,
   "include_eq_eight": true,
   "source_tolerances": {
@@ -42,6 +46,6 @@
   "physical_tolerance_rationale": "Caller-visible native GUI display tolerance; no normalized knob/DSP equivalence claim",
   "reopened_return_index": null,
   "configuration_schema_version": 1,
-  "expected_bridge_protocol_version": 46,
+  "expected_bridge_protocol_version": 47,
   "expected_target_snapshot_schema_version": 35
 }

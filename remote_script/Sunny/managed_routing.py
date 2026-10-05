@@ -16,6 +16,7 @@ from typing import Any
 from .managed import _digest, _fingerprint, _key
 from .managed_capacity import guard_managed_response_capacity
 from .managed_song_settings import ManagedSongSettings
+from .native_control import check_native_peer, native_call
 
 SEND_INSPECTION_METHOD = "sunny_managed_inspect_send"
 CANDIDATES_METHOD = "sunny_managed_routing_candidates"
@@ -1033,9 +1034,10 @@ class ManagedRouting:
         try:
             if kind == "create_return":
                 old_returns = self._objects(song.return_tracks)
+                check_native_peer()
                 operation["native_mutation_started"] = True
                 progress["started"].append("create_return_track")
-                song.create_return_track()
+                native_call(song.create_return_track)
                 progress["returned"].append("create_return_track")
                 returns = self._objects(song.return_tracks)
                 if len(returns) != len(old_returns) + 1 or not self._same_many(
@@ -1049,8 +1051,9 @@ class ManagedRouting:
                     raise RuntimeError(
                         "RoutingUnavailable: native Return append changed untouched state"
                     )
+                check_native_peer()
                 progress["started"].append("return_name")
-                created.name = body["selected"]["return_tag"]
+                native_call(setattr, created, "name", body["selected"]["return_tag"])
                 progress["returned"].append("return_name")
                 objects = created
             elif kind == "adopt_return":
@@ -1059,17 +1062,19 @@ class ManagedRouting:
                 field = "output_routing_type" if kind == "output_type" else "output_routing_channel"
                 current = getattr(retained["record"]["track"], field)
                 if not self.registry._same(current, objects[0]):
+                    check_native_peer()
                     operation["native_mutation_started"] = True
                     progress["started"].append(field)
-                    setattr(retained["record"]["track"], field, objects[0])
+                    native_call(setattr, retained["record"]["track"], field, objects[0])
                     progress["returned"].append(field)
             else:
                 parameter = objects[1]
                 value = selected["candidate"]["internal_value"]
                 if parameter.value != value:
+                    check_native_peer()
                     operation["native_mutation_started"] = True
                     progress["started"].append("send_value")
-                    parameter.value = value
+                    native_call(setattr, parameter, "value", value)
                     progress["returned"].append("send_value")
             after, actual = self._frame(song)
             preserved = self._preserved(body, after, witness, actual)

@@ -25,6 +25,7 @@ import time
 from collections.abc import Callable
 
 from .handler import BRIDGE_PROTOCOL_VERSION
+from .native_control import PeerControl, current_peer, peer_scope
 
 logger = logging.getLogger("sunny.remote_script.server")
 
@@ -189,13 +190,19 @@ class TcpServer:
     def _serve_client(self, client: socket.socket, addr: tuple) -> None:
         """Own the only request worker while the listener rejects other clients."""
         logger.info("Client connected from %s", addr)
+        peer = None
         try:
+            peer = PeerControl(client)
             with client:
-                self._handle_client(client)
+                with peer_scope(peer):
+                    self._handle_client(client)
         except Exception:
             if not self._stop_requested.is_set():
                 logger.exception("Client request failed")
         finally:
+            if peer is not None:
+                peer.close()
+            client.close()
             with self._lock:
                 if self._client_socket is client:
                     self._client_socket = None
@@ -258,6 +265,9 @@ class TcpServer:
             self._send_frame(client, json.dumps(response))
             return
 
+        peer = current_peer()
+        if peer is not None:
+            peer.phase("native")
         # Dispatch to handler
         if self._handler:
             try:
@@ -270,7 +280,11 @@ class TcpServer:
         response = _versioned_response(response)
 
         # Send response
+        if peer is not None:
+            peer.phase("responding")
         self._send_frame(client, json.dumps(response))
+        if peer is not None:
+            peer.phase("receiving")
 
     @staticmethod
     def _enable_keepalive(client: socket.socket) -> None:

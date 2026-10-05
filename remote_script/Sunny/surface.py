@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 import os
 import threading
+import time
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
@@ -49,6 +50,8 @@ from .configuration import load_native_configuration
 from .diagnostics import RemoteLog
 from .handler import LomHandler
 from .managed import ManagedRegistry
+from .native_control import current_peer, peer_scope
+from .native_qualification import register_primary, unregister_primary
 from .server import TcpServer
 
 if TYPE_CHECKING:
@@ -90,6 +93,7 @@ class SunnyControlSurface(ControlSurface):
             managed_registry=self._managed_registry,
         )
         self._managed_registry.attach_handler(self._handler)
+        register_primary(self._managed_registry)
         self._server = TcpServer(
             host=host,
             port=port,
@@ -121,9 +125,9 @@ class SunnyControlSurface(ControlSurface):
         All LOM access runs on the main thread. The server thread queues
         the request and waits for its result. A request that has not begun
         by the scheduling deadline is cancelled before it can touch Live.
-        Once a request has begun, wait for its definite outcome: returning
-        a timeout while a mutating LOM call remained in flight would make a
-        retry unsafe and could invalidate the deployment journal.
+        A connected accepted request waits for its definite outcome. If its
+        peer leaves after entry, release only the socket waiter with explicit
+        indeterminate delivery; the original Live callback and journal remain.
         """
         if LomHandler.is_remote_log_request(request):
             # Reads only the script's own log: no Live object, no main thread.
@@ -145,15 +149,32 @@ class SunnyControlSurface(ControlSurface):
         ordinary_outcome = (
             value.get("outcome")
             if isinstance(request, dict)
-            and request.get("name")
-            in {"sunny_ordinary_prepare", "sunny_ordinary_execute", "sunny_ordinary_operation"}
+            and type(request.get("name")) is str
+            and request["name"].startswith(("sunny_ordinary_", "sunny_legacy_", "sunny_managed_"))
             and isinstance(value, dict)
             else None
         )
-        if response.get("success") and ordinary_outcome in {"declined", "partial", "unknown_epoch"}:
+        args = request.get("args", []) if isinstance(request, dict) else []
+        if isinstance(args, list) and args and isinstance(args[0], dict):
+            for key in ("operation_id", "scope_id", "workflow_id"):
+                token = args[0].get(key)
+                if (
+                    type(token) is str
+                    and len(token) == 32
+                    and all(c in "0123456789abcdef" for c in token)
+                ):
+                    operation += f" {key}={token}"
+        if response.get("success") and ordinary_outcome in {
+            "declined",
+            "partial",
+            "indeterminate",
+            "unknown_epoch",
+            "unknown_operation",
+            "unknown_scope",
+        }:
             logger.warning("%s: %s: %s", operation, ordinary_outcome, value.get("error"))
         elif response.get("success"):
-            logger.info("%s: ok", operation)
+            logger.info("%s: %s", operation, ordinary_outcome or "ok")
         else:
             logger.warning("%s: %s", operation, response.get("error"))
 
@@ -162,6 +183,7 @@ class SunnyControlSurface(ControlSurface):
         completed = threading.Event()
         outcome: dict[str, dict] = {}
         state = {"phase": "queued"}
+        peer = current_peer()
 
         def cancel(reason: str) -> None:
             # All phase transitions and pending-set access hold _request_lock.
@@ -179,10 +201,14 @@ class SunnyControlSurface(ControlSurface):
             with self._request_lock:
                 if state["phase"] == "cancelled":
                     return
+                if peer is not None and not peer.check():
+                    cancel("Native peer disconnected; queued request cancelled")
+                    return
                 state["phase"] = "started"
                 self._pending_requests.discard(cancel)
             try:
-                outcome["response"] = self._handler.handle(request)
+                with peer_scope(peer):
+                    outcome["response"] = self._handler.handle(request)
             except Exception as exc:
                 logger.error("Scheduled LOM request failed: %s", exc, exc_info=True)
                 outcome["response"] = {"success": False, "error": str(exc)}
@@ -199,18 +225,25 @@ class SunnyControlSurface(ControlSurface):
                 if state["phase"] == "queued":
                     cancel(f"Could not schedule LOM request: {exc}")
 
-        if not completed.wait(LOM_REQUEST_TIMEOUT_SECONDS):
+        deadline = time.monotonic() + LOM_REQUEST_TIMEOUT_SECONDS
+        while not completed.wait(0.05):
             with self._request_lock:
-                if state["phase"] == "queued":
+                if peer is not None and not peer.check():
+                    if state["phase"] == "queued":
+                        cancel("Native peer disconnected; queued request cancelled")
+                    elif state["phase"] == "started":
+                        # The Live callback and original journal remain alive.
+                        # Release only the disconnected socket's waiting worker.
+                        return {
+                            "success": False,
+                            "error": "delivery indeterminate: native peer disconnected after "
+                            "the callback began; the Live call may still execute",
+                        }
+                elif state["phase"] == "queued" and time.monotonic() >= deadline:
                     cancel(
                         "Timed out before Ableton's main thread began the request; "
                         "request cancelled"
                     )
-
-            # If the request started, there is no public Live cancellation
-            # primitive; a second timeout would manufacture an ambiguous
-            # outcome. Cancelled requests have already signalled completion.
-            completed.wait()
         return outcome["response"]
 
     def disconnect(self) -> None:
@@ -222,6 +255,11 @@ class SunnyControlSurface(ControlSurface):
                 cancel("Sunny Remote Script disconnected; queued request cancelled")
         if self._server:
             self._server.shutdown()
+        registry = getattr(self, "_managed_registry", None)
+        if registry is not None:
+            unregister_primary(registry)
+            registry._ordinary.close()
+            registry._legacy.close()
         remote_log = getattr(self, "_remote_log", None)
         if remote_log is not None:
             logging.getLogger("sunny").removeHandler(remote_log)

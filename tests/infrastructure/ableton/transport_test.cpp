@@ -25,6 +25,7 @@
 #include <poll.h>
 #include <string>
 #include <sunny/infrastructure/ableton/transport.hpp>
+#include <sunny/infrastructure/request_control.hpp>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
@@ -38,9 +39,9 @@ using namespace std::chrono_literals;
 
 namespace {
 
-std::optional<std::string> read_frame(
-    int client,
-    std::optional<std::chrono::steady_clock::time_point> deadline = std::nullopt) {
+std::optional<std::string>
+read_frame(int client,
+           std::optional<std::chrono::steady_clock::time_point> deadline = std::nullopt) {
     const auto read_exact = [client, deadline](char* data, std::size_t size) {
         std::size_t received = 0;
         while (received < size) {
@@ -52,10 +53,8 @@ std::optional<std::string> read_frame(
                 if (ready < 0) return false;
                 if (ready == 0) continue;
             }
-            const auto count = ::recv(client,
-                                      data + received,
-                                      size - received,
-                                      deadline ? MSG_DONTWAIT : 0);
+            const auto count =
+                ::recv(client, data + received, size - received, deadline ? MSG_DONTWAIT : 0);
             if (deadline && count < 0 &&
                 (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK))
                 continue;
@@ -85,7 +84,7 @@ std::string frame(const std::string& payload) {
 }
 
 std::string response_with_value(const std::string& value_json) {
-    return R"({"bridge_protocol_version":46,"success":true,"value":)" + value_json + "}";
+    return R"({"bridge_protocol_version":47,"success":true,"value":)" + value_json + "}";
 }
 
 bool answer_identity_request(int client, const std::string& request) {
@@ -232,6 +231,30 @@ LomRequest tempo_request() {
     return LomProtocol::get_property(LomPaths::song(), "tempo");
 }
 
+LomRequest
+prepared_mutation(nlohmann::json command = {
+                      {"type", "set"}, {"path", "song"}, {"name", "tempo"}, {"args", {140.0}}}) {
+    const nlohmann::json intent{{"schema_version", 1},
+                                {"bridge_instance", std::string(32, 'b')},
+                                {"document_token", std::string(32, 'd')},
+                                {"scope_id", std::string(32, 'a')},
+                                {"workflow_id", std::string(32, 'c')},
+                                {"operation_id", std::string(32, 'e')},
+                                {"ordinal", 1},
+                                {"graph_revision", 0},
+                                {"command", std::move(command)}};
+    return LomProtocol::call_method(LomPaths::song(), "sunny_legacy_prepare", {intent});
+}
+
+std::shared_ptr<RequestControl> admitted_control() {
+    return std::make_shared<RequestControl>(
+        "number:transport",
+        "tools/call",
+        std::chrono::steady_clock::now() + MCP_REQUEST_TIMEOUT,
+        NativeOrigin{std::string(32, 'b'), std::string(32, 'd')},
+        "legacy_ableton_request");
+}
+
 /// A real exec'ed resolver fault peer; no substitute for transport process ownership.
 class ResolverPeer {
   public:
@@ -330,7 +353,7 @@ TEST_CASE("transports decline noncanonical paths without recording or sending",
     CHECK_FALSE(network.success);
     CHECK(network.delivery == LomDeliveryState::NotSent);
     REQUIRE(network.error.has_value());
-    CHECK(*network.error == "request outside Sunny bridge protocol v46");
+    CHECK(*network.error == "request outside Sunny bridge protocol v47");
 }
 
 TEST_CASE("transports decline requests outside the peer algebra before recording",
@@ -661,8 +684,8 @@ TEST_CASE(
         }});
         TcpTransport transport(loopback_config(peer.port()));
         REQUIRE(transport.connect());
-        const auto mutation =
-            transport.send(LomProtocol::set_property(LomPaths::song(), "tempo", 132.0));
+        RequestControlScope origin_scope(admitted_control());
+        const auto mutation = transport.send(prepared_mutation());
         CHECK_FALSE(mutation.success);
         CHECK(mutation.delivery == LomDeliveryState::NotSent);
         REQUIRE(mutation.error);
@@ -715,13 +738,13 @@ TEST_CASE("Matching source handshake is cached per socket and refreshed after re
     ScriptedPeer peer({session(matched, 2), session(mismatched, 1)});
     TcpTransport transport(loopback_config(peer.port()));
     REQUIRE(transport.connect());
+    RequestControlScope origin_scope(admitted_control());
     REQUIRE(transport.send(tempo_request()).success);
     REQUIRE(transport.send(tempo_request()).success);
     CHECK(identity_reads == 1);
     CHECK(ordinary_requests == 2);
     peer.wait_for_closed_sessions(1);
-    const auto declined =
-        transport.send(LomProtocol::set_property(LomPaths::song(), "tempo", 138.0));
+    const auto declined = transport.send(prepared_mutation());
     CHECK_FALSE(declined.success);
     CHECK(declined.delivery == LomDeliveryState::NotSent);
     CHECK(identity_reads == 2);
@@ -745,8 +768,8 @@ TEST_CASE("An uncertain read-only identity handshake never sends the caller muta
     config.response_timeout = 50ms;
     TcpTransport transport(config);
     REQUIRE(transport.connect());
-    const auto declined =
-        transport.send(LomProtocol::set_property(LomPaths::song(), "tempo", 138.0));
+    RequestControlScope origin_scope(admitted_control());
+    const auto declined = transport.send(prepared_mutation());
     CHECK_FALSE(declined.success);
     CHECK(declined.delivery == LomDeliveryState::NotSent);
     CHECK(frames == 1);
@@ -854,14 +877,19 @@ TEST_CASE("A stalled large request expires during send and is never replayed",
     config.response_timeout = 80ms;
     TcpTransport transport(config);
     REQUIRE(transport.connect());
+    RequestControlScope origin_scope(admitted_control());
     const std::vector<LomNoteData> notes(50000, LomNoteData{60, 0.0, 1.0, 100, false});
     REQUIRE(LomProtocol::validate_notes(LomPaths::clip(0, 0), notes));
     const auto payload =
         LomProtocol::serialize_request(LomProtocol::add_new_notes(LomPaths::clip(0, 0), notes));
     REQUIRE(payload.size() > 4U * 1024U * 1024U);
     REQUIRE(payload.size() < SUNNY_BRIDGE_MAX_WIRE_PAYLOAD);
+    auto command = nlohmann::json::parse(payload);
+    command.erase("bridge_protocol_version");
+    const auto request = prepared_mutation(std::move(command));
+    REQUIRE(LomProtocol::validate_request(request));
     const auto started = std::chrono::steady_clock::now();
-    const auto response = transport.send_notes(LomPaths::clip(0, 0), notes);
+    const auto response = transport.send(request);
     CHECK_FALSE(response.success);
     CHECK(response.delivery == LomDeliveryState::NotSent);
     REQUIRE(response.error);
@@ -869,7 +897,7 @@ TEST_CASE("A stalled large request expires during send and is never replayed",
           std::string::npos);
     CHECK(std::chrono::steady_clock::now() - started < 1s);
     CHECK_FALSE(transport.is_connected());
-    CHECK_FALSE(transport.send_notes(LomPaths::clip(0, 0), notes).success);
+    CHECK_FALSE(transport.send(request).success);
     peer.wait_for_closed_sessions(1);
     CHECK(full_requests == 0);
 }
@@ -882,19 +910,19 @@ TEST_CASE("Queued literal busy admission is NotSent and never reconnects or repl
         write_bytes(
             client,
             frame(
-                R"({"bridge_protocol_version":46,"success":false,"error":"bridge_busy: Sunny accepts one active client; close the existing client and retry"})"));
+                R"({"bridge_protocol_version":47,"success":false,"error":"bridge_busy: Sunny accepts one active client; close the existing client and retry"})"));
         busy_sent = true;
         if (read_frame(client)) ++frames;
     }});
     TcpTransport transport(loopback_config(peer.port()));
     REQUIRE(transport.connect());
+    RequestControlScope origin_scope(admitted_control());
     const auto ready_deadline = std::chrono::steady_clock::now() + 1s;
     while (!busy_sent && std::chrono::steady_clock::now() < ready_deadline)
         std::this_thread::sleep_for(1ms);
     REQUIRE(busy_sent);
     std::this_thread::sleep_for(10ms); // Ensure the pre-admission frame is readable on loopback.
-    const auto declined =
-        transport.send(LomProtocol::set_property(LomPaths::song(), "tempo", 140.0));
+    const auto declined = transport.send(prepared_mutation());
     CHECK_FALSE(declined.success);
     CHECK(declined.delivery == LomDeliveryState::NotSent);
     CHECK(transport.last_connect_failure() == ConnectFailure::Busy);
@@ -915,7 +943,7 @@ TEST_CASE("A literal malformed acknowledgment abandons the socket before any lat
              if (!read_frame(client)) return;
              ++ordinary_requests;
              write_bytes(client,
-                         frame(R"({"bridge_protocol_version":46,"success":"yes","value":120.0})"));
+                         frame(R"({"bridge_protocol_version":47,"success":"yes","value":120.0})"));
              std::this_thread::sleep_for(100ms);
              write_bytes(client, frame(response_with_value("999.0")));
              if (read_frame(client)) ++ordinary_requests;
@@ -934,4 +962,226 @@ TEST_CASE("A literal malformed acknowledgment abandons the socket before any lat
     const auto fresh = transport.send(tempo_request());
     REQUIRE(fresh.success);
     CHECK(std::get<double>(*fresh.value) == 123.0);
+}
+
+TEST_CASE("Request revocation before write is definitively NotSent",
+          "[bridge][transport][loopback][request-control]") {
+    std::atomic<int> frames{0};
+    ScriptedPeer peer({[&](int client) {
+        while (read_frame(client))
+            ++frames;
+    }});
+    TcpTransport transport(loopback_config(peer.port()));
+    REQUIRE(transport.connect());
+    auto control = std::make_shared<RequestControl>("number:1", "tools/call");
+    control->cancelled = true;
+    RequestControlScope scope(control);
+    const auto refused =
+        transport.send(LomProtocol::set_property(LomPaths::song(), "tempo", 140.0));
+    CHECK_FALSE(refused.success);
+    CHECK(refused.delivery == LomDeliveryState::NotSent);
+    CHECK_FALSE(transport.is_connected());
+    peer.wait_for_closed_sessions(1);
+    CHECK(frames == 0);
+}
+
+TEST_CASE("Physical stateful frames require the immutable admitted epoch before even the handshake",
+          "[bridge][transport][loopback][native-origin]") {
+    for (const auto* fault : {"no_control", "absent", "malformed", "bridge", "document", "raw"}) {
+        INFO(fault);
+        std::atomic<unsigned> frames{0};
+        ScriptedPeer peer({[&](int client) {
+            while (read_frame(client))
+                ++frames;
+        }});
+        TcpTransport transport(loopback_config(peer.port()));
+        REQUIRE(transport.connect());
+        auto control = admitted_control();
+        auto request = prepared_mutation();
+        if (std::string_view(fault) == "no_control")
+            control.reset();
+        else if (std::string_view(fault) == "absent")
+            control = std::make_shared<RequestControl>("number:absent", "tools/call");
+        else if (std::string_view(fault) == "malformed")
+            control = std::make_shared<RequestControl>(
+                "number:bad",
+                "tools/call",
+                std::chrono::steady_clock::now() + 2s,
+                NativeOrigin{std::string(32, 'B'), std::string(32, 'd')});
+        else if (std::string_view(fault) == "bridge")
+            std::get<nlohmann::json>(request.args.front())["bridge_instance"] =
+                std::string(32, 'f');
+        else if (std::string_view(fault) == "document")
+            std::get<nlohmann::json>(request.args.front())["document_token"] = std::string(32, 'f');
+        else
+            request = LomProtocol::set_property(LomPaths::song(), "tempo", 140.0);
+        RequestControlScope scope(control);
+        const auto declined = transport.send(request);
+        CHECK_FALSE(declined.success);
+        CHECK(declined.delivery == LomDeliveryState::NotSent);
+        REQUIRE(declined.error);
+        CHECK_FALSE(
+            transport.bridge_identity_error()); // Fresh metadata cannot grant a missing pin.
+        transport.disconnect();
+        peer.wait_for_closed_sessions(1);
+        CHECK(frames == 0);
+    }
+}
+
+TEST_CASE("A matching typed frame passes the physical gate once without silently replaying",
+          "[bridge][transport][loopback][native-origin]") {
+    std::atomic<unsigned> identities{0}, prepared{0};
+    ScriptedPeer peer({[&](int client) {
+        while (const auto payload = read_frame(client)) {
+            if (answer_identity_request(client, *payload)) {
+                ++identities;
+                continue;
+            }
+            const auto request = nlohmann::json::parse(*payload);
+            if (request.at("name") == "sunny_legacy_prepare" &&
+                request.at("args").at(0).at("bridge_instance") == std::string(32, 'b') &&
+                request.at("args").at(0).at("document_token") == std::string(32, 'd'))
+                ++prepared;
+            write_bytes(client, frame(response_with_value("null")));
+        }
+    }});
+    TcpTransport transport(loopback_config(peer.port()));
+    REQUIRE(transport.connect());
+    RequestControlScope scope(admitted_control());
+    const auto response = transport.send(prepared_mutation());
+    REQUIRE(response.success);
+    CHECK(response.delivery == LomDeliveryState::ResponseReceived);
+    transport.disconnect();
+    peer.wait_for_closed_sessions(1);
+    CHECK(identities == 1);
+    CHECK(prepared == 1);
+}
+
+TEST_CASE("Retained read-only previews do not drain after EOF",
+          "[bridge][transport][loopback][native-origin][request-control]") {
+    std::atomic<unsigned> frames{0};
+    ScriptedPeer peer({[&](int client) {
+        while (read_frame(client))
+            ++frames;
+    }});
+    TcpTransport transport(loopback_config(peer.port()));
+    REQUIRE(transport.connect());
+    const auto request = LomProtocol::call_method(
+        LomPaths::song(),
+        "sunny_managed_preview_song_settings",
+        {nlohmann::json::parse(
+            R"({"document_token":"dddddddddddddddddddddddddddddddd","project_key":"project","binding_key":"part","expected_content_fingerprint":"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee","expected_note_identity_fingerprint":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff","desired":{"tempo":140.0,"signature_numerator":4,"signature_denominator":4}})")});
+    REQUIRE(LomProtocol::is_read_only_request(request));
+    REQUIRE(LomProtocol::requires_native_origin(request));
+    auto control = admitted_control();
+    control->input_closed = true;
+    RequestControlScope scope(control);
+    const auto declined = transport.send(request);
+    CHECK_FALSE(declined.success);
+    CHECK(declined.delivery == LomDeliveryState::NotSent);
+    CHECK_FALSE(transport.is_connected());
+    peer.wait_for_closed_sessions(1);
+    CHECK(frames == 0);
+}
+
+TEST_CASE("EOF permits read-only native drain but no later native effect",
+          "[bridge][transport][loopback][request-control]") {
+    std::atomic<int> reads{0}, effects{0};
+    ScriptedPeer peer({[&](int client) {
+        while (const auto payload = read_frame(client)) {
+            if (answer_identity_request(client, *payload)) continue;
+            const auto request = nlohmann::json::parse(*payload);
+            if (request.at("type") == "get")
+                ++reads;
+            else
+                ++effects;
+            write_bytes(client, frame(response_with_value("120.0")));
+        }
+    }});
+    TcpTransport transport(loopback_config(peer.port()));
+    REQUIRE(transport.connect());
+    auto control = std::make_shared<RequestControl>("number:2", "tools/call");
+    control->input_closed = true;
+    RequestControlScope scope(control);
+    REQUIRE(transport.send(tempo_request()).success);
+    const auto refused =
+        transport.send(LomProtocol::set_property(LomPaths::song(), "tempo", 140.0));
+    CHECK(refused.delivery == LomDeliveryState::NotSent);
+    peer.wait_for_closed_sessions(1);
+    CHECK(reads == 1);
+    CHECK(effects == 0);
+}
+
+TEST_CASE("Cancellation after complete native frame is indeterminate and closes the socket",
+          "[bridge][transport][loopback][request-control]") {
+    auto control = std::make_shared<RequestControl>("number:3", "tools/call");
+    std::atomic<int> complete_requests{0};
+    ScriptedPeer peer({[&](int client) {
+        const auto identity = read_frame(client);
+        if (!identity || !answer_identity_request(client, *identity)) return;
+        if (!read_frame(client)) return;
+        ++complete_requests;
+        control->cancelled = true;
+        if (read_frame(client)) ++complete_requests;
+    }});
+    TcpTransport transport(loopback_config(peer.port()));
+    REQUIRE(transport.connect());
+    RequestControlScope scope(control);
+    const auto started = std::chrono::steady_clock::now();
+    const auto unknown = transport.send(tempo_request());
+    CHECK_FALSE(unknown.success);
+    CHECK(unknown.delivery == LomDeliveryState::SentWithoutValidResponse);
+    CHECK(std::chrono::steady_clock::now() - started < 300ms);
+    CHECK_FALSE(transport.is_connected());
+    CHECK(transport.send(tempo_request()).delivery == LomDeliveryState::NotSent);
+    peer.wait_for_closed_sessions(1);
+    CHECK(complete_requests == 1);
+}
+
+TEST_CASE("Owning absolute request deadline caps the configured native exchange budget",
+          "[bridge][transport][loopback][request-control]") {
+    std::atomic<int> requests{0};
+    ScriptedPeer peer({[&](int client) {
+        const auto identity = read_frame(client);
+        if (!identity || !answer_identity_request(client, *identity)) return;
+        if (read_frame(client)) ++requests;
+        (void)read_frame(client);
+    }});
+    TcpTransport transport(loopback_config(peer.port()));
+    REQUIRE(transport.connect());
+    auto control = std::make_shared<RequestControl>(
+        "number:4", "tools/call", std::chrono::steady_clock::now() + 100ms);
+    RequestControlScope scope(control);
+    const auto started = std::chrono::steady_clock::now();
+    const auto unknown = transport.send(tempo_request());
+    CHECK_FALSE(unknown.success);
+    CHECK(unknown.delivery == LomDeliveryState::SentWithoutValidResponse);
+    CHECK(std::chrono::steady_clock::now() - started < 350ms);
+    peer.wait_for_closed_sessions(1);
+    CHECK(requests == 1);
+}
+
+TEST_CASE("Cancelling actual DNS cleanup reaps the exact owned child",
+          "[bridge][transport][resolution][request-control]") {
+    ResolverPeer resolver("time.sleep(30)");
+    auto config = loopback_config(9001, "sunny-cancel-resolver.invalid");
+    config.resolver_executable = resolver.path();
+    config.connect_timeout = 2s;
+    auto control = std::make_shared<RequestControl>("number:5", "tools/call");
+    std::jthread revoke([&] {
+        const auto until = std::chrono::steady_clock::now() + 750ms;
+        struct stat status {};
+        while (::stat((resolver.path() + ".pid").c_str(), &status) != 0 &&
+               std::chrono::steady_clock::now() < until)
+            std::this_thread::sleep_for(1ms);
+        control->cancelled = true;
+    });
+    RequestControlScope scope(control);
+    TcpTransport transport(config);
+    const auto started = std::chrono::steady_clock::now();
+    CHECK_FALSE(transport.connect());
+    CHECK(transport.last_connect_failure() == ConnectFailure::RequestRevoked);
+    CHECK(std::chrono::steady_clock::now() - started < 1s);
+    revoke.join();
+    resolver.check_reaped();
 }
