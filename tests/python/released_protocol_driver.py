@@ -157,6 +157,7 @@ def main():
         dispatch = surface._managed_registry.dispatch_legacy
         native_requests = []
         execute_tokens = []
+        prepare_journals = {}
         drop = {"token": None, "done": False}
         disk_observations = []
 
@@ -226,14 +227,22 @@ def main():
                         for key, value in payload.items()
                         if key != "fingerprint"
                     )
-                    assert children[0]["evidence"][-1]["journal"]["outcome"] == "prepared"
-                    assert (
-                        children[0]["evidence"][-1]["journal"]["fingerprint"]
-                        == payload["fingerprint"]
-                    )
+                    # The durable original pre-send fence precedes both
+                    # frames. Prepare's native journal is observed on its
+                    # real response, while terminal evidence is appended
+                    # after execute; there is no intermediate disk ACK.
+                    assert children[0]["evidence"] == []
+                    prepared = prepare_journals[payload["operation_id"]]
+                    assert prepared["outcome"] == "prepared"
+                    assert all(prepared[key] == value for key, value in payload.items())
+                    assert prepared["native_mutation_started"] is False
+                    assert prepared["started_calls"] == prepared["returned_calls"] == 0
                     execute_tokens.append(dict(payload))
                     drop["token"] = payload["operation_id"]
-            return dispatch(name, values)
+            result = dispatch(name, values)
+            if name == "sunny_legacy_prepare":
+                prepare_journals[values[0]["operation_id"]] = result
+            return result
 
         monkeypatch.setattr(surface._managed_registry, "dispatch_legacy", observe_dispatch)
         send = surface._server._send_frame

@@ -72,6 +72,7 @@ COPY --from=builder /build/tools/windows/ /opt/sunny/installer/windows/
 COPY --from=builder /build/tools/doctor.py /opt/sunny/operator/doctor.py
 COPY --from=builder /build/tools/release.py /opt/sunny/operator/release.py
 COPY --from=builder /build/tools/live_qualification/ /opt/sunny/operator/live_qualification/
+COPY README.md /opt/sunny/operator/README.md
 
 USER sunny
 ENTRYPOINT ["sunny-mcp"]

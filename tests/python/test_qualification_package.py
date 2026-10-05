@@ -25,17 +25,23 @@ def producer(monkeypatch):
     return load(PROJECT / "tools/export_live_qualification.py", "qualification_zip_test")
 
 
-def paired(tmp_path, producer, kit=True):
+def paired(tmp_path, producer, omit=None):
     """Include actual operator bytes in both physical release and synthetic image rootfs."""
     root = tmp_path / "same image release"
     operators = {"release.py": (PROJECT / "tools/release.py").read_bytes()}
-    if kit:
+    if omit != "runbook":
+        operators["README.md"] = (PROJECT / "README.md").read_bytes()
+    if omit != "kit":
         for name in (
             "common.py",
             "host_runner.py",
             "verify_artifacts.py",
+            "configuration.json",
+            "obligations.json",
             "SunnyHostProbe/probe.py",
         ):
+            if name == omit:
+                continue
             operators["live_qualification/" + name] = (
                 PROJECT / "tools/live_qualification" / name
             ).read_bytes()
@@ -66,9 +72,10 @@ def test_zip_contains_exact_full_paired_release_and_inventory(tmp_path, producer
     assert not list(root.rglob("__pycache__"))
 
 
-def test_old_image_cannot_borrow_the_present_checkout_kit(tmp_path, producer):
+@pytest.mark.parametrize("missing", ["kit", "runbook", "configuration.json", "obligations.json"])
+def test_old_image_cannot_borrow_the_present_checkout_kit(tmp_path, producer, missing):
     """A valid release lacking image-owned helpers fails before producing a plausible ZIP."""
-    root = paired(tmp_path, producer, kit=False)
+    root = paired(tmp_path, producer, omit=missing)
     archive = tmp_path / "missing kit.zip"
     with pytest.raises(ValueError, match="lacks the paired qualification helper"):
         producer.package(root, archive)

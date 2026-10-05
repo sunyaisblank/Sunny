@@ -215,7 +215,7 @@ python3 tools/release.py verify --release /new/path/sunny-release \
 
 Retain the printed lowercase `release.json` SHA256 independently of the transferred directory.
 The release contains `image.tar`, exact `native/Sunny` bytes, `installer/windows/` operators,
-`operator/doctor.py`, `operator/release.py`, the entire `operator/live_qualification/` kit,
+`operator/README.md`, `operator/doctor.py`, `operator/release.py`, the entire `operator/live_qualification/` kit,
 locked build inputs, dependency inventories and `release.json`. The producer freezes committed
 source, pins the Ubuntu platform digest, signed dated apt snapshot, package versions/hashes and
 dependency revisions in `release/build-inputs.json`, and records actual compiler inputs. This

@@ -24,11 +24,14 @@ def package(root: Path, output: Path) -> dict:
     manifest_sha256 = hashlib.sha256((root / "release.json").read_bytes()).hexdigest()
     manifest = release.verify_release(root, manifest_sha256)
     for name in (
+        "operator/README.md",
         "operator/doctor.py",
         "operator/release.py",
         "operator/live_qualification/common.py",
         "operator/live_qualification/host_runner.py",
         "operator/live_qualification/verify_artifacts.py",
+        "operator/live_qualification/configuration.json",
+        "operator/live_qualification/obligations.json",
         "operator/live_qualification/SunnyHostProbe/probe.py",
     ):
         if not (root / name).is_file():
