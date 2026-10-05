@@ -1,7 +1,7 @@
 {
   "build_inputs_schema_version": 1,
   "release_platform": "linux/amd64",
-  "configuration_schema_version": null,
+  "configuration_schema_version": 1,
   "base_image": {
     "reference": "ubuntu:24.04@sha256:f610ab94648195aa356059f5b41d6085c9d4d903c072430cdd1af7bdb646106b",
     "manifest_digest": "sha256:f610ab94648195aa356059f5b41d6085c9d4d903c072430cdd1af7bdb646106b",
@@ -67,7 +67,8 @@
       "python3"
     ],
     "runtime_packages": [
-      "libstdc++6"
+      "libstdc++6",
+      "python3"
     ],
     "packages": {
       "ca-certificates": {
@@ -158,5 +159,5 @@
     "Dependency revisions were independently observed in the candidate fetched git source checkouts; release CMake verifies actual checkout HEAD.",
     "SOURCE_DATE_EPOCH is the concrete source commit time. Input closure does not claim independent builders produce byte-identical compiler output."
   ],
-  "configuration_contract": "legacy_environment"
+  "configuration_contract": "versioned_json"
 }

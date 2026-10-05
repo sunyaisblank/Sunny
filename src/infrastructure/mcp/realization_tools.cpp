@@ -2580,6 +2580,50 @@ void register_project_realization_tools(McpServer& server,
                                         const McpSession& session,
                                         LomTransport* transport) {
     auto domain = server.registration_scope(McpDocumentDomain::None);
+    server.register_tool(
+        "ordinary_clip_history",
+        "Inspect durable ordinary Clip attempts; restored records provide query authority only, without restoring undo stacks",
+        {{"type", "object"}, {"additionalProperties", false},
+         {"properties", {{"attempt_id", {{"type", "string"}, {"pattern", "^[0-9a-f]{32}$"}}}}}},
+        [session](const json& arguments) -> json {
+            try {
+                auto store = history(session, false);
+                json attempts = json::array();
+                for (const auto& [id, attempt] : store->ordinary_attempts()) {
+                    if (arguments.contains("attempt_id") && arguments.at("attempt_id") != id) continue;
+                    json evidence = json::array();
+                    for (const auto& receipt : attempt.evidence) evidence.push_back(ordinary_receipt_to_json(receipt));
+                    attempts.push_back({{"attempt_id", id}, {"dispatch_ordinal", attempt.dispatch_ordinal},
+                                        {"dispatch_state", "may_have_sent"},
+                                        {"prepared", ordinary_receipt_to_json(attempt.prepared)}, {"evidence", evidence}});
+                }
+                return {{"success", true}, {"workspace_namespace", store->workspace_namespace()},
+                        {"attempts", attempts}, {"mutation_dispatched", false}, {"undo_stack_restored", false}};
+            } catch (const std::exception& failure) { return workflow_failure(failure); }
+        });
+    server.register_tool(
+        "ordinary_clip_reconcile",
+        "Query the original fenced ordinary Clip operation without retrying preparation or any native setter",
+        {{"type", "object"}, {"additionalProperties", false}, {"required", {"attempt_id"}},
+         {"properties", {{"attempt_id", {{"type", "string"}, {"pattern", "^[0-9a-f]{32}$"}}}}}},
+        [session, transport](const json& arguments) -> json {
+            try {
+                auto store = history(session, false);
+                const auto id = arguments.at("attempt_id").get<std::string>();
+                const auto* attempt = store->find_ordinary(id);
+                if (!attempt) return decline("Original ordinary Clip dispatch fence is unavailable");
+                if (!transport || transport->records_without_execution() || !transport->ensure_connected()) return decline("An executing bridge connection is required for read-only reconciliation");
+                const auto& original = attempt->evidence.empty() ? attempt->prepared : attempt->evidence.back();
+                const auto result = reconcile_ordinary_clip(original, *transport);
+                if (!result) return decline("Ordinary query response rejected; retained history remains unchanged");
+                const auto saved = store->append_ordinary_evidence(id, *result);
+                json output{{"success", true}, {"attempt_id", id}, {"receipt", ordinary_receipt_to_json(*result)},
+                            {"history_saved", saved.has_value()}, {"mutation_retried", false},
+                            {"mutation_dispatched", false}, {"undo_stack_restored", false}};
+                if (!saved) output["history_error"] = saved.error().message;
+                return output;
+            } catch (const std::exception& failure) { return workflow_failure(failure); }
+        });
     auto native_tools = std::make_shared<NativeAuthoringTools>();
     const auto register_native_tool = [&server, native_tools](std::string name,
                                                               std::string description,

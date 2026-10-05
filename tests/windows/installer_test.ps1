@@ -30,6 +30,13 @@ function NewRelease([string]$Name, [string]$Body, [string]$Digit) {
     }
     $archive = Get-Item -LiteralPath (Join-Path $directory 'image.tar')
     $payload += [ordered]@{ path = 'image.tar'; sha256 = (Get-FileHash -LiteralPath $archive.FullName -Algorithm SHA256).Hash.ToLowerInvariant(); bytes = $archive.Length }
+    $operators = Join-Path $directory 'installer\windows'
+    [IO.Directory]::CreateDirectory($operators) | Out-Null
+    foreach ($name in @('Sunny.ps1', 'SunnyHost.ps1', 'SunnyRemote.ps1')) {
+        Copy-Item -LiteralPath (Join-Path $root $name) -Destination (Join-Path $operators $name)
+        $operatorFile = Get-Item -LiteralPath (Join-Path $operators $name)
+        $payload += [ordered]@{path=('installer/windows/' + $name);sha256=(Get-FileHash -LiteralPath $operatorFile.FullName -Algorithm SHA256).Hash.ToLowerInvariant();bytes=$operatorFile.Length}
+    }
     $manifest = [ordered]@{
         release_manifest_schema_version = 1; product = @{ name = 'Sunny'; version = 'fixture' }
         source = @{ revision = ($Digit * 40); source_date_epoch = 1 }
@@ -77,6 +84,12 @@ try {
     $script = Join-Path $root 'Sunny.ps1'
     [IO.File]::WriteAllBytes($script, [Convert]::FromBase64String('__SOURCE__'))
     . $script
+    $hostScript = Join-Path $root 'SunnyHost.ps1'
+    [IO.File]::WriteAllBytes($hostScript, [Convert]::FromBase64String('__HOST_SOURCE__'))
+    . $hostScript
+    $remoteScript = Join-Path $root 'SunnyRemote.ps1'
+    [IO.File]::WriteAllBytes($remoteScript, [Convert]::FromBase64String('__REMOTE_SOURCE__'))
+    . $remoteScript
     $library = Join-Path $root 'Different User Library with spaces'
     [IO.Directory]::CreateDirectory((Join-Path $library 'Remote Scripts\Unrelated')) | Out-Null
     WriteText (Join-Path $library 'user-set.als') 'unsaved-work-fixture'
@@ -278,6 +291,102 @@ try {
     Fails { Invoke-SunnyLifecycle 'Install' $foreign $a.root $a.hash } 'ownership record was preserved'
     Check ((Get-Content -LiteralPath $foreignFile -Raw) -ceq 'unrelated content') 'Unregistered ownership file was overwritten'
     $passed.Add('unregistered_initial_content_preserved')
+
+    $logDirectory = Join-Path $root 'Independent host logs with spaces'
+    [IO.Directory]::CreateDirectory($logDirectory) | Out-Null
+    $log = Join-Path $logDirectory 'Log.txt'
+    WriteText $log "Project PRIVATE-SET`nSunny error password=DO-NOT-EXPORT C:\private\PRIVATE-SET.als`nTraceback native script loading`n"
+    $hash = (Get-FileHash -LiteralPath $log -Algorithm SHA256).Hash
+    $request = ('a' * 32)
+    $metadata = Invoke-SunnyHost 'Log' $log 1024 $false $request
+    Check ($metadata.request_id -ceq $request -and $metadata.read_only -and -not $metadata.native_bridge_required) 'Host log correlation or effect classification failed'
+    Check (-not $metadata.log.Contains('messages') -and $metadata.log.matching_line_counts.sunny -eq 1 -and $metadata.log.matching_line_counts.tracebacks -eq 1) 'Default host log collected messages or lost independent counts'
+    Check (-not $metadata.log.incomplete -and -not $metadata.log.truncated) 'Complete host log was labeled incomplete'
+    $content = Invoke-SunnyHost 'Log' $log 1024 $true $request
+    $json = $content | ConvertTo-Json -Depth 12
+    Check ($content.log.project_content_may_remain -and $content.log.messages.Count -eq 2) 'Explicit host log content scope failed'
+    Check (-not $json.Contains('DO-NOT-EXPORT') -and -not $json.Contains('PRIVATE-SET')) 'Host log failed credential/path minimization'
+    Check ((Get-FileHash -LiteralPath $log -Algorithm SHA256).Hash -ceq $hash) 'Read-only host log changed file bytes'
+    WriteText $log (('Old Sunny entry' + "`n") * 150 + "Sunny final marker`n")
+    $tail = Invoke-SunnyHost 'Log' $log 1024 $true $request
+    Check ($tail.log.truncated -and $tail.log.read_bytes -le 1024 -and $tail.log.range_start -gt 0) 'Host log tail was not bounded'
+    Check ($tail.log.messages[-1] -ceq 'Sunny final marker') 'Host log tail lost newest independent marker'
+    [IO.File]::AppendAllText($log, 'Sunny unfinished')
+    $partial = Invoke-SunnyHost 'Log' $log 1024 $true $request
+    Check ($partial.log.incomplete -and $partial.log.messages[-1] -ceq 'Sunny final marker') 'Incomplete host log line was emitted as complete'
+    $completeBytes = [Text.UTF8Encoding]::new($false).GetBytes("Sunny complete evidence`n")
+    [IO.File]::WriteAllBytes($log, [byte[]]($completeBytes + [byte[]]@(226, 130)))
+    $partialCodepoint = Invoke-SunnyHost 'Log' $log 1024 $true $request
+    Check ($partialCodepoint.log.incomplete -and $partialCodepoint.log.messages.Count -eq 1 -and $partialCodepoint.log.messages[0] -ceq 'Sunny complete evidence') 'Partial UTF-8 codepoint discarded complete preceding evidence'
+    Check ($partialCodepoint.log.range_end -eq $completeBytes.Length -and $partialCodepoint.log.read_bytes -eq $completeBytes.Length + 2) 'Partial UTF-8 bytes were reported as complete evidence'
+    Fails { Invoke-SunnyHost 'Log' $log 65537 $false $request } 'byte limit'
+    Fails { Invoke-SunnyHost 'Log' $log 1024 $false 'invalid' } 'RequestId'
+    Fails { Invoke-SunnyHost 'Log' (Join-Path $logDirectory 'other.txt') 1024 $false $request } 'other filenames'
+    [IO.File]::WriteAllBytes($log, [byte[]]@(255, 10))
+    Fails { Invoke-SunnyHost 'Log' $log 1024 $false $request } 'UTF-8'
+    $originalLog = Join-Path $logDirectory 'Original.txt'
+    [IO.File]::Move($log, $originalLog)
+    New-Item -ItemType HardLink -Path $log -Target $originalLog | Out-Null
+    Fails { Invoke-SunnyHost 'Log' $log 1024 $false $request } 'hard links'
+    $passed.Add('independent_bounded_read_only_host_log')
+
+    $identity = Join-Path $root 'external identity file'
+    $knownHosts = Join-Path $root 'external known hosts'
+    WriteText $identity 'FIXTURE ONLY - NOT A KEY'
+    WriteText $knownHosts 'FIXTURE ONLY - NOT APPROVED TRUST'
+    $connection = @{connection_schema_version=1;host='localhost';port=22222;user='fixture';identity_file=$identity;known_hosts_file=$knownHosts}
+    $connectionFile = Join-Path $root 'connection.json'
+    $connectionText = $connection | ConvertTo-Json -Compress
+    WriteText $connectionFile $connectionText
+    $keyHash = (Get-FileHash -LiteralPath $identity -Algorithm SHA256).Hash
+    $trustHash = (Get-FileHash -LiteralPath $knownHosts -Algorithm SHA256).Hash
+    $plan = Invoke-SunnyRemote 'Plan' $connectionFile $a.root $a.hash $null $null $null $null $false 5 $request
+    Check (-not $plan.remote_action_executed -and -not $plan.security_settings_changed -and $plan.host -ceq 'localhost') 'Remote plan performed an action or changed endpoint'
+    foreach ($key in @('host', 'h\u006fst')) {
+        WriteText $connectionFile ('{"' + $key + '":"localhost",' + $connectionText.Substring(1))
+        Fails { Read-SunnyConnection $connectionFile } 'duplicate'
+    }
+    WriteText $connectionFile ($connectionText -replace '"connection_schema_version":1', '"connection_schema_version":2')
+    Fails { Read-SunnyConnection $connectionFile } 'Unsupported connection schema'
+    WriteText $connectionFile ($connectionText.Substring(0, $connectionText.Length - 1) + ',}')
+    Fails { Read-SunnyConnection $connectionFile } 'trailing comma'
+    WriteText $connectionFile $connectionText
+    Check ((Get-FileHash -LiteralPath $identity -Algorithm SHA256).Hash -ceq $keyHash -and (Get-FileHash -LiteralPath $knownHosts -Algorithm SHA256).Hash -ceq $trustHash) 'Remote plan changed keys or trust'
+    Fails { New-SunnyRemotePayload 'ArbitraryCommand' @{} '' '' } 'Unsupported remote operation'
+    $safeDirectory = Join-Path $root "Quoted' host log Ω"
+    [IO.Directory]::CreateDirectory($safeDirectory) | Out-Null
+    $safeLog = Join-Path $safeDirectory 'Log.txt'
+    WriteText $safeLog "Sunny error literal Ω`n"
+    $inputData = @{operation='Log';request_id=$request;log_path=$safeLog;include_messages=$true}
+    $payload = New-SunnyRemotePayload 'Log' $inputData ([IO.File]::ReadAllText($script)) ([IO.File]::ReadAllText($hostScript))
+    Check (-not ($payload -match '[^\x00-\x7f]')) 'Remote source transport is not ASCII-only'
+    $starter = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes('[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); Invoke-Expression ([Console]::In.ReadToEnd())'))
+    $exchange = Invoke-SunnyBoundedProcess (Get-Command powershell.exe).Source @('-NoProfile', '-NonInteractive', '-EncodedCommand', $starter) $payload 10
+    Check ($exchange.exit_code -eq 0) ('Local literal remote payload failed: ' + $exchange.stderr)
+    $reply = $exchange.stdout | ConvertFrom-Json
+    Check ($reply.request_id -ceq $request -and $reply.log.messages[0] -ceq 'Sunny error literal Ω') 'Remote data quoting, Unicode, or correlation failed'
+    Assert-SunnyRemoteReport $reply 'Log' $request 15
+    $observed = $reply.observed_at
+    $reply.operation = 'install'
+    Fails { Assert-SunnyRemoteReport $reply 'Log' $request 15 } 'uncorrelated'
+    $reply.operation = 'log'
+    $reply.observed_at = $observed - 30
+    Fails { Assert-SunnyRemoteReport $reply 'Log' $request 15 } 'stale'
+    $reply.observed_at = $observed
+    $reply.schema_version = $true
+    Fails { Assert-SunnyRemoteReport $reply 'Log' $request 15 } 'malformed'
+    $reply.schema_version = 1
+    $reply.read_only = 'true'
+    Fails { Assert-SunnyRemoteReport $reply 'Log' $request 15 } 'effect classification'
+    $argumentScript = Join-Path $root 'Arguments with spaces.ps1'
+    WriteText $argumentScript 'param([string]$One,[string]$Two) [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); @{one=$One;two=$Two} | ConvertTo-Json -Compress'
+    $one = 'spaces and a"quote\'
+    $two = "other' value Ω\\"
+    $quoted = Invoke-SunnyBoundedProcess (Get-Command powershell.exe).Source @('-NoProfile', '-NonInteractive', '-File', $argumentScript, '-One', $one, '-Two', $two) '' 10
+    Check ($quoted.exit_code -eq 0) ('Windows argument parser failed: ' + $quoted.stderr)
+    $parsed = $quoted.stdout | ConvertFrom-Json
+    Check ($parsed.one -ceq $one -and $parsed.two -ceq $two) 'Windows argument roundtrip changed caller data'
+    $passed.Add('strict_remote_plan_and_literal_local_payload')
     @{ passed = @($passed); native_live_executed = $false; root = $root } | ConvertTo-Json -Compress
 } finally {
     if (Test-Path -LiteralPath $root) { Remove-Item -LiteralPath $root -Recurse -Force }

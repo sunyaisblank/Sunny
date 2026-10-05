@@ -13,6 +13,7 @@ import hashlib
 import json
 import re
 import struct
+import threading
 import uuid
 from typing import Any
 
@@ -562,6 +563,7 @@ class ManagedRegistry:
     """Retain actual Live objects and operation records across TCP reconnects."""
 
     def __init__(self, surface: Any) -> None:
+        self._main_thread = threading.get_ident()
         self._surface = surface
         self._handler: Any = None
         self._song: Any = None
@@ -580,6 +582,7 @@ class ManagedRegistry:
         from .managed_recovery import ManagedRecovery
         from .managed_routing import ManagedRouting
         from .managed_song_settings import ManagedSongSettings
+        from .ordinary_clip import OrdinaryClips
 
         self._devices = ManagedDevices(self)
         self._routing = ManagedRouting(self)
@@ -588,6 +591,7 @@ class ManagedRegistry:
         self._geometry = ManagedGeometry(self)
         self._song_settings = ManagedSongSettings(self)
         self._envelope_revision = ManagedEnvelopeRevision(self)
+        self._ordinary = OrdinaryClips(self)
 
     def attach_handler(self, handler: Any) -> None:
         """Supply the existing adapter; all callbacks still run on its Live dispatch."""
@@ -598,10 +602,13 @@ class ManagedRegistry:
         return first is second or first == second
 
     def _ensure_document(self) -> Any:
+        if threading.get_ident() != self._main_thread:
+            raise RuntimeError("Native document authority requires the Live main thread")
         song = self._surface.song()
         if self._song is None:
             self._song = song
         elif not self._same(self._song, song):
+            self._ordinary.close()
             self._song = song
             self._document_token = uuid.uuid4().hex
             self._bindings.clear()
@@ -609,6 +616,11 @@ class ManagedRegistry:
             self._author_context = None
             self._reset_helpers()
         return song
+
+    def dispatch_ordinary(self, name: str, args: list[Any]) -> dict[str, Any]:
+        """Select the helper only after refreshing the shared document epoch."""
+        self._ensure_document()
+        return self._ordinary.dispatch(name, args[0])
 
     @staticmethod
     def _tags(project: str, binding: str) -> tuple[str, str]:
@@ -1081,6 +1093,9 @@ class ManagedRegistry:
         if request["document_token"] != self._document_token:
             return {"outcome": "unknown_epoch", "document_token": self._document_token}
         if name == "sunny_managed_operation":
+            existing = self._operations.get(request["operation_id"])
+            if existing is not None and existing.get("ordinary") is True:
+                raise RuntimeError("Operation token belongs to the ordinary Clip journal family")
             return copy.deepcopy(
                 self._operations.get(
                     request["operation_id"],
@@ -1096,6 +1111,8 @@ class ManagedRegistry:
         fingerprint = _digest({"name": name, "request": request})
         previous = self._operations.get(operation_id)
         if previous is not None:
+            if previous.get("ordinary") is True:
+                raise RuntimeError("Operation token belongs to another immutable journal family")
             if previous["request_fingerprint"] != fingerprint:
                 raise RuntimeError("Managed operation token was reused with different content")
             return copy.deepcopy(previous)

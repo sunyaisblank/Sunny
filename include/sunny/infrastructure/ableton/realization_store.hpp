@@ -9,11 +9,12 @@
 #include <string>
 #include <sunny/core/score/types.hpp>
 #include <sunny/infrastructure/ableton/managed_realization.hpp>
+#include <sunny/infrastructure/ableton/ordinary_clip.hpp>
 #include <vector>
 
 namespace sunny::infrastructure {
 
-inline constexpr int REALIZATION_STORE_SCHEMA_VERSION = 1;
+inline constexpr int REALIZATION_STORE_SCHEMA_VERSION = 2;
 inline constexpr std::size_t REALIZATION_STORE_MAX_BYTES = 64 * 1024 * 1024;
 inline constexpr std::size_t REALIZATION_STORE_MAX_ATTEMPTS = 4096;
 inline constexpr std::size_t REALIZATION_STORE_MAX_EVIDENCE = 64;
@@ -84,6 +85,27 @@ class RealizationDispatchPermit {
     std::optional<ManagedOperationReceipt> prepared_;
 };
 
+struct OrdinaryStoredAttempt {
+    OrdinaryClipReceipt prepared;
+    std::uint64_t dispatch_ordinal = 0;
+    std::vector<OrdinaryClipReceipt> evidence;
+};
+
+/** A restored record cannot produce this one-shot native send capability. */
+class OrdinaryDispatchPermit {
+  public:
+    OrdinaryDispatchPermit(OrdinaryDispatchPermit&&) noexcept;
+    OrdinaryDispatchPermit& operator=(OrdinaryDispatchPermit&&) noexcept;
+    OrdinaryDispatchPermit(const OrdinaryDispatchPermit&) = delete;
+    OrdinaryDispatchPermit& operator=(const OrdinaryDispatchPermit&) = delete;
+    [[nodiscard]] std::optional<OrdinaryClipReceipt> take_prepared() noexcept;
+
+  private:
+    friend class RealizationStore;
+    explicit OrdinaryDispatchPermit(OrdinaryClipReceipt receipt);
+    std::optional<OrdinaryClipReceipt> prepared_;
+};
+
 /** Caller serializes access. Holds a lifetime process lock on
  * <existing durable base_directory>/<32hex namespace>/.lock.
  * InitializeNew requires a wholly new namespace directory. OpenExisting refuses
@@ -108,6 +130,16 @@ class RealizationStore {
     [[nodiscard]] const std::map<std::string, RealizationStoredAttempt>& attempts() const noexcept;
     [[nodiscard]] const RealizationStoredAttempt*
     find(const std::string& attempt_id) const noexcept;
+    [[nodiscard]] const std::map<std::string, OrdinaryStoredAttempt>&
+    ordinary_attempts() const noexcept;
+    [[nodiscard]] const OrdinaryStoredAttempt*
+    find_ordinary(const std::string& attempt_id) const noexcept;
+    [[nodiscard]] RealizationStoreResult<OrdinaryDispatchPermit>
+    fence_ordinary(const OrdinaryClipReceipt& prepared, const RealizationStoreIoFault& fault = {});
+    [[nodiscard]] RealizationStoreResult<void>
+    append_ordinary_evidence(const std::string& attempt_id,
+                             const OrdinaryClipReceipt& evidence,
+                             const RealizationStoreIoFault& fault = {});
     [[nodiscard]] bool native_writes_available() const noexcept;
     [[nodiscard]] const std::optional<std::string>& blocked_reason() const noexcept;
     [[nodiscard]] RealizationStoreResult<std::string> new_attempt_id() const;

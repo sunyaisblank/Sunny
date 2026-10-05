@@ -56,6 +56,17 @@ foreach(
         message(FATAL_ERROR "${_sunny_contract_version} must be a positive uint32")
     endif()
 endforeach()
+# Standalone native parser is the shared authority for the production contract.
+set(_sunny_runtime_configuration "${PROJECT_SOURCE_DIR}/remote_script/Sunny/configuration.py")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_sunny_runtime_configuration}")
+file(READ "${_sunny_runtime_configuration}" _sunny_runtime_configuration_source)
+foreach(_constant CONFIGURATION_SCHEMA_VERSION MAX_CONFIGURATION_BYTES MAX_CONFIGURATION_DEPTH MAX_CONFIGURATION_PATH_BYTES)
+    string(REGEX MATCH "(^|\n)${_constant} = ([1-9][0-9]*)\n" _match "${_sunny_runtime_configuration_source}")
+    if(NOT _match)
+        message(FATAL_ERROR "Missing literal runtime configuration authority: ${_constant}")
+    endif()
+    set(${_constant} "${CMAKE_MATCH_2}")
+endforeach()
 set(_sunny_generated_include_dir "${PROJECT_BINARY_DIR}/generated/include")
 include(cmake/BridgeBundle.cmake)
 sunny_prepare_bridge_bundle(
@@ -72,6 +83,12 @@ configure_file(
 configure_file(
     cmake/bridge_contract.hpp.in
     "${_sunny_generated_include_dir}/sunny/infrastructure/ableton/bridge_contract.hpp"
+    @ONLY
+)
+
+configure_file(
+    cmake/runtime_configuration_contract.hpp.in
+    "${_sunny_generated_include_dir}/sunny/infrastructure/runtime_configuration_contract.hpp"
     @ONLY
 )
 
@@ -225,6 +242,8 @@ target_link_libraries(
 target_sources(
     sunny_infrastructure
     PRIVATE
+        src/infrastructure/runtime_configuration.cpp
+        src/infrastructure/ableton/ordinary_clip.cpp
         src/infrastructure/ableton/dispatcher.cpp
         src/infrastructure/ableton/deployment.cpp
         src/infrastructure/ableton/lom_protocol.cpp
@@ -375,6 +394,11 @@ install(
     FILES
         "${_sunny_generated_include_dir}/sunny/infrastructure/ableton/bridge_contract.hpp"
     DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/sunny/infrastructure/ableton"
+)
+
+install(
+    FILES "${_sunny_generated_include_dir}/sunny/infrastructure/runtime_configuration_contract.hpp"
+    DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/sunny/infrastructure"
 )
 
 set(_sunny_cmake_install_dir "${CMAKE_INSTALL_LIBDIR}/cmake/Sunny")

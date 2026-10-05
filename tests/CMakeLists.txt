@@ -121,6 +121,8 @@ target_link_libraries(
 target_sources(
     sunny_infrastructure_tests
     PRIVATE
+        infrastructure/runtime_configuration_test.cpp
+        infrastructure/ableton/ordinary_clip_test.cpp
         infrastructure/ableton/dispatcher_test.cpp
         infrastructure/ableton/lom_protocol_test.cpp
         infrastructure/ableton/managed_realization_test.cpp

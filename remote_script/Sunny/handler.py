@@ -68,6 +68,9 @@ _SONG_CALLS = frozenset(
         "create_midi_track",
         "create_return_track",
         "sunny_managed_context",
+        "sunny_ordinary_prepare",
+        "sunny_ordinary_execute",
+        "sunny_ordinary_operation",
         "sunny_managed_operation",
         "sunny_managed_observe",
         "sunny_managed_create_clip",
@@ -496,6 +499,10 @@ def _valid_request_arguments(req_type: str, kind: str, name: str, args: list[Any
             return isinstance(value, float) and value == 0.0
         return _finite_number(value)
     if kind == "song":
+        if name.startswith("sunny_ordinary_"):
+            from .ordinary_clip import valid_ordinary_request
+
+            return valid_ordinary_request(name, args)
         if name.startswith("sunny_managed_"):
             from .managed import valid_managed_request
 
@@ -770,6 +777,14 @@ class LomHandler:
 
             if req_type == "call" and name == "sunny_get_target_snapshot":
                 return {"success": True, "value": self._serialise(self._target_snapshot())}
+
+            if req_type == "call" and name.startswith("sunny_ordinary_"):
+                if self._managed_registry is None:
+                    return {"success": False, "error": "Native ownership registry is unavailable"}
+                return {
+                    "success": True,
+                    "value": self._managed_registry.dispatch_ordinary(name, args),
+                }
 
             if req_type == "call" and name.startswith("sunny_managed_"):
                 if self._managed_registry is None:

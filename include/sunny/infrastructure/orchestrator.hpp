@@ -18,11 +18,13 @@
 #include <cstdint>
 #include <deque>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <sunny/core/scale/definitions.hpp>
 #include <sunny/core/types/music_types.hpp>
 #include <sunny/core/types/note_event.hpp>
+#include <sunny/infrastructure/ableton/ordinary_clip.hpp>
 #include <vector>
 
 namespace sunny::infrastructure {
@@ -56,6 +58,8 @@ struct DispatchReport {
     /// whether it took effect is unknown
     bool indeterminate{false};
     std::vector<std::string> errors;
+    std::optional<OrdinaryClipReceipt> ordinary_receipt = std::nullopt;
+    std::string workspace_namespace{};
 
     [[nodiscard]] bool all_ok() const { return failed == 0; }
 };
@@ -72,6 +76,14 @@ class BridgeDelivery {
     virtual ~BridgeDelivery() = default;
 
     [[nodiscard]] virtual DispatchReport dispatch(const std::vector<BridgeMessage>& messages) = 0;
+    [[nodiscard]] virtual bool records_without_execution() const noexcept { return false; }
+    [[nodiscard]] virtual DispatchReport
+    dispatch_clip(const std::vector<BridgeMessage>& messages,
+                  const std::string& action,
+                  const std::optional<OrdinaryClipReceipt>& authority,
+                  const std::string& workspace_namespace);
+    [[nodiscard]] virtual DispatchReport reconcile_clip(const OrdinaryClipReceipt& receipt,
+                                                        const std::string& workspace_namespace);
 };
 
 /**
@@ -83,6 +95,7 @@ class BridgeDelivery {
 class RecordingDelivery final : public BridgeDelivery {
   public:
     [[nodiscard]] DispatchReport dispatch(const std::vector<BridgeMessage>& messages) override;
+    [[nodiscard]] bool records_without_execution() const noexcept override { return true; }
 
     /// Hand over every recorded message and clear the record
     [[nodiscard]] std::vector<BridgeMessage> drain_messages();
@@ -182,10 +195,14 @@ class Orchestrator {
     struct HistoryEntry {
         std::vector<BridgeMessage> forward_messages;
         BridgeMessage inverse;
+        std::optional<OrdinaryClipReceipt> authority = std::nullopt;
+        std::string workspace_namespace{};
+        std::optional<OrdinaryClipReceipt> pending = std::nullopt;
     };
 
     std::deque<HistoryEntry> undo_stack_;
     std::deque<HistoryEntry> redo_stack_;
+    std::optional<HistoryEntry> pending_create_;
     std::size_t max_undo_levels_{100};
     std::uint64_t next_operation_id_{1};
     mutable std::mutex mutex_;
@@ -197,6 +214,8 @@ class Orchestrator {
                                                            HistoryEntry entry,
                                                            std::string applied_message);
     void push_undo(HistoryEntry entry);
+    [[nodiscard]] std::optional<OrchestratorResult>
+    recover_pending_create(BridgeDelivery& delivery);
 };
 
 } // namespace sunny::infrastructure

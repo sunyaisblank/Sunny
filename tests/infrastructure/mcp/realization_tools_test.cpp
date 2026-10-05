@@ -118,6 +118,76 @@ struct Fixture {
 };
 } // namespace
 
+TEST_CASE("Ordinary native history survives restart with query-only original tokens",
+          "[mcp][ordinary][restart]") {
+#ifdef _WIN32
+    SKIP("Durable native writing uses the primary POSIX Docker profile");
+#else
+    class QueryOnly final : public LomTransport {
+      public:
+        unsigned queries = 0;
+        bool is_connected() const override { return true; }
+        LomResponse send_notes(const LomPath&, const std::vector<LomNoteData>&) override {
+            FAIL("Restored ordinary history cannot authorize note setters");
+            return {};
+        }
+        LomResponse send(const LomRequest& request) override {
+            REQUIRE(request.property_or_method == "sunny_ordinary_operation");
+            REQUIRE(LomProtocol::validate_request(request));
+            ++queries;
+            auto value = std::get<json>(request.args.at(0));
+            value["action"] = "unknown";
+            value["outcome"] = "unknown_epoch";
+            value["native_mutation_started"] = false;
+            value["started_calls"] = 0;
+            value["returned_calls"] = 0;
+            value["result"] = nullptr;
+            value["error"] = nullptr;
+            return {true, value, std::nullopt};
+        }
+    } transport;
+    Directory directory;
+    const auto workspace = directory.path / "ordinary.json";
+    const std::string id(32, '1');
+    {
+        Fixture fixture(&transport);
+        REQUIRE(fixture.call("workspace_save", {{"path", workspace.string()}}).at("success") ==
+                true);
+        auto prepared = prepare_ordinary_clip(
+            {std::string(32, 'b'), std::string(32, 'c')},
+            id,
+            "create",
+            {{"track_index", 0}, {"slot_index", 0}, {"clip_end", 4.0}, {"notes", json::array()}});
+        REQUIRE(prepared);
+        REQUIRE(fixture.session.realization->store->fence_ordinary(*prepared));
+        CHECK(transport.queries == 0);
+    }
+    Fixture restored(&transport);
+    REQUIRE(restored.call("workspace_open", {{"path", workspace.string()}}).at("success") == true);
+    const auto before = workspace_to_json(restored.session);
+    REQUIRE(before);
+    const auto inspected = restored.call("ordinary_clip_history", {{"attempt_id", id}});
+    CHECK(inspected.at("success") == true);
+    REQUIRE(inspected.at("attempts").size() == 1);
+    CHECK(inspected.at("attempts").at(0).at("dispatch_state") == "may_have_sent");
+    CHECK(inspected.at("undo_stack_restored") == false);
+    CHECK(transport.queries == 0);
+    const auto reconciled = restored.call("ordinary_clip_reconcile", {{"attempt_id", id}});
+    CHECK(reconciled.at("success") == true);
+    CHECK(reconciled.at("receipt").at("outcome") == "unknown_epoch");
+    CHECK(reconciled.at("mutation_retried") == false);
+    CHECK(reconciled.at("history_saved") == true);
+    CHECK(transport.queries == 1);
+    auto* history = restored.session.realization->store.get();
+    REQUIRE(history);
+    REQUIRE(history->find_ordinary(id));
+    CHECK_FALSE(history->fence_ordinary(history->find_ordinary(id)->prepared));
+    const auto after = workspace_to_json(restored.session);
+    REQUIRE(after);
+    CHECK(*after == *before);
+#endif
+}
+
 TEST_CASE("Selected native project plans fit the real public apply byte limit",
           "[mcp][realization][coordinator][capacity]") {
 #ifdef _WIN32

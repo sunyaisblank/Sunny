@@ -54,6 +54,25 @@ class _LiveMainThread:
     def schedule_message(self, delay: int, callback: Any) -> None:
         self._callbacks.put(callback)
 
+    def call(self, callback: Any) -> Any:
+        """Construct native-owned state on the same thread that runs Live callbacks."""
+        complete = threading.Event()
+        outcome: dict[str, Any] = {}
+
+        def run() -> None:
+            try:
+                outcome["value"] = callback()
+            except BaseException as error:
+                outcome["error"] = error
+            finally:
+                complete.set()
+
+        self.schedule_message(0, run)
+        assert complete.wait(5), "The modelled Live main-thread call did not complete"
+        if "error" in outcome:
+            raise outcome["error"]
+        return outcome["value"]
+
     def _run(self) -> None:
         while (callback := self._callbacks.get()) is not None:
             callback()
@@ -131,7 +150,7 @@ class _McpClient:
 
 
 @pytest.fixture
-def bridge(request, monkeypatch):
+def bridge(request, monkeypatch, tmp_path):
     """Yield ``(live, client)``: a modelled Live Set behind the real bridge and an MCP client.
 
     SUNNY_MCP_COMMAND runs the server another way, such as through the Docker
@@ -147,7 +166,10 @@ def bridge(request, monkeypatch):
     # accepts only 1..65535, so the configuration is supplied directly.
     monkeypatch.setattr(surface_module, "_server_configuration", lambda: (bind_host, 0))
     main_thread = _LiveMainThread()
-    surface = SunnyControlSurface(object())
+    surface = main_thread.call(lambda: SunnyControlSurface(object()))
+    # The test framework exposes no native c_instance.song binding. Supply only
+    # that host boundary; registry ownership still belongs to the callback thread.
+    monkeypatch.setattr(surface, "song", live.surface.song, raising=False)
     surface.schedule_message = main_thread.schedule_message
     client = None
     try:
@@ -171,6 +193,9 @@ def bridge(request, monkeypatch):
                 break
             assert time.monotonic() < deadline, readiness
             threading.Event().wait(0.1)
+        workspace = "/data/ordinary-workspace.json" if command else str(tmp_path / "workspace.json")
+        saved = client.call("workspace_save", path=workspace)
+        assert saved.get("durability_confirmed") is True, saved
         yield live, client
     finally:
         if client is not None:
@@ -541,7 +566,7 @@ def test_remote_log_reports_what_happened_inside_live(bridge):
         "duration_beats": 2.0,
     }
     assert client.call("create_progression_clip", **clip).get("success") is True
-    # Live refuses create_clip on an occupied slot; the refusal happens inside Live.
+    # Native preparation refuses the occupied target before any setter executes.
     refused = client.call("create_progression_clip", **clip)
     assert refused.get("success") is False, refused
     assert refused["outcome"] == "not_applied"
@@ -550,11 +575,11 @@ def test_remote_log_reports_what_happened_inside_live(bridge):
     assert log.get("success") is True, log
     assert log["truncated"] is False
     messages = [entry["message"] for entry in log["entries"]]
-    assert any("create_clip: ok" in message for message in messages), messages
+    assert any("sunny_ordinary_execute: ok" in message for message in messages), messages
     refusals = [
         entry
         for entry in log["entries"]
-        if entry["level"] == "WARNING" and "create_clip" in entry["message"]
+        if entry["level"] == "WARNING" and "sunny_ordinary_prepare: declined" in entry["message"]
     ]
     assert len(refusals) == 1, messages
     sequences = [entry["sequence"] for entry in log["entries"]]
@@ -565,7 +590,7 @@ def test_remote_log_reports_what_happened_inside_live(bridge):
     newer = client.call("get_ableton_remote_log", after_sequence=log["next_sequence"])
     assert newer["entries"], newer
     assert all(entry["sequence"] > log["next_sequence"] for entry in newer["entries"])
-    assert not any("create_clip" in entry["message"] for entry in newer["entries"])
+    assert not any("sunny_ordinary_" in entry["message"] for entry in newer["entries"])
 
     # The optional epoch cursor traverses the real MCP/native/TCP/handler path.
     empty = client.call(

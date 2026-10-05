@@ -122,9 +122,13 @@ For removed Parts, Clip recovery uses the last verified historical note/geometry
 separate mute-only Mixer adoption permits retirement without recreating the Score Part.
 
 A few quick tools (`create_progression_clip`, `apply_euclidean_rhythm`, `apply_arpeggio`) write a
-single clip into an empty clip slot without a project. They record only changes Live
-acknowledged, report a lost response as indeterminate rather than as a failure, and can be undone
-with `undo_ableton_operation`.
+single clip into an empty clip slot without a project. Save the workspace durably before using
+them. Every create, undo and redo retains the original native object authority and writes a
+durable attempt before sending it. A lost response remains indeterminate; inspect
+`ordinary_clip_history` and use `ordinary_clip_reconcile` to query the original token. Neither
+reconnect nor reconciliation repeats a mutation. Acknowledged creations can be undone with
+`undo_ableton_operation` while their original native objects and unchanged content remain available.
+Restart preserves query history; it does not restore the in-memory undo stack.
 
 A separate `max-package/` builds five Max externals (`sunny.lfo~`, `sunny.adsr~`, `sunny.hold~`,
 `sunny.clock~`, `sunny.events`) from the same render code. See `max-package/readme.md`.
@@ -209,14 +213,29 @@ Use its printed
 `loaded_image_local_immutable_id` when launching MCP. The manifest distinguishes the producing
 store's local ID, archived OCI index/manifest/config digests, and any registry digest. A tag or a
 local Docker ID is insufficient evidence of registry publication. Publication is pending an approved
-destination; current manifests explicitly retain configuration and native qualification as pending.
+destination; current manifests explicitly retain production and native qualification as pending.
+
+Production configuration is external UTF-8 JSON with `configuration_schema_version: 1`.
+Both consumers reject unknown fields, duplicate keys, future versions, malformed endpoints and
+ambiguous mixing with legacy environment variables before opening a workspace or socket.
+For an offline client, save this as an external file such as `C:\Sunny Configuration\offline.json`:
+
+```json
+{
+  "configuration_schema_version": 1,
+  "client": {
+    "transport": {"mode": "offline"},
+    "workspace": {"path": "/data/workspace.sunny.json", "recovery": "none"}
+  }
+}
+```
 
 ```json
 {
   "mcpServers": {
     "sunny": {
       "command": "docker",
-      "args": ["run", "-i", "--rm", "--mount", "type=volume,source=sunny-data,target=/data", "sha256:REPLACE_WITH_LOADED_IMAGE_ID"]
+      "args": ["run", "-i", "--rm", "--pull=never", "--mount", "type=volume,source=sunny-data,target=/data", "--mount", "type=bind,source=C:\\Sunny Configuration\\offline.json,target=/run/sunny/configuration.json,readonly", "--env", "SUNNY_CONFIG_PATH=/run/sunny/configuration.json", "sha256:REPLACE_WITH_LOADED_IMAGE_ID"]
     }
   }
 }
@@ -224,14 +243,63 @@ destination; current manifests explicitly retain configuration and native qualif
 
 This launches an offline authoring session. Each MCP client owns one container's stdio; do not
 share one unattended stdin among clients or add a TTY. Live remains native. The remote production
-profile requires an approved SSH route to the loopback bridge and its machine qualification;
-that integration remains under [issue #38](https://github.com/sunyaisblank/Sunny/issues/38).
+profile uses the Windows `installer/windows/SunnyClient.ps1` launcher and an approved SSH route
+to the loopback bridge. Its actual machine qualification remains under
+[issue #38](https://github.com/sunyaisblank/Sunny/issues/38).
 Raw TCP across a LAN is unauthenticated and is outside the supported production profile.
 
 For a native `sunny-mcp` on the same computer as Live, `SUNNY_ABLETON_HOST=127.0.0.1` connects to
 the default loopback listener. Inside an ordinary Docker container, `127.0.0.1` refers to that
 container and does not address Live on the host. Running without `SUNNY_ABLETON_HOST` starts an
-offline authoring session with the same durable volume.
+offline authoring session. Selecting a durable workspace requires explicit configuration.
+
+The Windows launcher requires 64-bit PowerShell 5.1+, Windows OpenSSH, a running local
+Linux/amd64 Docker Desktop engine, the verified loaded image and one named workspace volume.
+Keep SSH credentials and verified known-host entries outside the release. A separate connection
+file has exactly these fields:
+
+```json
+{
+  "connection_schema_version": 1,
+  "host": "REPLACE_WITH_APPROVED_LIVE_HOST",
+  "port": 22,
+  "user": "REPLACE_WITH_APPROVED_LOCAL_ACCOUNT",
+  "identity_file": "C:\\Sunny Configuration\\approved_identity",
+  "known_hosts_file": "C:\\Sunny Configuration\\approved_known_hosts"
+}
+```
+
+The launcher never registers access or accepts a changed host key. Directional approval from
+the Live PC to the client does not establish client-to-Live access. Set up the required direction
+manually after independent preparation and checks.
+
+For the remote runtime configuration, use both roles. Set `client.transport` to
+`{"mode":"tcp","host":"host.docker.internal","port":49001}` and keep its workspace under
+`/data`. Set `native` to `{"bridge":{"bind_host":"127.0.0.1","port":9001}}`.
+The local forward port is configurable; choose a free port. Supply the native configuration
+to Live through its process environment's `SUNNY_CONFIG_PATH`, then restart Live deliberately.
+No host address or library location is compiled into either component.
+
+```powershell
+$client = 'D:\Sunny Release\installer\windows\SunnyClient.ps1'
+& $client -Action Plan -ConnectionFile 'C:\Sunny Configuration\connection.json' `
+  -ConfigurationFile 'C:\Sunny Configuration\runtime.json' -WorkspaceVolume sunny-data `
+  -ReleaseDirectory 'D:\Sunny Release' -ExpectedManifestSHA256 $hash -ImageId $loadedImageId
+# Use the same arguments with -Action Run as the MCP client command.
+```
+
+`Plan` verifies the local release, image and compiled configuration using an isolated container;
+it does not start SSH or mount project data. `Run` starts an owned Windows loopback-only SSH
+forward, verifies its listening process, then starts one attached Sunny container with inherited
+MCP handles. Its normal stdout contains protocol messages only. Tunnel loss closes the session.
+Cleanup removes only containers with the exact per-session owner, name and original daemon;
+it preserves the project volume. A private Windows job closes owned SSH and Docker client
+processes when the launcher ends. Abrupt interruption can leave a daemon container, especially
+during preflight. The launcher prints a recovery directory to stderr before validation and
+preserves it if cleanup cannot be confirmed. After the original client has ended, run
+`SunnyClient.ps1 -Action Recover -SessionDirectory 'REPLACE_WITH_REPORTED_DIRECTORY'`.
+Recovery refuses foreign or changed scope and confirms container absence before removing its
+own temporary files. An owned listening forward alone does not prove native Live readiness.
 
 The volume retains saved work when a container is replaced. After authoring, call
 `workspace_save` with `path: "/data/workspace.sunny.json"`. The next container restores that
@@ -242,6 +310,12 @@ volume and survives authored undo or backup recovery. Keep that directory with t
 moving saved work; a missing history directory blocks native writes. Undo history and temporary
 deployment plans end with the process. Changes require an
 explicit save; closing the client does not save them automatically.
+
+The realization ledger reads schema 1 and writes schema 2 when publishing a new ordinary attempt.
+Migration preserves existing managed records and keeps ordinary attempts separately. Older
+binaries cannot read schema 2. Before a version rollback, stop the writer and restore a retained
+compatible workspace together with its complete realization namespace; copying only an authored
+`.bak` does not roll operational history back. Backup/recovery never grants replay authority.
 
 Each process reserves its configured workspace and backup before restoring or accepting requests.
 A second process using those files exits with a workspace writer admission error. Save, open and
@@ -275,9 +349,11 @@ in Live's Preferences, Link/Tempo/MIDI. For a native build, use the generated
 `.bin/remote_script/Sunny` folder from that build. Restart or reload the control surface after
 replacing the folder.
 
-The script listens on TCP port 9001, bound to `127.0.0.1` unless `SUNNY_BIND_HOST` is set in the
-environment of the Live process. If you bind to another interface, restrict access with a
-firewall: the port accepts commands that change your Live Set.
+The default legacy environment profile listens on TCP 9001 at `127.0.0.1`. Versioned native
+configuration requires an explicit numeric IPv4 loopback address and port; IPv6 native binding is
+unsupported by its current AF_INET server. Keep the plain native command port off the LAN.
+The legacy variables remain available for existing local development, but a non-loopback bind
+is outside the selected production profile.
 
 Keep the default `127.0.0.1` binding for local operation and the selected SSH route. One bridge
 client is served at a time; close another connected Sunny client before starting a replacement.
@@ -393,8 +469,22 @@ epoch and freshness metadata is explicitly unavailable.
 
 This log route needs a working bridge and shares its command channel. It cannot diagnose a script
 that never loaded or service a second request while the first remains in progress. `sunny-mcp`
-writes its own diagnostics to standard error. Docker logs cover container output; native Live
-`Log.txt` requires its separately authorized host route, which remains pending under the
+writes its own diagnostics to standard error. Docker logs cover container output.
+`installer/windows/SunnyHost.ps1 -Action Info` reads local host and process evidence without a
+bridge. `-Action Log -LogPath 'REPLACE_WITH_ACTUAL_NATIVE_Log.txt'` reads at most 64 KiB from that
+explicit physical log and returns metadata and matching line counts by default. Unfinished
+lines are omitted and reported incomplete; malformed complete UTF-8 lines fail explicitly.
+`-IncludeMessages` deliberately includes at most 100 selected, redacted lines; project content
+may still remain. It never exports automatically or changes log bytes.
+
+For an approved remote connection, `SunnyRemote.ps1` accepts `Info` and `Log` through the same
+separate connection file and verified release. Its fixed operations also include `Status`,
+`Install`, `Recover`, `Rollback`, `Uninstall` and `Confirm`. Arguments cross as encoded JSON data;
+the remote operator source is captured from the checksum-verified release. Installation requires
+the full release already transferred to its explicit destination. No operation creates SSH trust,
+stops Live, or changes security settings. Remote operation deadlines are finite; a missing
+acknowledgment requires status/recovery before repeating a filesystem change. The actual two-PC
+path remains a final qualification step under the
 [operating lifecycle contract](https://github.com/sunyaisblank/Sunny/issues/36).
 
 `doctor_ableton` observes paired source/protocol, current bridge/Set tokens, and three transport

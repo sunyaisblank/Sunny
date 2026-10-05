@@ -21,6 +21,16 @@
 #include <utility>
 
 namespace sunny::infrastructure {
+
+DispatchReport BridgeDelivery::dispatch_clip(const std::vector<BridgeMessage>&,
+                                             const std::string&,
+                                             const std::optional<OrdinaryClipReceipt>&,
+                                             const std::string&) {
+    return {0, 1, false, {"This delivery does not implement native Clip authority"}};
+}
+DispatchReport BridgeDelivery::reconcile_clip(const OrdinaryClipReceipt&, const std::string&) {
+    return {0, 1, true, {"This delivery cannot query a retained native Clip attempt"}};
+}
 namespace {
 
 [[nodiscard]] std::string clip_slot_path(int track_index, int slot_index) {
@@ -374,6 +384,42 @@ OrchestratorResult Orchestrator::deliver_forward(BridgeDelivery& delivery,
 OrchestratorResult Orchestrator::record_clip_operation(BridgeDelivery& delivery,
                                                        HistoryEntry entry,
                                                        std::string applied_message) {
+    if (auto recovered = recover_pending_create(delivery)) return *recovered;
+    if (!delivery.records_without_execution()) {
+        const auto report =
+            delivery.dispatch_clip(entry.forward_messages, "create", std::nullopt, "");
+        OrchestratorResult result;
+        result.commands_sent = report.sent;
+        result.errors = report.errors;
+        if (report.ordinary_receipt)
+            result.operation_id =
+                report.ordinary_receipt->intent.at("operation_id").get<std::string>();
+        if (!report.all_ok()) {
+            result.outcome = report.ordinary_receipt && report.ordinary_receipt->outcome ==
+                                                            OrdinaryClipOutcome::Partial
+                                 ? OperationOutcome::PartiallyApplied
+                             : report.indeterminate ? OperationOutcome::Indeterminate
+                                                    : OperationOutcome::NotApplied;
+            result.message = "Native Clip transaction was not acknowledged. Retain its original "
+                             "attempt for read-only reconciliation.";
+            if (report.indeterminate && report.ordinary_receipt) {
+                entry.pending = report.ordinary_receipt;
+                entry.workspace_namespace = report.workspace_namespace;
+                pending_create_ = std::move(entry);
+            }
+            return result;
+        }
+        if (!report.ordinary_receipt ||
+            report.ordinary_receipt->outcome != OrdinaryClipOutcome::Acknowledged)
+            return rejected("Native delivery omitted the typed Clip acknowledgement");
+        entry.authority = report.ordinary_receipt;
+        entry.workspace_namespace = report.workspace_namespace;
+        result.outcome = OperationOutcome::Applied;
+        result.message = std::move(applied_message);
+        push_undo(std::move(entry));
+        redo_stack_.clear();
+        return result;
+    }
     auto result = deliver_forward(delivery, entry);
     if (!result.success()) return result;
 
@@ -386,12 +432,49 @@ OrchestratorResult Orchestrator::record_clip_operation(BridgeDelivery& delivery,
 
 OrchestratorResult Orchestrator::undo(BridgeDelivery& delivery) {
     std::lock_guard lock(mutex_);
+    if (auto recovered = recover_pending_create(delivery)) return *recovered;
 
     if (undo_stack_.empty()) {
         return rejected("No Sunny Ableton operation is available to undo");
     }
 
-    const auto& entry = undo_stack_.back();
+    auto& entry = undo_stack_.back();
+    if (entry.authority) {
+        const auto report =
+            entry.pending
+                ? delivery.reconcile_clip(*entry.pending, entry.workspace_namespace)
+                : delivery.dispatch_clip({}, "undo", entry.authority, entry.workspace_namespace);
+        OrchestratorResult result;
+        result.commands_sent = report.sent;
+        result.errors = report.errors;
+        if (report.ordinary_receipt)
+            result.operation_id =
+                report.ordinary_receipt->intent.at("operation_id").get<std::string>();
+        if (!report.all_ok()) {
+            result.outcome = report.ordinary_receipt && report.ordinary_receipt->outcome ==
+                                                            OrdinaryClipOutcome::Partial
+                                 ? OperationOutcome::PartiallyApplied
+                             : report.indeterminate ? OperationOutcome::Indeterminate
+                                                    : OperationOutcome::NotApplied;
+            result.message = "Native undo was not acknowledged; uncertain attempts are queried "
+                             "using their original token.";
+            if (report.ordinary_receipt &&
+                (report.indeterminate ||
+                 report.ordinary_receipt->outcome == OrdinaryClipOutcome::Partial))
+                entry.pending = report.ordinary_receipt;
+            return result;
+        }
+        if (!report.ordinary_receipt) return rejected("Native undo omitted its acknowledgement");
+        entry.authority = report.ordinary_receipt;
+        entry.pending.reset();
+        result.outcome = OperationOutcome::Applied;
+        result.message = "Undid the retained native Clip";
+        redo_stack_.push_back(std::move(entry));
+        undo_stack_.pop_back();
+        return result;
+    }
+    if (!delivery.records_without_execution())
+        return rejected("Recorded-only history cannot authorize a native undo");
     const auto report = delivery.dispatch({entry.inverse});
     OrchestratorResult result;
     result.commands_sent = report.sent;
@@ -417,11 +500,49 @@ OrchestratorResult Orchestrator::undo(BridgeDelivery& delivery) {
 
 OrchestratorResult Orchestrator::redo(BridgeDelivery& delivery) {
     std::lock_guard lock(mutex_);
+    if (auto recovered = recover_pending_create(delivery)) return *recovered;
 
     if (redo_stack_.empty()) {
         return rejected("No Sunny Ableton operation is available to redo");
     }
 
+    auto& entry = redo_stack_.back();
+    if (entry.authority) {
+        const auto report =
+            entry.pending
+                ? delivery.reconcile_clip(*entry.pending, entry.workspace_namespace)
+                : delivery.dispatch_clip({}, "redo", entry.authority, entry.workspace_namespace);
+        OrchestratorResult result;
+        result.commands_sent = report.sent;
+        result.errors = report.errors;
+        if (report.ordinary_receipt)
+            result.operation_id =
+                report.ordinary_receipt->intent.at("operation_id").get<std::string>();
+        if (!report.all_ok()) {
+            result.outcome = report.ordinary_receipt && report.ordinary_receipt->outcome ==
+                                                            OrdinaryClipOutcome::Partial
+                                 ? OperationOutcome::PartiallyApplied
+                             : report.indeterminate ? OperationOutcome::Indeterminate
+                                                    : OperationOutcome::NotApplied;
+            result.message = "Native redo was not acknowledged; uncertain attempts are queried "
+                             "using their original token.";
+            if (report.ordinary_receipt &&
+                (report.indeterminate ||
+                 report.ordinary_receipt->outcome == OrdinaryClipOutcome::Partial))
+                entry.pending = report.ordinary_receipt;
+            return result;
+        }
+        if (!report.ordinary_receipt) return rejected("Native redo omitted its acknowledgement");
+        entry.authority = report.ordinary_receipt;
+        entry.pending.reset();
+        result.outcome = OperationOutcome::Applied;
+        result.message = "Redid the retained native Clip";
+        push_undo(std::move(entry));
+        redo_stack_.pop_back();
+        return result;
+    }
+    if (!delivery.records_without_execution())
+        return rejected("Recorded-only history cannot authorize a native redo");
     // A failed redo leaves the entry on the redo stack; the forward delivery
     // compensated for, or reported, whatever it partially applied.
     auto result = deliver_forward(delivery, redo_stack_.back());
@@ -447,6 +568,7 @@ void Orchestrator::clear_history() {
     std::lock_guard lock(mutex_);
     undo_stack_.clear();
     redo_stack_.clear();
+    pending_create_.reset();
 }
 
 void Orchestrator::set_max_undo_levels(std::size_t levels) {
@@ -470,6 +592,36 @@ void Orchestrator::push_undo(HistoryEntry entry) {
     while (undo_stack_.size() > max_undo_levels_) {
         undo_stack_.pop_front();
     }
+}
+
+std::optional<OrchestratorResult> Orchestrator::recover_pending_create(BridgeDelivery& delivery) {
+    if (!pending_create_) return std::nullopt;
+    auto& entry = *pending_create_;
+    const auto report = delivery.reconcile_clip(*entry.pending, entry.workspace_namespace);
+    OrchestratorResult result;
+    result.operation_id = entry.pending->intent.at("operation_id").get<std::string>();
+    result.commands_sent = report.sent;
+    result.errors = report.errors;
+    result.outcome = OperationOutcome::Indeterminate;
+    result.message =
+        "Queried the earlier Clip attempt; this call did not dispatch a new musical mutation.";
+    if (report.ordinary_receipt) entry.pending = report.ordinary_receipt;
+    if (report.all_ok() && report.ordinary_receipt) {
+        entry.authority = report.ordinary_receipt;
+        entry.pending.reset();
+        push_undo(std::move(entry));
+        redo_stack_.clear();
+        pending_create_.reset();
+        result.outcome = OperationOutcome::Applied;
+    } else if (report.ordinary_receipt &&
+               (report.ordinary_receipt->outcome == OrdinaryClipOutcome::Declined ||
+                report.ordinary_receipt->outcome == OrdinaryClipOutcome::Partial)) {
+        result.outcome = report.ordinary_receipt->outcome == OrdinaryClipOutcome::Partial
+                             ? OperationOutcome::PartiallyApplied
+                             : OperationOutcome::NotApplied;
+        pending_create_.reset();
+    }
+    return result;
 }
 
 } // namespace sunny::infrastructure

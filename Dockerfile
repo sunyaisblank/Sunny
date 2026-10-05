@@ -48,7 +48,7 @@ FROM ubuntu:24.04@sha256:f610ab94648195aa356059f5b41d6085c9d4d903c072430cdd1af7b
 ARG SUNNY_APT_SNAPSHOT=20261001T000000Z
 ARG SUNNY_CA_CERTIFICATES_URL=https://snapshot.ubuntu.com/ubuntu/20261001T000000Z/pool/main/c/ca-certificates/ca-certificates_20260601~24.04.1_all.deb
 ARG SUNNY_CA_CERTIFICATES_SHA256=6bac2a01979e210d9eac1d4d56747ec709ea60654744d66705dc3c36e7629e50
-ARG SUNNY_RUNTIME_PACKAGES="libstdc++6=14.2.0-4ubuntu2~24.04.1"
+ARG SUNNY_RUNTIME_PACKAGES="libstdc++6=14.2.0-4ubuntu2~24.04.1 python3=3.12.3-0ubuntu2.1"
 ARG SUNNY_SOURCE_REVISION=unrecorded-development-build
 ARG SUNNY_VERSION=0.4.0
 ARG SUNNY_BUILD_INPUTS_SHA256
@@ -71,7 +71,6 @@ COPY --from=builder /build/tools/windows/ /opt/sunny/installer/windows/
 COPY --from=builder /build/tools/doctor.py /opt/sunny/operator/doctor.py
 
 USER sunny
-ENV SUNNY_WORKSPACE_PATH=/data/workspace.sunny.json
 ENTRYPOINT ["sunny-mcp"]
 
 LABEL org.opencontainers.image.title="Sunny" \
@@ -83,4 +82,5 @@ LABEL org.opencontainers.image.title="Sunny" \
       org.opencontainers.image.base.name="ubuntu:24.04" \
       org.opencontainers.image.base.digest="sha256:f610ab94648195aa356059f5b41d6085c9d4d903c072430cdd1af7bdb646106b" \
       org.sunny.build-inputs.sha256="$SUNNY_BUILD_INPUTS_SHA256" \
-      org.sunny.configuration.contract="legacy_environment"
+      org.sunny.configuration.contract="versioned_json" \
+      org.sunny.configuration.schema-version="1"

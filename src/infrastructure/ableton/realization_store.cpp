@@ -177,7 +177,8 @@ void validate_terminal_history(const RealizationStoredAttempt& attempt) {
     }
 }
 json ledger_json(const std::string& ns,
-                 const std::map<std::string, RealizationStoredAttempt>& attempts) {
+                 const std::map<std::string, RealizationStoredAttempt>& attempts,
+                 const std::map<std::string, OrdinaryStoredAttempt>& ordinary) {
     json records = json::array();
     for (const auto& [id, attempt] : attempts) {
         static_cast<void>(id);
@@ -192,10 +193,44 @@ json ledger_json(const std::string& ns,
                            {"evidence", evidence},
                            {"bindings", bindings}});
     }
+    json ordinary_records = json::array();
+    for (const auto& [id, attempt] : ordinary) {
+        static_cast<void>(id);
+        json evidence = json::array();
+        for (const auto& receipt : attempt.evidence)
+            evidence.push_back(ordinary_receipt_to_json(receipt));
+        ordinary_records.push_back({{"prepared", ordinary_receipt_to_json(attempt.prepared)},
+                                    {"dispatch_ordinal", attempt.dispatch_ordinal},
+                                    {"dispatch_state", "may_have_sent"},
+                                    {"evidence", evidence}});
+    }
     return {{"format", "sunny-realization-ledger"},
             {"schema_version", REALIZATION_STORE_SCHEMA_VERSION},
             {"workspace_namespace", ns},
-            {"attempts", records}};
+            {"attempts", records},
+            {"ordinary_attempts", ordinary_records}};
+}
+
+void validate_ordinary_history(const OrdinaryStoredAttempt& attempt) {
+    const auto prepared = ordinary_receipt_from_json(ordinary_receipt_to_json(attempt.prepared));
+    if (!prepared || prepared->outcome != OrdinaryClipOutcome::Prepared || prepared->journal ||
+        prepared->error)
+        deny("ordinary attempt: original unsent Prepared receipt required");
+    std::optional<json> terminal;
+    for (const auto& evidence : attempt.evidence) {
+        if (!ordinary_receipt_from_json(ordinary_receipt_to_json(evidence)) ||
+            managed_detail::managed_digest(evidence.intent) !=
+                managed_detail::managed_digest(prepared->intent) ||
+            evidence.outcome == OrdinaryClipOutcome::Prepared)
+            deny("ordinary evidence: original immutable intent/epoch mismatch");
+        if (evidence.journal && evidence.outcome != OrdinaryClipOutcome::NativePrepared) {
+            if (terminal && *terminal != *evidence.journal)
+                deny("ordinary evidence: conflicting retained terminal journal");
+            terminal = *evidence.journal;
+        } else if (terminal && evidence.outcome == OrdinaryClipOutcome::NativePrepared) {
+            deny("ordinary evidence: native preparation cannot follow a terminal journal");
+        }
+    }
 }
 json parse(const std::string& bytes) {
     if (bytes.size() > REALIZATION_STORE_MAX_BYTES) deny("Realization ledger exceeds 64 MiB");
@@ -212,13 +247,25 @@ json parse(const std::string& bytes) {
         return true;
     });
 }
-std::map<std::string, RealizationStoredAttempt> decode(const std::string& bytes,
-                                                       const std::string& ns) {
+std::map<std::string, RealizationStoredAttempt>
+decode(const std::string& bytes,
+       const std::string& ns,
+       std::map<std::string, OrdinaryStoredAttempt>* ordinary = nullptr) {
     const auto document = parse(bytes);
-    exact(document, {"format", "schema_version", "workspace_namespace", "attempts"}, "ledger");
+    const auto schema =
+        sunny::core::detail::checked_integer<int>(document.at("schema_version"), "schema_version");
+    if (schema == 1)
+        exact(document, {"format", "schema_version", "workspace_namespace", "attempts"}, "ledger");
+    else if (schema == 2)
+        exact(document,
+              {"format", "schema_version", "workspace_namespace", "attempts", "ordinary_attempts"},
+              "ledger");
+    else
+        deny("Unsupported realization ledger schema; retain the older snapshot for software "
+             "rollback");
     if (document.at("format") != "sunny-realization-ledger" ||
-        sunny::core::detail::checked_integer<int>(
-            document.at("schema_version"), "schema_version") != REALIZATION_STORE_SCHEMA_VERSION ||
+        sunny::core::detail::checked_integer<int>(document.at("schema_version"),
+                                                  "schema_version") != schema ||
         document.at("workspace_namespace") != ns)
         deny("Realization ledger format/version/workspace namespace mismatch");
     const auto& records = document.at("attempts");
@@ -286,6 +333,42 @@ std::map<std::string, RealizationStoredAttempt> decode(const std::string& bytes,
         }
         result.emplace(intent.attempt_id, std::move(attempt));
     }
+    std::map<std::string, OrdinaryStoredAttempt> ordinary_result;
+    if (schema == 2) {
+        const auto& ordinary_records = document.at("ordinary_attempts");
+        if (!ordinary_records.is_array() ||
+            ordinary_records.size() + records.size() > REALIZATION_STORE_MAX_ATTEMPTS)
+            deny("Realization ledger combined attempt capacity exhausted");
+        std::set<std::uint64_t> ordinary_ordinals;
+        std::string previous_ordinary;
+        for (const auto& record : ordinary_records) {
+            exact(record,
+                  {"prepared", "dispatch_ordinal", "dispatch_state", "evidence"},
+                  "ordinary attempt");
+            const auto prepared = ordinary_receipt_from_json(record.at("prepared"));
+            if (!prepared || record.at("dispatch_state") != "may_have_sent")
+                deny("ordinary attempt: invalid receipt/fence");
+            OrdinaryStoredAttempt attempt{
+                *prepared, positive(record.at("dispatch_ordinal"), "ordinary ordinal"), {}};
+            const auto id = prepared->intent.at("operation_id").get<std::string>();
+            if (id <= previous_ordinary || result.contains(id) ||
+                attempt.dispatch_ordinal > ordinary_records.size() ||
+                !ordinary_ordinals.insert(attempt.dispatch_ordinal).second)
+                deny("ordinary attempts: duplicate identity or non-dense ordinal");
+            previous_ordinary = id;
+            if (!record.at("evidence").is_array() ||
+                record.at("evidence").size() > REALIZATION_STORE_MAX_EVIDENCE)
+                deny("ordinary evidence capacity exhausted");
+            for (const auto& value : record.at("evidence")) {
+                const auto evidence = ordinary_receipt_from_json(value);
+                if (!evidence) deny("ordinary evidence codec rejected result");
+                attempt.evidence.push_back(*evidence);
+            }
+            validate_ordinary_history(attempt);
+            ordinary_result.emplace(id, std::move(attempt));
+        }
+    }
+    if (ordinary) *ordinary = std::move(ordinary_result);
     return result;
 }
 #ifndef _WIN32
@@ -312,6 +395,7 @@ struct RealizationStore::Impl {
     std::string ns;
     fs::path path;
     std::map<std::string, RealizationStoredAttempt> attempts;
+    std::map<std::string, OrdinaryStoredAttempt> ordinary_attempts;
     std::string disk_bytes;
     std::optional<std::string> blocked;
 #ifdef _WIN32
@@ -396,7 +480,9 @@ struct RealizationStore::Impl {
     }
     RealizationStoreResult<void> write(std::map<std::string, RealizationStoredAttempt> candidate,
                                        const RealizationStoreIoFault& fault,
-                                       bool initialize = false) {
+                                       bool initialize = false,
+                                       std::optional<std::map<std::string, OrdinaryStoredAttempt>>
+                                           ordinary_candidate = std::nullopt) {
         bool committed = false;
         try {
             if (blocked) deny(*blocked);
@@ -404,12 +490,15 @@ struct RealizationStore::Impl {
             static_cast<void>(candidate);
             static_cast<void>(fault);
             static_cast<void>(initialize);
+            static_cast<void>(ordinary_candidate);
             deny("Native realization writes unsupported: confirmed directory durability is "
                  "unavailable on Windows");
 #else
             validate_location();
             if (!initialize) verify_unchanged();
-            auto encoded = ledger_json(ns, candidate).dump(2) + "\n";
+            auto candidate_ordinary =
+                ordinary_candidate ? std::move(*ordinary_candidate) : ordinary_attempts;
+            auto encoded = ledger_json(ns, candidate, candidate_ordinary).dump(2) + "\n";
             // Validate the actual text/private candidate before touching disk.
             static_cast<void>(decode(encoded, ns));
             const auto inject = [&](RealizationStoreIoPhase phase) {
@@ -462,6 +551,7 @@ struct RealizationStore::Impl {
             cleanup.name.clear();
             committed = true;
             attempts.swap(candidate);
+            ordinary_attempts.swap(candidate_ordinary);
             disk_bytes.swap(encoded);
             inject(RealizationStoreIoPhase::DirectorySync);
             if (!synchronize(directory_fd))
@@ -551,7 +641,7 @@ RealizationStore::open(const fs::path& base,
         if (impl->lock == INVALID_HANDLE_VALUE)
             deny("Realization namespace is locked or its lock history is missing");
         impl->disk_bytes = impl->read();
-        impl->attempts = decode(impl->disk_bytes, ns);
+        impl->attempts = decode(impl->disk_bytes, ns, &impl->ordinary_attempts);
         impl->blocked = "Native realization writes unsupported: confirmed directory durability is "
                         "unavailable on Windows";
 #else
@@ -573,7 +663,7 @@ RealizationStore::open(const fs::path& base,
             committed = true;
         } else {
             impl->disk_bytes = impl->read();
-            impl->attempts = decode(impl->disk_bytes, ns);
+            impl->attempts = decode(impl->disk_bytes, ns, &impl->ordinary_attempts);
         }
         // A warm reopen must not bypass a prior namespace-parent sync failure.
         if (fault && fault(RealizationStoreIoPhase::ParentDirectorySync))
@@ -600,6 +690,14 @@ const RealizationStoredAttempt* RealizationStore::find(const std::string& id) co
     const auto found = impl_->attempts.find(id);
     return found == impl_->attempts.end() ? nullptr : &found->second;
 }
+const std::map<std::string, OrdinaryStoredAttempt>&
+RealizationStore::ordinary_attempts() const noexcept {
+    return impl_->ordinary_attempts;
+}
+const OrdinaryStoredAttempt* RealizationStore::find_ordinary(const std::string& id) const noexcept {
+    const auto found = impl_->ordinary_attempts.find(id);
+    return found == impl_->ordinary_attempts.end() ? nullptr : &found->second;
+}
 bool RealizationStore::native_writes_available() const noexcept {
     return !impl_->blocked;
 }
@@ -619,7 +717,8 @@ RealizationStoreResult<std::string> RealizationStore::new_attempt_id() const {
                 value.push_back(digits[byte >> 4]);
                 value.push_back(digits[byte & 15]);
             }
-            if (!impl_->attempts.contains(value)) return value;
+            if (!impl_->attempts.contains(value) && !impl_->ordinary_attempts.contains(value))
+                return value;
         }
         deny("Opaque realization attempt-ID collisions exhausted retry bound");
     } catch (const std::exception& error) {
@@ -631,9 +730,11 @@ RealizationStore::fence(const RealizationAttemptIntent& intent,
                         const RealizationStoreIoFault& fault) {
     try {
         if (impl_->blocked) deny(*impl_->blocked);
-        if (impl_->attempts.contains(intent.attempt_id))
+        if (impl_->attempts.contains(intent.attempt_id) ||
+            impl_->ordinary_attempts.contains(intent.attempt_id))
             deny("Realization attempt already exists; disk-restored fences are query-only");
-        if (impl_->attempts.size() >= REALIZATION_STORE_MAX_ATTEMPTS)
+        if (impl_->attempts.size() + impl_->ordinary_attempts.size() >=
+            REALIZATION_STORE_MAX_ATTEMPTS)
             deny("Realization attempt capacity exhausted");
         validate_intent(intent, impl_->ns);
         auto candidate = impl_->attempts;
@@ -693,6 +794,75 @@ RealizationStore::append_evidence(const std::string& id,
             return {};
         }
         return impl_->write(std::move(candidate), fault);
+    } catch (const std::exception& error) {
+        return std::unexpected(RealizationStoreError{error.what()});
+    }
+}
+OrdinaryDispatchPermit::OrdinaryDispatchPermit(OrdinaryClipReceipt receipt)
+    : prepared_(std::move(receipt)) {}
+OrdinaryDispatchPermit::OrdinaryDispatchPermit(OrdinaryDispatchPermit&& other) noexcept
+    : prepared_(std::move(other.prepared_)) {
+    other.prepared_.reset();
+}
+OrdinaryDispatchPermit& OrdinaryDispatchPermit::operator=(OrdinaryDispatchPermit&& other) noexcept {
+    if (this != &other) {
+        prepared_ = std::move(other.prepared_);
+        other.prepared_.reset();
+    }
+    return *this;
+}
+std::optional<OrdinaryClipReceipt> OrdinaryDispatchPermit::take_prepared() noexcept {
+    auto result = std::move(prepared_);
+    prepared_.reset();
+    return result;
+}
+RealizationStoreResult<OrdinaryDispatchPermit>
+RealizationStore::fence_ordinary(const OrdinaryClipReceipt& prepared,
+                                 const RealizationStoreIoFault& fault) {
+    try {
+        if (impl_->blocked) deny(*impl_->blocked);
+        const auto id = prepared.intent.at("operation_id").get<std::string>();
+        if (impl_->attempts.contains(id) || impl_->ordinary_attempts.contains(id))
+            deny("Ordinary attempt already fenced; restored records are query-only");
+        if (impl_->attempts.size() + impl_->ordinary_attempts.size() >=
+            REALIZATION_STORE_MAX_ATTEMPTS)
+            deny("Realization attempt capacity exhausted");
+        OrdinaryStoredAttempt attempt{prepared, impl_->ordinary_attempts.size() + 1, {}};
+        validate_ordinary_history(attempt);
+        auto candidate = impl_->ordinary_attempts;
+        candidate.emplace(id, std::move(attempt));
+        OrdinaryDispatchPermit permit(prepared);
+        const auto written = impl_->write(impl_->attempts, fault, false, std::move(candidate));
+        if (!written) return std::unexpected(written.error());
+        return permit;
+    } catch (const std::exception& error) {
+        return std::unexpected(RealizationStoreError{error.what()});
+    }
+}
+RealizationStoreResult<void>
+RealizationStore::append_ordinary_evidence(const std::string& id,
+                                           const OrdinaryClipReceipt& evidence,
+                                           const RealizationStoreIoFault& fault) {
+    try {
+        if (impl_->blocked) deny(*impl_->blocked);
+        if (!impl_->ordinary_attempts.contains(id)) deny("Ordinary attempt does not exist");
+        auto candidate = impl_->ordinary_attempts;
+        auto& attempt = candidate.at(id);
+        if (!attempt.evidence.empty() && ordinary_receipt_to_json(attempt.evidence.back()) ==
+                                             ordinary_receipt_to_json(evidence)) {
+            impl_->verify_unchanged();
+            return {};
+        }
+        if (attempt.evidence.size() >= REALIZATION_STORE_MAX_EVIDENCE)
+            deny("Ordinary evidence capacity exhausted");
+        attempt.evidence.push_back(evidence);
+        try {
+            validate_ordinary_history(attempt);
+        } catch (const std::exception& error) {
+            impl_->blocked = error.what();
+            throw;
+        }
+        return impl_->write(impl_->attempts, fault, false, std::move(candidate));
     } catch (const std::exception& error) {
         return std::unexpected(RealizationStoreError{error.what()});
     }

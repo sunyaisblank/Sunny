@@ -1081,7 +1081,7 @@ def native_unit_bridge(monkeypatch):
     client_host = os.environ.get("SUNNY_TEST_BRIDGE_HOST", "127.0.0.1")
     monkeypatch.setattr(surface_module, "_server_configuration", lambda: (bind_host, 0))
     main_thread = _LiveMainThread()
-    surface = SunnyControlSurface(object())
+    surface = main_thread.call(lambda: SunnyControlSurface(object()))
     surface.schedule_message = main_thread.schedule_message
     client = None
     try:

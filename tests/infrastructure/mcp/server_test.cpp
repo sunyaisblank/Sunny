@@ -28,6 +28,7 @@
 #include <sunny/core/harmony/roman_numeral.hpp>
 #include <sunny/core/scale/definitions.hpp>
 #include <sunny/core/score/serialization.hpp>
+#include <sunny/infrastructure/ableton/detail/managed_fingerprint.hpp>
 #include <sunny/infrastructure/mcp/core_tools.hpp>
 #include <sunny/infrastructure/mcp/corpus_tools.hpp>
 #include <sunny/infrastructure/mcp/mix_tools.hpp>
@@ -1093,7 +1094,7 @@ TEST_CASE("all public tools advertise object-shaped JSON Schemas", "[mcp][tools]
     auto response =
         server.process_request({{"jsonrpc", "2.0"}, {"method", "tools/list"}, {"id", 30}});
     const auto& tools = response["result"]["tools"];
-    REQUIRE(tools.size() == 191);
+    REQUIRE(tools.size() == 193);
     for (const auto& tool : tools) {
         CAPTURE(tool["name"]);
         const auto& schema = tool["inputSchema"];
@@ -1337,79 +1338,200 @@ TEST_CASE("real MCP progression call reaches note transport", "[mcp][integration
 
 namespace {
 
-/**
- * Models Live's Session clip slots closely enough to observe what Sunny's
- * operations change. create_clip succeeds only on an empty slot (LOM
- * ClipSlot.create_clip), add_new_notes appends to an existing clip, and
- * delete_clip succeeds only on an occupied slot. Selected methods fail on
- * demand to model transient bridge failures.
- */
+/** Finite native prepare/execute/query fixture, not a running Live qualifier.
+ * Raw setters are refused. Native phase journals are literal closed wire values;
+ * the actual Python authorizer separately tests Set/Track/Clip object guards. */
 class ClipSlotModelTransport final : public LomTransport {
   public:
-    std::map<std::string, std::vector<int>> clips; ///< slot path -> clip pitches
-    std::map<std::string, int> failures;           ///< method -> upcoming calls to fail
-    LomDeliveryState failure_delivery = LomDeliveryState::ResponseReceived;
-    std::vector<std::string> methods; ///< every method that reached the model
-
+    std::map<std::string, std::vector<int>> clips;
+    std::map<std::string, int> failures;
+    bool lose_next_reply = false;
+    std::vector<std::string> methods; // Native setters actually started.
+    std::vector<LomRequest> wire;
+    std::shared_ptr<RealizationStore> history;
+    ClipSlotModelTransport() {
+        static std::atomic<unsigned> nonce{};
+        directory_ = std::filesystem::temp_directory_path() /
+                     ("sunny-mcp-ordinary-" +
+                      std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) +
+                      "-" + std::to_string(nonce.fetch_add(1)));
+        REQUIRE(std::filesystem::create_directory(directory_));
+        auto opened = RealizationStore::open(
+            directory_, std::string(32, 'a'), RealizationStoreMode::InitializeNew);
+        REQUIRE(opened);
+        history = std::move(*opened);
+    }
+    ~ClipSlotModelTransport() override {
+        history.reset();
+        std::error_code ignored;
+        std::filesystem::remove_all(directory_, ignored);
+    }
+    void configure(BridgeDispatcher& dispatcher) {
+        dispatcher.set_ordinary_store_provider([this](bool) { return history; });
+    }
     LomResponse send(const LomRequest& request) override {
+        REQUIRE(LomProtocol::validate_request(request));
+        wire.push_back(request);
         const auto& method = request.property_or_method;
-        const auto slot = request.path.to_string();
-        methods.push_back(method);
-        if (inject_failure(method)) return injected(method);
-        if (method == "create_clip") {
-            if (clips.contains(slot)) return rejected("clip slot already has a clip");
-            clips[slot] = {};
-            return {true, std::nullopt, std::nullopt};
+        if (method == "sunny_managed_context")
+            return {true,
+                    json{{"schema_version", 1},
+                         {"bridge_instance", std::string(32, 'b')},
+                         {"document_token", std::string(32, 'c')}},
+                    std::nullopt};
+        REQUIRE(request.args.size() == 1);
+        const auto& payload = std::get<json>(request.args[0]);
+        const auto id = payload.at("operation_id").get<std::string>();
+        REQUIRE(history->find_ordinary(id));
+        if (method == "sunny_ordinary_prepare") {
+            REQUIRE(history->find_ordinary(id)->prepared.intent.dump() == payload.dump());
+            Record record;
+            record.intent = payload;
+            record.journal = {{"schema_version", 1},
+                              {"bridge_instance", std::string(32, 'b')},
+                              {"document_token", std::string(32, 'c')},
+                              {"operation_id", id},
+                              {"fingerprint", *managed_detail::managed_digest(payload)},
+                              {"action", payload.at("action")},
+                              {"outcome", "prepared"},
+                              {"native_mutation_started", false},
+                              {"started_calls", 0},
+                              {"returned_calls", 0},
+                              {"result", nullptr},
+                              {"error", nullptr}};
+            const auto action = payload.at("action").get<std::string>();
+            const auto& intent = payload.at("payload");
+            if (action == "create") {
+                record.slot = "song/tracks/" + std::to_string(intent.at("track_index").get<int>()) +
+                              "/clip_slots/" + std::to_string(intent.at("slot_index").get<int>());
+                record.binding = std::string(32, intent.at("slot_index") == 0 ? 'd' : 'e');
+            } else {
+                record.binding = intent.at("binding_token").get<std::string>();
+                REQUIRE(bindings_.contains(record.binding));
+                record.slot = bindings_.at(record.binding).slot;
+            }
+            if (!guard(record) || (action == "undo" && inject_failure("undo_guard")))
+                decline(record);
+            records_[id] = std::move(record);
+            return {true, records_.at(id).journal, std::nullopt};
         }
-        if (method == "delete_clip") {
-            if (!clips.contains(slot)) return rejected("clip slot is empty");
-            clips.erase(slot);
-            return {true, std::nullopt, std::nullopt};
-        }
-        return rejected("unexpected request " + method);
+        REQUIRE(records_.contains(id));
+        auto& record = records_.at(id);
+        REQUIRE(payload.at("fingerprint") == record.journal.at("fingerprint"));
+        if (method == "sunny_ordinary_operation") return {true, record.journal, std::nullopt};
+        REQUIRE(method == "sunny_ordinary_execute");
+        if (record.journal.at("outcome") != "prepared") return {true, record.journal, std::nullopt};
+        if (!guard(record))
+            decline(record);
+        else
+            execute(record);
+        if (std::exchange(lose_next_reply, false))
+            return {false,
+                    std::nullopt,
+                    "native callback completed but its reply was lost",
+                    LomDeliveryState::SentWithoutValidResponse};
+        return {true, record.journal, std::nullopt};
     }
-
-    LomResponse send_notes(const LomPath& clip_path,
-                           const std::vector<LomNoteData>& notes) override {
-        methods.emplace_back("add_new_notes");
-        if (inject_failure("add_new_notes")) return injected("add_new_notes");
-        auto slot = clip_path.to_string();
-        if (!slot.ends_with("/clip")) return rejected("not a clip path");
-        slot.resize(slot.size() - std::string_view{"/clip"}.size());
-        const auto clip = clips.find(slot);
-        if (clip == clips.end()) return rejected("clip slot is empty");
-        for (const auto& note : notes)
-            clip->second.push_back(static_cast<int>(note.pitch));
-        return {true, std::nullopt, std::nullopt};
+    LomResponse send_notes(const LomPath&, const std::vector<LomNoteData>&) override {
+        FAIL("Ordinary MCP tools must not dispatch raw note setters");
+        return {};
     }
-
-    [[nodiscard]] bool is_connected() const override { return true; }
-
-    [[nodiscard]] std::size_t total_notes() const {
+    bool is_connected() const override { return true; }
+    std::size_t total_notes() const {
         std::size_t total = 0;
-        for (const auto& [slot, pitches] : clips)
+        for (const auto& [slot, pitches] : clips) {
+            static_cast<void>(slot);
             total += pitches.size();
+        }
         return total;
     }
-
-    [[nodiscard]] std::size_t count(std::string_view method) const {
+    std::size_t count(std::string_view method) const {
         return static_cast<std::size_t>(std::ranges::count(methods, method));
     }
+    const json& journal(const std::string& id) const { return records_.at(id).journal; }
 
   private:
+    struct Binding {
+        std::string slot;
+        std::vector<int> pitches;
+        int generation = 0;
+        bool occupied = false;
+    };
+    struct Record {
+        json intent;
+        json journal;
+        std::string slot;
+        std::string binding;
+    };
+    std::filesystem::path directory_;
+    std::map<std::string, Binding> bindings_;
+    std::map<std::string, Record> records_;
     bool inject_failure(const std::string& method) {
         const auto found = failures.find(method);
         if (found == failures.end() || found->second <= 0) return false;
         --found->second;
         return true;
     }
-
-    [[nodiscard]] LomResponse injected(const std::string& method) const {
-        return {false, std::nullopt, "injected " + method + " failure", failure_delivery};
+    bool guard(const Record& record) const {
+        const auto action = record.intent.at("action").get<std::string>();
+        if (action == "create") return !clips.contains(record.slot);
+        const auto& binding = bindings_.at(record.binding);
+        if (record.intent.at("payload").at("generation") != binding.generation) return false;
+        return action == "undo" ? binding.occupied && clips.contains(record.slot) &&
+                                      clips.at(record.slot) == binding.pitches
+                                : !binding.occupied && !clips.contains(record.slot);
     }
-
-    static LomResponse rejected(std::string reason) {
-        return {false, std::nullopt, std::move(reason)};
+    static void decline(Record& record) {
+        record.journal["outcome"] = "declined";
+        record.journal["error"] = "native exact-target preflight guard refused";
+    }
+    void execute(Record& record) {
+        const auto action = record.intent.at("action").get<std::string>();
+        auto& output = record.journal;
+        output["native_mutation_started"] = true;
+        output["started_calls"] = 1;
+        if (action == "undo") {
+            methods.emplace_back("delete_clip");
+            if (inject_failure("delete_clip")) {
+                output["outcome"] = "partial";
+                output["error"] = "native delete_clip failed after call started";
+                return;
+            }
+            clips.erase(record.slot);
+            bindings_.at(record.binding).occupied = false;
+        } else {
+            methods.emplace_back("create_clip");
+            if (inject_failure("create_clip")) {
+                output["outcome"] = "partial";
+                output["error"] = "native create_clip failed after call started";
+                return;
+            }
+            clips[record.slot] = {};
+            output["returned_calls"] = 1;
+            auto& binding = bindings_[record.binding];
+            if (action == "create") {
+                binding.slot = record.slot;
+                for (const auto& note : record.intent.at("payload").at("notes"))
+                    binding.pitches.push_back(note.at("pitch").get<int>());
+            }
+            methods.emplace_back("add_new_notes");
+            output["started_calls"] = 2;
+            if (inject_failure("add_new_notes")) {
+                output["outcome"] = "partial";
+                output["error"] = "native add_new_notes failed after call started";
+                return;
+            }
+            clips.at(record.slot) = binding.pitches;
+            ++binding.generation;
+            binding.occupied = true;
+        }
+        const auto& binding = bindings_.at(record.binding);
+        output["returned_calls"] = output.at("started_calls");
+        output["outcome"] = "acknowledged";
+        output["result"] = {{"binding_token", record.binding},
+                            {"generation", binding.generation},
+                            {"state", action == "undo" ? "empty" : "clip"},
+                            {"content_fingerprint", std::string(64, 'f')}};
     }
 };
 
@@ -1452,6 +1574,7 @@ TEST_CASE("creation on an occupied slot leaves the user's clip and the undo hist
         ClipSlotModelTransport transport;
         transport.clips[SLOT_0] = {48, 55};
         BridgeDispatcher dispatcher(&transport);
+        transport.configure(dispatcher);
         McpServer server;
         register_sunny_tools(server, orchestrator, dispatcher);
 
@@ -1461,6 +1584,14 @@ TEST_CASE("creation on an occupied slot leaves the user's clip and the undo hist
         CHECK(transport.clips.at(SLOT_0) == std::vector<int>{48, 55});
         CHECK(transport.count("add_new_notes") == 0);
         CHECK_FALSE(orchestrator.can_undo());
+        const auto id = created.at("operation_id").get<std::string>();
+        REQUIRE(transport.history->find_ordinary(id));
+        REQUIRE(transport.wire.size() == 2);
+        CHECK(transport.wire.back().property_or_method == "sunny_ordinary_prepare");
+        CHECK(transport.journal(id).at("outcome") == "declined");
+        CHECK(transport.journal(id).at("native_mutation_started") == false);
+        CHECK(transport.journal(id).at("started_calls") == 0);
+        CHECK(transport.journal(id).at("returned_calls") == 0);
 
         const auto undone = call_tool(server, "undo_ableton_operation", json::object(), 71);
         CHECK(undone["success"] == false);
@@ -1470,11 +1601,12 @@ TEST_CASE("creation on an occupied slot leaves the user's clip and the undo hist
     }
 }
 
-TEST_CASE("a failed undo keeps its entry so a retry reverts the intended operation",
+TEST_CASE("a guard-refused undo retains the intended operation for fresh guarded authority",
           "[mcp][integration][bridge][undo]") {
     Orchestrator orchestrator;
     ClipSlotModelTransport transport;
     BridgeDispatcher dispatcher(&transport);
+    transport.configure(dispatcher);
     McpServer server;
     register_sunny_tools(server, orchestrator, dispatcher);
 
@@ -1486,12 +1618,17 @@ TEST_CASE("a failed undo keeps its entry so a retry reverts the intended operati
     REQUIRE(transport.clips.at(SLOT_0).size() == 3);
     REQUIRE(transport.clips.at(SLOT_1).size() == 9);
 
-    transport.failures["delete_clip"] = 1;
+    transport.failures["undo_guard"] = 1;
     const auto failed = call_tool(server, "undo_ableton_operation", json::object(), 82);
     CHECK(failed["success"] == false);
     CHECK(failed["can_undo"] == true);
     CHECK(failed["can_redo"] == false);
     CHECK(transport.clips.at(SLOT_1).size() == 9);
+    CHECK(failed["outcome"] == "not_applied");
+    CHECK(transport.count("delete_clip") == 0);
+    const auto refused_id = failed.at("operation_id").get<std::string>();
+    CHECK(transport.journal(refused_id).at("outcome") == "declined");
+    CHECK(transport.journal(refused_id).at("started_calls") == 0);
 
     const auto retried = call_tool(server, "undo_ableton_operation", json::object(), 83);
     CHECK(retried["success"] == true);
@@ -1500,6 +1637,14 @@ TEST_CASE("a failed undo keeps its entry so a retry reverts the intended operati
     CHECK(transport.clips.at(SLOT_0).size() == 3);
     CHECK(retried["can_undo"] == true);
     CHECK(retried["can_redo"] == true);
+    CHECK(retried.at("operation_id") != failed.at("operation_id"));
+    CHECK(transport.count("delete_clip") == 1);
+    const auto undo_id = retried.at("operation_id").get<std::string>();
+    CHECK(transport.journal(undo_id).at("result") ==
+          json{{"binding_token", std::string(32, 'e')},
+               {"generation", 1},
+               {"state", "empty"},
+               {"content_fingerprint", std::string(64, 'f')}});
 
     const auto redone = call_tool(server, "redo_ableton_operation", json::object(), 84);
     CHECK(redone["success"] == true);
@@ -1507,13 +1652,17 @@ TEST_CASE("a failed undo keeps its entry so a retry reverts the intended operati
     CHECK(transport.clips.at(SLOT_1).size() == 9);
     CHECK(transport.total_notes() == 12);
     CHECK_FALSE(orchestrator.can_redo());
+    CHECK(transport.journal(redone.at("operation_id").get<std::string>())
+              .at("result")
+              .at("generation") == 2);
 }
 
-TEST_CASE("a failed note write is compensated by deleting the clip Sunny created",
+TEST_CASE("a known failed native note write retains the partial clip without compensation",
           "[mcp][integration][bridge][undo]") {
     Orchestrator orchestrator;
     ClipSlotModelTransport transport;
     BridgeDispatcher dispatcher(&transport);
+    transport.configure(dispatcher);
     McpServer server;
     register_sunny_tools(server, orchestrator, dispatcher);
 
@@ -1521,51 +1670,88 @@ TEST_CASE("a failed note write is compensated by deleting the clip Sunny created
     const auto result = call_tool(server, "create_progression_clip", progression_arguments(0), 90);
 
     CHECK(result["success"] == false);
-    CHECK(result["outcome"] == "rolled_back");
-    CHECK_FALSE(transport.clips.contains(SLOT_0));
-    CHECK(transport.count("delete_clip") == 1);
+    CHECK(result["outcome"] == "partially_applied");
+    REQUIRE(transport.clips.contains(SLOT_0));
+    CHECK(transport.clips.at(SLOT_0).empty());
+    CHECK(transport.count("delete_clip") == 0);
+    const auto id = result.at("operation_id").get<std::string>();
+    const auto& evidence = transport.journal(id);
+    CHECK(evidence.at("outcome") == "partial");
+    CHECK(evidence.at("native_mutation_started") == true);
+    CHECK(evidence.at("started_calls") == 2);
+    CHECK(evidence.at("returned_calls") == 1);
+    CHECK(evidence.at("result").is_null());
+    REQUIRE(transport.history->find_ordinary(id));
+    REQUIRE(transport.history->find_ordinary(id)->evidence.size() == 1);
+    CHECK(transport.history->find_ordinary(id)->evidence[0].outcome ==
+          OrdinaryClipOutcome::Partial);
     CHECK_FALSE(orchestrator.can_undo());
     CHECK_FALSE(orchestrator.can_redo());
 }
 
-TEST_CASE("a failed compensation is reported as partially applied without history",
+TEST_CASE("a lost partial-write reply is reconciled without compensation or mutation replay",
           "[mcp][integration][bridge][undo]") {
     Orchestrator orchestrator;
     ClipSlotModelTransport transport;
     BridgeDispatcher dispatcher(&transport);
+    transport.configure(dispatcher);
     McpServer server;
     register_sunny_tools(server, orchestrator, dispatcher);
 
     transport.failures["add_new_notes"] = 1;
-    transport.failures["delete_clip"] = 1;
+    transport.lose_next_reply = true;
     const auto result = call_tool(server, "apply_euclidean_rhythm", euclidean_arguments(0), 91);
 
     CHECK(result["success"] == false);
-    CHECK(result["outcome"] == "partially_applied");
+    CHECK(result["outcome"] == "indeterminate");
     REQUIRE(result["errors"].is_array());
-    CHECK(result["errors"].size() >= 2);
+    CHECK(result["errors"].size() == 1);
     REQUIRE(transport.clips.contains(SLOT_0));
     CHECK(transport.clips.at(SLOT_0).empty());
     CHECK_FALSE(orchestrator.can_undo());
+    const auto id = result.at("operation_id").get<std::string>();
+    const auto recovered = call_tool(server, "undo_ableton_operation", json::object(), 191);
+    CHECK(recovered["outcome"] == "partially_applied");
+    CHECK(recovered.at("operation_id") == id);
+    REQUIRE(transport.wire.back().property_or_method == "sunny_ordinary_operation");
+    CHECK(std::get<json>(transport.wire.back().args[0]).at("operation_id") == id);
+    CHECK(transport.count("create_clip") == 1);
+    CHECK(transport.count("add_new_notes") == 1);
+    CHECK(transport.count("delete_clip") == 0);
+    CHECK(transport.journal(id).at("started_calls") == 2);
+    CHECK(transport.journal(id).at("returned_calls") == 1);
+    CHECK_FALSE(orchestrator.can_undo());
 }
 
-TEST_CASE("a create_clip without a valid response is indeterminate and never compensated",
+TEST_CASE("an atomic native Clip create without a valid reply is queried and never compensated",
           "[mcp][integration][bridge][undo]") {
     Orchestrator orchestrator;
     ClipSlotModelTransport transport;
     BridgeDispatcher dispatcher(&transport);
+    transport.configure(dispatcher);
     McpServer server;
     register_sunny_tools(server, orchestrator, dispatcher);
 
-    transport.failures["create_clip"] = 1;
-    transport.failure_delivery = LomDeliveryState::SentWithoutValidResponse;
+    transport.lose_next_reply = true;
     const auto result = call_tool(server, "create_progression_clip", progression_arguments(0), 92);
 
     CHECK(result["success"] == false);
     CHECK(result["outcome"] == "indeterminate");
-    CHECK(transport.count("add_new_notes") == 0);
+    CHECK(transport.count("add_new_notes") == 1);
     CHECK(transport.count("delete_clip") == 0);
     CHECK_FALSE(orchestrator.can_undo());
+    REQUIRE(transport.clips.contains(SLOT_0));
+    CHECK(transport.clips.at(SLOT_0).size() == 9);
+    const auto id = result.at("operation_id").get<std::string>();
+    const auto observed = call_tool(server, "apply_euclidean_rhythm", euclidean_arguments(1), 192);
+    CHECK(observed["success"] == true);
+    CHECK(observed.at("operation_id") == id);
+    CHECK_FALSE(transport.clips.contains(SLOT_1));
+    CHECK(transport.wire.back().property_or_method == "sunny_ordinary_operation");
+    CHECK(transport.count("create_clip") == 1);
+    CHECK(transport.count("add_new_notes") == 1);
+    CHECK(transport.count("delete_clip") == 0);
+    CHECK(orchestrator.can_undo());
 }
 
 TEST_CASE("an undo without a valid response is indeterminate and keeps its entry",
@@ -1573,13 +1759,13 @@ TEST_CASE("an undo without a valid response is indeterminate and keeps its entry
     Orchestrator orchestrator;
     ClipSlotModelTransport transport;
     BridgeDispatcher dispatcher(&transport);
+    transport.configure(dispatcher);
     McpServer server;
     register_sunny_tools(server, orchestrator, dispatcher);
 
     REQUIRE(call_tool(server, "apply_euclidean_rhythm", euclidean_arguments(0), 97)["success"] ==
             true);
-    transport.failures["delete_clip"] = 1;
-    transport.failure_delivery = LomDeliveryState::SentWithoutValidResponse;
+    transport.lose_next_reply = true;
 
     const auto result = call_tool(server, "undo_ableton_operation", json::object(), 98);
 
@@ -1587,13 +1773,25 @@ TEST_CASE("an undo without a valid response is indeterminate and keeps its entry
     CHECK(result["outcome"] == "indeterminate");
     CHECK(result["can_undo"] == true);
     CHECK(result["can_redo"] == false);
-    CHECK(transport.clips.at(SLOT_0).size() == 3);
+    CHECK_FALSE(transport.clips.contains(SLOT_0));
+    const auto id = result.at("operation_id").get<std::string>();
+    const auto observed = call_tool(server, "undo_ableton_operation", json::object(), 198);
+    CHECK(observed["success"] == true);
+    CHECK(observed.at("operation_id") == id);
+    CHECK(observed["can_undo"] == false);
+    CHECK(observed["can_redo"] == true);
+    CHECK(transport.wire.back().property_or_method == "sunny_ordinary_operation");
+    CHECK(transport.count("delete_clip") == 1);
+    CHECK(transport.journal(id).at("started_calls") == 1);
+    CHECK(transport.journal(id).at("returned_calls") == 1);
+    CHECK(transport.journal(id).at("result").at("state") == "empty");
 }
 
 TEST_CASE("a failed redo keeps its entry on the redo stack", "[mcp][integration][bridge][undo]") {
     Orchestrator orchestrator;
     ClipSlotModelTransport transport;
     BridgeDispatcher dispatcher(&transport);
+    transport.configure(dispatcher);
     McpServer server;
     register_sunny_tools(server, orchestrator, dispatcher);
 
@@ -1608,6 +1806,8 @@ TEST_CASE("a failed redo keeps its entry on the redo stack", "[mcp][integration]
     CHECK(blocked["can_redo"] == true);
     CHECK(blocked["can_undo"] == false);
     CHECK(transport.clips.at(SLOT_0) == std::vector<int>{40});
+    CHECK(transport.journal(blocked.at("operation_id").get<std::string>())
+              .at("native_mutation_started") == false);
 
     transport.clips.erase(SLOT_0);
     const auto redone = call_tool(server, "redo_ableton_operation", json::object(), 96);
@@ -1615,6 +1815,12 @@ TEST_CASE("a failed redo keeps its entry on the redo stack", "[mcp][integration]
     CHECK(transport.clips.at(SLOT_0).size() == 3);
     CHECK(redone["can_undo"] == true);
     CHECK(redone["can_redo"] == false);
+    CHECK(transport.clips.at(SLOT_0) == std::vector<int>{60, 60, 60});
+    CHECK(transport.count("create_clip") == 2);
+    CHECK(transport.count("delete_clip") == 1);
+    CHECK(transport.journal(redone.at("operation_id").get<std::string>())
+              .at("result")
+              .at("generation") == 2);
 }
 
 TEST_CASE("offline Ableton tools report the actual reason they cannot connect",

@@ -13,6 +13,7 @@ No command here publishes an image or claims native Live qualification.
 from __future__ import annotations
 
 import argparse
+import ast
 import gzip
 import hashlib
 import json
@@ -102,6 +103,60 @@ def bridge_info(root: Path) -> dict:
     return {"source_sha256": identity, "contract": contract, "files": files}
 
 
+def native_configuration_contract(root: Path) -> dict:
+    """Read literal adapter constants without executing exported Python code."""
+    path = root / "configuration.py"
+    require(
+        path.is_file() and path.stat().st_size <= 131072,
+        "Missing bounded native configuration consumer",
+    )
+    authority = {}
+    try:
+        statements = ast.parse(path.read_bytes()).body
+    except (SyntaxError, UnicodeError, ValueError) as error:
+        raise ValueError("Invalid native configuration consumer source") from error
+    for statement in statements:
+        if not isinstance(statement, ast.Assign) or len(statement.targets) != 1:
+            continue
+        target = statement.targets[0]
+        if isinstance(target, ast.Name) and target.id in (
+            "CONFIGURATION_SCHEMA_VERSION",
+            "CONFIGURATION_CONTRACT",
+        ):
+            require(target.id not in authority, "Duplicate native configuration authority")
+            authority[target.id] = ast.literal_eval(statement.value)
+    require(
+        type(authority.get("CONFIGURATION_SCHEMA_VERSION")) is int
+        and authority["CONFIGURATION_SCHEMA_VERSION"] == 1
+        and authority.get("CONFIGURATION_CONTRACT") == "versioned_json",
+        "Unsupported native configuration consumer contract",
+    )
+    return {
+        "configuration_schema_version": authority["CONFIGURATION_SCHEMA_VERSION"],
+        "configuration_contract": authority["CONFIGURATION_CONTRACT"],
+    }
+
+
+def configuration_identity(lock: dict) -> dict:
+    """Admit the implemented production contract or honest archived legacy metadata."""
+    identity = {
+        key: lock[key] for key in ("configuration_schema_version", "configuration_contract")
+    }
+    require(
+        (
+            type(identity["configuration_schema_version"]) is int
+            and identity["configuration_schema_version"] == 1
+            and identity["configuration_contract"] == "versioned_json"
+        )
+        or (
+            identity["configuration_schema_version"] is None
+            and identity["configuration_contract"] == "legacy_environment"
+        ),
+        "Unsupported configuration contract",
+    )
+    return identity
+
+
 def package_inventory(path: Path, lock: dict, stage: str) -> dict:
     """Check pinned apt roots and retain the entire installed package inventory."""
     packages = {}
@@ -154,6 +209,25 @@ def record_build(args) -> None:
     shutil.copyfile(args.packages, args.output / "builder-packages.tsv")
     apt_metadata(args.apt_metadata, lock, "builder")
     shutil.copyfile(args.apt_metadata, args.output / "builder-apt-metadata.txt")
+    identity = configuration_identity(lock)
+    require(
+        identity["configuration_schema_version"] == 1,
+        "New release requires the production configuration consumer",
+    )
+    compiled_identity = json.loads(
+        run(str(args.build_directory / "sunny-mcp"), "--configuration-contract")
+    )
+    require(
+        isinstance(compiled_identity, dict)
+        and set(compiled_identity) == set(identity)
+        and type(compiled_identity.get("configuration_schema_version")) is int
+        and compiled_identity == identity,
+        "Compiled configuration consumer differs from build input contract",
+    )
+    require(
+        native_configuration_contract(args.build_directory / "remote_script" / "Sunny") == identity,
+        "Native configuration consumer differs from compiled client",
+    )
     dependencies = {}
     for name in ("json", "pugixml"):
         source = args.build_directory / "_deps" / (name.lower() + "-src")
@@ -169,6 +243,7 @@ def record_build(args) -> None:
         ),
         "configuration_schema_version": lock["configuration_schema_version"],
         "configuration_contract": lock["configuration_contract"],
+        "compiled_configuration_consumer": compiled_identity,
         "build_inputs_sha256": sha256(LOCK),
         "dependencies": dependencies,
         "builder_packages": package_inventory(args.packages, lock, "builder"),
@@ -378,6 +453,19 @@ def check_pair(root: Path, image: dict) -> tuple[dict, dict, dict]:
         and provenance["configuration_contract"] == lock["configuration_contract"],
         "Configuration contract mismatch",
     )
+    identity = configuration_identity(lock)
+    if identity["configuration_schema_version"] is not None:
+        compiled = provenance.get("compiled_configuration_consumer", {})
+        require(
+            isinstance(compiled, dict)
+            and type(compiled.get("configuration_schema_version")) is int
+            and compiled == identity,
+            "Missing or mismatched compiled configuration consumer evidence",
+        )
+        require(
+            native_configuration_contract(root / "native" / "Sunny") == identity,
+            "Native configuration consumer differs from build contract",
+        )
     for name in ("json", "pugixml"):
         expected = lock["dependencies"][name]
         require(
@@ -437,6 +525,23 @@ def check_pair(root: Path, image: dict) -> tuple[dict, dict, dict]:
         and labels.get("org.sunny.configuration.contract") == lock["configuration_contract"],
         "OCI labels differ from build provenance",
     )
+    if identity["configuration_schema_version"] is not None:
+        require(
+            labels.get("org.sunny.configuration.schema-version")
+            == str(identity["configuration_schema_version"]),
+            "OCI configuration schema label differs from consumer",
+        )
+        legacy = {
+            "SUNNY_ABLETON_HOST",
+            "SUNNY_TCP_PORT",
+            "SUNNY_WORKSPACE_PATH",
+            "SUNNY_WORKSPACE_RECOVERY",
+            "SUNNY_BIND_HOST",
+        }
+        require(
+            not any(item.split("=", 1)[0] in legacy for item in config["config"].get("Env", [])),
+            "Production image bakes ambiguous legacy runtime settings",
+        )
     require(config["config"].get("User") == "sunny", "Unexpected runtime identity")
     require(config["config"].get("Entrypoint") == ["sunny-mcp"], "Unexpected runtime entry point")
     return bridge, provenance, lock

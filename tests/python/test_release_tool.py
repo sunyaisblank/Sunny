@@ -54,16 +54,23 @@ def _tar(files: dict[str, bytes]) -> bytes:
     return output.getvalue()
 
 
-def _bridge(root: Path, module_bytes: bytes = b"VALUE = 23\n") -> dict:
+def _bridge(root: Path, module_bytes: bytes = b"VALUE = 23\n", native_schema=1) -> dict:
     root.mkdir(parents=True)
     (root / "__init__.py").write_bytes(module_bytes)
     _json(
         root / "bridge_contract.json",
         {"bridge_protocol_version": 46, "target_snapshot_schema_version": 35},
     )
-    identity = _hash(
-        b"sunny-remote-script-v1\n__init__.py\n" + _hash(module_bytes).encode() + b"\n"
+    (root / "configuration.py").write_bytes(
+        (
+            f"CONFIGURATION_SCHEMA_VERSION = {native_schema}\n"
+            'CONFIGURATION_CONTRACT = "versioned_json"\n'
+        ).encode()
     )
+    stream = b"sunny-remote-script-v1\n"
+    for path in sorted(root.glob("*.py")):
+        stream += (path.name + "\n" + _hash(path.read_bytes()) + "\n").encode()
+    identity = _hash(stream)
     (root / "source.sha256").write_text(identity + "\n")
     return {
         "source_sha256": identity,
@@ -84,9 +91,12 @@ def _make_release(
     before_payload: dict[str, bytes] | None = None,
     after_payload: dict[str, bytes] | None = None,
     upper_layer: dict[str, bytes] | None = None,
+    native_schema=1,
+    compiled_schema=1,
+    legacy_environment=None,
 ) -> dict:
     root.mkdir()
-    bridge = _bridge(root / "native/Sunny")
+    bridge = _bridge(root / "native/Sunny", native_schema=native_schema)
     provenance_dir = root / "provenance"
     provenance_dir.mkdir()
     installer = root / "installer/windows"
@@ -132,8 +142,12 @@ def _make_release(
         "source_revision": source["revision"],
         "source_date_epoch": source["source_date_epoch"],
         "product_version": "0.4.0",
-        "configuration_schema_version": None,
-        "configuration_contract": "legacy_environment",
+        "configuration_schema_version": lock["configuration_schema_version"],
+        "configuration_contract": lock["configuration_contract"],
+        "compiled_configuration_consumer": {
+            "configuration_schema_version": compiled_schema,
+            "configuration_contract": "versioned_json",
+        },
         "build_inputs_sha256": _hash((provenance_dir / "build-inputs.json").read_bytes()),
         "dependencies": {
             name: {
@@ -172,6 +186,7 @@ def _make_release(
             "config": {
                 "User": "sunny",
                 "Entrypoint": ["sunny-mcp"],
+                "Env": legacy_environment or [],
                 "Labels": {
                     "org.opencontainers.image.version": "0.4.0",
                     "org.opencontainers.image.revision": "5" * 40
@@ -179,7 +194,10 @@ def _make_release(
                     else source["revision"],
                     "org.sunny.build-inputs.sha256": provenance["build_inputs_sha256"],
                     "org.opencontainers.image.base.digest": lock["base_image"]["manifest_digest"],
-                    "org.sunny.configuration.contract": "legacy_environment",
+                    "org.sunny.configuration.contract": lock["configuration_contract"],
+                    "org.sunny.configuration.schema-version": str(
+                        lock["configuration_schema_version"]
+                    ),
                 },
             },
             "rootfs": {
@@ -226,8 +244,8 @@ def _make_release(
         "release_manifest_schema_version": 1,
         "product": {"name": "Sunny", "version": "0.4.0"},
         "source": source,
-        "configuration_schema_version": None,
-        "configuration_contract": "legacy_environment",
+        "configuration_schema_version": lock["configuration_schema_version"],
+        "configuration_contract": lock["configuration_contract"],
         "bridge": bridge,
         "build_inputs_sha256": provenance["build_inputs_sha256"],
         "image": {
@@ -271,7 +289,7 @@ def test_verified_archive_distinguishes_index_manifest_config_and_registry(relea
     assert len(set(identities)) == 3
     assert expected["image"]["local_immutable_id"] == identities[0]
     assert expected["image"]["registry_manifest_digest"] is None
-    assert expected["configuration_schema_version"] is None
+    assert expected["configuration_schema_version"] == 1
     assert expected["qualification"]["native_live"] == "pending"
     with pytest.raises(ValueError, match="trusted checksum"):
         release_tool.verify_release(root, "f" * 64)
@@ -330,7 +348,7 @@ def test_manifest_cannot_invent_release_claims(release_tool, tmp_path, change):
     elif change == "source":
         manifest["source"]["revision"] = "f" * 40
     else:
-        manifest["configuration_schema_version"] = 1
+        manifest["configuration_schema_version"] = 2
     _json(root / "release.json", manifest)
     with pytest.raises(ValueError):
         release_tool.verify_release(root)
@@ -593,7 +611,8 @@ def test_locked_docker_defaults_match_machine_inputs(release_tool):
     os.environ.get("SUNNY_RELEASE_APT_TESTS") != "1",
     reason="Opt in to the isolated local Docker prerequisite and public locked snapshot downloads",
 )
-def test_actual_locked_apt_recipe_before_compiling_sunny(release_tool, tmp_path):
+@pytest.mark.parametrize("stage", ["builder", "runtime"])
+def test_actual_locked_apt_recipe_before_compiling_sunny(release_tool, tmp_path, stage):
     """Run actual apt roots and production release CLI imports before compiling Sunny."""
     executable = shutil.which("docker")
     assert executable is not None, "The authorized local Docker prerequisite needs Docker"
@@ -608,10 +627,21 @@ def test_actual_locked_apt_recipe_before_compiling_sunny(release_tool, tmp_path)
     (isolated / "tools").mkdir(parents=True)
     # Use the actual production recipe through its first install, never compile
     # Sunny or copy in a test replacement of the bootstrap implementation.
-    prefix = (PROJECT / "Dockerfile").read_text().split("\nWORKDIR /build", 1)[0]
-    (isolated / "Dockerfile").write_text(
-        prefix + "\nCOPY tools/release.py /release.py\nRUN python3 /release.py --help\n"
-    )
+    dockerfile = (PROJECT / "Dockerfile").read_text()
+    if stage == "builder":
+        prefix = dockerfile.split("\nWORKDIR /build", 1)[0]
+        suffix = "\nCOPY tools/release.py /release.py\nRUN python3 /release.py --help\n"
+        metadata_prefix = "/"
+    else:
+        prefix = "FROM " + dockerfile.split("\nFROM ", 1)[1].split("\nCOPY --from=builder", 1)[0]
+        suffix = (
+            "\nUSER sunny\nRUN python3 -I -S -c "
+            '\'import socket,json; records=socket.getaddrinfo("localhost",9001,'
+            "socket.AF_UNSPEC,socket.SOCK_STREAM,socket.IPPROTO_TCP); "
+            "assert records; print(json.dumps([r[4][0] for r in records]))'\n"
+        )
+        metadata_prefix = "/opt/sunny/release/"
+    (isolated / "Dockerfile").write_text(prefix + suffix)
     shutil.copyfile(PROJECT / "tools/release.py", isolated / "tools/release.py")
     shutil.copyfile(PROJECT / "tools/apt_snapshot.sh", isolated / "tools/apt_snapshot.sh")
     tag = "sunny-apt-prerequisite:" + uuid.uuid4().hex
@@ -637,15 +667,17 @@ def test_actual_locked_apt_recipe_before_compiling_sunny(release_tool, tmp_path)
             )
         assert built.returncode == 0, log.read_text()[-8000:]
         container = release_tool.run(executable, "create", "--network", "none", tag)
-        for name in ("builder-packages.tsv", "builder-apt-metadata.txt"):
-            release_tool.run(executable, "cp", container + ":/" + name, str(tmp_path / name))
+        for name in (stage + "-packages.tsv", stage + "-apt-metadata.txt"):
+            release_tool.run(
+                executable, "cp", container + ":" + metadata_prefix + name, str(tmp_path / name)
+            )
         sources = tmp_path / "ubuntu.sources"
         release_tool.run(
             executable, "cp", container + ":/etc/apt/sources.list.d/ubuntu.sources", str(sources)
         )
         lock = json.loads((PROJECT / "release/build-inputs.json").read_text())
-        release_tool.package_inventory(tmp_path / "builder-packages.tsv", lock, "builder")
-        release_tool.apt_metadata(tmp_path / "builder-apt-metadata.txt", lock, "builder")
+        release_tool.package_inventory(tmp_path / (stage + "-packages.tsv"), lock, stage)
+        release_tool.apt_metadata(tmp_path / (stage + "-apt-metadata.txt"), lock, stage)
         assert sources.read_text().splitlines() == [
             "Types: deb",
             "URIs: " + lock["ubuntu"]["snapshot_service"] + lock["ubuntu"]["snapshot"] + "/",
@@ -872,11 +904,17 @@ def test_builder_records_actual_dependencies_tools_and_binary(release_tool, tmp_
     (project / "release").mkdir()
     _json(project / "release/build-inputs.json", lock)
     shutil.copytree(fixture / "native/Sunny", build / "remote_script/Sunny")
-    (build / "sunny-mcp").write_bytes(b"literal fixture binary")
+    (build / "sunny-mcp").write_bytes(
+        b'#!/bin/sh\nprintf \x27{"configuration_schema_version":1,'
+        b'"configuration_contract":"versioned_json"}\\n\x27\n'
+    )
+    (build / "sunny-mcp").chmod(0o700)
     actual_run = release_tool.run
 
     def command(*arguments, **kwargs):
-        if arguments[0] == "git" and "rev-parse" in arguments:
+        if (arguments[0] == "git" and "rev-parse" in arguments) or arguments[
+            -1
+        ] == "--configuration-contract":
             return actual_run(*arguments, **kwargs)
         assert arguments[-1] == "--version"
         return arguments[0] + " observed fixture version"
@@ -898,7 +936,7 @@ def test_builder_records_actual_dependencies_tools_and_binary(release_tool, tmp_
         )
     )
     provenance = json.loads((output / "build.json").read_text())
-    assert provenance["binary_sha256"] == _hash(b"literal fixture binary")
+    assert provenance["binary_sha256"] == _hash((build / "sunny-mcp").read_bytes())
     assert provenance["bridge"] == json.loads((fixture / "release.json").read_text())["bridge"]
     assert (
         provenance["dependencies"]["json"]["actual_revision"]
@@ -908,7 +946,11 @@ def test_builder_records_actual_dependencies_tools_and_binary(release_tool, tmp_
     assert (output / "builder-apt-metadata.txt").read_bytes() == (
         fixture / "provenance/builder-apt-metadata.txt"
     ).read_bytes()
-    assert provenance["configuration_schema_version"] is None
+    assert provenance["configuration_schema_version"] == 1
+    assert provenance["compiled_configuration_consumer"] == {
+        "configuration_schema_version": 1,
+        "configuration_contract": "versioned_json",
+    }
     assert provenance["native_host_qualification"] == "pending"
 
 
@@ -925,3 +967,34 @@ def test_doctor_requires_exact_same_image_bytes(release_tool, tmp_path, change):
     _refresh_inventory(root, release_tool)
     with pytest.raises(ValueError, match="Missing operator doctor CLI|exact OCI image"):
         release_tool.verify_release(root)
+
+
+@pytest.mark.parametrize("native_schema", [0, 2, "True"])
+def test_configuration_claim_requires_same_native_consumer(release_tool, tmp_path, native_schema):
+    """Self-consistent hashed OCI/export bytes cannot assert an unsupported native schema."""
+    root = tmp_path / "release"
+    _make_release(root, release_tool, native_schema=native_schema)
+    trusted = _hash((root / "release.json").read_bytes())
+    with pytest.raises(ValueError, match="native configuration consumer"):
+        release_tool.verify_release(root, trusted)
+
+
+@pytest.mark.parametrize("compiled_schema", [None, True, 2])
+def test_configuration_claim_requires_actual_compiled_evidence(
+    release_tool, tmp_path, compiled_schema
+):
+    """A schema label alone cannot qualify a client with absent or incompatible evidence."""
+    root = tmp_path / "release"
+    _make_release(root, release_tool, compiled_schema=compiled_schema)
+    trusted = _hash((root / "release.json").read_bytes())
+    with pytest.raises(ValueError, match="compiled configuration consumer evidence"):
+        release_tool.verify_release(root, trusted)
+
+
+def test_production_image_cannot_bake_legacy_workspace_environment(release_tool, tmp_path):
+    """External JSON selection remains usable without conflicting defaults from the image."""
+    root = tmp_path / "release"
+    _make_release(root, release_tool, legacy_environment=["SUNNY_WORKSPACE_PATH=/data/old.json"])
+    trusted = _hash((root / "release.json").read_bytes())
+    with pytest.raises(ValueError, match="ambiguous legacy runtime"):
+        release_tool.verify_release(root, trusted)

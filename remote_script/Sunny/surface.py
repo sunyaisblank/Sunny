@@ -43,6 +43,9 @@ except ImportError as framework_error:
         ) from framework_error
 
 
+from .configuration import DEFAULT_BIND_HOST as DEFAULT_BIND_HOST
+from .configuration import DEFAULT_PORT as DEFAULT_PORT
+from .configuration import load_native_configuration
 from .diagnostics import RemoteLog
 from .handler import LomHandler
 from .managed import ManagedRegistry
@@ -53,9 +56,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("sunny.remote_script")
 
-# The bridge is loopback-only unless the user deliberately exposes it.
-DEFAULT_BIND_HOST = "127.0.0.1"
-DEFAULT_PORT = 9001
 # Scheduling deadline: a request Live's main thread has not begun by then is
 # cancelled. Mirrored by SUNNY_REMOTE_SCRIPT_SCHEDULING_DEADLINE in the native
 # transport, whose response deadline must exceed it (test_bridge_lifecycle.py).
@@ -64,22 +64,7 @@ LOM_REQUEST_TIMEOUT_SECONDS = 10.0
 
 def _server_configuration() -> tuple[str, int]:
     """Read and validate the Remote Script's bridge configuration."""
-    host = os.environ.get("SUNNY_BIND_HOST", DEFAULT_BIND_HOST)
-    if not host:
-        raise ValueError("SUNNY_BIND_HOST must not be empty")
-    raw_port = os.environ.get("SUNNY_TCP_PORT", str(DEFAULT_PORT))
-    if (
-        not raw_port
-        or raw_port[0] not in "123456789"
-        or any(digit not in "0123456789" for digit in raw_port)
-        or len(raw_port) > 5
-        or not 1 <= int(raw_port) <= 65_535
-    ):
-        raise ValueError(
-            "SUNNY_TCP_PORT must be an ASCII decimal port from 1 to 65535 "
-            "without signs, whitespace, or leading zeros"
-        )
-    port = int(raw_port)
+    host, port, _ = load_native_configuration()
     return host, port
 
 
@@ -87,6 +72,8 @@ class SunnyControlSurface(ControlSurface):
     """Ableton Control Surface that hosts a TCP command server."""
 
     def __init__(self, c_instance):
+        # Validate every configured role before Live, logging, durable state or sockets.
+        host, port = _server_configuration()
         super().__init__(c_instance)
         self._initialise_request_lifecycle()
         # Every "sunny.*" record from this script is retained for clients that
@@ -103,7 +90,6 @@ class SunnyControlSurface(ControlSurface):
             managed_registry=self._managed_registry,
         )
         self._managed_registry.attach_handler(self._handler)
-        host, port = _server_configuration()
         self._server = TcpServer(
             host=host,
             port=port,
@@ -111,6 +97,8 @@ class SunnyControlSurface(ControlSurface):
         )
         self._server_thread: threading.Thread | None = None
         self._start_server()
+        contract = "versioned_json" if "SUNNY_CONFIG_PATH" in os.environ else "legacy_environment"
+        self.log_message(f"Sunny configuration contract: {contract}")
         self.log_message(f"Sunny Remote Script started on {host}:{port}")
 
     def _initialise_request_lifecycle(self) -> None:
@@ -153,7 +141,18 @@ class SunnyControlSurface(ControlSurface):
             )
         else:
             operation = "malformed request"
-        if response.get("success"):
+        value = response.get("value")
+        ordinary_outcome = (
+            value.get("outcome")
+            if isinstance(request, dict)
+            and request.get("name")
+            in {"sunny_ordinary_prepare", "sunny_ordinary_execute", "sunny_ordinary_operation"}
+            and isinstance(value, dict)
+            else None
+        )
+        if response.get("success") and ordinary_outcome in {"declined", "partial", "unknown_epoch"}:
+            logger.warning("%s: %s: %s", operation, ordinary_outcome, value.get("error"))
+        elif response.get("success"):
             logger.info("%s: ok", operation)
         else:
             logger.warning("%s: %s", operation, response.get("error"))

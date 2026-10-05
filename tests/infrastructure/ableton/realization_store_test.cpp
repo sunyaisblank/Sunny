@@ -755,7 +755,7 @@ TEST_CASE("Strict realization codec blocks corrupt foreign duplicate and incompl
     value["workspace_namespace"] = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     invalid.push_back(value);
     value = valid;
-    value["schema_version"] = 2;
+    value["schema_version"] = 3;
     invalid.push_back(value);
     value = valid;
     value["unknown"] = 1;
@@ -945,5 +945,36 @@ TEST_CASE("New namespace parent synchronization failure never grants a store or 
         RealizationStore::open(directory.path, ns, RealizationStoreMode::OpenExisting);
     REQUIRE(existing);
     CHECK((*existing)->attempts().empty());
+}
+
+TEST_CASE("Schema1 migration preserves complete existing managed records and separate ordinals",
+          "[realization-store][ordinary][migration]") {
+    Directory directory;
+    auto store = initialize(directory);
+    REQUIRE(store->fence(intent()));
+    const auto path = store->directory() / "ledger.json";
+    auto legacy = json::parse(read(path));
+    legacy["schema_version"] = 1;
+    legacy.erase("ordinary_attempts");
+    const auto original_bytes = legacy.dump(2) + "\n";
+    store.reset();
+    write(path, original_bytes);
+    auto reopened = RealizationStore::open(directory.path, ns, RealizationStoreMode::OpenExisting);
+    REQUIRE(reopened);
+    CHECK(read(path) == original_bytes);
+    REQUIRE((*reopened)->find(token));
+    CHECK((*reopened)->ordinary_attempts().empty());
+    auto prepared = prepare_ordinary_clip(
+        {std::string(32, 'b'), std::string(32, 'c')},
+        std::string(32, '2'),
+        "create",
+        {{"track_index", 0}, {"slot_index", 0}, {"clip_end", 4.0}, {"notes", json::array()}});
+    REQUIRE(prepared);
+    REQUIRE((*reopened)->fence_ordinary(*prepared));
+    const auto migrated = json::parse(read(path));
+    CHECK(migrated.at("schema_version") == 2);
+    CHECK(migrated.at("attempts").dump() == legacy.at("attempts").dump());
+    CHECK((*reopened)->find(token)->dispatch_ordinal == 1);
+    CHECK((*reopened)->find_ordinary(std::string(32, '2'))->dispatch_ordinal == 1);
 }
 #endif

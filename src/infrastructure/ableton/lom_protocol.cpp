@@ -27,6 +27,7 @@
 #include <sunny/infrastructure/ableton/lom_protocol.hpp>
 #include <sunny/infrastructure/ableton/managed_recovery.hpp>
 #include <sunny/infrastructure/ableton/managed_song_settings.hpp>
+#include <sunny/infrastructure/ableton/ordinary_clip.hpp>
 #include <sunny/infrastructure/ableton/target_profile.hpp>
 
 namespace sunny::infrastructure {
@@ -548,6 +549,9 @@ sunny::core::Result<void> LomProtocol::validate_request(const LomRequest& reques
                         "sunny_get_remote_log",
                         "sunny_set_cue",
                         "sunny_managed_context",
+                        "sunny_ordinary_prepare",
+                        "sunny_ordinary_execute",
+                        "sunny_ordinary_operation",
                         "sunny_managed_operation",
                         "sunny_managed_observe",
                         "sunny_managed_sample_envelope",
@@ -737,7 +741,9 @@ sunny::core::Result<void> LomProtocol::validate_request(const LomRequest& reques
 
     bool valid = false;
     if (*kind == PathKind::Song) {
-        if (name.starts_with("sunny_managed_"))
+        if (name.starts_with("sunny_ordinary_"))
+            valid = args.size() == 1 && ordinary_request_valid(std::string(name), args[0]);
+        else if (name.starts_with("sunny_managed_"))
             valid = valid_managed_request(name, args);
         else if (is_one_of(name,
                            {"sunny_get_target_profile",

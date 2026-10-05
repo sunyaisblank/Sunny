@@ -188,4 +188,181 @@ sunny::core::Result<std::optional<AbletonTargetProfile>> BridgeDispatcher::targe
     return transport_->target_profile();
 }
 
+namespace {
+DispatchReport ordinary_report(OrdinaryClipReceipt receipt, const std::string& ns) {
+    DispatchReport report;
+    report.workspace_namespace = ns;
+    report.sent = receipt.outcome == OrdinaryClipOutcome::Acknowledged ? 1 : 0;
+    report.failed = report.sent ? 0 : 1;
+    report.indeterminate = receipt.outcome == OrdinaryClipOutcome::Indeterminate ||
+                           receipt.outcome == OrdinaryClipOutcome::UnknownEpoch ||
+                           receipt.outcome == OrdinaryClipOutcome::UnknownOperation ||
+                           receipt.outcome == OrdinaryClipOutcome::NativePrepared;
+    if (!report.sent)
+        report.errors.push_back(receipt.error.value_or(
+            "Ordinary native operation was not acknowledged; its original token is retained"));
+    report.ordinary_receipt = std::move(receipt);
+    return report;
+}
+} // namespace
+
+DispatchReport BridgeDispatcher::dispatch_clip(const std::vector<BridgeMessage>& messages,
+                                               const std::string& action,
+                                               const std::optional<OrdinaryClipReceipt>& authority,
+                                               const std::string& expected_namespace) {
+    DispatchReport refused{0, 1, false, {}};
+    try {
+        if (!online() || records_without_execution()) {
+            refused.errors.push_back(
+                "Native Clip authority requires an executing connected transport");
+            return refused;
+        }
+        auto store = ordinary_store_provider_ ? ordinary_store_provider_(true) : nullptr;
+        if (!store || !store->native_writes_available()) {
+            refused.errors.push_back(
+                "Ordinary Clip mutation requires durable saved-workspace history");
+            return refused;
+        }
+        const auto& ns = store->workspace_namespace();
+        if (!expected_namespace.empty() && expected_namespace != ns) {
+            refused.errors.push_back("Ordinary history belongs to a different workspace namespace");
+            return refused;
+        }
+        ManagedBridgeContext context;
+        nlohmann::json payload;
+        if (action == "create") {
+            const auto observed_context = managed_bridge_context(*transport_);
+            if (!observed_context) {
+                refused.errors.push_back("Shared native document context unavailable");
+                return refused;
+            }
+            context = *observed_context;
+            if (messages.size() != 2 || messages[0].type != BridgeMessageType::CreateClip ||
+                messages[1].type != BridgeMessageType::AddNotes || messages[0].args.size() != 1) {
+                refused.errors.push_back("Unsupported ordinary Clip transaction");
+                return refused;
+            }
+            const auto path = LomPath::parse(messages[0].path);
+            if (!path.is_canonical() || path.segments.size() != 5 || path.segments[0] != "song" ||
+                path.segments[1] != "tracks" || path.segments[3] != "clip_slots" ||
+                messages[1].path != messages[0].path + "/clip") {
+                refused.errors.push_back("Invalid ordinary Clip target");
+                return refused;
+            }
+            const auto length = parse_positive_double(messages[0].args[0]);
+            if (!length) {
+                refused.errors.push_back("Invalid ordinary Clip length");
+                return refused;
+            }
+            nlohmann::json notes = nlohmann::json::array();
+            for (const auto& event : messages[1].notes) {
+                const auto converted = LomProtocol::from_note_event(event);
+                if (!converted) {
+                    refused.errors.push_back("Invalid ordinary note event");
+                    return refused;
+                }
+                auto request =
+                    LomProtocol::add_new_notes(LomPath::parse(messages[1].path), {*converted});
+                notes.push_back(std::get<nlohmann::json>(request.args.at(0)).at("notes").at(0));
+            }
+            payload = {{"track_index", std::stoi(path.segments[2])},
+                       {"slot_index", std::stoi(path.segments[4])},
+                       {"clip_end", *length},
+                       {"notes", notes}};
+        } else {
+            if (!authority || authority->outcome != OrdinaryClipOutcome::Acknowledged ||
+                !ordinary_receipt_from_json(ordinary_receipt_to_json(*authority))) {
+                refused.errors.push_back(
+                    "Ordinary undo/redo requires a typed native acknowledgement");
+                return refused;
+            }
+            context = {authority->intent.at("bridge_instance"),
+                       authority->intent.at("document_token")};
+            const auto& result = authority->journal->at("result");
+            payload = {{"binding_token", result.at("binding_token")},
+                       {"generation", result.at("generation")}};
+        }
+        const auto id = store->new_attempt_id();
+        if (!id) {
+            refused.errors.push_back(id.error().message);
+            return refused;
+        }
+        const auto prepared = prepare_ordinary_clip(context, *id, action, payload);
+        if (!prepared) {
+            refused.errors.push_back("Ordinary immutable intent rejected");
+            return refused;
+        }
+        auto permit = store->fence_ordinary(*prepared);
+        if (!permit) {
+            refused.errors.push_back(permit.error().message);
+            return refused;
+        }
+        auto original = permit->take_prepared();
+        if (!original) {
+            refused.errors.push_back("Ordinary dispatch permit already consumed");
+            return refused;
+        }
+        refused.workspace_namespace = ns;
+        refused.ordinary_receipt = *original;
+        refused.ordinary_receipt->outcome = OrdinaryClipOutcome::Indeterminate;
+        refused.ordinary_receipt->delivery = LomDeliveryState::SentWithoutValidResponse;
+        refused.indeterminate = true;
+        auto result = execute_ordinary_clip(*original, *transport_);
+        if (!result) {
+            original->outcome = OrdinaryClipOutcome::Indeterminate;
+            original->delivery = LomDeliveryState::SentWithoutValidResponse;
+            original->error = "Malformed ordinary native response; original attempt is query-only";
+            result = std::move(*original);
+        }
+        auto report = ordinary_report(*result, ns);
+        const auto saved = store->append_ordinary_evidence(*id, *result);
+        if (!saved) {
+            report.failed = 1;
+            report.indeterminate = true;
+            report.errors.push_back("Native evidence publication failed: " + saved.error().message);
+        }
+        return report;
+    } catch (const std::exception& error) {
+        refused.errors.push_back(error.what());
+        return refused;
+    }
+}
+
+DispatchReport BridgeDispatcher::reconcile_clip(const OrdinaryClipReceipt& receipt,
+                                                const std::string& ns) {
+    DispatchReport refused{0, 1, true, {}};
+    try {
+        auto store = ordinary_store_provider_ ? ordinary_store_provider_(false) : nullptr;
+        if (!store || store->workspace_namespace() != ns) {
+            refused.errors.push_back(
+                "Ordinary query requires its original durable workspace namespace");
+            return refused;
+        }
+        const auto id = receipt.intent.at("operation_id").get<std::string>();
+        const auto* retained = store->find_ordinary(id);
+        if (!retained || retained->prepared.intent.dump() != receipt.intent.dump()) {
+            refused.errors.push_back("Original ordinary dispatch fence is unavailable");
+            return refused;
+        }
+        if (!online()) {
+            refused.errors.push_back(offline_reason());
+            return refused;
+        }
+        const auto result = reconcile_ordinary_clip(receipt, *transport_);
+        if (!result) {
+            refused.errors.push_back("Malformed ordinary query response");
+            return refused;
+        }
+        auto report = ordinary_report(*result, ns);
+        const auto saved = store->append_ordinary_evidence(id, *result);
+        if (!saved)
+            report.errors.push_back("Ordinary query evidence could not be published: " +
+                                    saved.error().message);
+        return report;
+    } catch (const std::exception& error) {
+        refused.errors.push_back(error.what());
+        return refused;
+    }
+}
+
 } // namespace sunny::infrastructure

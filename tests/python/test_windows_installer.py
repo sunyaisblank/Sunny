@@ -27,6 +27,12 @@ def test_windows_managed_installer_lifecycle():
         pytest.skip("Windows PowerShell is required for real Windows filesystem evidence")
     source = Path(__file__).resolve().parents[2] / "tools/windows/Sunny.ps1"
     driver = WINDOWS_DRIVER.replace("__SOURCE__", base64.b64encode(source.read_bytes()).decode())
+    host_source = source.with_name("SunnyHost.ps1")
+    driver = driver.replace("__HOST_SOURCE__", base64.b64encode(host_source.read_bytes()).decode())
+    remote_source = source.with_name("SunnyRemote.ps1")
+    driver = driver.replace(
+        "__REMOTE_SOURCE__", base64.b64encode(remote_source.read_bytes()).decode()
+    )
     temporary_query = subprocess.run(
         [powershell, "-NoProfile", "-NonInteractive", "-Command", "[IO.Path]::GetTempPath()"],
         capture_output=True,
@@ -84,4 +90,6 @@ def test_windows_managed_installer_lifecycle():
         "reinstall_preserves_backup_and_refuses_unrecorded_stage",
         "owner_mismatch_refused",
         "unregistered_initial_content_preserved",
+        "independent_bounded_read_only_host_log",
+        "strict_remote_plan_and_literal_local_payload",
     ]

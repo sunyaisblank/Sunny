@@ -774,6 +774,9 @@ class Clip:
         self._live_major_version = live_version[0]
         self._name = ""
         self._notes: dict[int, MidiNote] = {}
+        # An explicit provider event model, not evidence about actual Live event
+        # coverage for MPE/Follow Actions or an embedded Python ABI.
+        self._note_listeners: list[Any] = []
         self._next_note_id = 1
         self._signature_numerator = 4
         self._signature_denominator = 4
@@ -793,6 +796,24 @@ class Clip:
         self._automation_envelopes: dict[DeviceParameter, AutomationEnvelope] = {}
 
     # --- notes --------------------------------------------------------------
+
+    def add_notes_listener(self, callback: Any) -> None:
+        """Model a retained note-change callback with duplicate registration refusal."""
+        if callback in self._note_listeners:
+            raise ArgumentError("notes listener is already registered")
+        self._note_listeners.append(callback)
+
+    def notes_has_listener(self, callback: Any) -> bool:
+        """Observe the modeled native listener membership."""
+        return callback in self._note_listeners
+
+    def remove_notes_listener(self, callback: Any) -> None:
+        """Remove exactly the recorded callback from the provider model."""
+        self._note_listeners.remove(callback)
+
+    def _notify_notes_changed(self) -> None:
+        for callback in tuple(self._note_listeners):
+            callback()
 
     def __getattribute__(self, name: str) -> Any:
         version = object.__getattribute__(self, "_live_version")
@@ -822,6 +843,8 @@ class Clip:
             self._next_note_id += 1
             self._notes[note_id] = MidiNote(note_id, specification)
             note_ids.append(note_id)
+        if note_ids:
+            self._notify_notes_changed()
         # Whether Live 11.0 returns IDs is unsettled (#22); later versions do.
         return IntVector(note_ids)
 
@@ -861,8 +884,11 @@ class Clip:
         return MidiNoteVector(sorted(notes, key=lambda n: (n.start_time, n.pitch)))
 
     def remove_notes_by_id(self, note_ids: Iterable[int]) -> None:
+        previous = len(self._notes)
         for note_id in list(note_ids):
             self._notes.pop(note_id, None)
+        if len(self._notes) != previous:
+            self._notify_notes_changed()
 
     # --- identity and structure ---------------------------------------------
 

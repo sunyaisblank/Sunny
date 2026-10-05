@@ -99,7 +99,9 @@ class NativeWorkflow:
             return surface._c_instance.song()
 
         monkeypatch.setattr(SunnyControlSurface.__mro__[1], "song", song, raising=False)
-        self.surface = SunnyControlSurface(SimpleNamespace(song=lambda: self.live.song))
+        self.surface = self.main_thread.call(
+            lambda: SunnyControlSurface(SimpleNamespace(song=lambda: self.live.song))
+        )
         self.surface.schedule_message = self.main_thread.schedule_message
         assert self.surface._server._ready.wait(5), "actual TCP listener did not start"
         dispatch = self.surface._managed_registry.dispatch

@@ -390,7 +390,7 @@ def native_boundary(monkeypatch):
     live = LiveSet((12, 4, 5)).install(monkeypatch)
     monkeypatch.setattr(surface_module, "_server_configuration", lambda: ("127.0.0.1", 0))
     main_thread = _LiveMainThread()
-    surface = SunnyControlSurface(object())
+    surface = main_thread.call(lambda: SunnyControlSurface(object()))
     # The test-only fallback framework lacks the native ControlSurface.song binding.
     # Supply that external host boundary; dispatcher, wire, handler and registry stay real.
     monkeypatch.setattr(surface, "song", live.surface.song, raising=False)
