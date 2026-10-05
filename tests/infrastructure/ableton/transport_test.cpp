@@ -266,7 +266,7 @@ class ResolverPeer {
         path_ = pattern;
         pid_path_ = path_ + ".pid";
         std::ofstream script(path_);
-        script << "#!/usr/bin/python3\nimport os,time,sys\n"
+        script << "#!/usr/bin/env python3\nimport os,time,sys\n"
                << "with open(" << nlohmann::json(pid_path_).dump()
                << ",'w') as output: output.write(str(os.getpid()))\n"
                << body << '\n';
