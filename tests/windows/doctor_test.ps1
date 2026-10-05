@@ -365,8 +365,39 @@ if($WorkspaceVolume-eq'bad_exit'){exit 9};exit 0
  Check ($literalEscape.text-ceq'\ud800') 'Literal escaped backslash was mistaken for a Unicode escape'
  $pairedEscape=ConvertFrom-SunnyDoctorJson ([Text.Encoding]::UTF8.GetBytes('{"text":"\ud83d\ude00"}'))
  Check ($pairedEscape.text-ceq[char]::ConvertFromUtf32(0x1f600)) 'Valid escaped surrogate pair was refused'
+ # The callback contract owns exact backoff timing. A public Stopwatch subclass
+ # advances only at the pump, so OS/pipe throughput cannot decide this check.
+ Add-Type -TypeDefinition 'public class SunnyDoctorFixtureClock : System.Diagnostics.Stopwatch { private long ticks; public new System.TimeSpan Elapsed { get { return System.TimeSpan.FromTicks(ticks); } } public void Advance(){ticks+=100000;} }'
+ $backoffClock=[SunnyDoctorFixtureClock]::new();$backoffTimes=[Collections.Generic.List[double]]::new();$backoffWaits=[Collections.Generic.List[bool]]::new()
+ $emptyCall={param($Cursor)
+  $backoffTimes.Add($backoffClock.Elapsed.TotalSeconds)
+  return @{success=$true;entries=@();next_sequence=0;latest_sequence=0;oldest_sequence=1;stream_id=('d'*32);reset=$false;truncated=$false;observed_at=([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()/1000.0);has_more=$false}
+ }
+ $backoffPump={param([switch]$Waiting);$backoffWaits.Add([bool]$Waiting);$backoffClock.Advance()}
+ $backoff=Invoke-SunnyDoctorPolling $emptyCall $backoffPump $backoffClock 0.4 0.05 $false
+ Check ($backoff.requests-eq3-and-not$backoff.stale-and-not$backoff.incomplete-and$backoffTimes.Count-eq3-and$backoffTimes[0]-eq0-and-not$backoffWaits.Contains($false)) 'Controlled empty polling did not retain fresh finite observations'
+ # Each doubled wait is observed within one 10 ms logical-clock tick; the same
+ # tick bounds floating-point wake/deadline rounding without a throughput floor.
+ Check ($backoffTimes[1]-$backoffTimes[0]-ge0.099999-and$backoffTimes[1]-$backoffTimes[0]-le0.110001-and$backoffTimes[2]-$backoffTimes[1]-ge0.199999-and$backoffTimes[2]-$backoffTimes[1]-le0.210001-and$backoffClock.Elapsed.TotalSeconds-ge0.399999-and$backoffClock.Elapsed.TotalSeconds-le0.410001) 'Controlled empty polling did not double .1/.2 backoff within its finite deadline'
+ $fixturePhase='empty_log_polling'
  $empty=Run 'log_empty' 8 0.4
- Check ($empty.report.success-and-not$empty.report.logs.stale-and-not$empty.report.logs.incomplete-and$empty.report.logs.requests-ge2-and$empty.report.logs.requests-le4) 'Finite valid-empty backoff failed'
+ $emptyLogs=$empty.report.logs;$hasEmptyLogs=$emptyLogs-is[Collections.IDictionary]
+ $emptyRequests=if([IO.File]::Exists($empty.marker+'.logrequests')){[IO.File]::ReadAllLines($empty.marker+'.logrequests').Count}else{0}
+ $healthyEmpty=$empty.report.success-and$empty.report.read_only_ready-and$empty.report.cleanup.success-and$empty.report.cleanup.owned_job_absent-and$hasEmptyLogs-and-not$emptyLogs.stale-and-not$emptyLogs.incomplete-and$emptyLogs.requests-ge1-and$emptyLogs.requests-le4-and$emptyLogs.requests-eq$emptyRequests-and$emptyLogs.cursor.after_sequence-eq0-and$emptyLogs.cursor.stream_id-ceq('d'*32)-and$emptyLogs.failures.Count-eq0-and$emptyLogs.resets-eq0-and$emptyLogs.gaps-eq0-and$emptyLogs.records_seen-eq0-and$emptyLogs.omitted_records-eq0
+ if(-not$healthyEmpty){
+  # Closed booleans/counters and fixed codes only; no messages, argv or records.
+  $facts=[ordered]@{summary_schema_version=1;received_requests=$emptyRequests;log_null=($null-eq$emptyLogs)}
+  foreach($field in @('success','read_only_ready')){$facts[$field]=if($empty.report[$field]-is[bool]){$empty.report[$field]}else{$null}}
+  foreach($field in @('stale','incomplete')){$facts[$field]=if($hasEmptyLogs-and$emptyLogs.Contains($field)-and$emptyLogs[$field]-is[bool]){$emptyLogs[$field]}else{$null}}
+  foreach($field in @('requests','resets','gaps','records_seen','omitted_records')){$facts[$field]=if($hasEmptyLogs-and$emptyLogs.Contains($field)-and($emptyLogs[$field]-is[int]-or$emptyLogs[$field]-is[long])){$emptyLogs[$field]}else{$null}}
+  $facts.cleanup_success=if($empty.report.cleanup.success-is[bool]){$empty.report.cleanup.success}else{$null}
+  $facts.owned_job_absent=if($empty.report.cleanup.owned_job_absent-is[bool]){$empty.report.cleanup.owned_job_absent}else{$null}
+  $facts.check_codes=@(foreach($check in $empty.report.checks){if($check.code-in@('owned_process_spawned','protocol_exchange_passed','diagnostic_tools_available','log_poll_incomplete','diagnosis_incomplete','protocol_close_incomplete','owned_cleanup_unconfirmed','recovery_checkpoint_failed')){$check.code}else{'unclassified_code'}})
+  $facts.log_failure_codes=if($hasEmptyLogs){@(foreach($failure in $emptyLogs.failures){if($failure.code-ceq'log_observation_unavailable'){$failure.code}else{'unclassified_code'}})}else{@()}
+  [Console]::Error.WriteLine('SUNNY_DOCTOR_EMPTY_POLL_FAILURE '+($facts|ConvertTo-Json -Depth 3 -Compress))
+ }
+ Check $healthyEmpty 'Finite valid-empty backoff failed'
+ $fixturePhase='protocol_fixture_checks'
  $pages=Run 'log_pages' 8 0.5
  Check ($pages.report.success-and$pages.report.logs.records_seen-eq3-and$pages.report.logs.cursor.after_sequence-eq3) 'Contiguous pagination failed'
  $arguments=@([IO.File]::ReadAllLines($pages.marker+'.logrequests')|ForEach-Object{ConvertFrom-SunnyDoctorJson ([Text.Encoding]::UTF8.GetBytes($_))})
