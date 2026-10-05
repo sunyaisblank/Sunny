@@ -231,6 +231,16 @@ moving saved work; a missing history directory blocks native writes. Undo histor
 deployment plans end with the process. Changes require an
 explicit save; closing the client does not save them automatically.
 
+Each process reserves its configured workspace and backup before restoring or accepting requests.
+A second process using those files exits with a workspace writer admission error. Save, open and
+applied backup recovery also reserve their destinations; independent workspace files can run
+separately. Stop the owning client before replacing its container or restoring its data. OS locks
+release when the process exits, including a crash. Keep the stable hidden `.sunny-writer.lock`
+sidecars: deleting or replacing them revokes publication and requires a restart. Parent-directory
+aliases resolve to the same ownership. Final workspace symlinks and hardlinks are refused because
+atomic replacement would split their identities. The Linux process behavior is tested; native
+Windows locking and the final released Docker volume profile still require qualification.
+
 For a native server, set `SUNNY_WORKSPACE_PATH` to your saved workspace path to enable the same
 startup restore. `workspace_open` replaces authored state only after complete validation;
 `workspace_import` refuses identity collisions. If the main file is corrupt, startup reports the
@@ -333,9 +343,51 @@ reconnect, persistence, and large-Set probes in
 
 When something goes wrong inside Live, `get_ableton_remote_log` returns the Remote Script's own
 records: every request with its outcome, every refusal and every error, numbered so a client can
-poll for newer records with `after_sequence`. The log is held in memory inside Live (the last
-1,000 records) and needs no access to Live's own log file. `sunny-mcp` writes its own diagnostics
-to standard error, which `docker logs` or the MCP client's log shows.
+poll for newer records with `after_sequence`. Pass the returned `stream_id` on later calls as well
+as `next_sequence`. A bridge restart changes the stream identity and reports `reset`; lost retained
+records report `truncated`. `observed_at` timestamps each read. `has_more` indicates another page,
+and `next_sequence` advances only through delivered records. Pages fit the native 16 MiB wire
+limit, including Unicode escaping. The last 1,000 records remain in memory inside Live.
+Sequence-only reads from an older bridge remain available for mismatch diagnosis; their missing
+epoch and freshness metadata is explicitly unavailable.
+
+This log route needs a working bridge and shares its command channel. It cannot diagnose a script
+that never loaded or service a second request while the first remains in progress. `sunny-mcp`
+writes its own diagnostics to standard error. Docker logs cover container output; native Live
+`Log.txt` requires its separately authorized host route. General doctor and host-log support are
+being completed under the [operating lifecycle contract](https://github.com/sunyaisblank/Sunny/issues/36).
+
+The maintained final-host tooling is in `tools/live_qualification/`. Its `obligations.json` retains
+all 23 original validation groups, their required evidence and applicability. Local toolkit tests
+do not mark those groups passed. Export the tooling with the exact bridge from a retained image:
+
+```bash
+python3 tools/export_live_qualification.py \
+  --image-id sha256:REPLACE_WITH_COMPLETE_IMAGE_ID \
+  --output /new/path/Sunny-qualification.zip
+```
+
+The export uses an unstarted container, records image architecture and available revision metadata,
+checks the exported source identity, and includes file checksums. It neither starts Live nor installs
+anything. This qualification package is a transport artifact; the coherent production release and
+its registry digest remain separate acceptance requirements.
+
+Configure the exported `qualification/configuration.json` with the exact image, current tool count,
+machine endpoints, Live version/edition and new evidence/workspace locations. Start with
+`python host_runner.py inventory` from that directory. Mutations require explicit scratch approval,
+the exact configured Set name, the observed native document token, stopped transport/recording, and
+input monitoring Off on every Track. A different Set, including one with the same name, cannot inherit
+that probe approval. The optional `SunnyHostProbe` surface on port 9002 creates notes and performs
+native setters for selected tests; it is a mutation instrument, not a general health check.
+
+Real execution comes after the integrated release's offline gates and approved machine setup.
+Generic raw bridge mutations currently decline because they lack native document authority;
+ordinary command guards and the running-cue check remain open in
+[issue #41](https://github.com/sunyaisblank/Sunny/issues/41). Complete native authoring, saved-envelope
+reopen/recovery, visual and audible observations, and all original groups remain required in
+[issue #22](https://github.com/sunyaisblank/Sunny/issues/22). RDP installation or a connected TCP socket
+does not establish audio readiness. The full lifecycle requirements, grouped findings and evidence
+index are in [issue #36](https://github.com/sunyaisblank/Sunny/issues/36).
 
 ## Python
 

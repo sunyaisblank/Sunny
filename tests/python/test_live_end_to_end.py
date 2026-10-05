@@ -567,6 +567,22 @@ def test_remote_log_reports_what_happened_inside_live(bridge):
     assert all(entry["sequence"] > log["next_sequence"] for entry in newer["entries"])
     assert not any("create_clip" in entry["message"] for entry in newer["entries"])
 
+    # The optional epoch cursor traverses the real MCP/native/TCP/handler path.
+    empty = client.call(
+        "get_ableton_remote_log",
+        after_sequence=newer["next_sequence"],
+        stream_id=newer["stream_id"],
+    )
+    assert empty["success"] is True and empty["entries"] == []
+    assert empty["reset"] is False and empty["has_more"] is False
+    assert empty["next_sequence"] == empty["latest_sequence"] == newer["next_sequence"]
+    assert empty["observed_at"] >= newer["observed_at"]
+    reset = client.call(
+        "get_ableton_remote_log", after_sequence=1, stream_id="00000000000000000000000000000000"
+    )
+    assert reset["success"] is True and reset["reset"] is True
+    assert reset["entries"][0]["sequence"] == 1
+
 
 def test_the_live_smoke_scenario_passes_against_the_offline_model(bridge):
     """The scenario used for the final live check is itself exercised offline."""

@@ -43,6 +43,34 @@ using namespace std::chrono_literals;
 
 namespace {
 
+class RemoteLogTransport final : public LomTransport {
+  public:
+    json page = {{"entries",
+                  json::array({{{"sequence", 1},
+                                {"time", 1700000000.0},
+                                {"level", "ERROR"},
+                                {"source", "sunny.test"},
+                                {"message", "literal error"}}})},
+                 {"next_sequence", 1},
+                 {"latest_sequence", 2},
+                 {"oldest_sequence", 1},
+                 {"truncated", false},
+                 {"has_more", true},
+                 {"reset", false},
+                 {"stream_id", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+                 {"observed_at", 1700000001.0}};
+    std::vector<LomRequest> requests;
+
+    LomResponse send(const LomRequest& request) override {
+        requests.push_back(request);
+        return {true, LomValue{page}, std::nullopt};
+    }
+    LomResponse send_notes(const LomPath&, const std::vector<LomNoteData>&) override {
+        return {false, std::nullopt, "Log reads cannot insert notes"};
+    }
+    bool is_connected() const override { return true; }
+};
+
 json call_tool(McpServer& server, const std::string& name, const json& arguments, int id) {
     auto response = server.process_request({{"jsonrpc", "2.0"},
                                             {"method", "tools/call"},
@@ -51,6 +79,195 @@ json call_tool(McpServer& server, const std::string& name, const json& arguments
     INFO("tool response for " << name << ": " << response.dump());
     REQUIRE(response.contains("result"));
     return json::parse(response["result"]["content"][0]["text"].get<std::string>());
+}
+
+TEST_CASE("Remote log MCP preserves sequence API and forwards explicit stream cursors",
+          "[mcp][remote-log]") {
+    RemoteLogTransport transport;
+    Orchestrator orchestrator;
+    BridgeDispatcher dispatcher(&transport);
+    McpServer server;
+    register_sunny_tools(server, orchestrator, dispatcher);
+    const auto first = call_tool(server, "get_ableton_remote_log", json::object(), 1);
+    REQUIRE(first.at("success") == true);
+    CHECK(first.at("next_sequence") == 1);
+    CHECK(first.at("latest_sequence") == 2);
+    CHECK(first.at("has_more") == true);
+    REQUIRE(transport.requests.size() == 1);
+    CHECK(
+        LomProtocol::serialize_request(transport.requests.back()) ==
+        R"({"args":[0],"bridge_protocol_version":46,"name":"sunny_get_remote_log","path":"song","type":"call"})");
+    transport.page["entries"][0]["sequence"] = 2;
+    transport.page["next_sequence"] = 2;
+    transport.page["has_more"] = false;
+    const auto second = call_tool(server,
+                                  "get_ableton_remote_log",
+                                  {{"after_sequence", 1}, {"stream_id", first.at("stream_id")}},
+                                  2);
+    REQUIRE(second.at("success") == true);
+    CHECK(second.at("next_sequence") == 2);
+    CHECK(second.at("entries")[0]["sequence"] == 2);
+    CHECK(
+        LomProtocol::serialize_request(transport.requests.back()) ==
+        R"({"args":[1,"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],"bridge_protocol_version":46,"name":"sunny_get_remote_log","path":"song","type":"call"})");
+
+    transport.page["entries"][0]["sequence"] = 1;
+    transport.page["next_sequence"] = 1;
+    transport.page["has_more"] = true;
+    transport.page["reset"] = true;
+    CHECK(call_tool(server,
+                    "get_ableton_remote_log",
+                    {{"after_sequence", 1}, {"stream_id", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}},
+                    3)
+              .at("success") == true);
+    CHECK(call_tool(server, "get_ableton_remote_log", {{"after_sequence", 99}}, 4).at("success") ==
+          true);
+
+    transport.page["entries"][0]["sequence"] = 3;
+    transport.page["next_sequence"] = 3;
+    transport.page["oldest_sequence"] = 3;
+    transport.page["latest_sequence"] = 4;
+    transport.page["reset"] = false;
+    transport.page["truncated"] = true;
+    const auto gap = call_tool(server, "get_ableton_remote_log", json::object(), 5);
+    CHECK(gap.at("success") == true);
+    CHECK(gap.at("truncated") == true);
+    CHECK(gap.at("reset") == false);
+}
+
+TEST_CASE("Remote log MCP rejects malformed cursors before bridge delivery", "[mcp][remote-log]") {
+    RemoteLogTransport transport;
+    Orchestrator orchestrator;
+    BridgeDispatcher dispatcher(&transport);
+    McpServer server;
+    register_sunny_tools(server, orchestrator, dispatcher);
+    for (const auto& arguments : {json{{"after_sequence", -1}},
+                                  json{{"after_sequence", 2147483648ULL}},
+                                  json{{"after_sequence", true}},
+                                  json{{"stream_id", nullptr}},
+                                  json{{"stream_id", std::string(31, 'a')}},
+                                  json{{"stream_id", std::string(32, 'A')}},
+                                  json{{"stream_id", std::string(32, 'g')}},
+                                  json{{"unadvertised", 0}}}) {
+        INFO(arguments.dump());
+        CHECK(call_tool(server, "get_ableton_remote_log", arguments, 1).contains("error"));
+        CHECK(transport.requests.empty());
+    }
+}
+
+TEST_CASE("Remote log MCP keeps legacy mismatch diagnosis while marking missing evidence",
+          "[mcp][remote-log]") {
+    RemoteLogTransport transport;
+    transport.page.erase("stream_id");
+    transport.page.erase("reset");
+    transport.page.erase("observed_at");
+    transport.page.erase("oldest_sequence");
+    transport.page.erase("latest_sequence");
+    transport.page.erase("has_more");
+    Orchestrator orchestrator;
+    BridgeDispatcher dispatcher(&transport);
+    McpServer server;
+    register_sunny_tools(server, orchestrator, dispatcher);
+    const auto legacy = call_tool(server, "get_ableton_remote_log", json::object(), 1);
+    REQUIRE(legacy.at("success") == true);
+    CHECK(legacy.at("entries")[0]["message"] == "literal error");
+    CHECK(legacy.at("next_sequence") == 1);
+    CHECK(legacy.at("cursor_metadata_available") == false);
+    for (const auto* key :
+         {"stream_id", "reset", "observed_at", "oldest_sequence", "latest_sequence", "has_more"})
+        CHECK(legacy.at(key).is_null());
+    CHECK(call_tool(server,
+                    "get_ableton_remote_log",
+                    {{"stream_id", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}},
+                    2)
+              .at("success") == false);
+    // The older producer silently returns a lower watermark after restart.
+    // Diagnosis stays readable without claiming this was a proved reset.
+    transport.page["entries"] = json::array();
+    const auto restarted = call_tool(server, "get_ableton_remote_log", {{"after_sequence", 3}}, 3);
+    REQUIRE(restarted.at("success") == true);
+    CHECK(restarted.at("next_sequence") == 1);
+    CHECK(restarted.at("reset").is_null());
+    CHECK(restarted.at("observed_at").is_null());
+    transport.page["stream_id"] = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    CHECK(call_tool(server, "get_ableton_remote_log", {{"after_sequence", 3}}, 4).at("success") ==
+          false); // Partial/mixed schema cannot silently gain legacy trust.
+    transport.page.erase("stream_id");
+    transport.page["truncated"] = true;
+    CHECK(call_tool(server, "get_ableton_remote_log", {{"after_sequence", 3}}, 5).at("success") ==
+          false);
+}
+
+TEST_CASE("Remote log MCP validates record order and cursor consistency against literal pages",
+          "[mcp][remote-log]") {
+    RemoteLogTransport transport;
+    Orchestrator orchestrator;
+    BridgeDispatcher dispatcher(&transport);
+    McpServer server;
+    register_sunny_tools(server, orchestrator, dispatcher);
+    const auto valid = transport.page;
+    std::vector<json> malformed;
+    for (const auto& [field, value] :
+         {std::pair<std::string, json>{"stream_id", std::string(32, 'g')},
+          {"next_sequence", -1},
+          {"next_sequence", 0},
+          {"next_sequence", true},
+          {"latest_sequence", 0},
+          {"oldest_sequence", 4},
+          {"observed_at", "stale"},
+          {"observed_at", -1.0},
+          {"observed_at", std::numeric_limits<double>::infinity()},
+          {"reset", true},
+          {"has_more", false},
+          {"truncated", true},
+          {"unknown", 0}}) {
+        auto page = valid;
+        page[field] = value;
+        malformed.push_back(std::move(page));
+    }
+    for (const auto& [field, value] : {std::pair<std::string, json>{"sequence", 2},
+                                       {"sequence", true},
+                                       {"time", std::numeric_limits<double>::quiet_NaN()},
+                                       {"source", nullptr},
+                                       {"level", json::object()},
+                                       {"message", std::string(8001, 'x')},
+                                       {"unknown", 0}}) {
+        auto page = valid;
+        page["entries"][0][field] = value;
+        malformed.push_back(std::move(page));
+    }
+    auto duplicate = valid;
+    duplicate["entries"].push_back(duplicate["entries"][0]);
+    malformed.push_back(std::move(duplicate));
+    auto empty = valid;
+    empty["entries"] = json::array();
+    empty["next_sequence"] = 0;
+    malformed.push_back(std::move(empty));
+    for (const auto& page : malformed) {
+        transport.page = page;
+        INFO(page.dump());
+        CHECK(call_tool(server, "get_ableton_remote_log", json::object(), 1).at("success") ==
+              false);
+    }
+    transport.page = {{"entries", json::array()},
+                      {"next_sequence", 0},
+                      {"latest_sequence", 0},
+                      {"oldest_sequence", 1},
+                      {"truncated", false},
+                      {"has_more", false},
+                      {"reset", false},
+                      {"stream_id", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+                      {"observed_at", 1700000001.0}};
+    CHECK(call_tool(server, "get_ableton_remote_log", json::object(), 2).at("success") == true);
+    transport.page["reset"] = true;
+    CHECK(call_tool(server, "get_ableton_remote_log", {{"after_sequence", 2147483647}}, 3)
+              .at("success") == true);
+    transport.page["reset"] = false;
+    transport.page["next_sequence"] = 2147483647;
+    transport.page["latest_sequence"] = 2147483647;
+    transport.page["oldest_sequence"] = 2147482648;
+    CHECK(call_tool(server, "get_ableton_remote_log", {{"after_sequence", 2147483647}}, 4)
+              .at("success") == true);
 }
 
 void check_diagnostic_contract(const json& diagnostic) {

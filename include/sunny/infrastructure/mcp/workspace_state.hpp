@@ -17,6 +17,14 @@ struct WorkspaceError {
 
 template <class Value> using WorkspaceResult = std::expected<Value, WorkspaceError>;
 
+/** Admit this process before restoring or publishing a workspace. Canonical parent
+ * aliases share admission; final symlinks/hardlinks are refused because atomic
+ * replacement would separate their identities. Hidden *.sunny-writer.lock names
+ * are reserved; stable sidecars are never removed.
+ * All admitted main/backup paths remain owned until the session is destroyed. */
+[[nodiscard]] WorkspaceResult<std::filesystem::path>
+acquire_workspace_writer(const McpSession& session, const std::filesystem::path& path);
+
 /** Detached candidate; no transport, Live identities, or deployment plans. */
 struct WorkspaceState {
     ScoreSession score;

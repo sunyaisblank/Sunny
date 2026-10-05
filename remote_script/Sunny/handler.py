@@ -510,7 +510,19 @@ def _valid_request_arguments(req_type: str, kind: str, name: str, args: list[Any
         if name in ("create_scene", "create_midi_track"):
             return len(args) == 1 and _protocol_index(args[0], allow_append=True)
         if name == "sunny_get_remote_log":
-            return len(args) == 1 and type(args[0]) is int and args[0] >= 0
+            return (
+                len(args) in (1, 2)
+                and type(args[0]) is int
+                and 0 <= args[0] <= 2147483647
+                and (
+                    len(args) == 1
+                    or (
+                        type(args[1]) is str
+                        and len(args[1]) == 32
+                        and all(character in "0123456789abcdef" for character in args[1])
+                    )
+                )
+            )
         if name == "sunny_set_cue":
             return (
                 len(args) == 2
@@ -749,7 +761,7 @@ class LomHandler:
             if req_type == "call" and name == "sunny_get_remote_log":
                 if self._remote_log is None:
                     return {"success": False, "error": "Remote log is not enabled"}
-                return {"success": True, "value": self._remote_log.entries_after(args[0])}
+                return {"success": True, "value": self._remote_log.entries_after(*args)}
 
             if req_type == "call" and name == "sunny_get_target_profile":
                 return {"success": True, "value": self._serialise(self._target_profile())}

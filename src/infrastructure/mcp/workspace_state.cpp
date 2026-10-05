@@ -6,6 +6,7 @@
 #include <cmath>
 #include <fstream>
 #include <limits>
+#include <mutex>
 #include <random>
 #include <set>
 #include <stdexcept>
@@ -32,6 +33,7 @@
 #include <windows.h>
 #else
 #include <fcntl.h>
+#include <sys/file.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #endif
@@ -40,6 +42,206 @@ namespace sunny::infrastructure {
 
 using json = nlohmann::json;
 using namespace sunny::core;
+
+/** A stable lock protects the name across atomic replacement of the main file.
+ * The backup name is reserved too: opening it as another writable workspace
+ * must not race publication of the first workspace's backup. */
+class WorkspaceWriter {
+    struct Lock {
+        std::filesystem::path path;
+        std::filesystem::path lock_path;
+#ifdef _WIN32
+        HANDLE handle = INVALID_HANDLE_VALUE;
+        HANDLE directory = INVALID_HANDLE_VALUE;
+        DWORD process = GetCurrentProcessId();
+#else
+        int descriptor = -1;
+        int directory = -1;
+        pid_t process = getpid();
+#endif
+
+        ~Lock() {
+#ifdef _WIN32
+            if (handle != INVALID_HANDLE_VALUE) CloseHandle(handle);
+            if (directory != INVALID_HANDLE_VALUE) CloseHandle(directory);
+#else
+            if (descriptor >= 0) close(descriptor);
+            if (directory >= 0) close(directory);
+#endif
+        }
+
+        [[noreturn]] void fail(const char* reason) const {
+            throw std::runtime_error(std::string("Workspace writer admission: ") + reason + ": " +
+                                     path.string());
+        }
+
+#ifdef _WIN32
+        static bool same(const BY_HANDLE_FILE_INFORMATION& a, const BY_HANDLE_FILE_INFORMATION& b) {
+            return a.dwVolumeSerialNumber == b.dwVolumeSerialNumber &&
+                   a.nFileIndexHigh == b.nFileIndexHigh && a.nFileIndexLow == b.nFileIndexLow;
+        }
+
+        static HANDLE inspect(const std::filesystem::path& name, bool directory = false) {
+            return CreateFileW(name.c_str(),
+                               FILE_READ_ATTRIBUTES,
+                               FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                               nullptr,
+                               OPEN_EXISTING,
+                               FILE_FLAG_OPEN_REPARSE_POINT |
+                                   (directory ? FILE_FLAG_BACKUP_SEMANTICS : 0),
+                               nullptr);
+        }
+
+        void check() const {
+            if (process != GetCurrentProcessId()) fail("admission belongs to another process");
+            const auto compare = [&](HANDLE held, const std::filesystem::path& name, bool dir) {
+                const auto named = inspect(name, dir);
+                if (named == INVALID_HANDLE_VALUE) fail("owned lock or directory is missing");
+                BY_HANDLE_FILE_INFORMATION a{}, b{};
+                const bool valid = GetFileInformationByHandle(held, &a) &&
+                                   GetFileInformationByHandle(named, &b) && same(a, b) &&
+                                   !(b.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) &&
+                                   (dir || b.nNumberOfLinks == 1);
+                CloseHandle(named);
+                if (!valid) fail("owned lock or directory identity changed; restart required");
+            };
+            compare(directory, path.parent_path(), true);
+            compare(handle, lock_path, false);
+            const auto file = inspect(path);
+            if (file == INVALID_HANDLE_VALUE) {
+                if (GetLastError() != ERROR_FILE_NOT_FOUND) fail("cannot inspect workspace name");
+                return;
+            }
+            BY_HANDLE_FILE_INFORMATION info{};
+            const bool regular = GetFileInformationByHandle(file, &info) &&
+                                 !(info.dwFileAttributes &
+                                   (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DIRECTORY)) &&
+                                 info.nNumberOfLinks == 1;
+            CloseHandle(file);
+            if (!regular) fail("workspace must be a regular file without hardlink/symlink aliases");
+        }
+#else
+        static bool same(const struct stat& a, const struct stat& b) {
+            return a.st_dev == b.st_dev && a.st_ino == b.st_ino;
+        }
+
+        void check() const {
+            if (process != getpid()) fail("admission belongs to another process");
+            struct stat held {
+            }, named{};
+            if (fstat(directory, &held) != 0 || lstat(path.parent_path().c_str(), &named) != 0 ||
+                !S_ISDIR(named.st_mode) || !same(held, named))
+                fail("owned directory identity changed; restart required");
+            if (fstat(descriptor, &held) != 0 ||
+                fstatat(directory, lock_path.filename().c_str(), &named, AT_SYMLINK_NOFOLLOW) !=
+                    0 ||
+                !S_ISREG(named.st_mode) || named.st_nlink != 1 || !same(held, named))
+                fail("owned lock identity changed; restart required");
+            if (fstatat(directory, path.filename().c_str(), &named, AT_SYMLINK_NOFOLLOW) != 0) {
+                if (errno != ENOENT) fail("cannot inspect workspace name");
+            } else if (!S_ISREG(named.st_mode) || named.st_nlink != 1) {
+                fail("workspace must be a regular file without hardlink/symlink aliases");
+            }
+        }
+#endif
+
+        void initialize(std::filesystem::path name) {
+            path = std::move(name);
+            lock_path =
+                path.parent_path() / ("." + path.filename().string() + ".sunny-writer.lock");
+#ifdef _WIN32
+            directory = inspect(path.parent_path(), true);
+            if (directory == INVALID_HANDLE_VALUE) fail("cannot open workspace directory");
+            handle = CreateFileW(lock_path.c_str(),
+                                 GENERIC_READ | GENERIC_WRITE,
+                                 FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                 nullptr,
+                                 OPEN_ALWAYS,
+                                 FILE_FLAG_OPEN_REPARSE_POINT,
+                                 nullptr);
+            if (handle == INVALID_HANDLE_VALUE) fail("cannot open writer lock");
+            OVERLAPPED overlap{};
+            if (!LockFileEx(
+                    handle, LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY, 0, 1, 0, &overlap))
+                fail("another process owns this workspace");
+#else
+            directory = open(path.parent_path().c_str(), O_RDONLY | O_CLOEXEC | O_DIRECTORY);
+            if (directory < 0) fail("cannot open workspace directory");
+            descriptor = openat(directory,
+                                lock_path.filename().c_str(),
+                                O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK,
+                                0600);
+            if (descriptor < 0) fail("cannot open writer lock");
+            if (flock(descriptor, LOCK_EX | LOCK_NB) != 0)
+                fail("another process owns this workspace or locking is unavailable");
+#endif
+            check();
+        }
+    };
+
+    // Constructing a Lock can fail after opening a handle. Allocate the object
+    // first, then initialize in place through a factory so RAII always closes it.
+    std::unique_ptr<Lock> main_, backup_;
+
+    static std::unique_ptr<Lock> lock(std::filesystem::path path) {
+        auto value = std::make_unique<Lock>();
+        value->initialize(std::move(path));
+        return value;
+    }
+
+  public:
+    const std::filesystem::path path;
+    explicit WorkspaceWriter(std::filesystem::path name) : path(std::move(name)) {
+        main_ = lock(path);
+        auto backup = path;
+        backup += ".bak";
+        backup_ = lock(backup);
+    }
+    void check() const {
+        main_->check();
+        backup_->check();
+    }
+};
+
+WorkspaceResult<std::filesystem::path> acquire_workspace_writer(const McpSession& session,
+                                                                const std::filesystem::path& path) {
+    try {
+        if (path.empty() || path.filename().empty() || path.filename() == "." ||
+            path.filename() == ".." ||
+            path.native().find(std::filesystem::path::value_type{}) !=
+                std::filesystem::path::string_type::npos)
+            throw std::runtime_error("Workspace writer path must name a file and contain no NUL");
+        const auto filename = path.filename().string();
+        if (filename.starts_with(".") && filename.ends_with(".sunny-writer.lock"))
+            throw std::runtime_error("Workspace writer admission: reserved writer lock filename");
+        const auto absolute = std::filesystem::absolute(path);
+        const auto canonical =
+            std::filesystem::canonical(absolute.parent_path()) / absolute.filename();
+        bool admitted = false;
+        for (const auto& writer : session.workspace_writer->admissions) {
+            writer->check();
+            admitted = admitted || writer->path == canonical;
+        }
+        if (admitted) return canonical;
+        // Each executable has one usable MCP session. Internal same-process
+        // sessions share process admission; this never substitutes for OS locking.
+        static std::mutex guard;
+        static std::map<std::filesystem::path, std::weak_ptr<WorkspaceWriter>> process_writers;
+        std::lock_guard held(guard);
+        std::erase_if(process_writers, [](const auto& entry) { return entry.second.expired(); });
+        auto writer = process_writers[canonical].lock();
+        if (writer)
+            writer->check();
+        else {
+            writer = std::make_shared<WorkspaceWriter>(canonical);
+            process_writers[canonical] = writer;
+        }
+        session.workspace_writer->admissions.push_back(std::move(writer));
+        return canonical;
+    } catch (const std::exception& exception) {
+        return std::unexpected(WorkspaceError{exception.what()});
+    }
+}
 
 std::string new_workspace_namespace() {
     std::random_device entropy;
@@ -964,7 +1166,8 @@ confirm_loaded_native_namespace(const std::filesystem::path& path,
 FileReplacement replace_file(const std::filesystem::path& destination,
                              const std::string& bytes,
                              WorkspaceFileRole role,
-                             const WorkspaceIoFault& fault) {
+                             const WorkspaceIoFault& fault,
+                             const std::function<std::optional<std::string>()>& writer_guard) {
     FileReplacement result;
     try {
         const auto injected = [&](WorkspaceIoPhase phase) {
@@ -1083,6 +1286,10 @@ FileReplacement replace_file(const std::filesystem::path& destination,
             return result;
         }
         if (injected(WorkspaceIoPhase::Replace)) return result;
+        if (auto admission_error = writer_guard()) {
+            result.error = *admission_error;
+            return result;
+        }
 #ifdef _WIN32
         if (!MoveFileExW(temporary.path.c_str(),
                          destination.c_str(),
@@ -1170,9 +1377,12 @@ WorkspaceResult<WorkspaceState> read_workspace(const std::filesystem::path& path
 
 WorkspaceResult<json> open_workspace(const McpSession& session, const std::filesystem::path& path) {
     try {
-        auto state = read_workspace(path);
+        const auto admission = acquire_workspace_writer(session, path);
+        if (!admission) return std::unexpected(admission.error());
+        const auto& owned_path = *admission;
+        auto state = read_workspace(owned_path);
         if (!state) return std::unexpected(state.error());
-        std::optional<std::string> source_path = std::filesystem::absolute(path).string();
+        std::optional<std::string> source_path = owned_path.string();
         if (state->native_realization.workspace_namespace ==
                 session.realization->metadata.workspace_namespace &&
             session.realization->metadata.history_base_directory) {
@@ -1192,11 +1402,13 @@ WorkspaceResult<json> open_workspace(const McpSession& session, const std::files
         auto native_error =
             state->native_namespace_is_new
                 ? std::optional<std::string>{"Save the migrated native namespace first"}
-                : confirm_loaded_native_namespace(path, state->native_realization);
+                : confirm_loaded_native_namespace(owned_path, state->native_realization);
         response["native_namespace_durability_confirmed"] = !native_error;
         if (native_error) response["native_history_error"] = *native_error;
         static_cast<void>(response.dump());
         guard_native_namespace_transition(session, *state);
+        const auto still_owned = acquire_workspace_writer(session, owned_path);
+        if (!still_owned) return std::unexpected(still_owned.error());
         publish(session, *state);
         session.realization->namespace_saved_durably = !native_error;
         if (native_error) session.realization->history_error.swap(native_error);
@@ -1267,12 +1479,18 @@ WorkspaceResult<json> import_workspace(const McpSession& session,
 
 WorkspaceResult<json>
 recover_workspace_backup(const McpSession& session, const std::filesystem::path& path, bool apply) {
-    auto backup = path;
+    auto owned_path = path;
+    if (apply) {
+        const auto admission = acquire_workspace_writer(session, path);
+        if (!admission) return std::unexpected(admission.error());
+        owned_path = *admission;
+    }
+    auto backup = owned_path;
     backup += ".bak";
     auto state = read_workspace(backup);
     if (!state) return std::unexpected(state.error());
     try {
-        std::optional<std::string> source_path = std::filesystem::absolute(path).string();
+        std::optional<std::string> source_path = std::filesystem::absolute(owned_path).string();
         if (state->native_realization.workspace_namespace ==
                 session.realization->metadata.workspace_namespace &&
             session.realization->metadata.history_base_directory) {
@@ -1302,6 +1520,8 @@ recover_workspace_backup(const McpSession& session, const std::filesystem::path&
         static_cast<void>(response.dump());
         if (apply) {
             guard_native_namespace_transition(session, *state);
+            const auto still_owned = acquire_workspace_writer(session, owned_path);
+            if (!still_owned) return std::unexpected(still_owned.error());
             publish(session, *state);
             session.realization->namespace_saved_durably = !native_error;
             if (native_error) session.realization->history_error.swap(native_error);
@@ -1319,6 +1539,17 @@ WorkspaceSaveResult save_workspace(const McpSession& session,
                                    const NativeWorkspaceMetadata* publication) {
     WorkspaceSaveResult result;
     try {
+        const auto admission = acquire_workspace_writer(session, path);
+        if (!admission) {
+            result.error = admission.error().message;
+            return result;
+        }
+        const auto& owned_path = *admission;
+        const auto writer_guard = [&session, &owned_path]() -> std::optional<std::string> {
+            const auto checked = acquire_workspace_writer(session, owned_path);
+            if (!checked) return checked.error().message;
+            return std::nullopt;
+        };
         auto encoded = workspace_to_json(session);
         if (!encoded) {
             result.error = encoded.error().message;
@@ -1334,14 +1565,14 @@ WorkspaceSaveResult save_workspace(const McpSession& session,
         }
         const auto bytes = encoded->dump(2) + "\n";
         std::error_code exists_error;
-        const bool exists = std::filesystem::exists(path, exists_error);
+        const bool exists = std::filesystem::exists(owned_path, exists_error);
         if (exists_error) {
             result.error = "Cannot inspect old workspace file: " + exists_error.message();
             return result;
         }
         result.backup_status = "No previous main file; existing backup retained";
         if (exists) {
-            auto previous = read_bytes(path);
+            auto previous = read_bytes(owned_path);
             if (!previous) {
                 result.error = previous.error().message;
                 return result;
@@ -1365,10 +1596,10 @@ WorkspaceSaveResult save_workspace(const McpSession& session,
                     std::string("Invalid previous main file; backup retained: ") + exception.what();
             }
             if (valid_previous) {
-                auto backup = path;
+                auto backup = owned_path;
                 backup += ".bak";
-                const auto saved =
-                    replace_file(backup, backup_bytes, WorkspaceFileRole::Backup, fault);
+                const auto saved = replace_file(
+                    backup, backup_bytes, WorkspaceFileRole::Backup, fault, writer_guard);
                 result.backup_updated = saved.committed;
                 result.backup_status = saved.durable ? "Previous valid main file saved durably"
                                                      : "Backup durability unknown";
@@ -1378,7 +1609,8 @@ WorkspaceSaveResult save_workspace(const McpSession& session,
                 }
             }
         }
-        const auto saved = replace_file(path, bytes, WorkspaceFileRole::Main, fault);
+        const auto saved =
+            replace_file(owned_path, bytes, WorkspaceFileRole::Main, fault, writer_guard);
         result.committed = saved.committed;
         result.durability_confirmed = saved.durable;
         result.error = saved.error;

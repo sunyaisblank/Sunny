@@ -971,3 +971,28 @@ TEST_CASE("Workspace namespace switch preserves unresolved Set-wide native "
     SUCCEED("Native-writing durable fence is unavailable on this platform");
 #endif
 }
+
+TEST_CASE("Writer lock replacement before atomic publication preserves the main file",
+          "[mcp][workspace][writer][persistence]") {
+    Directory directory;
+    Fixture fixture;
+    const auto path = directory.path / "workspace.json";
+    REQUIRE(save_workspace(fixture.session, path).success);
+    const auto before = bytes(path);
+    const auto lock = directory.path / ".workspace.json.sunny-writer.lock";
+    REQUIRE(fs::exists(lock));
+    fixture.session.score->scores.at(1).metadata.title = "Must not be published";
+    const auto failed = save_workspace(fixture.session, path, [&](auto role, auto phase) {
+        if (role == WorkspaceFileRole::Main && phase == WorkspaceIoPhase::Replace) {
+            fs::rename(lock, directory.path / "retained-writer-lock");
+            write_bytes(lock, "");
+        }
+        return false;
+    });
+    CHECK_FALSE(failed.success);
+    CHECK_FALSE(failed.committed);
+    CHECK(failed.error.find("identity changed") != std::string::npos);
+    CHECK(bytes(path) == before);
+    CHECK(bytes(fs::path{path.string() + ".bak"}) == before);
+    no_temporaries(directory);
+}

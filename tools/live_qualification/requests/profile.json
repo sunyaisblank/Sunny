@@ -1,0 +1,7 @@
+{
+  "bridge_protocol_version": 46,
+  "type": "call",
+  "path": "song",
+  "name": "sunny_get_target_profile",
+  "args": []
+}

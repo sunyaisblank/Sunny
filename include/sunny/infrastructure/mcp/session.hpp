@@ -116,6 +116,12 @@ struct WorkspaceNamespaceHistory {
 };
 
 class RealizationStore;
+class WorkspaceWriter;
+
+/** Process admissions are independent of native history and authored snapshots. */
+struct WorkspaceWriterSession {
+    std::vector<std::shared_ptr<WorkspaceWriter>> admissions;
+};
 
 [[nodiscard]] std::string new_workspace_namespace();
 
@@ -146,6 +152,8 @@ struct McpSession {
         std::make_shared<ProjectDeploymentSession>();
     std::shared_ptr<NativeRealizationSession> realization =
         std::make_shared<NativeRealizationSession>();
+    std::shared_ptr<WorkspaceWriterSession> workspace_writer =
+        std::make_shared<WorkspaceWriterSession>();
 };
 
 } // namespace sunny::infrastructure

@@ -6,7 +6,12 @@
  * Maps MCP tool calls to Orchestrator and Core functions.
  */
 
+#include <algorithm>
+#include <cmath>
+#include <cstdint>
 #include <limits>
+#include <optional>
+#include <string_view>
 #include <sunny/core/detail/serialization_integer.hpp>
 #include <sunny/core/harmony/harmonic_function.hpp>
 #include <sunny/core/harmony/negative_harmony.hpp>
@@ -53,6 +58,101 @@ json history_result(const char* action,
 
 json lom_value_json(const LomValue& value) {
     return std::visit([](const auto& item) -> json { return item; }, value);
+}
+
+bool log_stream_id(const json& value) {
+    return value.is_string() && value.get_ref<const std::string&>().size() == 32 &&
+           std::ranges::all_of(value.get_ref<const std::string&>(), [](char c) {
+               return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+           });
+}
+
+bool log_integer(const json& value, std::int64_t minimum, std::int64_t maximum) {
+    return value.is_number_integer() && value >= minimum && value <= maximum;
+}
+
+bool log_timestamp(const json& value) {
+    return value.is_number() && std::isfinite(value.get<double>()) && value >= 0;
+}
+
+bool remote_log_entry(const json& entry, std::int64_t expected, std::int64_t latest) {
+    if (!entry.is_object() || entry.size() != 5 || !entry.contains("sequence") ||
+        !log_integer(entry.at("sequence"), 1, std::numeric_limits<std::int32_t>::max()) ||
+        entry.at("sequence") != expected || expected > latest || !entry.contains("time") ||
+        !log_timestamp(entry.at("time")))
+        return false;
+    for (const auto* key : {"level", "source", "message"}) {
+        if (!entry.contains(key) || !entry.at(key).is_string() ||
+            entry.at(key).get_ref<const std::string&>().size() >
+                (std::string_view(key) == "message" ? 8000 : 512))
+            return false;
+    }
+    return true;
+}
+
+bool remote_log_response_size(const json& page) {
+    const json envelope = {{"success", true},
+                           {"value", page},
+                           {"bridge_protocol_version", std::numeric_limits<std::uint32_t>::max()}};
+    return envelope.dump(-1, ' ', true).size() <= 16 * 1024 * 1024;
+}
+
+/// Old bridges remain readable for mismatch diagnosis; continuity is unproven.
+bool legacy_remote_log_page(const json& page, int after) {
+    if (!page.is_object() || page.size() != 3 || !page.contains("entries") ||
+        !page.at("entries").is_array() || page.at("entries").size() > 1000 ||
+        !page.contains("truncated") || !page.at("truncated").is_boolean() ||
+        !page.contains("next_sequence") ||
+        !log_integer(page.at("next_sequence"), 0, std::numeric_limits<std::int32_t>::max()))
+        return false;
+    const auto latest = page.at("next_sequence").get<std::int64_t>();
+    const auto& entries = page.at("entries");
+    if (entries.empty())
+        return latest <= after && page.at("truncated") == false && remote_log_response_size(page);
+    if (!entries.front().is_object() || !entries.front().contains("sequence") ||
+        !log_integer(entries.front().at("sequence"), 1, latest))
+        return false;
+    auto expected = entries.front().at("sequence").get<std::int64_t>();
+    if (expected <= after || page.at("truncated") != (expected > std::int64_t(after) + 1))
+        return false;
+    for (const auto& entry : entries)
+        if (!remote_log_entry(entry, expected++, latest)) return false;
+    return expected - 1 == latest && remote_log_response_size(page);
+}
+
+/// Validate the cursor against the request, not merely the response's field types.
+bool remote_log_page(const json& page, int after, const std::optional<std::string>& stream) {
+    constexpr std::int64_t maximum = std::numeric_limits<std::int32_t>::max();
+    if (!page.is_object() || page.size() != 9 || !page.contains("entries") ||
+        !page.at("entries").is_array() || !page.contains("stream_id") ||
+        !log_stream_id(page.at("stream_id")) || !page.contains("observed_at") ||
+        !log_timestamp(page.at("observed_at")))
+        return false;
+    for (const auto* key : {"truncated", "reset", "has_more"})
+        if (!page.contains(key) || !page.at(key).is_boolean()) return false;
+    for (const auto* key : {"next_sequence", "latest_sequence"})
+        if (!page.contains(key) || !log_integer(page.at(key), 0, maximum)) return false;
+    if (!page.contains("oldest_sequence") ||
+        !log_integer(page.at("oldest_sequence"), 1, maximum + 1))
+        return false;
+    const auto latest = page.at("latest_sequence").get<std::int64_t>();
+    const auto oldest = page.at("oldest_sequence").get<std::int64_t>();
+    const auto next = page.at("next_sequence").get<std::int64_t>();
+    const bool reset =
+        (stream && *stream != page.at("stream_id").get_ref<const std::string&>()) || after > latest;
+    const std::int64_t effective_after = reset ? 0 : after;
+    if (page.at("reset") != reset || oldest > latest + 1 ||
+        page.at("truncated") != (oldest > effective_after + 1) || page.at("entries").size() > 1000)
+        return false;
+    auto expected = std::max<std::int64_t>(effective_after + 1, oldest);
+    for (const auto& entry : page.at("entries"))
+        if (!remote_log_entry(entry, expected++, latest)) return false;
+    const auto& entries = page.at("entries");
+    const auto delivered = entries.empty() ? effective_after : expected - 1;
+    if (next != delivered || page.at("has_more") != (next < latest) ||
+        (entries.empty() && next < latest))
+        return false; // A bounded record always fits: an empty page must make no progress owed.
+    return remote_log_response_size(page);
 }
 
 } // namespace
@@ -418,28 +518,56 @@ void register_sunny_tools(McpServer& server,
         "get_ableton_remote_log",
         "Read recent records from the Sunny Remote Script inside Ableton Live: every request "
         "with its outcome, refusals and errors. Pass after_sequence (the next_sequence of a "
-        "previous call) to receive only newer records; truncated means older unseen records "
-        "were discarded.",
+        "previous call) and its stream_id to receive newer records. reset signals a changed "
+        "stream or ahead cursor; truncated signals discarded unseen history. has_more means "
+        "another bounded page is available. observed_at is a fresh log observation, not Live "
+        "readiness. A legacy bridge read exposes unavailable cursor metadata as null.",
         {{"type", "object"},
+         {"additionalProperties", false},
          {"properties",
           {{"after_sequence",
             {{"type", "integer"},
              {"minimum", 0},
              {"maximum", std::numeric_limits<std::int32_t>::max()},
-             {"description", "integer (optional, default 0 for every retained record)"}}}}}},
+             {"description", "integer (optional, default 0 for retained records)"}}},
+           {"stream_id",
+            {{"type", "string"},
+             {"pattern", "^[0-9a-f]{32}$"},
+             {"description", "string (optional, stream_id from the previous page)"}}}}}},
         [&dispatcher](const json& params) -> json {
+            const auto after = sunny::core::detail::checked_integer_or<int>(
+                params, "after_sequence", 0, "after_sequence");
+            if (after < 0 ||
+                (params.contains("stream_id") && !log_stream_id(params.at("stream_id"))))
+                return {{"success", false}, {"error", "Invalid remote log cursor"}};
             if (!dispatcher.online()) return offline_decline(dispatcher);
-            const auto after = params.value("after_sequence", std::int64_t{0});
-            auto response = dispatcher.request(LomProtocol::call_method(
-                LomPaths::song(), "sunny_get_remote_log", {static_cast<int>(after)}));
+            std::optional<std::string> stream;
+            std::vector<LomValue> args{after};
+            if (params.contains("stream_id")) {
+                stream = params.at("stream_id").get<std::string>();
+                args.emplace_back(*stream);
+            }
+            auto response = dispatcher.request(
+                LomProtocol::call_method(LomPaths::song(), "sunny_get_remote_log", args));
             if (!response.success || !response.value)
                 return {{"success", false},
                         {"error", response.error.value_or("Remote log unavailable")}};
             auto log = lom_value_json(*response.value);
-            if (!log.is_object() || !log.contains("entries") || !log["entries"].is_array() ||
-                !log.contains("next_sequence") || !log["next_sequence"].is_number_integer() ||
-                !log.contains("truncated") || !log["truncated"].is_boolean())
-                return {{"success", false}, {"error", "Malformed remote log response"}};
+            if (!remote_log_page(log, after, stream)) {
+                if (stream || !legacy_remote_log_page(log, after))
+                    return {{"success", false}, {"error", "Malformed remote log response"}};
+                // Diagnostic bypass must still read an older mismatched bridge.
+                // Null is unavailable evidence, never a manufactured reset or
+                // fresh timestamp. It cannot qualify the new cursor contract.
+                for (const auto* key : {"stream_id",
+                                        "reset",
+                                        "observed_at",
+                                        "oldest_sequence",
+                                        "latest_sequence",
+                                        "has_more"})
+                    log[key] = nullptr;
+                log["cursor_metadata_available"] = false;
+            }
             log["success"] = true;
             return log;
         });

@@ -748,8 +748,12 @@ sunny::core::Result<void> LomProtocol::validate_request(const LomRequest& reques
         else if (name == "create_scene" || name == "create_midi_track")
             valid = args.size() == 1 && protocol_index(args[0], true);
         else if (name == "sunny_get_remote_log")
-            valid = args.size() == 1 && args[0].is_number_integer() && !args[0].is_number_float() &&
-                    args[0].get<std::int64_t>() >= 0;
+            valid = (args.size() == 1 || args.size() == 2) && protocol_index(args[0]) &&
+                    (args.size() == 1 ||
+                     (args[1].is_string() && args[1].get_ref<const std::string&>().size() == 32 &&
+                      std::ranges::all_of(args[1].get_ref<const std::string&>(), [](char c) {
+                          return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+                      })));
         else if (name == "sunny_set_cue")
             valid = args.size() == 2 && finite_number(args[0]) && args[0].get<double>() >= 0.0 &&
                     args[1].is_string();

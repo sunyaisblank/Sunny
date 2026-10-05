@@ -30,7 +30,10 @@ void register_workspace_tools(McpServer& server, const McpSession& session) {
         "Save all authored documents and owning bindings; preserve the previous valid file as .bak",
         path_schema(),
         [session](const json& params) {
-            const std::filesystem::path path(params.at("path").get<std::string>());
+            const auto admission =
+                acquire_workspace_writer(session, params.at("path").get<std::string>());
+            if (!admission) return error(admission.error());
+            const auto& path = *admission;
             std::optional<std::string> source_path = std::filesystem::absolute(path).string();
             auto metadata = session.realization->metadata;
             // Establish history while the namespace is provably fresh. Once a

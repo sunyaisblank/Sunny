@@ -303,7 +303,7 @@ TEST_CASE("native request validation mirrors the closed current bridge algebra",
         LomProtocol::call_method(LomPaths::song(), "sunny_get_track_count", {1})));
     CHECK_FALSE(LomProtocol::validate_request(
         LomProtocol::call_method(LomPaths::track(0), "sunny_get_track_count")));
-    // The remote log takes exactly one non-negative integer sequence.
+    // Legacy sequence cursors remain valid; epochs are an optional closed extension.
     CHECK(LomProtocol::validate_request(
         LomProtocol::call_method(LomPaths::song(), "sunny_get_remote_log", {0})));
     CHECK(LomProtocol::validate_request(
@@ -316,6 +316,19 @@ TEST_CASE("native request validation mirrors the closed current bridge algebra",
         LomProtocol::call_method(LomPaths::song(), "sunny_get_remote_log", {1.5})));
     CHECK_FALSE(LomProtocol::validate_request(
         LomProtocol::call_method(LomPaths::track(0), "sunny_get_remote_log", {0})));
+    CHECK(LomProtocol::validate_request(LomProtocol::call_method(
+        LomPaths::song(), "sunny_get_remote_log", {0, std::string(32, 'a')})));
+    for (const LomValue& epoch : {LomValue{0},
+                                  LomValue{nlohmann::json(nullptr)},
+                                  LomValue{std::string(31, 'a')},
+                                  LomValue{std::string(32, 'A')},
+                                  LomValue{std::string(32, 'g')}})
+        CHECK_FALSE(LomProtocol::validate_request(
+            LomProtocol::call_method(LomPaths::song(), "sunny_get_remote_log", {0, epoch})));
+    CHECK_FALSE(LomProtocol::validate_request(LomProtocol::call_method(
+        LomPaths::song(), "sunny_get_remote_log", {0, std::string(32, 'a'), 0})));
+    CHECK_FALSE(LomProtocol::validate_request(LomProtocol::call_method(
+        LomPaths::song(), "sunny_get_remote_log", {nlohmann::json(2147483648ULL)})));
     CHECK(LomProtocol::validate_request(
         LomProtocol::set_property(LomPaths::song(), "signature_denominator", 16)));
     CHECK(LomProtocol::validate_request(
