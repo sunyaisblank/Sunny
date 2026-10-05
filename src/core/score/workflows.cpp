@@ -236,6 +236,7 @@ Result<Score> create_score(const ScoreSpec& spec) {
             return std::unexpected(ErrorCode::InvariantViolation);
     }
 
+    retain_score_identities(score, ScoreIdentityReservations{});
     return score;
 }
 
@@ -247,6 +248,7 @@ Result<MutationResult>
 set_formal_plan(Score& score, const std::vector<SectionDefinition>& sections, UndoStack* undo) {
     if (detail::score_version_exhausted(score))
         return std::unexpected(ErrorCode::ArithmeticOverflow);
+    const detail::ScoreIdentityCommit identities(score);
     // Build new section map
     SectionMap new_map;
     auto section_ids = detail::section_id_allocator(score);
@@ -274,7 +276,7 @@ set_formal_plan(Score& score, const std::vector<SectionDefinition>& sections, Un
 
     candidate.section_map = std::move(new_map);
     if (!is_compilable(candidate)) return std::unexpected(ErrorCode::InvalidMutation);
-    if (auto advanced = detail::advance_score_version(candidate); !advanced)
+    if (auto advanced = identities.advance(candidate); !advanced)
         return std::unexpected(advanced.error());
     score = std::move(candidate);
 
@@ -293,6 +295,7 @@ Result<MutationResult> set_section_harmony(Score& score,
                                            UndoStack* undo) {
     if (detail::score_version_exhausted(score))
         return std::unexpected(ErrorCode::ArithmeticOverflow);
+    const detail::ScoreIdentityCommit identities(score);
     if (!valid_workflow_region(score, region)) return std::unexpected(ErrorCode::InvalidRegion);
     auto region_start = score_time_to_absolute_beat(region.start, score.time_map);
     auto region_end = score_time_to_absolute_beat(region.end, score.time_map);
@@ -399,7 +402,7 @@ Result<MutationResult> set_section_harmony(Score& score,
               });
 
     if (!is_compilable(candidate)) return std::unexpected(ErrorCode::InvalidMutation);
-    if (auto advanced = detail::advance_score_version(candidate); !advanced)
+    if (auto advanced = identities.advance(candidate); !advanced)
         return std::unexpected(advanced.error());
     score = std::move(candidate);
 

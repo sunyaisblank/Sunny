@@ -1,0 +1,3 @@
+| models.cpp:54:22:54:26 | call to Beat | Beat constructed with zero denominator. |
+| models.cpp:55:22:55:26 | call to Beat | Beat constructed with zero denominator. |
+| models.cpp:57:27:57:34 | call to Beat | Beat constructed with zero denominator. |

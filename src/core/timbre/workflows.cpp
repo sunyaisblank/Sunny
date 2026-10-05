@@ -832,6 +832,12 @@ Result<void> set_sound_source(TimbreProfile& profile, SoundSourceData source) {
 
 Result<void> add_effect(TimbreProfile& profile, Effect effect) {
     profile.insert_chain.effects.push_back(std::move(effect));
+    if (std::ranges::any_of(validate_timbre(profile), [](const Diagnostic& diagnostic) {
+            return diagnostic.severity == ValidationSeverity::Error;
+        })) {
+        profile.insert_chain.effects.pop_back();
+        return std::unexpected(ErrorCode::TimbreInvalidParameter);
+    }
     return {};
 }
 
@@ -1020,6 +1026,86 @@ Result<void> reorder_effects(TimbreProfile& profile, const std::vector<EffectId>
     return {};
 }
 
+Result<void> replace_effect(TimbreProfile& profile, Effect replacement) {
+    const auto found = std::ranges::find(profile.insert_chain.effects, replacement.id, &Effect::id);
+    if (found == profile.insert_chain.effects.end()) return std::unexpected(not_found());
+    EffectReferenceState previous(profile);
+    auto after = previous.effects;
+    after[static_cast<std::size_t>(found - profile.insert_chain.effects.begin())] =
+        std::move(replacement);
+    if (!relocate_effect_references(profile, previous.effects, after)) {
+        previous.restore(profile);
+        return std::unexpected(ErrorCode::InvalidModTarget);
+    }
+    profile.insert_chain.effects = std::move(after);
+    if (has_error(validate_timbre(profile))) {
+        previous.restore(profile);
+        return std::unexpected(ErrorCode::TimbreInvalidParameter);
+    }
+    return {};
+}
+
+Result<void> remove_automation(TimbreProfile& profile, std::size_t index) {
+    if (index >= profile.parameter_automation.size()) return std::unexpected(not_found());
+    profile.parameter_automation.erase(profile.parameter_automation.begin() +
+                                       static_cast<std::ptrdiff_t>(index));
+    return {};
+}
+
+Result<void> remove_modulation(TimbreProfile& profile, std::size_t index) {
+    if (index >= profile.modulation.routings.size()) return std::unexpected(not_found());
+    profile.modulation.routings.erase(profile.modulation.routings.begin() +
+                                      static_cast<std::ptrdiff_t>(index));
+    return {};
+}
+
+Result<void> remove_macro(TimbreProfile& profile, std::uint8_t index) {
+    const auto found = std::ranges::find(profile.modulation.macro_knobs, index, &MacroKnob::index);
+    if (found == profile.modulation.macro_knobs.end()) return std::unexpected(not_found());
+    EffectReferenceState previous(profile);
+    const auto position = static_cast<std::size_t>(found - profile.modulation.macro_knobs.begin());
+    const auto relocate = [&](std::string& path) -> bool {
+        const auto prefix = std::string{"modulation.macro_knobs["};
+        if (!path.starts_with(prefix)) return true;
+        auto segments = split_path(path);
+        if (!segments || segments->size() < 3) return false;
+        const auto old = parse_index((*segments)[2]);
+        if (!old || *old >= previous.modulation.macro_knobs.size()) return false;
+        if (*old == position) return false;
+        if (*old > position) {
+            const auto close = path.find(']', prefix.size());
+            path = prefix + std::to_string(*old - 1) + path.substr(close);
+        }
+        return true;
+    };
+    profile.modulation.macro_knobs.erase(found);
+    bool relocated = true;
+    for (auto& routing : profile.modulation.routings)
+        relocated &= relocate(routing.target);
+    for (auto& macro : profile.modulation.macro_knobs)
+        for (auto& mapping : macro.mappings)
+            relocated &= relocate(mapping.target);
+    for (auto& automation : profile.parameter_automation)
+        relocated &= relocate(automation.parameter_path);
+    std::map<std::string, DeviceParameter> rendering;
+    for (const auto& [key, mapping] : profile.rendering.parameter_map) {
+        auto path = key;
+        relocated &= relocate(path);
+        rendering.emplace(std::move(path), mapping);
+    }
+    profile.rendering.parameter_map = std::move(rendering);
+    if (!relocated || has_error(validate_timbre(profile))) {
+        previous.restore(profile);
+        return std::unexpected(ErrorCode::InvalidModTarget);
+    }
+    return {};
+}
+
+Result<void> remove_parameter_mapping(TimbreProfile& profile, const std::string& path) {
+    if (profile.rendering.parameter_map.erase(path) == 0) return std::unexpected(not_found());
+    return {};
+}
+
 // =============================================================================
 // Parameter Access
 // =============================================================================
@@ -1203,8 +1289,15 @@ Result<void> add_automation(TimbreProfile& profile, TimbreAutomation automation)
 // Semantic Descriptors
 // =============================================================================
 
-void set_semantic_descriptors(TimbreProfile& profile, SemanticTimbreDescriptor descriptors) {
+Result<void> set_semantic_descriptors(TimbreProfile& profile,
+                                      SemanticTimbreDescriptor descriptors) {
+    auto previous = profile.semantic_descriptors;
     profile.semantic_descriptors = std::move(descriptors);
+    if (has_error(validate_timbre(profile))) {
+        profile.semantic_descriptors = std::move(previous);
+        return std::unexpected(ErrorCode::TimbreInvalidParameter);
+    }
+    return {};
 }
 
 SemanticTimbreDescriptor analyze_timbre(const TimbreProfile& profile) {
@@ -1315,7 +1408,11 @@ Result<void> load_preset(TimbreProfile& profile, const TimbrePreset& preset) {
         }
         applied.emplace_back(slot, previous);
     }
-    profile.semantic_descriptors = preset.semantic_descriptors;
+    if (auto outcome = set_semantic_descriptors(profile, preset.semantic_descriptors); !outcome) {
+        for (auto restore = applied.rbegin(); restore != applied.rend(); ++restore)
+            *restore->first = restore->second;
+        return outcome;
+    }
     return {};
 }
 

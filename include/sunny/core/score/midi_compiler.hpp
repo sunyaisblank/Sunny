@@ -91,6 +91,8 @@ struct MidiNoteData {
     std::uint8_t velocity;              ///< Resolved velocity [1, 127]
     PartId part_id{};                   ///< Source part, retained for per-track deployment
     std::uint8_t release_velocity = 64; ///< Score-owned Note Off intensity [0, 127]
+    EventId attack_event_id{};          ///< The attacking event; tied continuations share it
+    std::size_t attack_note_index = 0;  ///< Note ordinal in that event, before target sorting
 };
 
 struct MidiKeyswitchData {

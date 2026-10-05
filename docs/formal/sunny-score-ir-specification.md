@@ -129,6 +129,7 @@ Every node in the hierarchy is addressable by a structural path. Two addressing 
 | `stale_harmonic_regions` | `Vec<ScoreRegion>` | Harmonic-analysis regions invalidated by edits (§7.2) |
 | `stale_orchestration_regions` | `Vec<ScoreRegion>` | Orchestration-analysis regions invalidated by edits (§7.2) |
 | `version` | `u64` | Monotonically increasing edit counter |
+| `identity_reservations` | `ScoreIdentityReservations` | Persistent typed sets of actually exposed Event, Part, Section, Tuplet, and BeamGroup IDs, including retired identities |
 
 Root identity belongs to the repository that owns multiple documents, not to a pure transformation
 or a process-global allocator. `ScoreSpec` carries the caller-selected identity (standalone creation
@@ -611,7 +612,7 @@ All event types carry a common header:
 | Field | Type | Description |
 |-------|------|-------------|
 | `notes` | `Vec<Note>` | One or more notes (non-empty) |
-| `duration` | `Beat` | Exact structural allocation; for a tuplet member its written glyph comes from `normal_type` |
+| `duration` | `Beat` | Exact structural allocation; a tuplet member's written duration is this allocation multiplied by the cumulative `actual/normal` ratios |
 | `tuplet_context` | `Option<TupletContext>` | Innermost enclosing tuplet, if any |
 | `beam_group` | `Option<Id<BeamGroup>>` | Beam grouping identifier |
 | `slur_start` | `bool` | Whether a slur begins here |
@@ -895,15 +896,15 @@ compiler may admit them.
 | Field | Type | Description |
 |-------|------|-------------|
 | `id` | `Id<TupletContext>` | Shared among all events in this tuplet |
-| `actual` | `u8` | Number of notes in the tuplet (*m* in *m*:*n*) |
-| `normal` | `u8` | Number of notes in the normal division (*n* in *m*:*n*) |
-| `normal_type` | `Beat` | Duration of each normal note |
+| `actual` | `u8` | Number of nominal rhythmic units in the tuplet (*m* in *m*:*n*); not the number of events |
+| `normal` | `u8` | Number of nominal rhythmic units in the normal span (*n* in *m*:*n*) |
+| `normal_type` | `Beat` | Written duration of a nominal rhythmic unit |
 | `nested_in` | `Option<Id<TupletContext>>` | Parent tuplet if nested |
 
 Each measured event stores only its innermost context; following `nested_in` yields an acyclic
-outermost-to-innermost chain. A context's logical direct members are its directly tagged measured
-events plus its direct child contexts, and their count equals `actual`. All descendant measured
-events form one contiguous span.
+outermost-to-innermost chain. All descendant measured events form one contiguous span. Members
+may have unequal durations, and a child context may replace part of an enclosing context's span.
+The rhythmic ratio does not impose an event or child-context cardinality.
 
 Let `A(t)` be the ancestors of context *t*. Its structural span is
 
@@ -911,14 +912,22 @@ Let `A(t)` be the ancestors of context *t*. Its structural span is
 
 The exact `duration` values of all events tagged with *t* or its descendants sum to that span.
 Thus `duration` is already the target-independent structural/sounding allocation; a notation
-compiler must not scale it again. The written note/rest type for a directly tagged member is
-`normal_type`. Nested scaling is the product of every context ratio.
+compiler must not scale it again. An event's written duration is its stored allocation multiplied
+by the product of `actual/normal` for every context in its outermost-to-innermost chain.
+`normal_type` defines the ratio's counting unit rather than every member's note/rest type.
 
 **Example**: A quarter-note triplet in 4/4 has `actual = 3`, `normal = 2`, and
 `normal_type = Beat(1,4)`. Its structural span is `Beat(1,2)` and three equal members each store
 `Beat(1,6)`. If a 3:2 eighth-note child replaces one outer member, its local quarter-note normal
 span is scaled by the outer 2:3 ratio to `Beat(1,6)`; three equal child events each store
 `Beat(1,18)`.
+
+**Mixed-duration example**: A 3:2 eighth-note triplet may contain a written quarter and an eighth.
+Its `normal_type` is `Beat(1,8)`, but its two events store `Beat(1,6)` and `Beat(1,12)` and together
+occupy `Beat(1,4)`. This is the mixed triplet illustrated by the
+[MusicXML notation tutorial](https://www.w3.org/2021/06/musicxml40/tutorial/notation-basics/#tuplets).
+Splitting a member into shorter notes or rests preserves validity when the exact contiguous
+structural span and shared context remain valid; event count is not an additional constraint.
 
 ### 4.10 BeamGroup
 
@@ -932,9 +941,11 @@ explicit group or leave beaming to the target's defaults.
 | `event_ids` | `Vec<Id<Event>>` | Ordered events under this beam |
 | `beam_breaks` | `Vec<u8>` | Reserved secondary-beam metadata; must be empty in the compilable profile |
 
-For beaming, an event's *written duration* is its innermost `TupletContext.normal_type`, or its
-stored duration when it is not in a tuplet. A valid group has a globally unique ID and at least two
-members. Its member IDs are unique, strictly ordered as stored in the Voice, and contiguous among
+For beaming, an event's *written duration* is its stored duration multiplied by the cumulative
+`actual/normal` ratio of its complete tuplet context chain, or its stored duration when it is not
+in a tuplet. Arithmetic or context-chain failures make the group invalid. A valid group has a
+globally unique ID and at least two members. Its member IDs are unique, strictly ordered as stored
+in the Voice, and contiguous among
 that Voice's measured events. Each member is a NoteGroup or Rest with a positive written duration
 shorter than a quarter note. A NoteGroup member is ordinary rather than grace material and carries
 the matching `beam_group` back-reference; every NoteGroup back-reference names exactly the local
@@ -1339,14 +1350,14 @@ therefore deploys as Song.tempo = 120. An out-of-range value returns 4112 before
    Non-standard source tuning adds a capability warning. Even canonical 12-TET remains an explicit
    incomplete target obligation because an existing Live Set may have a different active tuning.
 
-2. **Track creation**: For each Part, create an Ableton MIDI track via the LOM bridge and set its name. Set and immediately read back exact Boolean `Track.arm = false` and `Track.implicit_arm = false`, exact integer `Track.mixer_device.crossfade_assign = 1`, Live's public “neither A nor B” value, and exact integer `panning_mode = 0` before setting `RenderingConfig.pan` through `Track.mixer_device.panning.value`. Live documents armed Tracks as admitting monitored input and recording/overdub participation; `implicit_arm` is its second public arm state used by Push. Live's Split Stereo mode (`1`) replaces the single Stereo Pan operation with independent left/right positions and is not a representation of Sunny's one pan scalar. Aggregate schema-14 evidence requires both arm states to remain false, the final crossfade assignment to remain 1, and final panning mode 0. It also requires the final Track's public `is_frozen` state to be false, because a frozen Session clip plays its freeze audio rather than the current MIDI/device state, and explicitly observed null Group Track membership: a parent Group can add a summing mixer/effects and commonly changes the Part's route without changing its own Track facts. This does not materialise or verify Sunny GroupBuses. The current snapshot schema additionally requires the created Part to retain exact `(has_audio_input, has_midi_input) = (false, true)`, plus exact selected input-routing type/channel dictionaries that are full-dictionary members of Live's corresponding advertised option arrays. This proves the expected MIDI-input Track class and a Live-valid current selection, not the semantic identity or neutrality of the selected source; Sunny performs no input-route mutation and never interprets a presentation label such as “No Input.” The same gate requires exact floating `input_meter_level = output_meter_level = 0.0` plus `input_meter_left = input_meter_right = output_meter_left = output_meter_right = 0.0`. Live documents the first pair as one-second hold peaks and the latter four as smoothed momentary peaks available on audio-output Tracks, with additional GUI load when observed. Sunny reads each once and exports separate hold, stereo-momentary, and conjunctive verdicts. These verdicts exclude bounded metered activity only at the sequential final reads; they do not prove continuous event/signal absence, monitoring state, interface behavior, or sound. Every normal Track also retains its complete ordered ClipSlot vector. Generated Part evidence requires exact slot cardinality/order and Clip occupancy agreement, and every slot to be non-Group, status-zero/not playing, not recording/not will-record, and not triggered. Stop Button presence remains observed target state rather than Sunny intent. This closes a pending action on a later empty cell at the sequential final read, without firing/stopping a slot or proving atomicity, future stability, recording preferences, playback, signal, or sound. On Live 11+, the same Track snapshot retains the exact cardinality of the `arrangement_clips` list, and the generated Part gate requires zero; earlier modeled targets retain null and cannot verify this obligation. Take lanes arrived with Live 12, so the `take_lanes` cardinality is retained and required to be zero only on Live 12+; below Live 12 the snapshot carries null and take-lane absence holds by construction. Count zero proves the requested Arrangement-content absence proposition without serializing private Clip objects. On Live 12+ it also removes the Take Lane branch that Ableton documents as audible under Audition Mode, whose state is not exposed in the public LOM. Neither count proves atomicity, future stability, playback, or sound. Disarming does not establish the monitoring selector: the current public Track LOM omits the mode that Ableton documents as capable of suppressing clip output, so `monitoring_state_observed` and `clip_output_not_suppressed_by_monitoring_verified` remain false even for an unfrozen/disarmed Track gate. Arm/input-class/selection/meter-hold/Session/Arrangement/Take-Lane/crossfade/pan-mode closure does not prove external-input neutrality, output routing, Return-path neutrality, continuous signal, or sound.
+2. **Track creation**: For each Part, create an Ableton MIDI track via the LOM bridge and set its name. Set and immediately read back exact Boolean `Track.arm = false` and `Track.implicit_arm = false`, exact integer `Track.mixer_device.crossfade_assign = 1`, Live's public “neither A nor B” value, and exact integer `panning_mode = 0` before setting `RenderingConfig.pan` through `Track.mixer_device.panning.value`. Live documents armed Tracks as admitting monitored input and recording/overdub participation; `implicit_arm` is its second public arm state used by Push. Live's Split Stereo mode (`1`) replaces the single Stereo Pan operation with independent left/right positions and is not a representation of Sunny's one pan scalar. Aggregate schema-14 evidence requires both arm states to remain false, the final crossfade assignment to remain 1, and final panning mode 0. It also requires the final Track's public `is_frozen` state to be false, because a frozen Session clip plays its freeze audio rather than the current MIDI/device state, and explicitly observed null Group Track membership: a parent Group can add a summing mixer/effects and commonly changes the Part's route without changing its own Track facts. This does not materialise or verify Sunny GroupBuses. The current snapshot schema additionally requires the created Part to retain exact `(has_audio_input, has_midi_input) = (false, true)`, plus exact selected input-routing type/channel dictionaries that are full-dictionary members of Live's corresponding advertised option arrays. This proves the expected MIDI-input Track class and a Live-valid current selection, not the semantic identity or neutrality of the selected source; Sunny performs no input-route mutation and never interprets a presentation label such as “No Input.” The same gate requires exact floating `input_meter_level = output_meter_level = 0.0` plus `input_meter_left = input_meter_right = output_meter_left = output_meter_right = 0.0`. Live documents the first pair as one-second hold peaks and the latter four as smoothed momentary peaks available on audio-output Tracks, with additional GUI load when observed. Sunny reads each once and exports separate hold, stereo-momentary, and conjunctive verdicts. These verdicts exclude bounded metered activity only at the sequential final reads; they do not prove continuous event/signal absence, monitoring state, interface behavior, or sound. Every normal Track also retains its complete ordered ClipSlot vector. Generated Part evidence requires exact slot cardinality/order and Clip occupancy agreement, and every slot to be non-Group, status-zero/not playing, not recording/not will-record, and not triggered. Stop Button presence remains observed target state rather than Sunny intent. This closes a pending action on a later empty cell at the sequential final read, without firing/stopping a slot or proving atomicity, future stability, recording preferences, playback, signal, or sound. On Live 11+, the same Track snapshot retains the exact cardinality of the `arrangement_clips` list, and the generated Part gate requires zero; earlier modeled targets retain null and cannot verify this obligation. Live 11 already has take lanes. The `take_lanes` cardinality is retained and required to be zero only on API-qualified Live 12+; below Live 12 this adapter carries null because API exposure remains unqualified, and take-lane absence remains unverified. Count zero proves the requested Arrangement-content absence proposition without serializing private Clip objects. On Live 12+ it also removes the Take Lane branch that Ableton documents as audible under Audition Mode, whose state is not exposed in the public LOM. Neither count proves atomicity, future stability, playback, or sound. Disarming does not establish the monitoring selector: the current public Track LOM omits the mode that Ableton documents as capable of suppressing clip output, so `monitoring_state_observed` and `clip_output_not_suppressed_by_monitoring_verified` remain false even for an unfrozen/disarmed Track gate. Arm/input-class/selection/meter-hold/Session/Arrangement/Take-Lane/crossfade/pan-mode closure does not prove external-input neutrality, output routing, Return-path neutrality, continuous signal, or sound.
 
    Staff topology is notation layout inside a Part, not playback routing. `staff_count`,
    `staff_clefs`, and `Voice.staff_index` therefore do not create additional Live tracks or clips;
    every sounding Voice in the Part is compiled into that Part's single clip. Track identity remains
    `PartId`, never staff ordinal.
 
-3. **Clip generation**: Create one Session View clip in slot zero per Part, spanning the greater of the structural score duration and the latest compiled musical note end. `ClipSlot.create_clip` specifies neither meter inheritance nor activator/loop/marker/launch/groove/envelope defaults. Set/read back start marker 0, end marker equal to that compiled length, `looping = false`, and `muted = false`, making the Score a finite active unlooped structural interval. Ableton defines an unlooped Clip's played range by these start/end markers; the independently stored loop brace is dormant and unobserved under the false loop invariant. Admitting a looped projection would require separate `loop_start`/`loop_end` intent and evidence. The current snapshot schema independently requires public audio false/MIDI true/Arrangement false identity and read-only `end_time` equality with the requested End Marker. On Live 11+, it also requires Session true, and on Live 12+ Take-Lane false (below Live 12 the take-lane identity is null and holds by construction), then sets/reads back `launch_mode = 0` (Trigger), `launch_quantization = 1` (None), `legato = false`, floating `velocity_amount = 0.0`, and the null `groove` object. An associated groove can non-destructively alter timing, random offsets, and velocity despite exact stored note dictionaries; generated clips therefore require final `has_groove = false`. The public Clip LOM exposes no Follow Action state even though Ableton documents Follow Actions that can stop, restart, or launch clips and override loop/region behavior. Sunny neither fires the Clip nor observes a playback trace, so the structural interval and bounded launch tuple do not prove one-shot playback. Final generated-Clip evidence first requires the complete occupied Session-slot set on its Track to equal exactly `{0}`; target-owned content in any other slot remains observed but makes the projection incomplete. The current snapshot schema retains exact Boolean `is_playing`, `is_recording`, `is_overdubbing`, `is_triggered`, and `will_record_on_start` state. A generated Clip verifies only when all five are false at the sequential final observation; Sunny does not issue a stop, claim atomicity, or guarantee that a later user/controller action cannot change them. Before inserting notes, call the public all-envelope clear through the exact no-argument adapter and require immediate Boolean `has_envelopes = false`; aggregate evidence requires the same final state. Clip Envelopes can otherwise automate/modulate mixer or device controls and carry MIDI controller data. Also set/read back the initial Score signature on each created Clip before inserting notes. Within the clip, each NoteGroup compiles to one or more Live note dictionaries:
+3. **Clip generation**: Create one Session View clip in slot zero per Part, spanning the greater of the structural score duration and the latest compiled musical note end. `ClipSlot.create_clip` specifies neither meter inheritance nor activator/loop/marker/launch/groove/envelope defaults. Set/read back start marker 0, end marker equal to that compiled length, `looping = false`, and `muted = false`, making the Score a finite active unlooped structural interval. Ableton defines an unlooped Clip's played range by these start/end markers; the independently stored loop brace is dormant and unobserved under the false loop invariant. Admitting a looped projection would require separate `loop_start`/`loop_end` intent and evidence. The current snapshot schema independently requires public audio false/MIDI true/Arrangement false identity and read-only `end_time` equality with the requested End Marker. On Live 11+, it also requires Session true, and on API-qualified Live 12+ Take-Lane false (below Live 12 the unavailable take-lane identity remains null and cannot verify false), then sets/reads back `launch_mode = 0` (Trigger), `launch_quantization = 1` (None), `legato = false`, floating `velocity_amount = 0.0`, and the null `groove` object. An associated groove can non-destructively alter timing, random offsets, and velocity despite exact stored note dictionaries; generated clips therefore require final `has_groove = false`. The public Clip LOM exposes no Follow Action state even though Ableton documents Follow Actions that can stop, restart, or launch clips and override loop/region behavior. Sunny neither fires the Clip nor observes a playback trace, so the structural interval and bounded launch tuple do not prove one-shot playback. Final generated-Clip evidence first requires the complete occupied Session-slot set on its Track to equal exactly `{0}`; target-owned content in any other slot remains observed but makes the projection incomplete. The current snapshot schema retains exact Boolean `is_playing`, `is_recording`, `is_overdubbing`, `is_triggered`, and `will_record_on_start` state. A generated Clip verifies only when all five are false at the sequential final observation; Sunny does not issue a stop, claim atomicity, or guarantee that a later user/controller action cannot change them. Before inserting notes, call the public all-envelope clear through the exact no-argument adapter and require immediate Boolean `has_envelopes = false`; aggregate evidence requires the same final state. Clip Envelopes can otherwise automate/modulate mixer or device controls and carry MIDI controller data. Also set/read back the initial Score signature on each created Clip before inserting notes. Within the clip, each NoteGroup compiles to one or more Live note dictionaries:
    - Pitch: `midi(note.pitch)` from the Theory Spec.
    - Velocity: `note.velocity.value` (resolved; see §9.5).
    - Start: TickTime of the event offset within the clip, after grace timing resolution when applicable.
@@ -1366,9 +1377,13 @@ therefore deploys as Song.tempo = 120. An out-of-range value returns 4112 before
    containing ID plus pitch/start/duration/velocity/mute, adapter-owned floating probability
    1.0 and velocity deviation 0.0, and Score-owned floating release velocity. The insertion dictionary explicitly
    sends the same deterministic values. The response must contain the same unique
-   ID set and exact record schema. It also calls `get_all_notes_extended` with the same selected
-   fields and requires exactly the same complete record multiset, proving that the newly generated
-   Clip contains no additional or missing notes. Requested and observed eight-property tuples are
+   ID set and exact record schema. On Live 11.1+ it also calls `get_all_notes_extended` with the
+   same selected fields and requires the same complete record multiset, proving no additional or
+   missing ordinary notes. On Live 11.0 the existing `get_notes_extended` API queries all pitches
+   `[0,128)` and note starts in `[0, generated_clip_end)` quarter-note beats. Selection follows note
+   starts, including notes whose durations cross the query end, rather than clip markers. Its
+   finite `observed_time_span` and false `entire_clip_population_observed` explicitly leave
+   outside-range notes unobserved; matching inserted IDs/properties do not verify a complete batch. Requested and observed eight-property tuples are
    compared as multisets, so no undocumented return-order correspondence is assumed. A
    well-typed, consistent property difference is retained as unverified and warned; extra/missing
    notes, inconsistent queries, or malformed evidence are protocol errors. Recording
@@ -1400,10 +1415,13 @@ remain call-outcome evidence and are not promoted to scalar-state verification. 
 The separate all-envelope clear retains requested/executed/verified counts and one per-Part
 deployment with requested absence, optional observed `has_envelopes`, action, and verdict. A real
 transport requires the exact one-Boolean response; a recording transport claims only intent.
-The paired `get_notes_by_id`/`get_all_notes_extended` evidence verifies Sunny's five Score-derived
-note properties, the three fixed adapter properties, and exact Clip-note-set cardinality. Each
-deployment exposes the requested eight-field Live-domain tuple multiset as well as `observed_notes`, `properties_verified`,
-`notes_verified`, and `note_batches_verified`; the Boolean verdict is therefore derivable from its
+Paired insertion-ID and version-appropriate population readback verifies Sunny's five
+Score-derived note properties and three fixed adapter properties within the observed domain.
+Only whole-population access verifies exact Clip-note-set cardinality. Each deployment exposes
+its requested tuple multiset, `observed_notes`, `properties_verified`,
+`entire_clip_population_observed`, optional `observed_time_span`, `notes_verified`, and
+`note_batches_verified`; the complete-batch verdict additionally requires whole-population
+coverage and is therefore derivable from its
 stored proposition and observation rather than trusted opaquely. It still is not
 audible-output proof or evidence about per-note MPE expression.
 Clearing and finally observing no Clip groove closes one documented playback transformation. The
@@ -1508,7 +1526,7 @@ The implemented Score-to-MIDI behaviours are:
 
 ### 9.3 MidiCompiler
 
-**Definition 9.3.1**. The implemented *MidiCompiler* produces a deterministic `CompiledMidi` event model. The C++ API returns that type and `score_compile_to_midi` returns its JSON representation; it does not return `.mid` file bytes. The infrastructure layer has a separate SMF reader/writer for file interchange.
+**Definition 9.3.1**. The implemented *MidiCompiler* produces a deterministic `CompiledMidi` event model. The C++ API returns that type and `score_compile_to_midi` returns its JSON representation; it does not return `.mid` file bytes. `score_export_midi` uses the infrastructure SMF reader/writer to return actual type-0 file bytes as base64, with the same compilation loss report; its PPQ domain is 1–32767, while the event model admits 1–65535.
 
 Each note event retains both its requested MIDI channel and its source `PartId`. The Ableton compiler routes by `PartId`, so two parts that share a MIDI channel still deploy to separate tracks without duplicating or exchanging notes.
 
@@ -1739,7 +1757,7 @@ are rejected rather than flattened.
 | Hairpin | `<wedge>` within `<direction>` |
 | Tie | `<tie>` and `<tied>`, with inferred stop and stored forward-start endpoints |
 | Slur | `<slur>` within `<notations>` |
-| TupletContext | Numbered `<tuplet type="start|stop">` boundaries at every nesting level + cumulative `<time-modification>` on each member; written `<type>` comes from the innermost `normal_type` |
+| TupletContext | Numbered `<tuplet type="start|stop">` boundaries at every nesting level + cumulative `<time-modification>` on each member; written `<type>` comes from its sounding allocation multiplied by every enclosing `actual/normal` ratio |
 | BeamGroup | Exact primary `<beam number="1">begin|continue|end</beam>` sequence; S14 rejects under-specified secondary-break state before projection |
 | KeySignature | Stored `accidentals` as `<fifths>` plus native major/minor/church `<mode>` within `<attributes>`; a transposing Part receives the written key |
 | TimeSignature | `<time>` within `<attributes>`; unequal stored groups use additive `<beats>` text such as `3+2` |
@@ -1870,7 +1888,7 @@ Voice `ChordSymbol` events remain distinct from the global harmonic-analysis lay
 | TechnicalDirection | Native fingering, string number, rational-cent `\bendAfter`, breath, or caesura; otherwise visible note text plus diagnostic |
 | LyricSyllable | One named `NullVoice` alignment lane plus native `Lyrics \lyricsto` context per verse; `--`, `_`, and `__` project word, skip, and melisma state exactly |
 | BeamGroup | Exact explicit primary `[` / `]` manual beam; S14 rejects secondary-break state that would require per-stem left/right beam counts |
-| Nested TupletContext | Nested `\tuplet actual/normal { ... }` blocks; notes and rests use the innermost stored `normal_type` |
+| Nested TupletContext | Nested `\tuplet actual/normal { ... }` blocks; notes, rests and spacers use their sounding allocation multiplied by every enclosing `actual/normal` ratio |
 | PartDirective | Exact-time italic start text and explicit `end …` text in the Part's annotation layer |
 | ChordSymbol | Exact-time bold display text retaining root, quality, bass, Roman text, and extensions; structured numeral/key/inversion/degree state remains source-owned and produces a chordmode-semantic residual |
 | TempoMap | Exact stored beat unit and rational rate; a Linear label is placed at the previous event and its exact target mark at the destination; metric units remain visible; target curve limits are diagnosed |
@@ -1929,7 +1947,7 @@ Validation produces a list of diagnostics, each classified by severity:
 | S5 | Error | TimeSignatureMap begins at bar 1 and its entries are in-score and ordered; group positivity/numerator representability/power-of-two denominator are `TimeSignature` construction and parser invariants, so validation emits no diagnostic for an impossible malformed value |
 | S6 | Error | KeySignatureMap begins exactly at `ScoreTime(1, 0)`; every entry is an in-score, in-meter point; entries are strictly ordered |
 | S7 | Error | A tied note's next measured event in the same voice is a NoteGroup containing the same ordinary (non-grace) pitch; intervening point events do not break adjacency |
-| S8 | Error | Tuplet definitions agree; ratios are positive; nesting is acyclic; logical members are contiguous and match `actual`; descendant durations sum to the ancestor-scaled structural span |
+| S8 | Error | Tuplet definitions agree; ratios are positive; nesting is acyclic; descendant measured members are contiguous and their exact durations sum to the ancestor-scaled structural span; `actual` counts rhythmic units rather than events |
 | S9 | Error | Section spans do not overlap at the same nesting level |
 | S10 | Error | Section hierarchy is properly nested |
 | S11 | Error | Tone row (if present) is a valid permutation of 12 pitch classes |
@@ -1994,17 +2012,27 @@ unchanged.
 Topology-changing operations construct or prove the complete affected measure partition before
 commit. Semantic endpoint deletion cascades to its paired endpoint. A transform that cannot retain
 a Voice-scoped span or BeamGroup identity removes the complete relation and returns a `MUT1`
-warning; it never leaves an orphan or silently assigns a new identity. Event-ID allocation is
-document-local rather than process-global: each candidate operation indexes the identifiers already
-present, including deserialised values, and assigns the lowest unused positive value. Part and
-Section authoring uses the same rule. Rejection discards the local allocation state, so it consumes
-no hidden process identity. A present `UINT64_MAX` does not itself exhaust the domain when a lower
-positive hole exists, and no allocator performs a wrapping increment. Pure reduction views that
-replace all event content number their new events deterministically from one; a part extraction
-that preserves source events indexes those retained identifiers before adding cues. On supported
-64-bit targets a materialised derived-view event vector exhausts addressable memory before its
-fresh positive `uint64` cursor; the legacy Score-returning view APIs have no separate allocation
-error channel.
+warning; it never leaves an orphan or silently assigns a new identity. Typed-ID allocation is
+document-local rather than process-global: each candidate operation indexes both represented IDs
+and `Score.identity_reservations`, assigning the lowest unused positive value in its own typed
+domain. Event, Part, Section, Tuplet, and BeamGroup reservations are separate ordered sets. Each
+successful raw mutation retains the union of its before/after exposed IDs, including objects
+retired by deletion or notation repair. Failure discards private allocation work and leaves the
+reservations, document, version, and history unchanged. Reserving an imported `UINT64_MAX` reserves
+only that value; it does not reserve untouched holes below it or force a max-plus-one cursor. No
+allocator performs a wrapping increment.
+
+These reservations belong to the Score value and its canonical codec, so private candidates,
+immutable snapshots, and save/load cycles retain the same identity history without process-global
+or thread-local state. Directly assembled Score values remain admissible without manually seeding
+the sets: allocators also inspect actual represented IDs, and successful mutation/ownership
+boundaries and serialization collect them. The public `collect_score_identities` helper collects
+represented plus reserved identities; `retain_score_identities(restored,current)` unions both
+documents' identity histories without remapping content or changing their versions.
+
+Pure reduction views that replace all event content number their new events deterministically
+from one under their caller-selected new root identity; part extraction indexes retained events
+before adding cues. Reduction APIs propagate failure through `Result<Score>`.
 
 The version domain is the closed `uint64` interval. Before any raw mutation that would publish a
 new Score state, the implementation admits the operation only if `version < UINT64_MAX`. An
@@ -2079,7 +2107,7 @@ transition; only an available traversal then applies the exhaustion check.
 
 ### 11.7 Undo/Redo
 
-Every mutation records the complete document snapshot that preceded it (§11.1). Undo saves the live document onto the redo stack and restores the popped snapshot; redo mirrors this. Any new mutation clears the redo history.
+Mutations record the complete preceding document snapshot when an `UndoStack` is supplied (§11.1). Undo saves the live document onto the redo stack and restores the popped content; redo mirrors this. Restored content keeps its original typed IDs, while its reservations union the restored and current histories. Thus inserting Event 1, undoing it, and inserting different content allocates Event 2 rather than reusing Event 1. Full-content identity comparisons exclude the monotonic version and reservation metadata. Any new mutation clears redo history; reservation history survives capacity pruning and disabled undo recording.
 
 **Group operations**: A sequence of mutations can be grouped as a single undoable unit (e.g., "reorchestrate bars 33–48" might involve dozens of individual mutations, but undoing it reverts all of them at once).
 
@@ -2135,6 +2163,14 @@ The Score IR exposes its operations as MCP (Model Context Protocol) tools, exten
 | `score_set_tuning` | Atomically replace the name, reference note/frequency, and exact 128-entry cent function |
 | `score_set_formal_plan` | Define the SectionMap (e.g., "sonata form in D major, 3 sections") |
 | `score_add_part` | Add an instrument to the score with Appendix A defaults and the first free MIDI channel |
+| `score_remove_part` | Remove a Part and its owned bound siblings; refuse retained incoming references |
+| `score_reorder_parts` | Apply an exact Part permutation while retaining typed identities |
+| `score_insert_measures` | Insert whole bars and atomically relocate bound automation and morph anchors |
+| `score_delete_measures` | Delete whole bars, report removed controls, clip morph spans, and relocate survivors |
+| `score_set_time_signature` | Apply positive ordered additive groups and a power-of-two denominator; bound controls must still fit |
+| `score_set_key_signature` | Apply an exact spelled root and registered mode; derive or validate the fifths count |
+| `score_set_tempo_map` | Replace a caller-ordered exact rational map with explicit incoming linear/metric payloads |
+| `score_assign_instrument` | Apply standard notation range/transposition while preserving concert pitches and custom rendering/staff settings; refuse pitched/unpitched migration |
 | `score_set_section_harmony` | Atomically construct complete registered chord voicings and per-position local-key analyses for a section; reject out-of-range members, unknown qualities, and non-chord slash basses |
 
 **Arrangement tools** (mid-level, operating on parts and regions):
@@ -2148,6 +2184,13 @@ The Score IR exposes its operations as MCP (Model Context Protocol) tools, exten
 | `score_set_dynamics` | Apply dynamic markings to a region |
 | `score_set_articulation` | Apply articulations to notes in a region |
 | `score_set_articulation_mapping` | Set or remove one validated part/articulation MIDI mapping |
+| `score_delete_region` | Delete a half-open exact ScoreTime span |
+| `score_copy_region` | Copy an exact span to an exact destination |
+| `score_move_region` | Move an exact span to an exact destination |
+| `score_retrograde_region` | Reverse allocations within an exact span |
+| `score_invert_region` | Reflect pitches around an exact spelled axis |
+| `score_augment_region` | Multiply durations/offsets by an exact positive factor |
+| `score_diminish_region` | Divide durations/offsets by an exact positive factor |
 
 **Detail tools** (low-level, operating on individual events):
 
@@ -2158,6 +2201,11 @@ The Score IR exposes its operations as MCP (Model Context Protocol) tools, exten
 | `score_modify_note` | Change pitch, duration, attack velocity, release velocity, or articulation |
 | `score_delete_event` | Remove an event |
 | `score_set_tie` | Set or clear the forward tie of one note; a tie needs an adjacent same-pitch continuation, so both notes are inserted first |
+| `score_add_voice` | Add a distinct voice in one Part/bar, optionally selecting a staff |
+| `score_remove_voice` | Remove one structural voice, retaining its observed event identities |
+| `score_insert_hairpin` | Add an exact crescendo/diminuendo span and optional target dynamic |
+| `score_create_tuplet_group` | Attach a new standalone context to an exact contiguous measured span whose already-scaled allocation equals `normal * normal_type`; nesting/conflicts are refused |
+| `score_remove_tuplet_group` | Remove standalone notation without changing note/rest allocations; nested references are refused and retired IDs remain reserved |
 | `score_transpose` | Transpose a note, event, or region |
 
 **History tools**:
@@ -2190,6 +2238,7 @@ The Score IR exposes its operations as MCP (Model Context Protocol) tools, exten
 | Tool | Description |
 |------|-------------|
 | `score_compile_to_midi` | Compile to MIDI event data |
+| `score_export_midi` | Serialize actual SMF type-0 bytes as base64, preserving the compilation report |
 | `score_compile_to_musicxml` | Compile to MusicXML |
 | `score_compile_to_lilypond` | Compile to LilyPond |
 
@@ -2270,7 +2319,7 @@ The implemented Score IR format is a single versioned JSON document for human re
 ### 13.2 Versioning
 
 The serialisation format includes a schema version number. The current library writes schema
-version 8 and accepts versions 1 through 8, applying its version-specific defaults while loading
+version 9 and accepts versions 1 through 9, applying its version-specific defaults while loading
 older documents. Schema versions 1–3 used one optional unstructured `lyric` string; loading
 migrates it to verse 1, `Single`, without an extender. Version 4 writes the structured `lyrics`
 array and persists the owned key-mode `name` and non-semantic `description`; an older key payload
@@ -2289,6 +2338,14 @@ current document may not omit it. Version 8 adds optional structured `numeral`, 
 `degrees` fields to ChordSymbol. Versions 1–7 migrate their absence to empty option/vector values;
 a legacy-labelled document already carrying them preserves and validates that forward evidence.
 When present, every nested numeral key and degree field is mandatory.
+Version 9 requires `identity_reservations` with five arrays named `events`, `parts`, `sections`,
+`tuplets`, and `beams`. Each is a strictly increasing, duplicate-free sequence of checked unsigned
+64-bit IDs; together they must cover the document's actually represented IDs in those domains.
+Writers collect actual IDs as well as stored retired reservations, giving directly assembled values
+one canonical encoding. Versions 1–8 without this metadata migrate by reserving only IDs actually
+represented in the loaded document: unavailable historical deletions cannot be reconstructed, and
+no ranges beneath an imported maximum are invented. A legacy-labelled file carrying explicit
+reservation metadata preserves and validates it, then unions actual IDs.
 Missing, zero, or future versions are rejected explicitly; clients must not assume that an
 older runtime can read a newer document.
 
@@ -2344,8 +2401,10 @@ run concurrently on it without retaining a document lock.
 4. On a callable error or failed structural validation, discard (C). Snapshot identity and
    version remain exactly (S_v).
 5. If `v` is the maximum `uint64` value, reject with `ArithmeticOverflow` before invoking `f`.
-6. Otherwise set `C.version = v + 1`, construct an immutable snapshot, and replace the current
-   snapshot under one exclusive commit lock.
+6. Otherwise retain the union of (S_v)'s and (C)'s represented/reserved identities, set
+   `C.version = v + 1`, construct an immutable snapshot, and replace the current snapshot under one
+   exclusive commit lock. Restoring prior content through a transaction therefore cannot erase
+   identities retired in a later committed state.
 
 The version increment denotes one externally visible transaction, even if its candidate work
 composes several raw mutations. The callable must confine transaction-dependent side effects to

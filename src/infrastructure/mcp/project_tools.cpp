@@ -11,9 +11,16 @@
 #include <string_view>
 #include <sunny/core/detail/serialization_integer.hpp>
 #include <sunny/core/project/validation.hpp>
+#include <sunny/infrastructure/ableton/authority_transport.hpp>
+#include <sunny/infrastructure/ableton/detail/managed_fingerprint.hpp>
+#include <sunny/infrastructure/ableton/native_units.hpp>
 #include <sunny/infrastructure/ableton/target_profile.hpp>
 #include <sunny/infrastructure/formats/ableton_project.hpp>
+#include <sunny/infrastructure/mcp/project_session.hpp>
 #include <sunny/infrastructure/mcp/project_tools.hpp>
+#include <sunny/infrastructure/mcp/realization_tools.hpp>
+#include <sunny/infrastructure/mcp/session_ids.hpp>
+#include <sunny/infrastructure/mcp/workspace_tools.hpp>
 #include <vector>
 
 namespace sunny::infrastructure {
@@ -746,6 +753,9 @@ json note_postcondition_evidence_j(
              {"observed_notes", std::move(observed)},
              {"identity_verified", evidence.identity_verified},
              {"properties_verified", evidence.properties_verified},
+             {"entire_clip_population_observed", evidence.entire_clip_population_observed},
+             {"observed_time_span",
+              evidence.observed_time_span ? json(*evidence.observed_time_span) : json(nullptr)},
              {"verified", evidence.verified}});
     }
     return encoded;
@@ -1233,6 +1243,8 @@ json mutation_journal_j(const std::vector<AbletonMutationJournalEntry>& journal)
              {"outcome", mutation_outcome_name(entry.outcome)},
              {"response_value", lom_value_j(entry.response_value)},
              {"response_error", entry.response_error ? json(*entry.response_error) : json(nullptr)},
+             {"legacy_receipt",
+              entry.legacy_receipt ? legacy_receipt_to_json(*entry.legacy_receipt) : json{}},
              {"target_may_have_mutated", entry.target_may_have_mutated()}});
     }
     return encoded;
@@ -1266,6 +1278,8 @@ json plan_j(std::uint64_t plan_id, const formats::AbletonProjectDeploymentPlan& 
             {"plan_id", plan_id},
             {"one_shot", true},
             {"ppq", plan.ppq},
+            {"planning_authority",
+             plan.planning_authority ? legacy_authority_to_json(*plan.planning_authority) : json{}},
             {"target_snapshot", target_snapshot_to_json(plan.target_snapshot)},
             {"part_tracks", part_tracks_j(plan.part_tracks)},
             {"output_routing_bindings",
@@ -1304,6 +1318,284 @@ std::optional<ResolvedProject> resolve_stored_project(const StoredProjectDeploym
 } // namespace
 
 void register_project_tools(McpServer& server, const McpSession& session, LomTransport* transport) {
+    auto legacy_history = [runtime = session.realization](bool disposition) {
+        if (disposition && !runtime->namespace_saved_durably)
+            throw std::runtime_error(
+                "Save the current workspace durably before history disposition");
+        if (!runtime->metadata.history_base_directory)
+            throw std::runtime_error("Current workspace native history is unavailable");
+        if (!runtime->store) {
+            auto opened = RealizationStore::open(*runtime->metadata.history_base_directory,
+                                                 runtime->metadata.workspace_namespace,
+                                                 RealizationStoreMode::OpenExisting);
+            if (!opened) {
+                runtime->history_error = opened.error().message;
+                throw std::runtime_error(*runtime->history_error);
+            }
+            runtime->store = std::move(*opened);
+            runtime->history_error.reset();
+        }
+        if (runtime->store->workspace_namespace() != runtime->metadata.workspace_namespace)
+            throw std::runtime_error("Current workspace namespace/history mismatch");
+        return runtime->store;
+    };
+    server.register_tool(
+        "legacy_ableton_request",
+        "Execute one closed musical command with original-document authority and a durable "
+        "workflow fence",
+        json{{"type", "object"},
+             {"additionalProperties", false},
+             {"required", json::array({"command", "bridge_instance", "document_token"})},
+             {"properties",
+              {{"command", {{"type", "object"}}},
+               {"bridge_instance", {{"type", "string"}, {"pattern", "^[0-9a-f]{32}$"}}},
+               {"document_token", {{"type", "string"}, {"pattern", "^[0-9a-f]{32}$"}}}}}},
+        [transport](const json& params) -> json {
+            json output{{"success", false},
+                        {"workspace_namespace", nullptr},
+                        {"receipt", nullptr},
+                        {"value", nullptr},
+                        {"error", nullptr}};
+            if (!params.is_object() || params.size() != 3 || !params.contains("command") ||
+                !params.contains("bridge_instance") || !params.contains("document_token")) {
+                output["error"] = "Exact closed command and original epoch required";
+                return output;
+            }
+            const auto id_valid = [](const json& v) {
+                if (!v.is_string()) return false;
+                const auto& text = v.get_ref<const std::string&>();
+                return text.size() == 32 && std::ranges::all_of(text, [](char c) {
+                           return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+                       });
+            };
+            if (!id_valid(params.at("bridge_instance")) || !id_valid(params.at("document_token"))) {
+                output["error"] = "Original epoch IDs must be 32 lowercase hex characters";
+                return output;
+            }
+            auto command = legacy_command_from_json(params.at("command"));
+            if (!command || LomProtocol::is_read_only_request(*command)) {
+                output["error"] = "A validated musical mutation Command is required";
+                return output;
+            }
+            if (!transport || transport->records_without_execution() ||
+                !current_request_control() || native_request_revoked() ||
+                !transport->ensure_connected()) {
+                output["error"] = "Executing admitted native authority transport unavailable";
+                return output;
+            }
+            auto authority = transport->capture_legacy_authority();
+            if (!authority || !authority->has_value()) {
+                output["error"] = "Original native graph capture unavailable";
+                return output;
+            }
+            output["workspace_namespace"] = (**authority).workspace_namespace;
+            if ((**authority).scope.at("bridge_instance") != params.at("bridge_instance") ||
+                (**authority).scope.at("document_token") != params.at("document_token")) {
+                static_cast<void>(transport->finish_legacy_workflow(false));
+                output["error"] =
+                    "Caller original epoch is stale; no workflow or operation was fenced";
+                return output;
+            }
+            LegacyWorkflowRecipe recipe;
+            recipe.kind = "single_request";
+            recipe.authority = **authority;
+            recipe.intent_fingerprint = *managed_detail::managed_digest(params.at("command"));
+            recipe.commands.push_back({{"command", params.at("command")}, {"phase", 0}});
+            if (!transport->activate_legacy_workflow(recipe)) {
+                static_cast<void>(transport->finish_legacy_workflow(false));
+                output["error"] = "Saved current durable workspace or original native workflow "
+                                  "activation unavailable";
+                return output;
+            }
+            auto response = transport->send(*command);
+            auto finalized = transport->finish_legacy_workflow(response.success);
+            output["success"] = response.success && finalized.has_value();
+            if (response.legacy_receipt)
+                output["receipt"] = legacy_receipt_to_json(*response.legacy_receipt);
+            if (response.value)
+                output["value"] =
+                    std::visit([](const auto& v) { return json(v); }, *response.value);
+            if (response.error)
+                output["error"] = *response.error;
+            else if (!finalized)
+                output["error"] = "Native evidence retained; durable workflow finalization failed";
+            return output;
+        });
+    server.register_tool(
+        "legacy_ableton_history",
+        "Inspect current namespace workflow fences without issuing dispatch permits",
+        json{{"type", "object"},
+             {"additionalProperties", false},
+             {"required", json::array({"workspace_namespace"})},
+             {"properties",
+              {{"workspace_namespace", {{"type", "string"}}},
+               {"workflow_id", {{"type", "string"}}},
+               {"after_ordinal", {{"type", "integer"}, {"minimum", 0}}},
+               {"limit", {{"type", "integer"}, {"minimum", 1}, {"maximum", 32}}}}}},
+        [legacy_history](const json& p) -> json {
+            for (const auto& [key, value] : p.items()) {
+                static_cast<void>(value);
+                if (key != "workspace_namespace" && key != "workflow_id" &&
+                    key != "after_ordinal" && key != "limit")
+                    return error_response("Unknown history field");
+            }
+            auto store = legacy_history(false);
+            if (p.at("workspace_namespace") != store->workspace_namespace())
+                return error_response("Original current workspace namespace required");
+            json records = json::array();
+            if (!p.contains("workflow_id")) {
+                for (const auto& [id, w] : store->legacy_workflows())
+                    records.push_back({{"workflow_id", id},
+                                       {"kind", w.recipe.kind},
+                                       {"intent_fingerprint", w.recipe.intent_fingerprint},
+                                       {"state", w.state},
+                                       {"child_count", w.children.size()}});
+                return json{{"success", true},
+                            {"workspace_namespace", store->workspace_namespace()},
+                            {"unresolved", store->has_unresolved_legacy_workflow()},
+                            {"workflows", records}};
+            }
+            const auto found =
+                store->legacy_workflows().find(p.at("workflow_id").get<std::string>());
+            if (found == store->legacy_workflows().end())
+                return error_response("Original workflow is absent");
+            const auto after =
+                           detail::checked_integer_or<unsigned>(p, "after_ordinal", 0, "ordinal"),
+                       limit = detail::checked_integer_or<unsigned>(p, "limit", 32, "limit");
+            if (limit < 1 || limit > 32) return error_response("History limit must be 1..32");
+            const auto& w = found->second;
+            for (std::size_t i = after; i < w.children.size() && records.size() < limit; ++i) {
+                const auto& c = w.children[i];
+                json latest =
+                    c.evidence.empty() ? json{} : legacy_receipt_to_json(c.evidence.back());
+                records.push_back(
+                    {{"token", legacy_token(c.prepared)},
+                     {"outcome", latest.is_null() ? json("fenced") : latest.at("outcome")},
+                     {"delivery", latest.is_null() ? json{} : latest.at("delivery")},
+                     {"diagnostic",
+                      !c.evidence.empty() && c.evidence.back().journal
+                          ? c.evidence.back().journal->at("diagnostic")
+                          : json{}}});
+            }
+            return json{{"success", true},
+                        {"workspace_namespace", store->workspace_namespace()},
+                        {"workflow_id", w.workflow_id},
+                        {"state", w.state},
+                        {"disposition", w.disposition ? json(*w.disposition) : json{}},
+                        {"authority", legacy_authority_to_json(w.recipe.authority)},
+                        {"children", records},
+                        {"next_ordinal", after + records.size()},
+                        {"has_more", after + records.size() < w.children.size()}};
+        });
+    server.register_tool(
+        "legacy_ableton_reconcile",
+        "Query only one original durable workflow child; never prepare, execute, or resume",
+        json{{"type", "object"},
+             {"additionalProperties", false},
+             {"required", json::array({"workspace_namespace", "workflow_id", "operation_id"})},
+             {"properties",
+              {{"workspace_namespace", {{"type", "string"}}},
+               {"workflow_id", {{"type", "string"}}},
+               {"operation_id", {{"type", "string"}}}}}},
+        [legacy_history, transport](const json& p) -> json {
+            if (!p.is_object() || p.size() != 3 || !p.contains("workspace_namespace") ||
+                !p.contains("workflow_id") || !p.contains("operation_id"))
+                return error_response("Exact original namespace/workflow/operation required");
+            auto store = legacy_history(false);
+            if (p.at("workspace_namespace") != store->workspace_namespace())
+                return error_response("Original current namespace required");
+            auto found = store->legacy_workflows().find(p.at("workflow_id").get<std::string>());
+            if (found == store->legacy_workflows().end())
+                return error_response("Original workflow absent");
+            auto child = std::ranges::find_if(found->second.children, [&](const auto& c) {
+                return c.prepared.intent.at("operation_id") == p.at("operation_id");
+            });
+            if (child == found->second.children.end() || !transport ||
+                !transport->ensure_connected())
+                return error_response("Original child or read-only transport unavailable");
+            auto receipt = reconcile_legacy_operation(child->prepared, *transport);
+            if (!receipt) return error_response("Original-token query codec failed");
+            auto saved = store->append_legacy_evidence(found->first, *receipt);
+            return json{{"success", true},
+                        {"workspace_namespace", store->workspace_namespace()},
+                        {"query_only", true},
+                        {"dispatch_permit", false},
+                        {"receipt", legacy_receipt_to_json(*receipt)},
+                        {"history_saved", saved.has_value()},
+                        {"history_error", saved ? json{} : json(saved.error().message)}};
+        });
+    server.register_tool(
+        "legacy_ableton_dispose",
+        "Explicitly acknowledge an unresolved retained native state; does not execute or restore "
+        "any dispatch permit",
+        json{{"type", "object"},
+             {"additionalProperties", false},
+             {"required", json::array({"workspace_namespace", "workflow_id", "retained_state"})},
+             {"properties",
+              {{"workspace_namespace", {{"type", "string"}}},
+               {"workflow_id", {{"type", "string"}}},
+               {"retained_state", {{"type", "string"}, {"minLength", 1}, {"maxLength", 4096}}}}}},
+        [legacy_history](const json& p) -> json {
+            if (!p.is_object() || p.size() != 3 || !p.contains("workspace_namespace") ||
+                !p.contains("workflow_id") || !p.contains("retained_state") ||
+                !current_request_control() || request_stop_requested())
+                return error_response(
+                    "Exact explicit retained-state disposition and current request required");
+            auto store = legacy_history(true);
+            if (p.at("workspace_namespace") != store->workspace_namespace())
+                return error_response("Original current namespace required");
+            auto result = store->dispose_legacy_workflow(p.at("workflow_id").get<std::string>(),
+                                                         p.at("retained_state").get<std::string>());
+            return json{{"success", result.has_value()},
+                        {"workspace_namespace", store->workspace_namespace()},
+                        {"dispatch_permit", false},
+                        {"native_mutation", false},
+                        {"error", result ? json{} : json(result.error().message)}};
+        });
+
+    register_project_authoring_tools(server, session);
+    register_workspace_tools(server, session);
+    register_project_realization_tools(server, session, transport);
+    server.register_tool(
+        "resolve_native_display_value",
+        "Read a finite native parameter's display mapping without writing to Live",
+        {{"type", "object"},
+         {"properties",
+          {{"track_index", {{"type", "integer"}, {"minimum", 0}}},
+           {"device_index", {{"type", "integer"}, {"minimum", 0}}},
+           {"capability_id", {{"type", "string"}}},
+           {"target", {{"type", "number"}}},
+           {"tolerance", {{"type", "number"}, {"minimum", 0}}}}},
+         {"required", {"track_index", "device_index", "capability_id", "target", "tolerance"}}},
+        [transport](const json& params) -> json {
+            if (!transport) return {{"success", false}, {"error", "Ableton transport unavailable"}};
+            const auto track =
+                detail::checked_integer<int>(params.at("track_index"), "track_index");
+            const auto device =
+                detail::checked_integer<int>(params.at("device_index"), "device_index");
+            const auto path = LomPath::parse("song/tracks/" + std::to_string(track) + "/devices/" +
+                                             std::to_string(device));
+            auto observed =
+                resolve_native_display_value(path,
+                                             params.at("capability_id").get<std::string>(),
+                                             params.at("target").get<double>(),
+                                             params.at("tolerance").get<double>(),
+                                             *transport);
+            if (!observed)
+                return {{"success", false},
+                        {"error", "Native display observation rejected"},
+                        {"error_code", static_cast<int>(observed.error())}};
+            return {{"success", observed->status == NativeDisplayResolutionStatus::Candidate},
+                    {"status",
+                     observed->status == NativeDisplayResolutionStatus::Candidate ? "candidate"
+                     : observed->status == NativeDisplayResolutionStatus::Declined
+                         ? "declined"
+                         : "observation_unavailable"},
+                    {"reason", observed->reason},
+                    {"diagnostic", observed->diagnostic},
+                    {"formatter_calls", observed->formatter_calls},
+                    {"evidence", observed->evidence ? *observed->evidence : json(nullptr)}};
+        });
     const auto schema =
         json{{"type", "object"},
              {"properties",
@@ -1344,6 +1636,20 @@ void register_project_tools(McpServer& server, const McpSession& session, LomTra
             std::string error;
             auto project = resolve_project(params, scores, timbres, mixes, error);
             if (!project) return error_response(error);
+            const auto observed_plan_id = plans->plans.empty() ? 0 : plans->plans.rbegin()->first;
+            auto allocation =
+                mcp_detail::checked_session_id_batch(plans->next_plan_id, observed_plan_id);
+            if (!allocation)
+                return json{{"error", "Project deployment plan identity allocation rejected"},
+                            {"error_code", static_cast<int>(allocation.error())}};
+            constexpr std::size_t max_retained_plans = 256;
+            std::vector<std::uint64_t> prune_ids;
+            for (const auto& [plan_id, retained] : plans->plans) {
+                if (plans->plans.size() - prune_ids.size() < max_retained_plans) break;
+                if (retained.consumed) prune_ids.push_back(plan_id);
+            }
+            if (plans->plans.size() - prune_ids.size() >= max_retained_plans)
+                return error_response("Too many unconsumed project deployment plans");
             if (transport == nullptr || !transport->ensure_connected())
                 return json{{"success", false},
                             {"connected", false},
@@ -1363,29 +1669,22 @@ void register_project_tools(McpServer& server, const McpSession& session, LomTra
                             {"connected", transport->is_connected()},
                             {"error_code", static_cast<int>(plan.error())},
                             {"error", "Ableton project planning failed"}};
-            if (plans->next_plan_id == std::numeric_limits<std::uint64_t>::max())
-                return error_response("Project deployment plan ID space exhausted");
-            constexpr std::size_t max_retained_plans = 256;
-            for (auto item = plans->plans.begin();
-                 plans->plans.size() >= max_retained_plans && item != plans->plans.end();) {
-                if (item->second.consumed)
-                    item = plans->plans.erase(item);
-                else
-                    ++item;
-            }
-            if (plans->plans.size() >= max_retained_plans)
-                return error_response("Too many unconsumed project deployment plans");
-
-            const auto plan_id = plans->next_plan_id;
+            const auto plan_id = allocation->first;
             StoredProjectDeploymentPlan stored;
             stored.score_id = project->score_id;
             stored.timbre_profile_ids = project->profile_ids;
             stored.mix_graph_id = project->mix_graph_id;
             stored.plan = std::move(*plan);
-            const auto [position, inserted] = plans->plans.emplace(plan_id, std::move(stored));
-            if (!inserted) return error_response("Project deployment plan ID collision");
-            ++plans->next_plan_id;
-            return plan_j(plan_id, *position->second.plan);
+            auto response = plan_j(plan_id, *stored.plan);
+            static_cast<void>(response.dump());
+            std::map<std::uint64_t, StoredProjectDeploymentPlan> prepared;
+            prepared.emplace(plan_id, std::move(stored));
+            // All fallible candidate work is complete before canonical publication.
+            plans->plans.merge(prepared);
+            for (const auto retired_id : prune_ids)
+                plans->plans.erase(retired_id);
+            plans->next_plan_id = allocation->next;
+            return response;
         });
 
     const auto apply_schema =

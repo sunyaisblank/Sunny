@@ -36,7 +36,12 @@ enum class CadenceType {
     Plagal,       ///< Plagal Cadence: IV→I
     Deceptive,    ///< Deceptive Cadence: V→vi
     PhrygianHalf, ///< Phrygian Half Cadence: iv6→V (minor)
-    None          ///< No cadence detected
+    None,         ///< No cadence detected
+    // Traditional phrase-analysis spellings share the same cadence contract.
+    HC = Half,
+    PC = Plagal,
+    DC = Deceptive,
+    Phrygian = PhrygianHalf
 };
 
 /**

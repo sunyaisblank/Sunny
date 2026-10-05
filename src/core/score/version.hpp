@@ -20,4 +20,23 @@ namespace sunny::core::detail {
     return {};
 }
 
+/** Capture pre-operation IDs privately; publish their union only on success. */
+class ScoreIdentityCommit {
+  public:
+    explicit ScoreIdentityCommit(const Score& before)
+        : observed_(collect_score_identities(before)) {}
+
+    void retain(Score& candidate) const { retain_score_identities(candidate, observed_); }
+
+    [[nodiscard]] VoidResult advance(Score& candidate) const {
+        if (score_version_exhausted(candidate))
+            return std::unexpected(ErrorCode::ArithmeticOverflow);
+        retain(candidate);
+        return advance_score_version(candidate);
+    }
+
+  private:
+    ScoreIdentityReservations observed_;
+};
+
 } // namespace sunny::core::detail

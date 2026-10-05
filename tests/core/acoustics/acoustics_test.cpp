@@ -7,6 +7,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
+#include <limits>
 #include <sunny/core/acoustics/consonance.hpp>
 #include <sunny/core/acoustics/harmonic_series.hpp>
 #include <sunny/core/acoustics/roughness.hpp>
@@ -114,27 +115,54 @@ TEST_CASE("sethares_dissonance with harmonic tones", "[acoustics][core]") {
     REQUIRE(*d_fifth < *d_m2);
 }
 
-TEST_CASE("dissonance_curve has unison minimum", "[acoustics][core]") {
+TEST_CASE("dissonance_curve retains complex-spectrum cross-pair roughness", "[acoustics][core]") {
     auto partials = *harmonic_spectrum(220.0, 6, 1.0);
     auto curve_r = dissonance_curve(partials, 1.0, 2.0, 50);
     REQUIRE(curve_r.has_value());
     auto& curve = *curve_r;
 
     REQUIRE(curve.size() == 51);
-    // Unison (ratio 1.0) should have low dissonance
+    // Decimal evaluation of the published cross-pair loop, i,j=1..6,
+    // frequencies220*i/220*j, amplitudes1/i and1/j. Equal indices
+    // contribute zero, while other partial pairs retain a nonzero tail.
     REQUIRE(curve.front().first == 1.0);
-    REQUIRE_THAT(curve.front().second, WithinAbs(0.0, 0.01));
+    REQUIRE_THAT(curve.front().second, WithinAbs(0.04632791693759504, 1e-13));
+    CHECK(curve[1].first == 1.02);
+    CHECK(curve[1].second > curve.front().second);
+    CHECK(curve.back().first == 2.0);
 }
 
 // =============================================================================
 // §14.3 Roughness// =============================================================================
 
-TEST_CASE("roughness identical tones is near-zero", "[acoustics][core]") {
-    auto tone = *harmonic_spectrum(440.0, 4, 1.0);
-    // Self-roughness at unison — all partials match exactly
+TEST_CASE("roughness equal pure tones is zero", "[acoustics][core]") {
+    const std::vector<std::pair<double, double>> tone{{440.0, 1.0}};
     auto r = roughness(tone, tone);
     REQUIRE(r.has_value());
-    REQUIRE_THAT(*r, WithinAbs(0.0, 1e-10));
+    REQUIRE(*r == 0.0);
+}
+
+TEST_CASE("Sethares pair values match the published frequency fit", "[acoustics][core][evidence]") {
+    // Decimal hand evaluation of Sethares's constants, independent of this API:
+    // s=.24/(.0207*440+18.96), d=5*(exp(-3.51*s*20)-exp(-5.75*s*20)).
+    constexpr double expected = 0.873030315214684;
+    REQUIRE_THAT(*plomp_levelt_dissonance(440.0, 460.0), WithinAbs(expected, 1e-13));
+    REQUIRE_THAT(*plomp_levelt_dissonance(460.0, 440.0), WithinAbs(expected, 1e-13));
+    // Analytic derivative vanishes at x=ln(5.75/3.51)/(5.75-3.51).
+    REQUIRE_THAT(*plomp_levelt_dissonance(440.0, 465.76992296290943),
+                 WithinAbs(0.898782427191725, 1e-13));
+    CHECK(*plomp_levelt_dissonance(440.0, 464.0) < 0.898782427191725);
+    CHECK(*plomp_levelt_dissonance(440.0, 467.0) < 0.898782427191725);
+    const std::vector<std::pair<double, double>> a{{440.0, 0.5}}, b{{460.0, 0.25}};
+    REQUIRE_THAT(*sethares_dissonance(a, b), WithinAbs(expected / 4.0, 1e-13));
+    REQUIRE_THAT(*roughness_product(a, b), WithinAbs(expected / 8.0, 1e-13));
+}
+
+TEST_CASE("identical complex spectra retain unequal-frequency contributions",
+          "[acoustics][core][evidence]") {
+    const std::vector<std::pair<double, double>> spectrum{{440.0, 1.0}, {460.0, 1.0}};
+    // Two equal-frequency pairs contribute zero; two cross pairs each .873030315214684.
+    REQUIRE_THAT(*roughness(spectrum, spectrum), WithinAbs(1.746060630429368, 1e-13));
 }
 
 TEST_CASE("roughness_product positive for detuned tones", "[acoustics][core]") {
@@ -243,4 +271,79 @@ TEST_CASE("plomp_levelt_dissonance rejects f2 <= 0", "[acoustics][core]") {
     auto r = plomp_levelt_dissonance(440.0, -1.0);
     REQUIRE_FALSE(r.has_value());
     REQUIRE(r.error() == ErrorCode::InvalidFrequency);
+}
+
+TEST_CASE("acoustic APIs reject nonfinite input and invalid sweep controls",
+          "[acoustics][core][evidence]") {
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    const double inf = std::numeric_limits<double>::infinity();
+    for (double frequency : {nan, inf, -inf, 0.0, -1.0}) {
+        CHECK_FALSE(partial_frequency(1, frequency));
+        CHECK_FALSE(harmonic_spectrum(frequency, 2));
+        CHECK_FALSE(critical_bandwidth(frequency));
+        CHECK_FALSE(plomp_levelt_dissonance(frequency, 440.0));
+        CHECK_FALSE(plomp_levelt_dissonance(440.0, frequency));
+        const std::vector<std::pair<double, double>> invalid{{frequency, 1.0}};
+        CHECK_FALSE(sethares_dissonance(invalid, {}));
+        CHECK_FALSE(roughness_product({}, invalid));
+        CHECK_FALSE(dissonance_curve(invalid));
+        CHECK_FALSE(virtual_pitch(std::vector<double>{frequency, 440.0}));
+    }
+    const std::vector<std::pair<double, double>> tone{{440.0, 1.0}};
+    for (double amplitude : {nan, inf, -1.0}) {
+        const std::vector<std::pair<double, double>> invalid{{440.0, amplitude}};
+        CHECK_FALSE(sethares_dissonance(invalid, tone));
+        CHECK_FALSE(roughness_product(tone, invalid));
+    }
+    CHECK(*sethares_dissonance(std::vector<std::pair<double, double>>{{460.0, 0.0}}, tone) == 0.0);
+    CHECK_FALSE(harmonic_spectrum(440.0, 2, nan));
+    CHECK_FALSE(harmonic_spectrum(440.0, 2, -1.0));
+    CHECK_FALSE(dissonance_curve(tone, 1.0, 2.0, 0));
+    CHECK_FALSE(dissonance_curve(tone, 1.0, 2.0, -1));
+    CHECK_FALSE(dissonance_curve(tone, 2.0, 1.0));
+    CHECK_FALSE(dissonance_curve(tone, 0.0, 2.0));
+    CHECK_FALSE(dissonance_curve(tone, nan, 2.0));
+    CHECK_FALSE(dissonance_curve(tone, 1.0, inf));
+    REQUIRE(dissonance_curve(tone, 1.0, 2.0, 2)->size() == 3);
+    CHECK_FALSE(virtual_pitch(std::vector<double>{440.0}, nan));
+    CHECK_FALSE(virtual_pitch(std::vector<double>{440.0}, -1.0));
+    CHECK_FALSE(virtual_pitch(std::vector<double>{440.0}, 50.0, 0));
+}
+
+TEST_CASE("acoustic arithmetic overflow is explicit", "[acoustics][core][evidence]") {
+    const auto check_overflow = [](const auto& result) {
+        REQUIRE_FALSE(result);
+        CHECK(result.error() == ErrorCode::ArithmeticOverflow);
+    };
+    const double largest = std::numeric_limits<double>::max();
+    check_overflow(partial_frequency(2, largest));
+    check_overflow(harmonic_spectrum(largest, 2));
+    check_overflow(critical_bandwidth(largest));
+    const std::vector<std::pair<double, double>> low{{440.0, largest}, {440.0, largest}};
+    const std::vector<std::pair<double, double>> high{{460.0, largest}};
+    check_overflow(sethares_dissonance(low, high));
+    check_overflow(roughness_product(low, high));
+    CHECK(*roughness_product(low, low) == 0.0);
+    check_overflow(
+        dissonance_curve(std::vector<std::pair<double, double>>{{largest, 1.0}}, 1.0, 2.0));
+    auto estimate = virtual_pitch(std::vector<double>{largest, largest}, 0.0, 1);
+    REQUIRE(estimate);
+    CHECK(estimate->frequency == largest);
+    CHECK(estimate->confidence == 1.0);
+}
+
+TEST_CASE("virtual pitch reports support for its returned candidate",
+          "[acoustics][core][evidence]") {
+    // At 50 cents, 100 Hz matches 97.5/100/102, while 102 Hz matches
+    // 100/102/104.5. Their average 101 Hz matches only 100/102.
+    auto estimate = virtual_pitch(std::vector<double>{97.5, 100.0, 102.0, 104.5}, 50.0, 16);
+    REQUIRE(estimate);
+    CHECK(estimate->frequency == 102.0);
+    CHECK(estimate->confidence == 0.75);
+    // 1700/100=17 exceeds the requested harmonic bound, so 100 Hz cannot
+    // claim both observations. Highest candidate wins the one-match tie.
+    estimate = virtual_pitch(std::vector<double>{100.0, 1700.0}, 0.0, 16);
+    REQUIRE(estimate);
+    CHECK(estimate->frequency == 1700.0);
+    CHECK(estimate->confidence == 0.5);
 }

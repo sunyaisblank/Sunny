@@ -183,3 +183,53 @@ TEST_CASE("ScoreDocument serializes writers on shared handles", "[score-ir][conc
     CHECK(*second_result == **first_result + 1);
     CHECK(document.snapshot()->metadata.title == "Second");
 }
+
+TEST_CASE("ScoreDocument snapshot restoration retains retired identities",
+          "[score-ir][concurrency][identity][reservation]") {
+    auto document = make_document();
+    const auto original = document.snapshot();
+    const auto part = original->parts[0].id;
+    const Note c{SpelledPitch{0, 0, 4}, VelocityValue{{}, 80}};
+    REQUIRE(document.transact([&](Score& candidate) {
+        return insert_note(candidate, part, 1, 0, Beat::zero(), c, Beat::one());
+    }));
+    const auto first_note_id = document.snapshot()->parts[0].measures[0].voices[0].events[0].id;
+    REQUIRE(document.transact([&](Score& candidate) -> VoidResult {
+        candidate = *original;
+        return {};
+    }));
+    REQUIRE(document.snapshot()->identity_reservations.events.contains(first_note_id));
+    REQUIRE(document.version() == original->version + 2);
+    REQUIRE(document.transact([&](Score& candidate) {
+        return insert_note(candidate, part, 1, 0, Beat::zero(), c, Beat::one());
+    }));
+    const auto second_note_id = document.snapshot()->parts[0].measures[0].voices[0].events[0].id;
+    REQUIRE(second_note_id != first_note_id);
+    REQUIRE(original->parts[0].measures[0].voices[0].events[0].is_rest());
+}
+
+TEST_CASE("failed ScoreDocument candidate allocation does not consume identities",
+          "[score-ir][concurrency][identity][reservation][atomicity]") {
+    auto document = make_document();
+    const auto before = document.snapshot();
+    const auto part = before->parts[0].id;
+    const Note c{SpelledPitch{0, 0, 4}, VelocityValue{{}, 80}};
+    auto failed = document.transact([&](Score& candidate) -> VoidResult {
+        auto inserted = insert_note(candidate, part, 1, 0, Beat::zero(), c, Beat::one());
+        REQUIRE(inserted);
+        return std::unexpected(ErrorCode::InvalidMutation);
+    });
+    REQUIRE_FALSE(failed);
+    REQUIRE(document.snapshot() == before);
+    REQUIRE(document.snapshot()->identity_reservations == before->identity_reservations);
+    auto clean = ScoreDocument::create(*before).value();
+    REQUIRE(document.transact([&](Score& candidate) {
+        return insert_note(candidate, part, 1, 0, Beat::zero(), c, Beat::one());
+    }));
+    REQUIRE(clean.transact([&](Score& candidate) {
+        return insert_note(candidate, part, 1, 0, Beat::zero(), c, Beat::one());
+    }));
+    REQUIRE(document.snapshot()->identity_reservations == clean.snapshot()->identity_reservations);
+    REQUIRE(document.snapshot()->parts[0].measures[0].voices[0].events[0].id ==
+            clean.snapshot()->parts[0].measures[0].voices[0].events[0].id);
+}

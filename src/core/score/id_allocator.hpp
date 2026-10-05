@@ -42,6 +42,8 @@ template <typename Identifier> class FreshIdAllocator {
 
 inline FreshIdAllocator<EventId> event_id_allocator(const Score& score) {
     FreshIdAllocator<EventId> allocator;
+    for (const auto id : score.identity_reservations.events)
+        allocator.include(id);
     for (const auto& part : score.parts)
         for (const auto& measure : part.measures)
             for (const auto& voice : measure.voices)
@@ -52,6 +54,8 @@ inline FreshIdAllocator<EventId> event_id_allocator(const Score& score) {
 
 inline FreshIdAllocator<PartId> part_id_allocator(const Score& score) {
     FreshIdAllocator<PartId> allocator;
+    for (const auto id : score.identity_reservations.parts)
+        allocator.include(id);
     for (const auto& part : score.parts)
         allocator.include(part.id);
     return allocator;
@@ -67,7 +71,47 @@ inline void include_section_ids(FreshIdAllocator<SectionId>& allocator,
 
 inline FreshIdAllocator<SectionId> section_id_allocator(const Score& score) {
     FreshIdAllocator<SectionId> allocator;
+    for (const auto id : score.identity_reservations.sections)
+        allocator.include(id);
     include_section_ids(allocator, score.section_map);
+    return allocator;
+}
+
+inline FreshIdAllocator<TupletId> tuplet_id_allocator(const Score& score) {
+    FreshIdAllocator<TupletId> allocator;
+    for (const auto id : score.identity_reservations.tuplets)
+        allocator.include(id);
+    for (const auto& part : score.parts)
+        for (const auto& measure : part.measures)
+            for (const auto& voice : measure.voices)
+                for (const auto& event : voice.events) {
+                    const auto include = [&](const auto& context) {
+                        if (context) {
+                            allocator.include(context->id);
+                            if (context->nested_in) allocator.include(*context->nested_in);
+                        }
+                    };
+                    if (const auto* group = event.as_note_group())
+                        include(group->tuplet_context);
+                    else if (const auto* rest = event.as_rest())
+                        include(rest->tuplet_context);
+                }
+    return allocator;
+}
+
+inline FreshIdAllocator<BeamGroupId> beam_id_allocator(const Score& score) {
+    FreshIdAllocator<BeamGroupId> allocator;
+    for (const auto id : score.identity_reservations.beams)
+        allocator.include(id);
+    for (const auto& part : score.parts)
+        for (const auto& measure : part.measures)
+            for (const auto& voice : measure.voices) {
+                for (const auto& beam : voice.beam_groups)
+                    allocator.include(beam.id);
+                for (const auto& event : voice.events)
+                    if (const auto* group = event.as_note_group(); group && group->beam_group)
+                        allocator.include(*group->beam_group);
+            }
     return allocator;
 }
 

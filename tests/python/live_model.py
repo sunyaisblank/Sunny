@@ -2,19 +2,27 @@
 
 A Remote Script runs against Live's embedded Python API, not the Max-side LOM
 dictionaries. This module reproduces the Python-side types and documented
-semantics for exactly the objects, properties and functions the handler uses,
-so that tests judge the handler against Live's contract rather than against
-fakes shaped by the handler's own assumptions.
+semantics for the objects, properties and functions the handler uses. Source
+observations and the public Max LOM guide the modeled contract; an offline
+model cannot establish the behavior of every embedded Python host version.
 
 Sources:
-    * Ableton Live 12 MIDI Remote Scripts, ``_MxDCore/MxDCore.py`` (Ableton's own
-      Max translation layer): notes are built as ``Live.Clip.MidiNoteSpecification``;
-      ``get_notes_by_id`` and ``get_all_notes_extended`` return ``MidiNote`` objects;
+    * The Live 12 Remote Scripts source mirror ``gluon/AbletonLive12_MIDIRemoteScripts``
+      at ``e83d5192f321b24eb9daab843ac49a2d95d862b1``, ``_MxDCore/MxDCore.py``:
+      the Max translation layer builds ``Live.Clip.MidiNoteSpecification``;
+      note readback returns ``MidiNote`` objects and ranged queries use keyword arguments;
       enum properties are ``int`` subclasses set with plain ``int`` values; Boolean
       properties accept ``int`` 0/1.
     * ``_MxDCore/LomTypes.py``: routing values are ``RoutingType``/``RoutingChannel``
       objects exposing ``display_name`` and selected by equality from ``available_*``
       tuples; ``clip_slots``, ``devices``, ``tracks`` and similar are tuple types.
+    * Pinned ``pushbase/automation_component.py``: Python ``automation_envelope`` /
+      ``create_automation_envelope`` take actual DeviceParameter objects;
+      ``insert_step(start, positive_duration, internal_value)`` and
+      ``value_at_time(time)`` are the observed author/read subset. Its fixture
+      requires explicit opt-in and does not imply a general version floor.
+      ``pushbase/actions.py`` observes Session Clip → ClipSlot → Track parents;
+      ``ableton/v3/live/util.py`` observes mixer parameter owner parents.
     * Live 11.0 Python API dump (nsuspray.github.io/Live_API_Doc/11.0.0.xml):
       ``Clip.add_new_notes`` "expects a Python iterable holding a number of
       Live.Clip.MidiNoteSpecification objects"; ``Vector``/``StringVector``/``IntVector``
@@ -41,6 +49,7 @@ property read on one object without disturbing the model's own semantics.
 from __future__ import annotations
 
 import enum
+import math
 import sys
 import types
 from collections.abc import Callable, Iterable, Iterator
@@ -379,6 +388,11 @@ class DeviceParameter:
         self._is_enabled = True
         self._state = ParameterState.enabled
         self._automation_state = AutomationState.none
+        self._canonical_parent: Any = None
+
+    @live_property
+    def canonical_parent(self) -> Any:
+        return self._canonical_parent
 
     @live_property
     def name(self) -> str:
@@ -533,6 +547,13 @@ class Device:
         self._parameters = (_on_off("Device On"),) + tuple(
             DeviceParameter(parameter_name) for parameter_name in parameter_names
         )
+        self._canonical_parent: Any = None
+        for parameter in self._parameters:
+            parameter._canonical_parent = self
+
+    @live_property
+    def canonical_parent(self) -> Any:
+        return self._canonical_parent
 
     @live_property
     def name(self) -> str:
@@ -624,6 +645,13 @@ class MixerDevice:
         self._crossfade_assignable = crossfade_assignable
         self._crossfade_assign = CrossfadeAssignment.NONE
         self._panning_mode = PanningMode.stereo
+        self._canonical_parent: Any = None
+        for parameter in (self._volume, self._panning, self._track_activator, *self._sends):
+            parameter._canonical_parent = self
+
+    @live_property
+    def canonical_parent(self) -> Any:
+        return self._canonical_parent
 
     @live_property
     def volume(self) -> DeviceParameter:
@@ -642,7 +670,9 @@ class MixerDevice:
         return self._sends
 
     def _add_send(self, name: str) -> None:
-        self._sends = self._sends + (send_parameter(name),)
+        parameter = send_parameter(name)
+        parameter._canonical_parent = self
+        self._sends = self._sends + (parameter,)
 
     @live_property
     def crossfade_assign(self) -> CrossfadeAssignment:
@@ -678,13 +708,75 @@ class Groove:
         self.name = name
 
 
+class AutomationEnvelope:
+    """Source-contract fixture for Python ``insert_step``/``value_at_time``.
+
+    Pinned Live 12 pushbase calls these methods with a real DeviceParameter and
+    positive intervals in internal units. This finite interval model tests
+    bridge behavior; it supplies no empirical persistence or host unit proof.
+    """
+
+    def __init__(self, parameter: DeviceParameter) -> None:
+        self._parameter = parameter
+        self._steps: list[tuple[float, float, float]] = []
+
+    def insert_step(self, start: Any, duration: Any, value: Any) -> None:
+        """Replace a positive, finite interval without affecting other intervals."""
+        start, duration, value = _float(start), _float(duration), _float(value)
+        stop = start + duration
+        if (
+            not all(math.isfinite(number) for number in (start, duration, stop, value))
+            or start < 0.0
+            or duration <= 0.0
+            or stop <= start
+            or not self._parameter.min <= value <= self._parameter.max
+        ):
+            raise ArgumentError(
+                "insert_step requires a finite positive interval and internal value"
+            )
+        retained = []
+        for previous_start, previous_stop, previous_value in self._steps:
+            if previous_stop <= start or previous_start >= stop:
+                retained.append((previous_start, previous_stop, previous_value))
+            else:
+                if previous_start < start:
+                    retained.append((previous_start, start, previous_value))
+                if previous_stop > stop:
+                    retained.append((stop, previous_stop, previous_value))
+        self._steps = sorted(retained + [(start, stop, value)])
+
+    def value_at_time(self, time: Any) -> float:
+        """Read the model's half-open interval value independently of requests."""
+        time = _float(time)
+        if not math.isfinite(time) or time < 0.0:
+            raise ArgumentError("value_at_time requires a finite non-negative time")
+        for start, stop, value in self._steps:
+            if start <= time < stop:
+                return value
+        # A fixture convention outside authored intervals, not a documented
+        # assertion about native envelope extrapolation.
+        return self._parameter.value
+
+
 class Clip:
     """``Live.Clip.Clip`` in a Session clip slot of a MIDI track."""
 
-    def __init__(self, length: float, live_major_version: int = 12) -> None:
-        self._live_major_version = live_major_version
+    def __init__(
+        self,
+        length: float,
+        live_version: tuple[int, int, int] = (12, 3, 5),
+        *,
+        python_envelope_api: bool = False,
+    ) -> None:
+        self._live_version = live_version
+        self._python_envelope_api = python_envelope_api
+        self._canonical_parent: Any = None
+        self._live_major_version = live_version[0]
         self._name = ""
         self._notes: dict[int, MidiNote] = {}
+        # An explicit provider event model, not evidence about actual Live event
+        # coverage for MPE/Follow Actions or an embedded Python ABI.
+        self._note_listeners: list[Any] = []
         self._next_note_id = 1
         self._signature_numerator = 4
         self._signature_denominator = 4
@@ -701,8 +793,39 @@ class Clip:
         self._velocity_amount = 0.0
         self._groove: Groove | None = None
         self._envelopes: set[str] = set()
+        self._automation_envelopes: dict[DeviceParameter, AutomationEnvelope] = {}
 
     # --- notes --------------------------------------------------------------
+
+    def add_notes_listener(self, callback: Any) -> None:
+        """Model a retained note-change callback with duplicate registration refusal."""
+        if callback in self._note_listeners:
+            raise ArgumentError("notes listener is already registered")
+        self._note_listeners.append(callback)
+
+    def notes_has_listener(self, callback: Any) -> bool:
+        """Observe the modeled native listener membership."""
+        return callback in self._note_listeners
+
+    def remove_notes_listener(self, callback: Any) -> None:
+        """Remove exactly the recorded callback from the provider model."""
+        self._note_listeners.remove(callback)
+
+    def _notify_notes_changed(self) -> None:
+        for callback in tuple(self._note_listeners):
+            callback()
+
+    def __getattribute__(self, name: str) -> Any:
+        version = object.__getattribute__(self, "_live_version")
+        if name in {"add_new_notes", "get_notes_by_id", "get_notes_extended", "remove_notes_by_id"}:
+            if version < (11, 0):
+                raise AttributeError(f"{name} requires Live 11.0")
+        if name == "get_all_notes_extended" and version < (11, 1):
+            raise AttributeError("get_all_notes_extended requires Live 11.1")
+        if name in {"automation_envelope", "create_automation_envelope", "clear_envelope"}:
+            if not object.__getattribute__(self, "_python_envelope_api"):
+                raise AttributeError(f"{name} is not enabled in this source-contract fixture")
+        return object.__getattribute__(self, name)
 
     def add_new_notes(self, specifications: Any) -> IntVector:
         try:
@@ -720,6 +843,8 @@ class Clip:
             self._next_note_id += 1
             self._notes[note_id] = MidiNote(note_id, specification)
             note_ids.append(note_id)
+        if note_ids:
+            self._notify_notes_changed()
         # Whether Live 11.0 returns IDs is unsettled (#22); later versions do.
         return IntVector(note_ids)
 
@@ -735,11 +860,41 @@ class Clip:
     def get_all_notes_extended(self) -> MidiNoteVector:
         return MidiNoteVector(sorted(self._notes.values(), key=lambda n: (n.start_time, n.pitch)))
 
+    def get_notes_extended(
+        self, from_pitch: int, pitch_span: int, from_time: float, time_span: float
+    ) -> MidiNoteVector:
+        # The public LOM defines selection by note start, not by overlap with
+        # the interval or by the clip's markers. Python keyword invocation is
+        # source-observed in MxDCore; final-host range qualification remains #22.
+        if any(
+            isinstance(value, bool) or not isinstance(value, int)
+            for value in (from_pitch, pitch_span)
+        ):
+            raise ArgumentError("pitch range requires integers")
+        from_time = _float(from_time)
+        time_span = _float(time_span)
+        if not (math.isfinite(from_time) and math.isfinite(time_span) and time_span > 0.0):
+            raise ArgumentError("time range requires finite values and a positive span")
+        notes = (
+            note
+            for note in self._notes.values()
+            if from_pitch <= note.pitch < from_pitch + pitch_span
+            and from_time <= note.start_time < from_time + time_span
+        )
+        return MidiNoteVector(sorted(notes, key=lambda n: (n.start_time, n.pitch)))
+
     def remove_notes_by_id(self, note_ids: Iterable[int]) -> None:
+        previous = len(self._notes)
         for note_id in list(note_ids):
             self._notes.pop(note_id, None)
+        if len(self._notes) != previous:
+            self._notify_notes_changed()
 
     # --- identity and structure ---------------------------------------------
+
+    @live_property
+    def canonical_parent(self) -> Any:
+        return self._canonical_parent
 
     @live_property
     def name(self) -> str:
@@ -767,7 +922,8 @@ class Clip:
 
     @live_property
     def is_take_lane_clip(self) -> bool:
-        # Take lanes, and with them this property, arrived with Live 12.
+        # The adapter only qualifies this Python property on Live 12+. Take
+        # lanes themselves already exist in Live 11 (Live 11 Comping manual).
         if self._live_major_version < 12:
             raise AttributeError("is_take_lane_clip")
         return False
@@ -904,10 +1060,33 @@ class Clip:
 
     @live_property
     def has_envelopes(self) -> bool:
-        return bool(self._envelopes)
+        return bool(self._envelopes or self._automation_envelopes)
 
     def clear_all_envelopes(self) -> None:
         self._envelopes.clear()
+        self._automation_envelopes.clear()
+
+    def automation_envelope(self, parameter: Any) -> AutomationEnvelope | None:
+        """Look up with an actual Python parameter object; never create on read."""
+        if not isinstance(parameter, DeviceParameter):
+            raise ArgumentError("automation_envelope expects a DeviceParameter object")
+        return self._automation_envelopes.get(parameter)
+
+    def create_automation_envelope(self, parameter: Any) -> AutomationEnvelope:
+        """Create the source-observed Python envelope on explicit authoring."""
+        if not isinstance(parameter, DeviceParameter):
+            raise ArgumentError("create_automation_envelope expects a DeviceParameter object")
+        if parameter in self._automation_envelopes:
+            raise RuntimeError("Parameter already has an envelope")
+        envelope = AutomationEnvelope(parameter)
+        self._automation_envelopes[parameter] = envelope
+        return envelope
+
+    def clear_envelope(self, parameter: Any) -> None:
+        """Clear one parameter's envelope without disturbing another's."""
+        if not isinstance(parameter, DeviceParameter):
+            raise ArgumentError("clear_envelope expects a DeviceParameter object")
+        self._automation_envelopes.pop(parameter, None)
 
     def add_envelope(self, parameter_name: str) -> None:
         """Model-only helper: give the clip an automation envelope."""
@@ -944,6 +1123,10 @@ class ClipSlot:
         self._clip: Clip | None = None
 
     @live_property
+    def canonical_parent(self) -> Track:
+        return self._track
+
+    @live_property
     def clip(self) -> Clip | None:
         return self._clip
 
@@ -960,7 +1143,12 @@ class ClipSlot:
             raise RuntimeError("Can only create MIDI clips in MIDI tracks")
         if not length > 0.0:
             raise RuntimeError("Clip length must be greater than 0")
-        self._clip = Clip(length, self._track._song._application.get_major_version())
+        self._clip = Clip(
+            length,
+            self._track._song._application.version_tuple(),
+            python_envelope_api=self._track._song._python_envelope_api,
+        )
+        self._clip._canonical_parent = self
 
     def delete_clip(self) -> None:
         if self._clip is None:
@@ -1081,6 +1269,7 @@ class Track:
             else (),
             crossfade_assignable=kind != "master",
         )
+        self._mixer._canonical_parent = self
         self._clip_slots = tuple(ClipSlot(self) for _ in song._scenes) if self._is_midi else ()
         self._output_type: tuple[Any, ...] | None = None
         self._output_channel: tuple[Any, ...] | None = None
@@ -1195,7 +1384,8 @@ class Track:
 
     @live_property
     def take_lanes(self) -> Vector:
-        # Take lanes arrived with Live 12; the container type is unsettled (#22).
+        # API exposure, not Live's take-lane content, is gated here. Live 11
+        # already has take lanes; this container's runtime type is unsettled (#22).
         if self._song._application.get_major_version() < 12:
             raise AttributeError("take_lanes")
         return Vector()
@@ -1223,6 +1413,7 @@ class Track:
         device = native_device(device_name)
         if self._kind != "midi" and device.type == DeviceType.instrument:
             raise RuntimeError("Instruments can only be inserted on MIDI tracks")
+        device._canonical_parent = self
         self._devices.insert(index, device)
 
     # --- signal flow ----------------------------------------------------------
@@ -1760,9 +1951,13 @@ class LiveSet:
         scenes: int = 1,
         midi_tracks: int = 0,
         return_tracks: int = 0,
+        python_envelope_api: bool = False,
     ) -> None:
         self.application = Application(version)
         self.song = Song(self.application, scenes)
+        # Deliberately explicit; a Live major version is not evidence of this
+        # private Python API or its saved/reopened behavior on that host.
+        self.song._python_envelope_api = python_envelope_api
         self.application._document = self.song
         for _ in range(return_tracks):
             self.song.create_return_track()

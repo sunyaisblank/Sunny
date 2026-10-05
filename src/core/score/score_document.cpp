@@ -9,6 +9,62 @@
 
 namespace sunny::core {
 
+namespace {
+
+void include_sections(ScoreIdentityReservations& ids, const SectionMap& sections) {
+    for (const auto& section : sections) {
+        ids.sections.insert(section.id);
+        include_sections(ids, section.children);
+    }
+}
+
+void include_tuplet(ScoreIdentityReservations& ids, const TupletContext& context) {
+    ids.tuplets.insert(context.id);
+    if (context.nested_in) ids.tuplets.insert(*context.nested_in);
+}
+
+} // namespace
+
+ScoreIdentityReservations collect_score_identities(const Score& score) {
+    auto ids = score.identity_reservations;
+    include_sections(ids, score.section_map);
+    for (const auto& part : score.parts) {
+        ids.parts.insert(part.id);
+        for (const auto& measure : part.measures) {
+            for (const auto& voice : measure.voices) {
+                for (const auto& beam : voice.beam_groups) {
+                    ids.beams.insert(beam.id);
+                    ids.events.insert(beam.event_ids.begin(), beam.event_ids.end());
+                }
+                for (const auto& event : voice.events) {
+                    ids.events.insert(event.id);
+                    if (const auto* group = event.as_note_group()) {
+                        if (group->tuplet_context) include_tuplet(ids, *group->tuplet_context);
+                        if (group->beam_group) ids.beams.insert(*group->beam_group);
+                    } else if (const auto* rest = event.as_rest()) {
+                        if (rest->tuplet_context) include_tuplet(ids, *rest->tuplet_context);
+                    }
+                }
+            }
+        }
+    }
+    return ids;
+}
+
+void retain_score_identities(Score& score, const ScoreIdentityReservations& observed) {
+    auto combined = collect_score_identities(score);
+    combined.events.insert(observed.events.begin(), observed.events.end());
+    combined.parts.insert(observed.parts.begin(), observed.parts.end());
+    combined.sections.insert(observed.sections.begin(), observed.sections.end());
+    combined.tuplets.insert(observed.tuplets.begin(), observed.tuplets.end());
+    combined.beams.insert(observed.beams.begin(), observed.beams.end());
+    score.identity_reservations = std::move(combined);
+}
+
+void retain_score_identities(Score& restored, const Score& current) {
+    retain_score_identities(restored, collect_score_identities(current));
+}
+
 std::optional<SpelledPitch> derive_chord_numeral_root(const ChordNumeral& numeral) noexcept {
     if (numeral.root < 1 || numeral.root > 7 || numeral.key.fifths < -7 || numeral.key.fifths > 7 ||
         static_cast<std::uint8_t>(numeral.key.mode) >
@@ -41,6 +97,7 @@ std::optional<SpelledPitch> derive_chord_numeral_root(const ChordNumeral& numera
 
 Result<ScoreDocument> ScoreDocument::create(Score initial) {
     if (!is_compilable(initial)) return std::unexpected(ErrorCode::InvariantViolation);
+    retain_score_identities(initial, ScoreIdentityReservations{});
 
     Snapshot snapshot = std::make_shared<const Score>(std::move(initial));
     return ScoreDocument{std::make_shared<State>(std::move(snapshot))};

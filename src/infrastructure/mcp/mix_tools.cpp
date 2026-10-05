@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <map>
 #include <memory>
 #include <optional>
@@ -19,6 +20,7 @@
 #include <sunny/core/mix/serialization.hpp>
 #include <sunny/core/mix/workflows.hpp>
 #include <sunny/infrastructure/mcp/mix_tools.hpp>
+#include <sunny/infrastructure/mcp/session_ids.hpp>
 
 namespace sunny::infrastructure {
 
@@ -87,6 +89,68 @@ json error_response(const std::string& msg) {
 
 json graph_not_found(std::uint64_t id) {
     return error_response("Mix graph not found: " + std::to_string(id));
+}
+
+json identity_error(ErrorCode code, const char* domain) {
+    const auto reason = code == ErrorCode::ArithmeticOverflow
+                            ? " identity domain exhausted or counter invalid"
+                            : " allocation counter must exceed every represented identity";
+    return {{"error", std::string(domain) + reason}, {"error_code", static_cast<int>(code)}};
+}
+
+constexpr double reference_float_limit = std::numeric_limits<float>::max();
+
+// Reference measurements are stored as f32. Check the input before narrowing:
+// finite JSON doubles can still overflow that domain or round a positive Hz
+// value to zero. Loudness measurements and dB levels permit either sign.
+std::optional<float> checked_reference_float(const json& encoded,
+                                             double lower = -reference_float_limit,
+                                             double upper = reference_float_limit,
+                                             bool positive = false) {
+    if (!encoded.is_number()) return std::nullopt;
+    const auto number = encoded.get<double>();
+    if (!std::isfinite(number) || number < lower || number > upper || (positive && number <= 0.0))
+        return std::nullopt;
+    const auto narrowed = static_cast<float>(number);
+    if (!std::isfinite(narrowed) || (positive && narrowed <= 0.0f)) return std::nullopt;
+    return narrowed;
+}
+
+enum class MixIdentityDomain { Group, Aux, Effect, Reference };
+
+std::uint64_t maximum_mix_identity(const MixSession& session, MixIdentityDomain domain) {
+    std::uint64_t maximum = 0;
+    const auto chain_ids = [&](const MixEffectChain& chain) {
+        for (const auto& effect : chain.effects)
+            maximum = std::max(maximum, effect.id.value);
+    };
+    for (const auto& [id, graph] : session.graphs) {
+        static_cast<void>(id);
+        switch (domain) {
+        case MixIdentityDomain::Group:
+            for (const auto& group : graph.group_buses)
+                maximum = std::max(maximum, group.id.value);
+            break;
+        case MixIdentityDomain::Aux:
+            for (const auto& aux : graph.aux_buses)
+                maximum = std::max(maximum, aux.id.value);
+            break;
+        case MixIdentityDomain::Reference:
+            for (const auto& reference : graph.reference_profiles)
+                maximum = std::max(maximum, reference.id.value);
+            break;
+        case MixIdentityDomain::Effect:
+            for (const auto& channel : graph.channels)
+                chain_ids(channel.insert_chain);
+            for (const auto& group : graph.group_buses)
+                chain_ids(group.insert_chain);
+            for (const auto& aux : graph.aux_buses)
+                chain_ids(aux.effect_chain);
+            chain_ids(graph.master_bus.insert_chain);
+            break;
+        }
+    }
+    return maximum;
 }
 
 const char* fader_target_type_name(FaderTargetType type) {
@@ -376,6 +440,7 @@ std::optional<MixEffect> build_effect(const json& params, std::uint64_t effect_i
 
 void register_mix_tools(McpServer& server, std::shared_ptr<MixSession> session) {
     if (!session) session = std::make_shared<MixSession>();
+    auto domain = server.registration_scope(McpDocumentDomain::Mix);
 
     // =========================================================================
     // create_mix_graph
@@ -394,10 +459,14 @@ void register_mix_tools(McpServer& server, std::shared_ptr<MixSession> session) 
             std::vector<PartId> parts;
             for (const auto& pid : params.at("part_ids"))
                 parts.push_back(PartId{detail::checked_integer<std::uint64_t>(pid, "part id")});
-            auto gid = session->next_graph_id;
+            const auto allocation = mcp_detail::checked_session_id_batch(
+                session->next_graph_id, mcp_detail::maximum_session_store_id(session->graphs));
+            if (!allocation) return identity_error(allocation.error(), "Mix graph");
+            const auto gid = allocation->first;
             auto graph = create_mix_graph(MixGraphId{gid}, parts);
-            session->graphs.emplace(gid, std::move(graph));
-            ++session->next_graph_id;
+            if (!session->graphs.emplace(gid, std::move(graph)).second)
+                return identity_error(ErrorCode::InvariantViolation, "Mix graph");
+            session->next_graph_id = allocation->next;
             return {{"graph_id", gid}, {"channel_count", parts.size()}, {"success", true}};
         });
 
@@ -422,7 +491,10 @@ void register_mix_tools(McpServer& server, std::shared_ptr<MixSession> session) 
             auto* g = session->find(graph_id);
             if (!g) return graph_not_found(graph_id);
 
-            auto gid = GroupBusId{session->next_group_id};
+            const auto allocation = mcp_detail::checked_session_id_batch(
+                session->next_group_id, maximum_mix_identity(*session, MixIdentityDomain::Group));
+            if (!allocation) return identity_error(allocation.error(), "Mix group bus");
+            const auto gid = GroupBusId{allocation->first};
             std::vector<ChannelStripId> members;
             if (params.contains("member_channel_ids")) {
                 for (const auto& id : params["member_channel_ids"])
@@ -431,7 +503,7 @@ void register_mix_tools(McpServer& server, std::shared_ptr<MixSession> session) 
             }
             auto r = create_group_bus(*g, gid, params.at("name").get<std::string>(), members);
             if (!r) return error_response("Failed to create group bus");
-            ++session->next_group_id;
+            session->next_group_id = allocation->next;
             return {{"group_bus_id", gid.value}, {"success", true}};
         });
 
@@ -452,10 +524,13 @@ void register_mix_tools(McpServer& server, std::shared_ptr<MixSession> session) 
             auto* g = session->find(graph_id);
             if (!g) return graph_not_found(graph_id);
 
-            auto aid = AuxBusId{session->next_aux_id};
+            const auto allocation = mcp_detail::checked_session_id_batch(
+                session->next_aux_id, maximum_mix_identity(*session, MixIdentityDomain::Aux));
+            if (!allocation) return identity_error(allocation.error(), "Mix aux bus");
+            const auto aid = AuxBusId{allocation->first};
             auto r = create_aux_bus(*g, aid, params.at("name").get<std::string>());
             if (!r) return error_response("Failed to create aux bus");
-            ++session->next_aux_id;
+            session->next_aux_id = allocation->next;
             return {{"aux_bus_id", aid.value}, {"success", true}};
         });
 
@@ -719,15 +794,21 @@ void register_mix_tools(McpServer& server, std::shared_ptr<MixSession> session) 
                 detail::checked_integer<std::uint64_t>(params.at("graph_id"), "mix graph id");
             auto* g = session->find(graph_id);
             if (!g) return graph_not_found(graph_id);
-            auto eid = session->next_effect_id;
+            const auto allocation = mcp_detail::checked_session_id_batch(
+                session->next_effect_id, maximum_mix_identity(*session, MixIdentityDomain::Effect));
+            if (!allocation) return identity_error(allocation.error(), "Mix effect");
+            const auto eid = allocation->first;
             auto effect = build_effect(params, eid);
             if (!effect) return error_response("Unknown or invalid mix effect configuration");
             auto r = add_channel_effect(*g,
                                         ChannelStripId{detail::checked_integer<std::uint64_t>(
                                             params.at("channel_id"), "channel id")},
                                         std::move(*effect));
-            if (!r) return error_response("Channel not found");
-            ++session->next_effect_id;
+            if (!r) {
+                if (r.error() == ErrorCode::MixNotFound) return error_response("Channel not found");
+                return error_response("The effect configuration/references are invalid");
+            }
+            session->next_effect_id = allocation->next;
             return {{"effect_id", eid}, {"success", true}};
         });
 
@@ -784,15 +865,22 @@ void register_mix_tools(McpServer& server, std::shared_ptr<MixSession> session) 
                 detail::checked_integer<std::uint64_t>(params.at("graph_id"), "mix graph id");
             auto* g = session->find(graph_id);
             if (!g) return graph_not_found(graph_id);
-            auto eid = session->next_effect_id;
+            const auto allocation = mcp_detail::checked_session_id_batch(
+                session->next_effect_id, maximum_mix_identity(*session, MixIdentityDomain::Effect));
+            if (!allocation) return identity_error(allocation.error(), "Mix effect");
+            const auto eid = allocation->first;
             auto effect = build_effect(params, eid);
             if (!effect) return error_response("Unknown or invalid mix effect configuration");
             auto r = add_bus_effect(*g,
                                     GroupBusId{detail::checked_integer<std::uint64_t>(
                                         params.at("group_id"), "group id")},
                                     std::move(*effect));
-            if (!r) return error_response("Group bus not found");
-            ++session->next_effect_id;
+            if (!r) {
+                if (r.error() == ErrorCode::MixNotFound)
+                    return error_response("Group bus not found");
+                return error_response("The effect configuration/references are invalid");
+            }
+            session->next_effect_id = allocation->next;
             return {{"effect_id", eid}, {"success", true}};
         });
 
@@ -849,15 +937,21 @@ void register_mix_tools(McpServer& server, std::shared_ptr<MixSession> session) 
                 detail::checked_integer<std::uint64_t>(params.at("graph_id"), "mix graph id");
             auto* g = session->find(graph_id);
             if (!g) return graph_not_found(graph_id);
-            auto eid = session->next_effect_id;
+            const auto allocation = mcp_detail::checked_session_id_batch(
+                session->next_effect_id, maximum_mix_identity(*session, MixIdentityDomain::Effect));
+            if (!allocation) return identity_error(allocation.error(), "Mix effect");
+            const auto eid = allocation->first;
             auto effect = build_effect(params, eid);
             if (!effect) return error_response("Unknown or invalid mix effect configuration");
             auto r = add_aux_effect(
                 *g,
                 AuxBusId{detail::checked_integer<std::uint64_t>(params.at("aux_id"), "aux bus id")},
                 std::move(*effect));
-            if (!r) return error_response("Aux bus not found");
-            ++session->next_effect_id;
+            if (!r) {
+                if (r.error() == ErrorCode::MixNotFound) return error_response("Aux bus not found");
+                return error_response("The effect configuration/references are invalid");
+            }
+            session->next_effect_id = allocation->next;
             return {{"effect_id", eid}, {"success", true}};
         });
 
@@ -914,11 +1008,15 @@ void register_mix_tools(McpServer& server, std::shared_ptr<MixSession> session) 
                 detail::checked_integer<std::uint64_t>(params.at("graph_id"), "mix graph id");
             auto* g = session->find(graph_id);
             if (!g) return graph_not_found(graph_id);
-            auto eid = session->next_effect_id;
+            const auto allocation = mcp_detail::checked_session_id_batch(
+                session->next_effect_id, maximum_mix_identity(*session, MixIdentityDomain::Effect));
+            if (!allocation) return identity_error(allocation.error(), "Mix effect");
+            const auto eid = allocation->first;
             auto effect = build_effect(params, eid);
             if (!effect) return error_response("Unknown or invalid mix effect configuration");
-            add_master_effect(*g, std::move(*effect));
-            ++session->next_effect_id;
+            if (!add_master_effect(*g, std::move(*effect)))
+                return error_response("Effect configuration or references are invalid");
+            session->next_effect_id = allocation->next;
             return {{"effect_id", eid}, {"success", true}};
         });
 
@@ -1014,6 +1112,37 @@ void register_mix_tools(McpServer& server, std::shared_ptr<MixSession> session) 
         });
 
     // =========================================================================
+    // set_channel_input_trim
+    // =========================================================================
+    server.register_tool(
+        "set_channel_input_trim",
+        "Set the owning channel's input gain trim in dB, separately from its output fader",
+        {{"type", "object"},
+         {"additionalProperties", false},
+         {"properties",
+          {{"graph_id", {{"type", "integer"}}},
+           {"channel_id", {{"type", "integer"}}},
+           {"input_trim_db", {{"type", "number"}, {"minimum", -24.0}, {"maximum", 24.0}}}}},
+         {"required", {"graph_id", "channel_id", "input_trim_db"}}},
+        [session](const json& params) -> json {
+            const auto graph_id =
+                detail::checked_integer<std::uint64_t>(params.at("graph_id"), "mix graph id");
+            auto* graph = session->find(graph_id);
+            if (!graph) return graph_not_found(graph_id);
+            const auto value = params.at("input_trim_db").get<double>();
+            if (!std::isfinite(value) || value < -24.0 || value > 24.0)
+                return error_response("Input trim must be finite and in [-24, +24] dB");
+            const auto channel = ChannelStripId{
+                detail::checked_integer<std::uint64_t>(params.at("channel_id"), "channel id")};
+            const auto found = std::find_if(graph->channels.begin(),
+                                            graph->channels.end(),
+                                            [&](const auto& strip) { return strip.id == channel; });
+            if (found == graph->channels.end()) return error_response("Channel not found");
+            found->input_trim = static_cast<float>(value);
+            return {{"success", true}};
+        });
+
+    // =========================================================================
     // set_channel_level
     // =========================================================================
     server.register_tool(
@@ -1040,6 +1169,48 @@ void register_mix_tools(McpServer& server, std::shared_ptr<MixSession> session) 
                 return error_response("Fader level is outside the model domain");
             }
             return {{"success", true}};
+        });
+
+    // =========================================================================
+    // set_channel_flags
+    // =========================================================================
+    server.register_tool(
+        "set_channel_flags",
+        "Set selected authored Channel mute/solo booleans; preserve unselected flags and other "
+        "Channels. Native solo needs separate Set-wide audible approval during realization",
+        {{"type", "object"},
+         {"additionalProperties", false},
+         {"properties",
+          {{"graph_id", {{"type", "integer"}}},
+           {"channel_id", {{"type", "integer"}}},
+           {"mute", {{"type", "boolean"}}},
+           {"solo", {{"type", "boolean"}}}}},
+         {"required", {"graph_id", "channel_id"}},
+         {"anyOf", {{{"required", {"mute"}}}, {{"required", {"solo"}}}}}},
+        [session](const json& params) -> json {
+            std::optional<bool> mute, solo;
+            for (const auto* flag : {"mute", "solo"})
+                if (params.contains(flag) && !params.at(flag).is_boolean())
+                    return error_response("mute and solo must be genuine booleans");
+            if (params.contains("mute")) mute = params.at("mute").get<bool>();
+            if (params.contains("solo")) solo = params.at("solo").get<bool>();
+            if (!mute && !solo) return error_response("Select at least one of mute or solo");
+            const auto graph_id =
+                detail::checked_integer<std::uint64_t>(params.at("graph_id"), "mix graph id");
+            auto* graph = session->find(graph_id);
+            if (!graph) return graph_not_found(graph_id);
+            const auto channel_id = ChannelStripId{
+                detail::checked_integer<std::uint64_t>(params.at("channel_id"), "channel id")};
+            if (!set_channel_flags(*graph, channel_id, mute, solo))
+                return error_response("Channel not found");
+            const auto channel =
+                std::find_if(graph->channels.begin(),
+                             graph->channels.end(),
+                             [&](const auto& value) { return value.id == channel_id; });
+            return {{"success", true},
+                    {"channel_id", channel_id.value},
+                    {"mute", channel->mute},
+                    {"solo", channel->solo}};
         });
 
     // =========================================================================
@@ -1289,13 +1460,33 @@ void register_mix_tools(McpServer& server, std::shared_ptr<MixSession> session) 
            {"name", {{"type", "string"}, {"description", "Reference name"}}},
            {"source", {{"type", "string"}, {"description", "Source file path or URI"}}},
            {"integrated_lufs",
-            {{"type", "number"}, {"description", "Reference integrated loudness"}}},
-           {"true_peak", {{"type", "number"}, {"description", "Reference true peak dBFS"}}},
-           {"loudness_range", {{"type", "number"}, {"description", "Reference loudness range LU"}}},
-           {"avg_correlation", {{"type", "number"}, {"description", "Average stereo correlation"}}},
-           {"avg_width", {{"type", "number"}, {"description", "Average stereo width"}}},
+            {{"type", "number"}, {"description", "Finite f32 reference integrated loudness LUFS"}}},
+           {"true_peak",
+            {{"type", "number"}, {"description", "Finite f32 reference true peak dBFS"}}},
+           {"loudness_range",
+            {{"type", "number"},
+             {"minimum", 0},
+             {"description", "Finite nonnegative f32 reference loudness range LU"}}},
+           {"avg_correlation",
+            {{"type", "number"},
+             {"minimum", -1},
+             {"maximum", 1},
+             {"description", "Average stereo correlation [-1,1]"}}},
+           {"avg_width",
+            {{"type", "number"},
+             {"minimum", 0},
+             {"maximum", 1},
+             {"description", "Average stereo width [0,1]"}}},
            {"tonal_balance",
-            {{"type", "array"}, {"description", "Tonal balance curve [{frequency, level}]"}}}}},
+            {{"type", "array"},
+             {"description",
+              "Tonal balance curve: positive finite f32 frequency Hz and finite f32 level dB"},
+             {"items",
+              {{"type", "object"},
+               {"properties",
+                {{"frequency", {{"type", "number"}, {"exclusiveMinimum", 0}}},
+                 {"level", {{"type", "number"}}}}},
+               {"required", json::array({"frequency", "level"})}}}}}}},
          {"required", json::array({"graph_id", "name"})}},
         [session](const json& params) -> json {
             const auto graph_id =
@@ -1303,30 +1494,55 @@ void register_mix_tools(McpServer& server, std::shared_ptr<MixSession> session) 
             auto* g = session->find(graph_id);
             if (!g) return graph_not_found(graph_id);
 
+            const auto allocation = mcp_detail::checked_session_id_batch(
+                session->next_ref_id, maximum_mix_identity(*session, MixIdentityDomain::Reference));
+            if (!allocation) return identity_error(allocation.error(), "Mix reference");
             ReferenceProfile ref;
-            ref.id = ReferenceProfileId{session->next_ref_id};
+            ref.id = ReferenceProfileId{allocation->first};
             ref.name = params.at("name").get<std::string>();
             ref.source = params.value("source", "");
-            ref.loudness_profile.integrated =
-                static_cast<float>(params.value("integrated_lufs", 0.0));
-            ref.loudness_profile.true_peak = static_cast<float>(params.value("true_peak", 0.0));
-            ref.dynamic_profile.loudness_range =
-                static_cast<float>(params.value("loudness_range", 0.0));
-            ref.spatial_profile.average_correlation =
-                static_cast<float>(params.value("avg_correlation", 1.0));
-            ref.spatial_profile.average_width = static_cast<float>(params.value("avg_width", 0.0));
+            const auto integrated =
+                checked_reference_float(params.value("integrated_lufs", json(0.0)));
+            const auto peak = checked_reference_float(params.value("true_peak", json(0.0)));
+            const auto range =
+                checked_reference_float(params.value("loudness_range", json(0.0)), 0.0);
+            const auto correlation =
+                checked_reference_float(params.value("avg_correlation", json(1.0)), -1.0, 1.0);
+            const auto width =
+                checked_reference_float(params.value("avg_width", json(0.0)), 0.0, 1.0);
+            if (!integrated)
+                return error_response("integrated_lufs must be finite and representable as f32");
+            if (!peak) return error_response("true_peak must be finite and representable as f32");
+            if (!range)
+                return error_response(
+                    "loudness_range must be finite, nonnegative, and representable as f32");
+            if (!correlation)
+                return error_response("avg_correlation must be finite and within [-1,1]");
+            if (!width) return error_response("avg_width must be finite and within [0,1]");
+            ref.loudness_profile.integrated = *integrated;
+            ref.loudness_profile.true_peak = *peak;
+            ref.dynamic_profile.loudness_range = *range;
+            ref.spatial_profile.average_correlation = *correlation;
+            ref.spatial_profile.average_width = *width;
 
             if (params.contains("tonal_balance")) {
                 for (const auto& pt : params["tonal_balance"]) {
-                    ref.tonal_balance_curve.push_back(
-                        {static_cast<float>(pt.at("frequency").get<double>()),
-                         static_cast<float>(pt.at("level").get<double>())});
+                    const auto frequency = checked_reference_float(
+                        pt.at("frequency"), 0.0, reference_float_limit, true);
+                    const auto level = checked_reference_float(pt.at("level"));
+                    if (!frequency)
+                        return error_response(
+                            "tonal_balance frequency must remain finite and positive in f32 Hz");
+                    if (!level)
+                        return error_response(
+                            "tonal_balance level must be finite and representable as f32 dB");
+                    ref.tonal_balance_curve.emplace_back(*frequency, *level);
                 }
             }
 
             const auto reference_id = ref.id.value;
             add_reference_profile(*g, std::move(ref));
-            ++session->next_ref_id;
+            session->next_ref_id = allocation->next;
             return {{"reference_id", reference_id}, {"success", true}};
         });
 
@@ -1475,6 +1691,131 @@ void register_mix_tools(McpServer& server, std::shared_ptr<MixSession> session) 
             return {{"success", true}};
         });
 
+    server.register_tool(
+        "inspect_mix_effect",
+        "Inspect an effect's stable ID, current numeric parameter paths and values, and "
+        "source-owned configuration in get_mix_json",
+        {{"graph_id", "integer"}, {"effect_id", "integer"}},
+        [session](const json& params) -> json {
+            const auto id =
+                detail::checked_integer<std::uint64_t>(params.at("graph_id"), "graph id");
+            const auto* graph = session->find(id);
+            if (!graph) return graph_not_found(id);
+            const auto effect_id = MixEffectId{
+                detail::checked_integer<std::uint64_t>(params.at("effect_id"), "effect id")};
+            const auto* effect = find_effect(*graph, effect_id);
+            if (!effect) return error_response("Effect identity does not exist or is not unique");
+            json values = json::object();
+            for (const auto& path : mix_effect_parameter_paths(*effect)) {
+                if (auto value = get_mix_effect_parameter(*effect, path)) values[path] = *value;
+            }
+            return {{"effect_id", effect_id.value},
+                    {"enabled", effect->enabled},
+                    {"parameters", std::move(values)},
+                    {"non_scalar_paths", mix_effect_non_scalar_paths(*effect)}};
+        });
+
+    server.register_tool(
+        "replace_mix_effect",
+        "Replace an effect using a complete add_channel_effect configuration; omitted fields use "
+        "construction defaults; preserve existing target mappings and validate all references",
+        {{"type", "object"},
+         {"properties",
+          {{"graph_id", {{"type", "integer"}}},
+           {"effect_id", {{"type", "integer"}}},
+           {"configuration",
+            {{"type", "object"},
+             {"properties", {{"effect_type", {{"type", "string"}}}}},
+             {"required", {"effect_type"}}}}}},
+         {"required", {"graph_id", "effect_id", "configuration"}}},
+        [session](const json& params) -> json {
+            const auto id =
+                detail::checked_integer<std::uint64_t>(params.at("graph_id"), "graph id");
+            auto* graph = session->find(id);
+            if (!graph) return graph_not_found(id);
+            const auto effect_id =
+                detail::checked_integer<std::uint64_t>(params.at("effect_id"), "effect id");
+            const auto* previous = find_effect(*graph, MixEffectId{effect_id});
+            if (!previous) return error_response("Effect identity does not exist or is not unique");
+            auto effect = build_effect(params.at("configuration"), effect_id);
+            if (!effect) return error_response("Invalid effect configuration");
+            if (!replace_mix_effect(
+                    *graph, MixEffectId{effect_id}, std::move(effect->parameters), effect->enabled))
+                return error_response("Effect parameters or retained references are invalid; "
+                                      "remove incompatible lanes/mappings first");
+            return {{"success", true}};
+        });
+
+    server.register_tool(
+        "remove_mix_effect",
+        "Remove an effect by stable ID; refuse automation or processing-rationale references and "
+        "relocate lanes targeting later effects",
+        {{"graph_id", "integer"}, {"effect_id", "integer"}},
+        [session](const json& params) -> json {
+            const auto id =
+                detail::checked_integer<std::uint64_t>(params.at("graph_id"), "graph id");
+            auto* graph = session->find(id);
+            if (!graph) return graph_not_found(id);
+            if (!remove_mix_effect(*graph,
+                                   MixEffectId{detail::checked_integer<std::uint64_t>(
+                                       params.at("effect_id"), "effect id")}))
+                return error_response("Effect does not exist or has references; remove lanes or "
+                                      "revise processing rationale first");
+            return {{"success", true}};
+        });
+
+    server.register_tool(
+        "reorder_mix_effects",
+        "Reorder an exact effect-ID permutation in channels[PartId].insert_chain, "
+        "group_buses[ID].insert_chain, aux_buses[ID].effect_chain or master_bus.insert_chain; "
+        "automation follows effect identity",
+        {{"graph_id", "integer"}, {"chain_path", "string"}, {"effect_ids", "array of integers"}},
+        [session](const json& params) -> json {
+            const auto id =
+                detail::checked_integer<std::uint64_t>(params.at("graph_id"), "graph id");
+            auto* graph = session->find(id);
+            if (!graph) return graph_not_found(id);
+            std::vector<MixEffectId> order;
+            for (const auto& value : params.at("effect_ids"))
+                order.push_back(
+                    MixEffectId{detail::checked_integer<std::uint64_t>(value, "effect id")});
+            if (!reorder_mix_effects(*graph, params.at("chain_path").get<std::string>(), order))
+                return error_response("Unknown chain or invalid effect permutation/references");
+            return {{"success", true}};
+        });
+
+    server.register_tool(
+        "remove_mix_automation",
+        "Remove a mix automation lane by its zero-based index from get_mix_json",
+        {{"graph_id", "integer"}, {"index", "integer"}},
+        [session](const json& params) -> json {
+            const auto id =
+                detail::checked_integer<std::uint64_t>(params.at("graph_id"), "graph id");
+            auto* graph = session->find(id);
+            if (!graph) return graph_not_found(id);
+            if (!remove_mix_automation(
+                    *graph, detail::checked_integer<std::size_t>(params.at("index"), "lane index")))
+                return error_response("Automation lane does not exist");
+            return {{"success", true}};
+        });
+
+    server.register_tool(
+        "remove_mix_parameter_mapping",
+        "Remove one effect's explicit target mapping by stable effect ID and source parameter path",
+        {{"graph_id", "integer"}, {"effect_id", "integer"}, {"source_path", "string"}},
+        [session](const json& params) -> json {
+            const auto id =
+                detail::checked_integer<std::uint64_t>(params.at("graph_id"), "graph id");
+            auto* graph = session->find(id);
+            if (!graph) return graph_not_found(id);
+            if (!remove_mix_parameter_mapping(*graph,
+                                              MixEffectId{detail::checked_integer<std::uint64_t>(
+                                                  params.at("effect_id"), "effect id")},
+                                              params.at("source_path").get<std::string>()))
+                return error_response("Effect or mapping does not exist");
+            return {{"success", true}};
+        });
+
     // =========================================================================
     // validate_mix
     // =========================================================================
@@ -1521,6 +1862,12 @@ void register_mix_tools(McpServer& server, std::shared_ptr<MixSession> session) 
             if (!g) return graph_not_found(graph_id);
             return {{"mix_ir", mix_to_json(*g)}};
         });
+    for (const auto* name : {"resolve_mix_fader_levels",
+                             "compare_to_reference",
+                             "inspect_mix_effect",
+                             "validate_mix",
+                             "get_mix_json"})
+        server.set_tool_document_domain(name, McpDocumentDomain::None);
 }
 
 } // namespace sunny::infrastructure

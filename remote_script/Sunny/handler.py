@@ -1,5 +1,4 @@
-"""
-LOM request handler — translates Sunny requests to Ableton API calls.
+"""LOM request handler — translates Sunny requests to Ableton API calls.
 
 Each request has a type (get/set/call), a path into
 the LOM object hierarchy, and a property or method name with arguments.
@@ -20,6 +19,9 @@ import logging
 import math
 import os
 from typing import Any
+
+from .build_identity import BRIDGE_SOURCE_SHA256
+from .native_control import native_call
 
 logger = logging.getLogger("sunny.remote_script.handler")
 
@@ -48,6 +50,8 @@ _SONG_GETS = frozenset(
         "signature_numerator",
         "signature_denominator",
         "is_playing",
+        "session_record",
+        "record_mode",
         "current_song_time",
     }
 )
@@ -64,6 +68,48 @@ _SONG_CALLS = frozenset(
         "create_scene",
         "create_midi_track",
         "create_return_track",
+        "sunny_managed_context",
+        "sunny_ordinary_prepare",
+        "sunny_ordinary_execute",
+        "sunny_ordinary_operation",
+        "sunny_managed_operation",
+        "sunny_managed_observe",
+        "sunny_managed_create_clip",
+        "sunny_managed_replace_clip",
+        "sunny_managed_rebind",
+        "sunny_managed_author_envelope",
+        "sunny_managed_update_notes",
+        "sunny_managed_sample_envelope",
+        "sunny_managed_revise_note_population",
+        "sunny_managed_preview_adoption",
+        "sunny_managed_adopt_clip",
+        "sunny_managed_insert_device",
+        "sunny_managed_update_device_parameters",
+        "sunny_managed_preview_devices",
+        "sunny_managed_inspect_devices",
+        "sunny_managed_adopt_devices",
+        "sunny_managed_update_clip_geometry",
+        "sunny_managed_preview_song_settings",
+        "sunny_managed_inspect_song_settings",
+        "sunny_managed_apply_song_settings",
+        "sunny_managed_preview_envelope_replacement",
+        "sunny_managed_replace_envelope",
+        "sunny_managed_update_device_modes",
+        "sunny_managed_preview_static_mixer",
+        "sunny_managed_inspect_static_mixer",
+        "sunny_managed_adopt_static_mixer",
+        "sunny_managed_update_static_mixer",
+        "sunny_managed_routing_candidates",
+        "sunny_managed_inspect_send",
+        "sunny_managed_preview_routing",
+        "sunny_managed_preview_group",
+        "sunny_managed_apply_routing",
+        "sunny_legacy_scope",
+        "sunny_legacy_read",
+        "sunny_legacy_prepare",
+        "sunny_legacy_execute",
+        "sunny_legacy_operation",
+        "sunny_legacy_finish",
     }
 )
 
@@ -155,7 +201,12 @@ def _path_kind(path: str) -> str | None:
 
 
 def _finite_number(value: Any) -> bool:
-    return not isinstance(value, bool) and isinstance(value, (int, float)) and math.isfinite(value)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False
 
 
 def _protocol_index(value: Any, *, allow_append: bool = False) -> bool:
@@ -322,6 +373,85 @@ def _valid_all_notes_query(value: Any) -> bool:
     )
 
 
+def _valid_ranged_notes_query(value: Any) -> bool:
+    return (
+        isinstance(value, dict)
+        and set(value) == {"return", "from_pitch", "pitch_span", "from_time", "time_span"}
+        and _valid_all_notes_query({"return": value["return"]})
+        and type(value["from_pitch"]) is int
+        and value["from_pitch"] == 0
+        and type(value["pitch_span"]) is int
+        and value["pitch_span"] == 128
+        and _finite_number(value["from_time"])
+        and value["from_time"] == 0.0
+        and _finite_number(value["time_span"])
+        and value["time_span"] > 0.0
+    )
+
+
+def _valid_envelope_parameter(value: Any) -> bool:
+    if not isinstance(value, dict) or not isinstance(value.get("kind"), str):
+        return False
+    kind = value["kind"]
+    if kind in ("volume", "panning"):
+        return set(value) == {"kind"}
+    if kind == "send":
+        return set(value) == {"kind", "send_index"} and _protocol_index(value["send_index"])
+    return (
+        kind == "device"
+        and set(value) == {"kind", "device_index", "parameter_name"}
+        and _protocol_index(value["device_index"])
+        and isinstance(value["parameter_name"], str)
+        and bool(value["parameter_name"])
+    )
+
+
+def _valid_step_envelope_author(value: Any) -> bool:
+    from .managed_envelope_revision import MAX_STEP_POINTS
+
+    if (
+        not isinstance(value, dict)
+        or set(value) != {"parameter", "interpolation", "clip_end", "points"}
+        or not _valid_envelope_parameter(value["parameter"])
+        or value["interpolation"] != "step"
+        or not _finite_number(value["clip_end"])
+        or value["clip_end"] <= 0.0
+        or not isinstance(value["points"], list)
+        or not value["points"]
+        or len(value["points"]) > MAX_STEP_POINTS
+    ):
+        return False
+    previous = -1.0
+    for point in value["points"]:
+        if (
+            not isinstance(point, dict)
+            or set(point) != {"time", "value"}
+            or not _finite_number(point["time"])
+            or not _finite_number(point["value"])
+            or not previous < float(point["time"]) < float(value["clip_end"])
+        ):
+            return False
+        previous = float(point["time"])
+    return value["points"][0]["time"] == 0.0
+
+
+def _valid_step_envelope_query(value: Any) -> bool:
+    if (
+        not isinstance(value, dict)
+        or set(value) != {"parameter", "sample_times"}
+        or not _valid_envelope_parameter(value["parameter"])
+        or not isinstance(value["sample_times"], list)
+        or not value["sample_times"]
+    ):
+        return False
+    previous = -1.0
+    for time in value["sample_times"]:
+        if not _finite_number(time) or time < 0.0 or float(time) <= previous:
+            return False
+        previous = float(time)
+    return True
+
+
 def _valid_request_arguments(req_type: str, kind: str, name: str, args: list[Any]) -> bool:
     if req_type == "get":
         return not args
@@ -376,6 +506,18 @@ def _valid_request_arguments(req_type: str, kind: str, name: str, args: list[Any
             return isinstance(value, float) and value == 0.0
         return _finite_number(value)
     if kind == "song":
+        if name.startswith("sunny_legacy_"):
+            from .legacy import valid_legacy_request
+
+            return valid_legacy_request(name, args)
+        if name.startswith("sunny_ordinary_"):
+            from .ordinary_clip import valid_ordinary_request
+
+            return valid_ordinary_request(name, args)
+        if name.startswith("sunny_managed_"):
+            from .managed import valid_managed_request
+
+            return valid_managed_request(name, args)
         if name in (
             "sunny_get_target_profile",
             "sunny_get_target_snapshot",
@@ -388,7 +530,19 @@ def _valid_request_arguments(req_type: str, kind: str, name: str, args: list[Any
         if name in ("create_scene", "create_midi_track"):
             return len(args) == 1 and _protocol_index(args[0], allow_append=True)
         if name == "sunny_get_remote_log":
-            return len(args) == 1 and type(args[0]) is int and args[0] >= 0
+            return (
+                len(args) in (1, 2)
+                and type(args[0]) is int
+                and 0 <= args[0] <= 2147483647
+                and (
+                    len(args) == 1
+                    or (
+                        type(args[1]) is str
+                        and len(args[1]) == 32
+                        and all(character in "0123456789abcdef" for character in args[1])
+                    )
+                )
+            )
         if name == "sunny_set_cue":
             return (
                 len(args) == 2
@@ -421,6 +575,10 @@ def _valid_request_arguments(req_type: str, kind: str, name: str, args: list[Any
     if kind == "clip":
         if name == "sunny_clear_all_envelopes":
             return not args
+        if name == "sunny_author_step_envelope":
+            return len(args) == 1 and _valid_step_envelope_author(args[0])
+        if name == "sunny_get_step_envelope":
+            return len(args) == 1 and _valid_step_envelope_query(args[0])
         return len(args) == 1 and (
             _valid_note_dictionary(args[0])
             if name == "add_new_notes"
@@ -428,9 +586,15 @@ def _valid_request_arguments(req_type: str, kind: str, name: str, args: list[Any
             if name == "get_notes_by_id"
             else _valid_all_notes_query(args[0])
             if name == "get_all_notes_extended"
+            else _valid_ranged_notes_query(args[0])
+            if name == "get_notes_extended"
             else False
         )
     if kind == "device":
+        if name == "sunny_resolve_native_display_value":
+            from .native_units import valid_native_display_request
+
+            return len(args) == 1 and valid_native_display_request(args[0])
         if name == "sunny_get_device_parameter":
             return (
                 len(args) == 2
@@ -521,8 +685,11 @@ def _request_allowed(req_type: str, path: str, name: str, args: list[Any]) -> bo
             in (
                 "add_new_notes",
                 "get_notes_by_id",
+                "get_notes_extended",
                 "get_all_notes_extended",
                 "sunny_clear_all_envelopes",
+                "sunny_author_step_envelope",
+                "sunny_get_step_envelope",
             )
         )
     elif kind == "mixer_device":
@@ -547,6 +714,7 @@ def _request_allowed(req_type: str, path: str, name: str, args: list[Any]) -> bo
         allowed = req_type == "call" and name in (
             "sunny_get_device_parameter",
             "sunny_set_device_parameter",
+            "sunny_resolve_native_display_value",
         )
     return allowed and _valid_request_arguments(req_type, kind, name, args)
 
@@ -554,9 +722,16 @@ def _request_allowed(req_type: str, path: str, name: str, args: list[Any]) -> bo
 class LomHandler:
     """Translates LomRequest JSON to Ableton LOM API calls."""
 
-    def __init__(self, surface, remote_log=None):
+    def __init__(
+        self, surface, remote_log=None, *, envelope_authorizer=None, managed_registry=None
+    ):
         self._surface = surface
         self._remote_log = remote_log
+        # The surface dispatches Live operations on its main thread. Product
+        # admission stays denied until managed project identities supply this
+        # callback; a path/index/name never establishes ownership.
+        self._envelope_authorizer = envelope_authorizer
+        self._managed_registry = managed_registry
 
     @staticmethod
     def is_remote_log_request(request: object) -> bool:
@@ -606,13 +781,44 @@ class LomHandler:
             if req_type == "call" and name == "sunny_get_remote_log":
                 if self._remote_log is None:
                     return {"success": False, "error": "Remote log is not enabled"}
-                return {"success": True, "value": self._remote_log.entries_after(args[0])}
+                return {"success": True, "value": self._remote_log.entries_after(*args)}
 
             if req_type == "call" and name == "sunny_get_target_profile":
                 return {"success": True, "value": self._serialise(self._target_profile())}
 
             if req_type == "call" and name == "sunny_get_target_snapshot":
                 return {"success": True, "value": self._serialise(self._target_snapshot())}
+
+            if req_type == "call" and name.startswith("sunny_ordinary_"):
+                if self._managed_registry is None:
+                    return {"success": False, "error": "Native ownership registry is unavailable"}
+                return {
+                    "success": True,
+                    "value": self._managed_registry.dispatch_ordinary(name, args),
+                }
+
+            if req_type == "call" and name.startswith("sunny_legacy_"):
+                if self._managed_registry is None:
+                    return {"success": False, "error": "Native ownership registry is unavailable"}
+                return {
+                    "success": True,
+                    "value": self._managed_registry.dispatch_legacy(name, args),
+                }
+
+            if req_type == "call" and name.startswith("sunny_managed_"):
+                if self._managed_registry is None:
+                    return {"success": False, "error": "Managed ownership registry is unavailable"}
+                return {"success": True, "value": self._managed_registry.dispatch(name, args)}
+
+            if BRIDGE_PROTOCOL_VERSION >= 47:
+                from .legacy import command_valid
+
+                command = {"type": req_type, "path": path, "name": name, "args": args}
+                if not command_valid(command, readonly=True):
+                    return {
+                        "success": False,
+                        "error": "Raw native mutation requires prepared scope authority",
+                    }
 
             obj = self._resolve_path(path)
 
@@ -629,7 +835,7 @@ class LomHandler:
                     return {"success": False, "error": "Set requests require exactly one arg"}
                 getattr(obj, name)
                 requested = args[0]
-                setattr(obj, name, requested)
+                native_call(setattr, obj, name, requested)
                 observed = getattr(obj, name)
                 return {
                     "success": True,
@@ -668,6 +874,15 @@ class LomHandler:
                 if name == "sunny_get_device_parameter":
                     evidence = self._get_device_parameter(obj, *args)
                     return {"success": True, "value": self._serialise(evidence)}
+                if name == "sunny_resolve_native_display_value":
+                    evidence = self._resolve_native_display_value(obj, args[0])
+                    return {"success": True, "value": self._serialise(evidence)}
+                if name == "sunny_author_step_envelope":
+                    acknowledgement = self._author_step_envelope(path, obj, args[0])
+                    return {"success": True, "value": acknowledgement}
+                if name == "sunny_get_step_envelope":
+                    evidence = self._get_step_envelope(path, obj, args[0])
+                    return {"success": True, "value": evidence}
                 if name == "add_new_notes":
                     return {"success": True, "value": self._add_new_notes(obj, args[0]["notes"])}
                 if name == "get_notes_by_id":
@@ -676,11 +891,22 @@ class LomHandler:
                 if name == "get_all_notes_extended":
                     notes = obj.get_all_notes_extended()
                     return {"success": True, "value": self._midi_notes_dictionary(notes)}
+                if name == "get_notes_extended":
+                    query = args[0]
+                    # Python keyword arguments/MidiNoteVector are observed in
+                    # Live's MxDCore source, not the Max-side dictionary ABI.
+                    notes = obj.get_notes_extended(
+                        from_pitch=query["from_pitch"],
+                        pitch_span=query["pitch_span"],
+                        from_time=float(query["from_time"]),
+                        time_span=float(query["time_span"]),
+                    )
+                    return {"success": True, "value": self._midi_notes_dictionary(notes)}
                 if name in _STRUCTURAL_CALLS:
-                    getattr(obj, name)(*args)
+                    native_call(getattr(obj, name), *args)
                     return {"success": True, "value": None}
                 if name == "sunny_clear_all_envelopes":
-                    obj.clear_all_envelopes()
+                    native_call(obj.clear_all_envelopes)
                     has_envelopes = obj.has_envelopes
                     if not isinstance(has_envelopes, bool):
                         raise RuntimeError("Clip returned invalid has_envelopes state")
@@ -768,7 +994,9 @@ class LomHandler:
         return cls._live_module().Application.get_application()
 
     @classmethod
-    def _add_new_notes(cls, clip: Any, notes: list[dict[str, Any]]) -> list[int]:
+    def _add_new_notes(
+        cls, clip: Any, notes: list[dict[str, Any]], *, phase: Any = None
+    ) -> list[int]:
         """Insert validated wire notes as ``MidiNoteSpecification`` objects; return their IDs.
 
         ``Clip.add_new_notes`` accepts only an iterable of specifications, the
@@ -788,7 +1016,8 @@ class LomHandler:
             )
             for note in notes
         )
-        note_ids = _lom_sequence(clip.add_new_notes(specifications))
+        call = phase or (lambda _label, callback, *values: native_call(callback, *values))
+        note_ids = _lom_sequence(call("notes_add", clip.add_new_notes, specifications))
         if note_ids is None:
             raise RuntimeError("Clip.add_new_notes returned no note IDs")
         if len(note_ids) != len(specifications) or any(
@@ -847,6 +1076,7 @@ class LomHandler:
                 "name": "Sunny Remote Script",
                 "runtime": "control_surface_python",
                 "contract": "version_coupled_private",
+                "source_sha256": BRIDGE_SOURCE_SHA256,
             },
             "live": {
                 "version": {
@@ -868,6 +1098,68 @@ class LomHandler:
                 "structural_snapshot": "available",
             },
         }
+
+    def _resolve_native_display_value(
+        self, device: Any, query: dict[str, Any], *, retained_parameters: Any = None
+    ) -> dict[str, Any]:
+        """One read-only main-thread operation over an observed native device.
+
+        Source-candidate coverage is Live 12.3.x/12.4.x. Actual class, population,
+        modes and display evidence still determine admission; an application
+        version alone never qualifies an ABI, edition or interpreted sound.
+        """
+        from .native_units import NativeUnitError, resolve_registered_native_display_value
+
+        result = {"schema_version": 1, **query}
+        calls = 0
+
+        def version() -> tuple[int, int, int]:
+            application = self._get_application()
+            observed = tuple(
+                self._lom_integer(getattr(application, method)(), "Application version")
+                for method in ("get_major_version", "get_minor_version", "get_bugfix_version")
+            )
+            if min(observed) < 0:
+                raise NativeUnitError(
+                    "InvalidObservation", "Application version must be nonnegative"
+                )
+            return observed
+
+        try:
+            initial_version = version()
+            if initial_version[0] != 12 or initial_version[1] not in (3, 4):
+                raise NativeUnitError(
+                    "UnknownRegistryCoverage", "Native display candidates cover Live 12.3.x/12.4.x"
+                )
+            candidate = resolve_registered_native_display_value(
+                device,
+                query["capability_id"],
+                query["target"],
+                query["tolerance"],
+                retained_parameters=retained_parameters,
+            )
+            calls = candidate["formatter_calls"]
+            if version() != initial_version:
+                raise NativeUnitError(
+                    "HostVersionDrift", "Application version changed during observation", calls
+                )
+            return {**result, "outcome": "resolved", "candidate": candidate}
+        except NativeUnitError as error:
+            return {
+                **result,
+                "outcome": "declined",
+                "reason": error.reason,
+                "diagnostic": str(error),
+                "formatter_calls": error.formatter_calls,
+            }
+        except Exception as error:
+            return {
+                **result,
+                "outcome": "declined",
+                "reason": "ObservationUnavailable",
+                "diagnostic": "Native application observation failed: " + str(error),
+                "formatter_calls": calls,
+            }
 
     @staticmethod
     def _device_snapshot(device: Any) -> dict[str, Any]:
@@ -1033,8 +1325,11 @@ class LomHandler:
             "identifier": requested_type["identifier"],
         }
         before = cls._output_routing_snapshot(track)
-        track.output_routing_type = cls._advertised_route(
-            track, "available_output_routing_types", requested
+        native_call(
+            setattr,
+            track,
+            "output_routing_type",
+            cls._advertised_route(track, "available_output_routing_types", requested),
         )
         after = cls._output_routing_snapshot(track)
         if after["output_routing_type"] != requested:
@@ -1064,8 +1359,11 @@ class LomHandler:
         before = cls._output_routing_snapshot(track)
         if before["output_routing_type"] != expected:
             raise RuntimeError("Track output routing type changed before channel mutation")
-        track.output_routing_channel = cls._advertised_route(
-            track, "available_output_routing_channels", requested
+        native_call(
+            setattr,
+            track,
+            "output_routing_channel",
+            cls._advertised_route(track, "available_output_routing_channels", requested),
         )
         after = cls._output_routing_snapshot(track)
         if after["output_routing_type"] != expected:
@@ -1281,7 +1579,8 @@ class LomHandler:
             if arrangement_clips is None:
                 raise RuntimeError("Track returned invalid arrangement_clips collection")
             arrangement_clip_count = len(arrangement_clips)
-        # Take lanes arrived with Live 12; a Live 11 Track has no take_lanes.
+        # Live 11 has take lanes in its UI, but this adapter only reads their
+        # Python API topology on Live 12+. Null means unobserved, not absent.
         if take_lane_state_available:
             take_lanes = _lom_sequence(track.take_lanes)
             if take_lanes is None:
@@ -1604,7 +1903,7 @@ class LomHandler:
             "note_tunings": note_tunings,
         }
 
-    def _target_snapshot(self) -> dict[str, Any]:
+    def _target_snapshot(self, retained_song: Any = None) -> dict[str, Any]:
         """Observe plan-relevant Set structure in one synchronous main-thread call.
 
         Live exposes no snapshot transaction or topology lock. The returned
@@ -1612,7 +1911,7 @@ class LomHandler:
         during this call, not proof that the Set cannot change immediately
         before or after it.
         """
-        song = self._get_song()
+        song = self._get_song() if retained_song is None else retained_song
         profile = self._target_profile()
         version = profile["live"]["version"]
         live_version = (version["major"], version["minor"], version["bugfix"])
@@ -1682,7 +1981,7 @@ class LomHandler:
 
     @classmethod
     def _insert_device(
-        cls, track: Any, device_name: str, target_index: int | None = None
+        cls, track: Any, device_name: str, target_index: int | None = None, *, phase: Any = None
     ) -> dict[str, Any]:
         """Insert one native device and return closed structural/state evidence."""
         before_count = len(cls._device_chain(track))
@@ -1690,10 +1989,11 @@ class LomHandler:
         if requested_index > before_count:
             raise RuntimeError("Device insertion index exceeds the current device-chain length")
 
+        call = phase or (lambda _label, callback, *values: native_call(callback, *values))
         if target_index is None:
-            track.insert_device(device_name)
+            call("insert_device", track.insert_device, device_name)
         else:
-            track.insert_device(device_name, target_index)
+            call("insert_device", track.insert_device, device_name, target_index)
 
         devices = cls._device_chain(track)
         after_count = len(devices)
@@ -1725,7 +2025,9 @@ class LomHandler:
         }
 
     @staticmethod
-    def _set_cue(song: Any, beat: float, label: str) -> dict[str, Any]:
+    def _set_cue(
+        song: Any, beat: float, label: str, *, retained: Any = None, phase: Any = None
+    ) -> dict[str, Any]:
         """Create or rename a cue without the toggle/delete ambiguity of LOM.
 
         ``Song.set_or_delete_cue`` only acts at ``current_song_time`` and takes
@@ -1735,10 +2037,43 @@ class LomHandler:
         beat = float(beat)
         if type(label) is not str:
             raise RuntimeError("Cue label must be a string")
+        if retained is not None:
+            call = phase
+            existing = retained["extra"]["cue"]
+            cue = existing["object"] if existing is not None else None
+            if cue is None:
+                call("cue_move_playhead", setattr, song, "current_song_time", beat)
+                call("cue_toggle", song.set_or_delete_cue)
+                # Restoration is an explicit phase only after a returned,
+                # verified toggle on the original Song; never compensation
+                # after a failed/lost native call or a replacement document.
+                call(
+                    "cue_restore_playhead",
+                    setattr,
+                    song,
+                    "current_song_time",
+                    retained["extra"]["previous_time"],
+                )
+                matches = [
+                    node
+                    for node in retained["scope"]["graph"].nodes.values()
+                    if node["kind"] == "cue" and abs(float(node["before"]["time"]) - beat) < 1e-7
+                ]
+                if len(matches) != 1:
+                    raise RuntimeError("Verified owned CuePoint is unavailable")
+                cue = matches[0]["object"]
+            call("cue_rename", setattr, cue, "name", label)
+            return {
+                "action": "updated" if existing else "created",
+                "requested_time": beat,
+                "observed_time": LomHandler._lom_float(cue.time, "CuePoint time"),
+                "requested_name": label,
+                "observed_name": LomHandler._lom_string(cue.name, "CuePoint name"),
+            }
         for cue in song.cue_points:
             cue_time = LomHandler._lom_float(cue.time, "CuePoint time")
             if abs(cue_time - beat) < 1e-7:
-                cue.name = label
+                native_call(setattr, cue, "name", label)
                 return {
                     "action": "updated",
                     "requested_time": beat,
@@ -1749,15 +2084,15 @@ class LomHandler:
 
         previous_time = song.current_song_time
         try:
-            song.current_song_time = beat
-            song.set_or_delete_cue()
+            native_call(setattr, song, "current_song_time", beat)
+            native_call(song.set_or_delete_cue)
         finally:
-            song.current_song_time = previous_time
+            native_call(setattr, song, "current_song_time", previous_time)
 
         for cue in song.cue_points:
             cue_time = LomHandler._lom_float(cue.time, "CuePoint time")
             if abs(cue_time - beat) < 1e-7:
-                cue.name = label
+                native_call(setattr, cue, "name", label)
                 return {
                     "action": "created",
                     "requested_time": beat,
@@ -1785,16 +2120,391 @@ class LomHandler:
             )
         return matches[0]
 
+    @staticmethod
+    def _same_live_object(first: Any, second: Any) -> bool:
+        # Live may supply distinct Python wrappers for one native identity.
+        return first is second or first == second
+
+    @staticmethod
+    def _envelope_valid(envelope: Any) -> bool:
+        # Pinned ableton.v2.base.liveobj_valid uses native equality with None
+        # to reject invalid Live wrappers, not just Python identity.
+        return envelope != None  # noqa: E711
+
+    @classmethod
+    def _step_clip_interval(cls, clip: Any, *, idle: bool) -> float:
+        for name, expected in (
+            ("is_session_clip", True),
+            ("is_arrangement_clip", False),
+            ("is_audio_clip", False),
+            ("is_midi_clip", True),
+            ("looping", False),
+        ):
+            if getattr(clip, name) is not expected:
+                raise RuntimeError(
+                    f"Step envelopes require a nonlooping MIDI Session clip ({name})"
+                )
+        start = cls._lom_float(clip.start_marker, "Step envelope clip start")
+        end = cls._lom_float(clip.end_marker, "Step envelope clip end")
+        if start != 0.0 or end <= start:
+            raise RuntimeError("Step envelopes require the generated marker interval [0, clip_end)")
+        if idle:
+            for name in (
+                "is_playing",
+                "is_recording",
+                "is_overdubbing",
+                "is_triggered",
+                "will_record_on_start",
+            ):
+                if getattr(clip, name) is not False:
+                    raise RuntimeError(f"Step envelope authoring requires an idle clip ({name})")
+        return end
+
+    def _step_envelope_target(
+        self, path: str, clip: Any, selector: dict[str, Any], *, retained_objects: Any = None
+    ) -> tuple[Any, Any, dict[str, Any]]:
+        import Live
+
+        if retained_objects is None:
+            track = self._resolve_path("/".join(path.split("/")[:3]))
+            slot = self._resolve_path(path.rsplit("/", 1)[0])
+        else:
+            track, slot, _, _ = retained_objects
+        if (
+            not isinstance(track, Live.Track.Track)
+            or not isinstance(clip, Live.Clip.Clip)
+            or not self._same_live_object(clip.canonical_parent, slot)
+            or not self._same_live_object(slot.canonical_parent, track)
+            or not self._same_live_object(slot.clip, clip)
+        ):
+            raise RuntimeError("Step envelope clip does not belong to the resolved target track")
+
+        if retained_objects is not None:
+            _, _, parameter, owner = retained_objects
+        else:
+            kind = selector["kind"]
+            owner = track.mixer_device
+            if kind == "device":
+                owner = self._device_chain(track)[selector["device_index"]]
+                parameter = self._resolve_device_parameter(owner, selector["parameter_name"])
+            elif kind == "send":
+                parameter = owner.sends[selector["send_index"]]
+            else:
+                parameter = getattr(owner, kind)
+        if (
+            not isinstance(parameter, Live.DeviceParameter.DeviceParameter)
+            or not self._same_live_object(parameter.canonical_parent, owner)
+            or not self._same_live_object(owner.canonical_parent, track)
+        ):
+            raise RuntimeError("Step envelope parameter does not belong to the target track")
+
+        minimum = self._lom_float(parameter.min, "Step envelope parameter minimum")
+        maximum = self._lom_float(parameter.max, "Step envelope parameter maximum")
+        observed = self._lom_float(parameter.value, "Step envelope parameter value")
+        state = _device_parameter_state(parameter.state, "state", parameter.name)
+        automation_state = _device_parameter_state(
+            parameter.automation_state, "automation state", parameter.name
+        )
+        if (
+            minimum >= maximum
+            or not minimum <= observed <= maximum
+            or parameter.is_quantized is not False
+            or parameter.is_enabled is not True
+            or state != 0
+        ):
+            raise RuntimeError("Step envelopes require an enabled, active continuous parameter")
+        domain = {
+            "matched_name": self._lom_string(parameter.name, "Step envelope parameter name"),
+            "original_name": self._lom_string(
+                parameter.original_name, "Step envelope original name"
+            ),
+            "minimum": minimum,
+            "maximum": maximum,
+            "unit": "internal",
+            "state": state,
+            "automation_state": automation_state,
+        }
+        return track, parameter, domain
+
+    def _authorize_step_envelope(self, track: Any, clip: Any, parameter: Any) -> None:
+        # This callback runs in the same Live main-thread dispatch as the
+        # mutation. It must resolve managed ownership using these native
+        # identities, and must not mutate Live objects itself.
+        if (
+            not callable(self._envelope_authorizer)
+            or self._envelope_authorizer(track, clip, parameter) is not True
+        ):
+            raise RuntimeError("Native envelope authoring is not authorized for these identities")
+
+    def _author_step_envelope(
+        self,
+        path: str,
+        clip: Any,
+        lane: dict[str, Any],
+        *,
+        retained_target: Any = None,
+        phase: Any = None,
+    ) -> dict[str, Any]:
+        if not callable(self._envelope_authorizer):
+            raise RuntimeError("Native envelope authoring is not authorized")
+        track, parameter, domain = retained_target or self._step_envelope_target(
+            path, clip, lane["parameter"]
+        )
+        call = phase or (lambda _label, callback, *values: native_call(callback, *values))
+        end = self._step_clip_interval(clip, idle=True)
+        if end != float(lane["clip_end"]):
+            raise RuntimeError("Step envelope marker interval differs from the authored clip_end")
+        if domain["automation_state"] == 2:
+            raise RuntimeError("Step envelope parameter automation is overridden")
+        # Validate the entire lane before the first mutation. Values are Live
+        # internal units; display_value availability and physical-unit maps
+        # remain separately qualified.
+        steps = []
+        for index, point in enumerate(lane["points"]):
+            value = float(point["value"])
+            if not domain["minimum"] <= value <= domain["maximum"]:
+                raise RuntimeError("Step envelope value is outside the actual parameter domain")
+            start = float(point["time"])
+            stop = (
+                float(lane["points"][index + 1]["time"]) if index + 1 < len(lane["points"]) else end
+            )
+            steps.append((start, stop - start, value))
+        lookup = getattr(clip, "automation_envelope", None)
+        create = getattr(clip, "create_automation_envelope", None)
+        if not callable(lookup) or not callable(create):
+            raise RuntimeError("Native Python envelope authoring API is unavailable")
+        envelope = lookup(parameter)
+        created = not self._envelope_valid(envelope)
+        if created:
+            self._authorize_step_envelope(track, clip, parameter)
+            envelope = call("envelope_create", create, parameter)
+        if not self._envelope_valid(envelope) or not callable(
+            getattr(envelope, "insert_step", None)
+        ):
+            raise RuntimeError(
+                "Native envelope creation/lookup did not return an editable envelope"
+            )
+        for start, duration, value in steps:
+            self._authorize_step_envelope(track, clip, parameter)
+            call("envelope_insert_step", envelope.insert_step, start, duration, value)
+        # This is an acknowledgement of returned mutation calls, not readback
+        # of authored points or proof of saved/reopened persistence.
+        return {
+            "action": "created" if created else "updated",
+            "steps_inserted": len(steps),
+            "parameter": domain,
+        }
+
+    def _get_step_envelope(
+        self, path: str, clip: Any, query: dict[str, Any], *, retained_target: Any = None
+    ) -> dict[str, Any]:
+        _, parameter, domain = retained_target or self._step_envelope_target(
+            path, clip, query["parameter"]
+        )
+        end = self._step_clip_interval(clip, idle=False)
+        if any(time >= end for time in query["sample_times"]):
+            raise RuntimeError("Step envelope sample times must be inside the marker interval")
+        lookup = getattr(clip, "automation_envelope", None)
+        if not callable(lookup):
+            raise RuntimeError("Native Python envelope readback API is unavailable")
+        envelope = lookup(parameter)
+        present = self._envelope_valid(envelope)
+        samples = []
+        if present:
+            sample = getattr(envelope, "value_at_time", None)
+            if not callable(sample):
+                raise RuntimeError("Native envelope does not expose value_at_time")
+            for time in query["sample_times"]:
+                value = self._lom_float(sample(float(time)), "Step envelope sampled value")
+                if not domain["minimum"] <= value <= domain["maximum"]:
+                    raise RuntimeError(
+                        "Step envelope sampled value is outside the parameter domain"
+                    )
+                samples.append({"time": float(time), "value": value})
+        return {"has_envelope": present, "parameter": domain, "samples": samples}
+
+    def retained_envelope_target(self, path: str, graph: Any, selector: Any) -> Any:
+        """Select Track/Slot/Parameter only from the original retained graph."""
+        track_path = "/".join(path.split("/")[:3])
+        track = graph.node(track_path)["object"]
+        slot = graph.node(path.rsplit("/", 1)[0])["object"]
+        owner_path = track_path + "/mixer_device"
+        kind = selector["kind"]
+        if kind == "device":
+            owner_path = f"{track_path}/devices/{selector['device_index']}"
+            parameter = graph.parameter(owner_path, selector["parameter_name"])
+        elif kind == "send":
+            parameter = graph.node(f"{owner_path}/sends/{selector['send_index']}")
+        else:
+            parameter = graph.node(owner_path + "/" + kind)
+        graph.check_before(parameter)
+        return self._step_envelope_target(
+            path,
+            graph.node(path)["object"],
+            selector,
+            retained_objects=(track, slot, parameter["object"], graph.node(owner_path)["object"]),
+        )
+
+    def handle_retained(
+        self, command: Any, graph: Any, *, phase: Any = None, prepared: Any = None
+    ) -> Any:
+        """Execute a closed command without resolving a mutable numeric path."""
+        path, name, args = command["path"], command["name"], command["args"]
+        obj = graph.node(path)["object"]
+        if command["type"] == "get":
+            return self._serialise(getattr(obj, name))
+        if command["type"] == "set":
+            phase("property_set", setattr, obj, name, args[0])
+            observed = self._serialise(getattr(obj, name))
+            if not _request_allowed("set", path, name, [observed]):
+                raise RuntimeError("Native property readback is outside its closed scalar domain")
+            return {
+                "property": name,
+                "requested": args[0],
+                "observed": observed,
+            }
+        if name == "sunny_get_target_profile":
+            return self._target_profile()
+        if name == "sunny_get_target_snapshot":
+            return self._target_snapshot(graph.song)
+        if name == "sunny_get_remote_log":
+            return self._remote_log.entries_after(*args)
+        if name in {
+            "sunny_get_scene_count",
+            "sunny_get_track_count",
+            "sunny_get_return_track_count",
+        }:
+            return self._collection_count(
+                getattr(
+                    obj,
+                    {
+                        "sunny_get_scene_count": "scenes",
+                        "sunny_get_track_count": "tracks",
+                        "sunny_get_return_track_count": "return_tracks",
+                    }[name],
+                ),
+                name,
+            )
+        if name == "sunny_get_device_count":
+            return len(
+                [
+                    n
+                    for p, n in graph.nodes.items()
+                    if p.startswith(path + "/devices/") and n["kind"] == "device"
+                ]
+            )
+        if name == "sunny_get_device_parameter":
+            parameter = graph.parameter(path, args[0])
+            graph.check_before(parameter, ("name", "original_name"))
+            return self._get_device_parameter(obj, *args, retained_parameter=parameter["object"])
+        if name == "sunny_set_device_parameter":
+            return self._set_device_parameter(
+                obj, *args, retained_parameter=prepared["parameter"]["object"], phase=phase
+            )
+        if name == "sunny_resolve_native_display_value":
+            prefix = path + "/parameters/"
+            parameters = [
+                node for member_path, node in graph.nodes.items() if member_path.startswith(prefix)
+            ]
+            for parameter in parameters:
+                graph.check_before(parameter)
+            return self._resolve_native_display_value(
+                obj, args[0], retained_parameters=tuple(node["object"] for node in parameters)
+            )
+        if name in {"sunny_get_step_envelope", "sunny_author_step_envelope"}:
+            target = self.retained_envelope_target(path, graph, args[0]["parameter"])
+            if name == "sunny_get_step_envelope":
+                return self._get_step_envelope(path, obj, args[0], retained_target=target)
+            return self._author_step_envelope(
+                path,
+                obj,
+                args[0],
+                retained_target=prepared["extra"]["envelope_target"],
+                phase=phase,
+            )
+        if name == "sunny_set_cue":
+            return self._set_cue(obj, *args, retained=prepared, phase=phase)
+        if name == "insert_device":
+            return self._insert_device(obj, *args, phase=phase)
+        if name in {"sunny_set_output_routing_type", "sunny_set_output_routing_channel"}:
+            before = self._output_routing_snapshot(obj)
+            if before != prepared["extra"]["routing"]:
+                raise RuntimeError("Prepared native routing before-state changed")
+            channel = name.endswith("_channel")
+            if channel and before["output_routing_type"] != args[0]:
+                raise RuntimeError("Prepared output routing type differs")
+            field = "output_routing_channel" if channel else "output_routing_type"
+            phase("routing_set", setattr, obj, field, prepared["extra"]["route"])
+            after = self._output_routing_snapshot(obj)
+            if after[field] != args[-1] or (channel and after["output_routing_type"] != args[0]):
+                raise RuntimeError("Prepared native routing readback differs")
+            return (
+                {
+                    "requested_type": args[0],
+                    "requested_channel": args[1],
+                    "output_routing_type_before": before["output_routing_type"],
+                    "available_output_routing_types_before": before[
+                        "available_output_routing_types"
+                    ],
+                    "available_output_routing_channels_before": before[
+                        "available_output_routing_channels"
+                    ],
+                    **after,
+                }
+                if channel
+                else {
+                    "requested_type": args[0],
+                    "available_output_routing_types_before": before[
+                        "available_output_routing_types"
+                    ],
+                    **after,
+                }
+            )
+        if name in _STRUCTURAL_CALLS:
+            phase(name, getattr(obj, name), *args)
+            return None
+        if name == "add_new_notes":
+            return self._add_new_notes(obj, args[0]["notes"], phase=phase)
+        if name == "sunny_clear_all_envelopes":
+            phase("clear_envelopes", obj.clear_all_envelopes)
+            if type(obj.has_envelopes) is not bool:
+                raise RuntimeError("Native envelope presence readback is invalid")
+            return {"has_envelopes": obj.has_envelopes}
+        if name == "get_notes_by_id":
+            return self._midi_notes_dictionary(obj.get_notes_by_id(tuple(args[0]["note_ids"])))
+        if name == "get_all_notes_extended":
+            return self._midi_notes_dictionary(obj.get_all_notes_extended())
+        if name == "get_notes_extended":
+            query = args[0]
+            return self._midi_notes_dictionary(
+                obj.get_notes_extended(
+                    from_pitch=query["from_pitch"],
+                    pitch_span=query["pitch_span"],
+                    from_time=float(query["from_time"]),
+                    time_span=float(query["time_span"]),
+                )
+            )
+        raise RuntimeError("Unsupported retained native command")
+
     @classmethod
     def _get_device_parameter(
-        cls, device: Any, parameter_name: str, value_property: str = "value"
+        cls,
+        device: Any,
+        parameter_name: str,
+        value_property: str = "value",
+        *,
+        retained_parameter: Any = None,
     ) -> dict[str, Any]:
         """Observe an exact-name parameter without changing or repairing target state."""
         if type(parameter_name) is not str or type(value_property) is not str:
             raise RuntimeError("Device parameter name/property must be strings")
         if value_property not in ("value", "display_value"):
             raise RuntimeError(f"Unsupported DeviceParameter property '{value_property}'")
-        parameter = cls._resolve_device_parameter(device, parameter_name)
+        parameter = (
+            retained_parameter
+            if retained_parameter is not None
+            else cls._resolve_device_parameter(device, parameter_name)
+        )
         observed = cls._lom_float(
             getattr(parameter, value_property), f"Device parameter '{parameter_name}' value"
         )
@@ -1845,6 +2555,9 @@ class LomHandler:
         value_property: str = "value",
         expected_min: float | None = None,
         expected_max: float | None = None,
+        *,
+        retained_parameter: Any = None,
+        phase: Any = None,
     ) -> dict[str, Any]:
         """Set and read back an enabled parameter by its exact public LOM name."""
         if type(parameter_name) is not str or type(value_property) is not str:
@@ -1853,8 +2566,14 @@ class LomHandler:
             raise RuntimeError(f"Unsupported DeviceParameter property '{value_property}'")
         if (expected_min is None) != (expected_max is None):
             raise RuntimeError("Expected DeviceParameter range requires both min and max")
-        parameter = cls._resolve_device_parameter(device, parameter_name)
-        before = cls._get_device_parameter(device, parameter_name, value_property)
+        parameter = (
+            retained_parameter
+            if retained_parameter is not None
+            else cls._resolve_device_parameter(device, parameter_name)
+        )
+        before = cls._get_device_parameter(
+            device, parameter_name, value_property, retained_parameter=parameter
+        )
         if not before["is_enabled"]:
             raise RuntimeError(f"Device parameter '{parameter_name}' is disabled")
         if before["state"] == 2:
@@ -1875,8 +2594,11 @@ class LomHandler:
                     f"[{float(expected_min)}, {float(expected_max)}]"
                 )
         requested = float(value)
-        setattr(parameter, value_property, requested)
-        observation = cls._get_device_parameter(device, parameter_name, value_property)
+        call = phase or (lambda _label, callback, *values: native_call(callback, *values))
+        call("device_parameter_set", setattr, parameter, value_property, requested)
+        observation = cls._get_device_parameter(
+            device, parameter_name, value_property, retained_parameter=parameter
+        )
         return {**observation, "requested": requested}
 
     @staticmethod

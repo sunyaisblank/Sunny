@@ -16,11 +16,15 @@
 #include <map>
 #include <memory>
 #include <sunny/core/detail/serialization_integer.hpp>
+#include <sunny/core/scale/definitions.hpp>
 #include <sunny/core/score/queries.hpp>
 #include <sunny/core/score/serialization.hpp>
 #include <sunny/core/score/workflows.hpp>
 #include <sunny/infrastructure/compilation_workflows.hpp>
+#include <sunny/infrastructure/formats/midi_file.hpp>
+#include <sunny/infrastructure/mcp/score_notation_tools.hpp>
 #include <sunny/infrastructure/mcp/score_tools.hpp>
+#include <sunny/infrastructure/mcp/session_ids.hpp>
 
 namespace sunny::infrastructure {
 
@@ -37,15 +41,33 @@ json error_response(const std::string& msg) {
     return {{"error", msg}};
 }
 
+std::string encode_midi_base64(std::span<const std::uint8_t> bytes) {
+    static constexpr char alphabet[] =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    std::string encoded;
+    encoded.reserve(((bytes.size() + 2) / 3) * 4);
+    for (std::size_t index = 0; index < bytes.size(); index += 3) {
+        const bool second = index + 1 < bytes.size(), third = index + 2 < bytes.size();
+        const auto value = (static_cast<std::uint32_t>(bytes[index]) << 16) |
+                           (second ? static_cast<std::uint32_t>(bytes[index + 1]) << 8 : 0) |
+                           (third ? bytes[index + 2] : 0);
+        encoded.push_back(alphabet[(value >> 18) & 63]);
+        encoded.push_back(alphabet[(value >> 12) & 63]);
+        encoded.push_back(second ? alphabet[(value >> 6) & 63] : '=');
+        encoded.push_back(third ? alphabet[value & 63] : '=');
+    }
+    return encoded;
+}
+
 Result<std::uint64_t> pending_score_id(const ScoreSession& session) {
-    const auto id = session.next_score_id;
-    if (id == 0 || session.scores.contains(id))
-        return std::unexpected(ErrorCode::ArithmeticOverflow);
-    return id;
+    auto batch = mcp_detail::checked_session_id_batch(
+        session.next_score_id, mcp_detail::maximum_session_store_id(session.scores));
+    if (!batch) return std::unexpected(batch.error());
+    return batch->first;
 }
 
 void commit_score_id(ScoreSession& session, std::uint64_t id) {
-    if (id != std::numeric_limits<std::uint64_t>::max()) session.next_score_id = id + 1;
+    session.next_score_id = id + 1;
 }
 
 // =============================================================================
@@ -350,6 +372,7 @@ Result<ScoreTuning> parse_score_tuning(const json& value) {
 
 void register_score_tools(McpServer& server, std::shared_ptr<ScoreSession> session) {
     if (!session) session = std::make_shared<ScoreSession>();
+    auto domain = server.registration_scope(McpDocumentDomain::Score);
 
     // =========================================================================
     // Composition Tools
@@ -430,14 +453,16 @@ void register_score_tools(McpServer& server, std::shared_ptr<ScoreSession> sessi
                 }
             }
 
-            spec.id = ScoreId{session->next_score_id};
+            auto pending_id = pending_score_id(*session);
+            if (!pending_id)
+                return {{"error", "score identity allocation rejected"},
+                        {"error_code", static_cast<int>(pending_id.error())}};
+            spec.id = ScoreId{*pending_id};
             auto result = create_score(spec);
             if (!result)
                 return error_response("create_score failed: error " +
                                       std::to_string(static_cast<int>(result.error())));
 
-            auto pending_id = pending_score_id(*session);
-            if (!pending_id) return error_response("score identity domain exhausted");
             const auto id = *pending_id;
             session->scores[id] = std::move(*result);
             commit_score_id(*session, id);
@@ -1181,9 +1206,243 @@ void register_score_tools(McpServer& server, std::shared_ptr<ScoreSession> sessi
             return mutation_result_j(*result);
         });
 
+    // Existing core structural and expression mutations use the same request
+    // history boundary as note edits, including bound sibling transactions.
+    for (const bool insertion : {true, false}) {
+        const std::string name = insertion ? "score_insert_measures" : "score_delete_measures";
+        server.register_tool(
+            name,
+            insertion
+                ? "Insert empty measures after a bar in every Part and relocate project controls"
+                : "Delete whole measures in every Part and splice project controls",
+            {{"score_id", "integer"},
+             {insertion ? "after_bar" : "bar", "integer"},
+             {"count", "integer"}},
+            [session, insertion](const json& params) -> json {
+                json err;
+                auto* score = lookup_score(session, params, err);
+                if (!score) return err;
+                const auto id =
+                    detail::checked_integer<std::uint64_t>(params.at("score_id"), "score id");
+                const auto bar = detail::checked_integer<std::uint32_t>(
+                    params.at(insertion ? "after_bar" : "bar"), "bar");
+                const auto count =
+                    detail::checked_integer<std::uint32_t>(params.at("count"), "measure count");
+                auto result = insertion
+                                  ? insert_measures(*score, bar, count, session->undo_for(id))
+                                  : delete_measures(*score, bar, count, session->undo_for(id));
+                if (!result)
+                    return error_response("Measure edit failed: error " +
+                                          std::to_string(static_cast<int>(result.error())));
+                return mutation_result_j(*result);
+            });
+    }
+    server.register_tool(
+        "score_set_time_signature",
+        "Set a grouped metre from this bar; musical content must still fit",
+        {{"score_id", "integer"},
+         {"bar", "integer"},
+         {"groups", "array of positive integers"},
+         {"denominator", "integer"}},
+        [session](const json& params) -> json {
+            json err;
+            auto* score = lookup_score(session, params, err);
+            if (!score) return err;
+            std::vector<int> groups;
+            for (const auto& value : params.at("groups"))
+                groups.push_back(detail::checked_integer<int>(value, "metre group"));
+            auto signature = TimeSignature::from_groups(
+                std::move(groups),
+                detail::checked_integer<int>(params.at("denominator"), "metre denominator"));
+            if (!signature) return error_response("Invalid grouped metre");
+            const auto id =
+                detail::checked_integer<std::uint64_t>(params.at("score_id"), "score id");
+            auto result =
+                set_time_signature(*score,
+                                   detail::checked_integer<std::uint32_t>(params.at("bar"), "bar"),
+                                   *signature,
+                                   session->undo_for(id));
+            if (!result)
+                return error_response("Metre edit failed: error " +
+                                      std::to_string(static_cast<int>(result.error())));
+            return mutation_result_j(*result);
+        });
+    server.register_tool(
+        "score_set_key_signature",
+        "Set a spelled tonic and named mode at an exact position",
+        {{"score_id", "integer"},
+         {"position", "object {bar, beat_n, beat_d}"},
+         {"root", "object {letter, accidental, octave}"},
+         {"mode", "string (optional, default major)"},
+         {"accidentals", "integer (optional, derived for diatonic modes)"}},
+        [session](const json& params) -> json {
+            json err;
+            auto* score = lookup_score(session, params, err);
+            if (!score) return err;
+            auto position = score_time_from_json(params.at("position"));
+            auto root = spelled_pitch_from_json(params.at("root"));
+            auto mode = find_scale(params.value("mode", "major"));
+            if (!position || !root || !mode)
+                return error_response("Invalid key position, tonic or mode");
+            KeySignature key{*root, *mode, 0};
+            if (params.contains("accidentals"))
+                key.accidentals = detail::checked_integer<std::int8_t>(params.at("accidentals"),
+                                                                       "key accidentals");
+            else if (const auto expected = expected_key_accidentals(key)) {
+                if (*expected < -7 || *expected > 7)
+                    return error_response("Tonic/mode needs unsupported key accidentals");
+                key.accidentals = static_cast<std::int8_t>(*expected);
+            }
+            const auto id =
+                detail::checked_integer<std::uint64_t>(params.at("score_id"), "score id");
+            auto result = set_key_signature(*score, *position, key, session->undo_for(id));
+            if (!result)
+                return error_response("Key edit failed: error " +
+                                      std::to_string(static_cast<int>(result.error())));
+            return mutation_result_j(*result);
+        });
+    for (const bool adding : {true, false}) {
+        const std::string name = adding ? "score_add_voice" : "score_remove_voice";
+        json schema = {{"score_id", "integer"},
+                       {"part_id", "integer"},
+                       {"bar", "integer"},
+                       {"voice_index", "integer"}};
+        if (adding) schema["staff_index"] = "integer (optional, default 0)";
+        server.register_tool(
+            name,
+            adding ? "Add a rested structural voice to one Part measure"
+                   : "Remove a voice from one Part measure",
+            schema,
+            [session, adding](const json& params) -> json {
+                json err;
+                auto* score = lookup_score(session, params, err);
+                if (!score) return err;
+                const auto id =
+                    detail::checked_integer<std::uint64_t>(params.at("score_id"), "score id");
+                const auto part =
+                    PartId{detail::checked_integer<std::uint64_t>(params.at("part_id"), "part id")};
+                const auto bar = detail::checked_integer<std::uint32_t>(params.at("bar"), "bar");
+                const auto voice =
+                    detail::checked_integer<std::uint8_t>(params.at("voice_index"), "voice index");
+                auto result = adding
+                                  ? add_voice(*score,
+                                              bar,
+                                              part,
+                                              voice,
+                                              detail::checked_integer_or<std::uint8_t>(
+                                                  params, "staff_index", 0, "staff index"),
+                                              session->undo_for(id))
+                                  : remove_voice(*score, bar, part, voice, session->undo_for(id));
+                if (!result)
+                    return error_response("Voice edit failed: error " +
+                                          std::to_string(static_cast<int>(result.error())));
+                return mutation_result_j(*result);
+            });
+    }
+    server.register_tool(
+        "score_insert_hairpin",
+        "Insert an exact crescendo or diminuendo span",
+        {{"type", "object"},
+         {"properties",
+          {{"score_id", {{"type", "integer"}, {"minimum", 1}}},
+           {"part_id", {{"type", "integer"}, {"minimum", 1}}},
+           {"start", {{"type", "object"}, {"description", "Exact {bar, beat_n, beat_d}"}}},
+           {"end", {{"type", "object"}, {"description", "Exact {bar, beat_n, beat_d}"}}},
+           {"type",
+            {{"type", "integer"}, {"enum", {0, 1}}, {"description", "0=crescendo, 1=diminuendo"}}},
+           {"target", {{"type", "integer"}, {"description", "Optional DynamicLevel"}}}}},
+         {"required", {"score_id", "part_id", "start", "end", "type"}}},
+        [session](const json& params) -> json {
+            json err;
+            auto* score = lookup_score(session, params, err);
+            if (!score) return err;
+            const auto start = score_time_from_json(params.at("start"));
+            const auto end = score_time_from_json(params.at("end"));
+            const auto type = checked_enum<HairpinType>(params.at("type"), 1);
+            std::optional<DynamicLevel> target;
+            if (params.contains("target")) {
+                target = checked_enum<DynamicLevel>(params.at("target"),
+                                                    static_cast<int>(DynamicLevel::rfz));
+                if (!target) return error_response("Invalid hairpin target dynamic");
+            }
+            if (!start || !end || !type) return error_response("Invalid hairpin span or type");
+            const auto id =
+                detail::checked_integer<std::uint64_t>(params.at("score_id"), "score id");
+            auto result = insert_hairpin(
+                *score,
+                PartId{detail::checked_integer<std::uint64_t>(params.at("part_id"), "part id")},
+                *start,
+                *end,
+                *type,
+                target,
+                session->undo_for(id));
+            if (!result)
+                return error_response("Hairpin edit failed: error " +
+                                      std::to_string(static_cast<int>(result.error())));
+            return mutation_result_j(*result);
+        });
+    server.register_tool(
+        "score_assign_instrument",
+        "Change a Part's notation instrument using the standard range/transposition profile",
+        {{"score_id", "integer"}, {"part_id", "integer"}, {"instrument_type", "integer"}},
+        [session](const json& params) -> json {
+            json err;
+            auto* score = lookup_score(session, params, err);
+            if (!score) return err;
+            const auto instrument = checked_enum<InstrumentType>(
+                params.at("instrument_type"), static_cast<int>(InstrumentType::Custom));
+            if (!instrument) return error_response("Invalid instrument type");
+            const auto id =
+                detail::checked_integer<std::uint64_t>(params.at("score_id"), "score id");
+            auto result = assign_instrument(
+                *score,
+                PartId{detail::checked_integer<std::uint64_t>(params.at("part_id"), "part id")},
+                *instrument,
+                session->undo_for(id));
+            if (!result)
+                return error_response("Instrument edit failed: error " +
+                                      std::to_string(static_cast<int>(result.error())));
+            return mutation_result_j(*result);
+        });
+
     // =========================================================================
     // History Tools (SS-IR §11.7)
     // =========================================================================
+
+    server.register_tool(
+        "score_remove_part",
+        "Remove one Part; bound projects remove its owned Timbre profile and channel atomically",
+        {{"score_id", "integer"}, {"part_id", "integer"}},
+        [session](const json& params) -> json {
+            json err;
+            auto* score = lookup_score(session, params, err);
+            if (!score) return err;
+            const auto id =
+                detail::checked_integer<std::uint64_t>(params.at("score_id"), "score id");
+            auto result = remove_part(
+                *score,
+                PartId{detail::checked_integer<std::uint64_t>(params.at("part_id"), "part id")},
+                session->undo_for(id));
+            if (!result) return error_response("remove_part failed");
+            return mutation_result_j(*result);
+        });
+    server.register_tool(
+        "score_reorder_parts",
+        "Reorder Parts by an exact permutation of their stable identities",
+        {{"score_id", "integer"}, {"part_ids", "array"}},
+        [session](const json& params) -> json {
+            json err;
+            auto* score = lookup_score(session, params, err);
+            if (!score) return err;
+            const auto id =
+                detail::checked_integer<std::uint64_t>(params.at("score_id"), "score id");
+            std::vector<PartId> order;
+            for (const auto& encoded : params.at("part_ids"))
+                order.push_back(PartId{detail::checked_integer<std::uint64_t>(encoded, "part id")});
+            auto result = reorder_parts(*score, order, session->undo_for(id));
+            if (!result) return error_response("reorder_parts failed");
+            return mutation_result_j(*result);
+        });
 
     // Every mutating tool records its pre-mutation document in the score's
     // bounded UndoStack; these tools make that history reachable.
@@ -1292,13 +1551,14 @@ void register_score_tools(McpServer& server, std::shared_ptr<ScoreSession> sessi
                 region = *parsed;
             }
 
-            auto reduced =
-                get_reduction(*score, ScoreId{session->next_score_id}, view_type, region);
+            auto pending_id = pending_score_id(*session);
+            if (!pending_id)
+                return {{"error", "score identity allocation rejected"},
+                        {"error_code", static_cast<int>(pending_id.error())}};
+            auto reduced = get_reduction(*score, ScoreId{*pending_id}, view_type, region);
             if (!reduced) return error_response("get_reduction failed: invalid view or region");
 
             // Store the reduction as a new score in the session
-            auto pending_id = pending_score_id(*session);
-            if (!pending_id) return error_response("score identity domain exhausted");
             const auto id = *pending_id;
             session->scores[id] = std::move(*reduced);
             commit_score_id(*session, id);
@@ -1454,6 +1714,32 @@ void register_score_tools(McpServer& server, std::shared_ptr<ScoreSession> sessi
                     {"report", mcp_detail::encode_compilation_report(result->report)}};
         });
 
+    server.register_tool(
+        "score_export_midi",
+        "Export an actual Standard MIDI File type 0 as base64, retaining the compilation loss "
+        "report",
+        {{"score_id", "integer"}, {"ppq", "integer (optional, 1..32767; default 480)"}},
+        [session](const json& params) -> json {
+            json err;
+            auto* score = lookup_score(session, params, err);
+            if (!score) return err;
+            const auto ppq = detail::checked_integer_or<int>(params, "ppq", 480, "SMF PPQ");
+            if (ppq < 1 || ppq > 32767)
+                return error_response("SMF ppq must be between 1 and 32767");
+            const auto compiled = compile_to_midi(*score, ppq);
+            if (!compiled) return error_response("Score MIDI compilation failed");
+            const auto file = formats::compiled_midi_to_file(compiled->midi);
+            if (!file)
+                return error_response("Compiled events exceed the supported SMF type-0 domain");
+            const auto bytes = formats::write_midi(*file);
+            if (!bytes) return error_response("SMF serialization failed");
+            return {{"format", "smf_type_0"},
+                    {"ppq", ppq},
+                    {"midi_base64", encode_midi_base64(*bytes)},
+                    {"complete", !compiled->report.has_residuals()},
+                    {"report", mcp_detail::encode_compilation_report(compiled->report)}};
+        });
+
     server.register_tool("score_compile_to_musicxml",
                          "Compile the score to MusicXML",
                          {{"score_id", "integer"}},
@@ -1545,6 +1831,22 @@ void register_score_tools(McpServer& server, std::shared_ptr<ScoreSession> sessi
                                  result.push_back(motif_occurrence_j(o));
                              return {{"occurrences", result}, {"count", occurrences.size()}};
                          });
+    register_score_notation_tools(server, session);
+    // The group defaults to mutation routing so future authoring tools cannot
+    // silently bypass project transactions. Pure queries/exports opt out.
+    for (const auto* name : {"score_analyze_harmony",
+                             "score_get_orchestration",
+                             "score_get_reduction",
+                             "score_validate",
+                             "score_get_form_summary",
+                             "score_get_json",
+                             "score_compile_to_midi",
+                             "score_export_midi",
+                             "score_compile_to_musicxml",
+                             "score_compile_to_lilypond",
+                             "score_query_harmony_at",
+                             "score_find_motif"})
+        server.set_tool_document_domain(name, McpDocumentDomain::None);
 }
 
 } // namespace sunny::infrastructure

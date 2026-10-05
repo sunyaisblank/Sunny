@@ -12,11 +12,13 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <set>
 #include <sunny/core/corpus/document.hpp>
 #include <sunny/core/mix/document.hpp>
 #include <sunny/core/score/workflows.hpp>
 #include <sunny/core/timbre/document.hpp>
 #include <sunny/infrastructure/formats/ableton_project.hpp>
+#include <sunny/infrastructure/mcp/project_state.hpp>
 #include <vector>
 
 namespace sunny::infrastructure {
@@ -25,6 +27,9 @@ struct ScoreSession {
     std::map<std::uint64_t, sunny::core::Score> scores;
     std::map<std::uint64_t, sunny::core::UndoStack> undo_stacks;
     std::uint64_t next_score_id = 1;
+    // Active only inside the serialized project boundary. The project records
+    // its complete before/after state, so inner Score-only snapshots are suppressed.
+    std::optional<std::uint64_t> project_transaction_score;
 
     [[nodiscard]] sunny::core::Score* find(std::uint64_t id) {
         const auto it = scores.find(id);
@@ -36,7 +41,10 @@ struct ScoreSession {
         return it != scores.end() ? &it->second : nullptr;
     }
 
-    [[nodiscard]] sunny::core::UndoStack* undo_for(std::uint64_t id) { return &undo_stacks[id]; }
+    [[nodiscard]] sunny::core::UndoStack* undo_for(std::uint64_t id) {
+        if (project_transaction_score == id) return nullptr;
+        return &undo_stacks[id];
+    }
 };
 
 struct TimbreSession {
@@ -95,13 +103,57 @@ struct ProjectDeploymentSession {
     std::uint64_t next_plan_id = 1;
 };
 
+/** Retired local identities and publication floors survive absence from active stores. */
+struct ScoreNamespaceHistory {
+    sunny::core::ScoreIdentityReservations identities;
+    std::uint64_t version_floor = 0;
+};
+
+struct WorkspaceNamespaceHistory {
+    std::map<std::uint64_t, ScoreNamespaceHistory> scores;
+    std::map<std::uint64_t, std::set<std::uint64_t>> graph_channels;
+    std::map<std::uint64_t, std::uint64_t> project_revision_floors;
+};
+
+class RealizationStore;
+class WorkspaceWriter;
+
+/** Process admissions are independent of native history and authored snapshots. */
+struct WorkspaceWriterSession {
+    std::vector<std::shared_ptr<WorkspaceWriter>> admissions;
+};
+
+[[nodiscard]] std::string new_workspace_namespace();
+
+struct NativeWorkspaceMetadata {
+    std::string workspace_namespace;
+    std::optional<std::string> history_base_directory;
+};
+
+/** Operational history is outside authored undo and workspace backup snapshots. */
+struct NativeRealizationSession {
+    NativeWorkspaceMetadata metadata{new_workspace_namespace(), std::nullopt};
+    bool namespace_is_new = true;
+    bool namespace_saved_durably = false;
+    std::optional<std::string> workspace_path;
+    std::shared_ptr<RealizationStore> store;
+    std::optional<std::string> history_error;
+};
+
 struct McpSession {
     std::shared_ptr<ScoreSession> score = std::make_shared<ScoreSession>();
     std::shared_ptr<TimbreSession> timbre = std::make_shared<TimbreSession>();
     std::shared_ptr<MixSession> mix = std::make_shared<MixSession>();
     std::shared_ptr<CorpusSession> corpus = std::make_shared<CorpusSession>();
+    std::shared_ptr<ProjectSession> project = std::make_shared<ProjectSession>();
+    std::shared_ptr<WorkspaceNamespaceHistory> namespace_history =
+        std::make_shared<WorkspaceNamespaceHistory>();
     std::shared_ptr<ProjectDeploymentSession> deployment =
         std::make_shared<ProjectDeploymentSession>();
+    std::shared_ptr<NativeRealizationSession> realization =
+        std::make_shared<NativeRealizationSession>();
+    std::shared_ptr<WorkspaceWriterSession> workspace_writer =
+        std::make_shared<WorkspaceWriterSession>();
 };
 
 } // namespace sunny::infrastructure

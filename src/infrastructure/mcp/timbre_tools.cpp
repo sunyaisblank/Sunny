@@ -17,6 +17,7 @@
 #include <sunny/core/detail/serialization_integer.hpp>
 #include <sunny/core/timbre/serialization.hpp>
 #include <sunny/core/timbre/workflows.hpp>
+#include <sunny/infrastructure/mcp/session_ids.hpp>
 #include <sunny/infrastructure/mcp/timbre_tools.hpp>
 
 namespace sunny::infrastructure {
@@ -58,6 +59,31 @@ json error_response(const std::string& msg) {
 
 json profile_not_found(std::uint64_t id) {
     return error_response("Profile not found: " + std::to_string(id));
+}
+
+json identity_error(ErrorCode code, const char* domain) {
+    const auto reason = code == ErrorCode::ArithmeticOverflow
+                            ? " identity domain exhausted or counter invalid"
+                            : " allocation counter must exceed every represented identity";
+    return {{"error", std::string(domain) + reason}, {"error_code", static_cast<int>(code)}};
+}
+
+std::uint64_t maximum_effect_id(const TimbreSession& session) {
+    std::uint64_t maximum = 0;
+    for (const auto& [id, profile] : session.profiles) {
+        static_cast<void>(id);
+        for (const auto& effect : profile.insert_chain.effects)
+            maximum = std::max(maximum, effect.id.value);
+    }
+    return maximum;
+}
+
+std::uint64_t maximum_shared_preset_id(const TimbreSession& session) {
+    std::uint64_t maximum = 0;
+    // Embedded profile presets have a separate local scope.
+    for (const auto& preset : session.preset_library)
+        maximum = std::max(maximum, preset.id.value);
+    return maximum;
 }
 
 /// Build a SoundSourceData from JSON parameters without inventing defaults
@@ -247,6 +273,7 @@ json semantic_to_json(const SemanticTimbreDescriptor& d) {
 
 void register_timbre_tools(McpServer& server, std::shared_ptr<TimbreSession> session) {
     if (!session) session = std::make_shared<TimbreSession>();
+    auto domain = server.registration_scope(McpDocumentDomain::Timbre);
 
     // =========================================================================
     // create_timbre_profile
@@ -263,10 +290,14 @@ void register_timbre_tools(McpServer& server, std::shared_ptr<TimbreSession> ses
             const auto part_id =
                 detail::checked_integer<std::uint64_t>(params.at("part_id"), "part id");
             const auto name = params.at("name").get<std::string>();
-            auto id = session->next_profile_id;
+            const auto allocation = mcp_detail::checked_session_id_batch(
+                session->next_profile_id, mcp_detail::maximum_session_store_id(session->profiles));
+            if (!allocation) return identity_error(allocation.error(), "Timbre profile");
+            const auto id = allocation->first;
             auto p = create_timbre_profile(TimbreProfileId{id}, PartId{part_id}, name);
-            session->profiles.emplace(id, std::move(p));
-            ++session->next_profile_id;
+            if (!session->profiles.emplace(id, std::move(p)).second)
+                return identity_error(ErrorCode::InvariantViolation, "Timbre profile");
+            session->next_profile_id = allocation->next;
             return {{"profile_id", id}, {"success", true}};
         });
 
@@ -354,12 +385,15 @@ void register_timbre_tools(McpServer& server, std::shared_ptr<TimbreSession> ses
                 detail::checked_integer<std::uint64_t>(params.at("profile_id"), "profile id");
             auto* p = session->find(profile_id);
             if (!p) return profile_not_found(profile_id);
-            auto eid = session->next_effect_id;
+            const auto allocation = mcp_detail::checked_session_id_batch(
+                session->next_effect_id, maximum_effect_id(*session));
+            if (!allocation) return identity_error(allocation.error(), "Timbre effect");
+            const auto eid = allocation->first;
             auto effect = build_effect(params, eid);
             if (!effect) return error_response("Unknown or invalid timbre effect configuration");
             auto r = add_effect(*p, std::move(*effect));
             if (!r) return error_response("Failed to add effect");
-            ++session->next_effect_id;
+            session->next_effect_id = allocation->next;
             return {{"success", true}, {"effect_id", eid}};
         });
 
@@ -825,7 +859,8 @@ void register_timbre_tools(McpServer& server, std::shared_ptr<TimbreSession> ses
             if (params.contains("weight"))
                 d.weight = static_cast<float>(params["weight"].get<double>());
             if (params.contains("tags")) d.tags = params["tags"].get<std::vector<std::string>>();
-            set_semantic_descriptors(*p, d);
+            if (!set_semantic_descriptors(*p, d))
+                return error_response("Semantic descriptor values must be finite and in [0, 1]");
             return {{"success", true}};
         });
 
@@ -917,11 +952,14 @@ void register_timbre_tools(McpServer& server, std::shared_ptr<TimbreSession> ses
             const auto name = params.at("name").get<std::string>();
             std::vector<std::string> tags;
             if (params.contains("tags")) tags = params["tags"].get<std::vector<std::string>>();
-            auto pid = session->next_preset_id;
+            const auto allocation = mcp_detail::checked_session_id_batch(
+                session->next_preset_id, maximum_shared_preset_id(*session));
+            if (!allocation) return identity_error(allocation.error(), "Shared preset");
+            const auto pid = allocation->first;
             auto preset = save_preset(*p, TimbrePresetId{pid}, name);
             preset.tags = std::move(tags);
             session->preset_library.push_back(preset);
-            ++session->next_preset_id;
+            session->next_preset_id = allocation->next;
             return {{"success", true}, {"preset_id", pid}};
         });
 
@@ -1111,6 +1149,83 @@ void register_timbre_tools(McpServer& server, std::shared_ptr<TimbreSession> ses
                     {"target_value", *target_value}};
         });
 
+    server.register_tool("get_timbre_json",
+                         "Inspect the complete TimbreProfile, effect IDs, modulation, automation, "
+                         "presets and mappings",
+                         {{"profile_id", "integer"}},
+                         [session](const json& params) -> json {
+                             const auto id = detail::checked_integer<std::uint64_t>(
+                                 params.at("profile_id"), "profile id");
+                             const auto* profile = session->find(id);
+                             if (!profile) return profile_not_found(id);
+                             return timbre_to_json(*profile);
+                         });
+
+    server.register_tool(
+        "replace_timbre_effect",
+        "Replace an effect at its stable ID using a complete add_effect configuration; omitted "
+        "fields use add_effect defaults; references are retained and validated",
+        {{"type", "object"},
+         {"properties",
+          {{"profile_id", {{"type", "integer"}}},
+           {"effect_id", {{"type", "integer"}}},
+           {"configuration",
+            {{"type", "object"},
+             {"properties", {{"effect_type", {{"type", "string"}}}}},
+             {"required", {"effect_type"}}}}}},
+         {"required", {"profile_id", "effect_id", "configuration"}}},
+        [session](const json& params) -> json {
+            const auto id =
+                detail::checked_integer<std::uint64_t>(params.at("profile_id"), "profile id");
+            auto* profile = session->find(id);
+            if (!profile) return profile_not_found(id);
+            const auto effect_id =
+                detail::checked_integer<std::uint64_t>(params.at("effect_id"), "effect id");
+            auto effect = build_effect(params.at("configuration"), effect_id);
+            if (!effect || !replace_effect(*profile, std::move(*effect)))
+                return error_response(
+                    "Effect replacement has invalid parameters or retained references; inspect the "
+                    "profile and remove incompatible references first");
+            return {{"success", true}};
+        });
+
+    for (const auto& kind : {std::string{"automation"},
+                             std::string{"modulation"},
+                             std::string{"macro"},
+                             std::string{"parameter_mapping"}}) {
+        json properties = {{"profile_id", {{"type", "integer"}}}};
+        const auto field = kind == "parameter_mapping" ? "path" : "index";
+        properties[field] = {{"type", kind == "parameter_mapping" ? "string" : "integer"}};
+        server.register_tool(
+            "remove_timbre_" + kind,
+            "Remove one " + kind +
+                "; index is zero-based for lanes/routings and the stable source index for a macro; "
+                "referenced macros are refused",
+            {{"type", "object"}, {"properties", properties}, {"required", {"profile_id", field}}},
+            [session, kind](const json& params) -> json {
+                const auto id =
+                    detail::checked_integer<std::uint64_t>(params.at("profile_id"), "profile id");
+                auto* profile = session->find(id);
+                if (!profile) return profile_not_found(id);
+                Result<void> outcome;
+                if (kind == "parameter_mapping")
+                    outcome =
+                        remove_parameter_mapping(*profile, params.at("path").get<std::string>());
+                else if (kind == "macro")
+                    outcome = remove_macro(
+                        *profile,
+                        detail::checked_integer<std::uint8_t>(params.at("index"), "macro index"));
+                else {
+                    const auto index = detail::checked_integer<std::size_t>(params.at("index"),
+                                                                            "collection index");
+                    outcome = kind == "automation" ? remove_automation(*profile, index)
+                                                   : remove_modulation(*profile, index);
+                }
+                if (!outcome) return error_response("Entry does not exist or still has references");
+                return {{"success", true}};
+            });
+    }
+
     // =========================================================================
     // validate_timbre
     // =========================================================================
@@ -1142,6 +1257,12 @@ void register_timbre_tools(McpServer& server, std::shared_ptr<TimbreSession> ses
             }
             return {{"valid", valid}, {"diagnostics", arr}};
         });
+    for (const auto* name : {"get_parameter",
+                             "analyze_timbre",
+                             "search_presets",
+                             "get_timbre_json",
+                             "validate_timbre"})
+        server.set_tool_document_domain(name, McpDocumentDomain::None);
 }
 
 } // namespace sunny::infrastructure

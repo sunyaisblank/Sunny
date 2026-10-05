@@ -16,16 +16,23 @@
 #include <cstdint>
 #include <cstring>
 #include <ctime>
+#if defined(__APPLE__)
+#include <crt_externs.h>
+#endif
 #include <fcntl.h>
 #include <limits>
 #include <netdb.h>
 #include <netinet/in.h>
 #include <poll.h>
+#include <signal.h>
+#include <spawn.h>
 #include <string>
 #include <string_view>
 #include <sunny/infrastructure/ableton/transport.hpp>
+#include <sunny/infrastructure/request_control.hpp>
 #include <sys/socket.h>
 #include <sys/time.h>
+#include <sys/wait.h>
 #include <type_traits>
 #include <unistd.h>
 #include <utility>
@@ -33,6 +40,9 @@
 namespace sunny::infrastructure {
 
 namespace {
+
+constexpr std::string_view bridge_busy_error =
+    "bridge_busy: Sunny accepts one active client; close the existing client and retry";
 
 nlohmann::json modeled_devices(std::uint32_t count) {
     auto devices = nlohmann::json::array();
@@ -359,14 +369,23 @@ void CommandBuffer::set_target_snapshot(AbletonTargetSnapshot snapshot) {
 std::string_view describe(ConnectFailure failure) noexcept {
     switch (failure) {
     case ConnectFailure::InvalidConfiguration:
-        return "the configured bridge timeouts are not positive";
+        return "the bridge endpoint or positive timeout configuration is invalid";
     case ConnectFailure::HostUnresolved:
         return "the host name did not resolve to an address";
+    case ConnectFailure::ResolverUnavailable:
+        return "the owned Python 3 hostname resolver could not run or returned invalid data; "
+               "install Python 3 with its socket and JSON standard library, or use a numeric "
+               "address";
+    case ConnectFailure::Busy:
+        return "the Sunny bridge already has an active client; close that client and retry "
+               "explicitly";
+    case ConnectFailure::RequestRevoked:
+        return "the owning request was cancelled or expired before connection completed";
     case ConnectFailure::Refused:
         return "nothing accepted the connection; check that the Sunny control surface is "
                "active in Live and that SUNNY_TCP_PORT matches its port";
     case ConnectFailure::TimedOut:
-        return "no address answered within the connect timeout";
+        return "host resolution or connection exceeded the shared connect timeout";
     case ConnectFailure::SocketError:
         return "a local socket could not be created or configured";
     }
@@ -379,14 +398,19 @@ namespace {
 /// the most specific obstacle rather than whichever address was tried last.
 int failure_rank(ConnectFailure failure) noexcept {
     switch (failure) {
+    case ConnectFailure::RequestRevoked:
+        return 4;
     case ConnectFailure::TimedOut:
         return 3;
     case ConnectFailure::Refused:
+        return 2;
+    case ConnectFailure::Busy:
         return 2;
     case ConnectFailure::SocketError:
         return 1;
     case ConnectFailure::InvalidConfiguration:
     case ConnectFailure::HostUnresolved:
+    case ConnectFailure::ResolverUnavailable:
         return 0;
     }
     return 0;
@@ -398,9 +422,219 @@ int poll_milliseconds(std::chrono::steady_clock::duration remaining) noexcept {
         std::clamp<std::int64_t>(milliseconds, 0, std::numeric_limits<int>::max()));
 }
 
+std::chrono::steady_clock::time_point
+request_bounded_deadline(std::chrono::steady_clock::time_point configured) {
+    const auto control = current_request_control();
+    return control ? std::min(configured, control->deadline) : configured;
+}
+
+bool request_revoked(bool read_only) {
+    const auto control = current_request_control();
+    return control && (control->stop_requested() ||
+                       (!read_only && control->input_closed.load(std::memory_order_acquire)));
+}
+
 std::string indeterminate(std::string_view reason) {
     return "delivery indeterminate: " + std::string{reason} +
            "; the request may have executed in Live";
+}
+
+struct ResolvedAddress {
+    sockaddr_storage storage{};
+    socklen_t size{};
+};
+
+using AddressResult = std::expected<std::vector<ResolvedAddress>, ConnectFailure>;
+
+/// Numeric-only libc resolution performs no hostname lookup or service lookup.
+std::vector<ResolvedAddress> numeric_addresses(const TcpConfig& config) {
+    addrinfo hints{};
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_protocol = IPPROTO_TCP;
+    hints.ai_flags = AI_NUMERICHOST | AI_NUMERICSERV;
+    addrinfo* resolved = nullptr;
+    const auto service = std::to_string(config.port);
+    if (::getaddrinfo(config.host.c_str(), service.c_str(), &hints, &resolved) != 0) return {};
+    const std::unique_ptr<addrinfo, decltype(&::freeaddrinfo)> addresses(resolved, &::freeaddrinfo);
+    std::vector<ResolvedAddress> result;
+    for (const auto* address = resolved; address; address = address->ai_next) {
+        if ((address->ai_family == AF_INET || address->ai_family == AF_INET6) &&
+            address->ai_addrlen <= sizeof(sockaddr_storage)) {
+            ResolvedAddress item;
+            item.size = address->ai_addrlen;
+            std::memcpy(&item.storage, address->ai_addr, item.size);
+            result.push_back(item);
+        }
+    }
+    return result;
+}
+
+/// Each hostname lookup owns one exec'ed resolver process and one capped pipe.
+/// Unlike a detached DNS thread, its lifetime ends before connect() returns.
+AddressResult resolve_hostname(const TcpConfig& config,
+                               std::chrono::steady_clock::time_point deadline) {
+    constexpr std::string_view program = R"py(import json,socket,sys
+try:
+    values=socket.getaddrinfo(sys.argv[1],int(sys.argv[2]),socket.AF_UNSPEC,socket.SOCK_STREAM,socket.IPPROTO_TCP)
+    rows=list(dict.fromkeys((family,address[0],address[3] if family==socket.AF_INET6 else 0)
+        for family,kind,protocol,name,address in values if family in (socket.AF_INET,socket.AF_INET6)))
+    if not rows: sys.exit(2)
+    if len(rows)>64: sys.exit(3)
+    print(json.dumps(rows,separators=(',',':')))
+except socket.gaierror: sys.exit(2)
+except Exception: sys.exit(3)
+)py";
+    if (request_revoked(true)) return std::unexpected(ConnectFailure::RequestRevoked);
+    if (std::chrono::steady_clock::now() >= deadline)
+        return std::unexpected(ConnectFailure::TimedOut);
+    int descriptors[2];
+    if (::pipe(descriptors) != 0) return std::unexpected(ConnectFailure::ResolverUnavailable);
+    const auto close_pipe = [&] {
+        ::close(descriptors[0]);
+        ::close(descriptors[1]);
+    };
+    if (::fcntl(descriptors[0], F_SETFD, FD_CLOEXEC) < 0 ||
+        ::fcntl(descriptors[1], F_SETFD, FD_CLOEXEC) < 0 ||
+        ::fcntl(descriptors[0], F_SETFL, O_NONBLOCK) < 0) {
+        close_pipe();
+        return std::unexpected(ConnectFailure::ResolverUnavailable);
+    }
+    posix_spawn_file_actions_t actions;
+    posix_spawnattr_t attributes;
+    if (::posix_spawn_file_actions_init(&actions) != 0) {
+        close_pipe();
+        return std::unexpected(ConnectFailure::ResolverUnavailable);
+    }
+    if (::posix_spawnattr_init(&attributes) != 0) {
+        ::posix_spawn_file_actions_destroy(&actions);
+        close_pipe();
+        return std::unexpected(ConnectFailure::ResolverUnavailable);
+    }
+    const bool configured =
+        ::posix_spawn_file_actions_addopen(&actions, STDIN_FILENO, "/dev/null", O_RDONLY, 0) == 0 &&
+        ::posix_spawn_file_actions_addopen(&actions, STDERR_FILENO, "/dev/null", O_WRONLY, 0) ==
+            0 &&
+        ::posix_spawn_file_actions_adddup2(&actions, descriptors[1], STDOUT_FILENO) == 0 &&
+        ::posix_spawn_file_actions_addclose(&actions, descriptors[0]) == 0 &&
+        ::posix_spawn_file_actions_addclose(&actions, descriptors[1]) == 0 &&
+        ::posix_spawnattr_setflags(&attributes, POSIX_SPAWN_SETPGROUP) == 0 &&
+        ::posix_spawnattr_setpgroup(&attributes, 0) == 0;
+    const auto service = std::to_string(config.port);
+    // Values are individual argv entries, never shell text. -I -S prevents
+    // PYTHONPATH/site customization from changing the stdlib resolver.
+    char* const arguments[] = {const_cast<char*>(config.resolver_executable.c_str()),
+                               const_cast<char*>("-I"),
+                               const_cast<char*>("-S"),
+                               const_cast<char*>("-c"),
+                               const_cast<char*>(program.data()),
+                               const_cast<char*>(config.host.c_str()),
+                               const_cast<char*>(service.c_str()),
+                               nullptr};
+    // Darwin exposes the process environment through its CRT accessor;
+    // unistd.h does not declare a global environ in the Apple SDK.
+#if defined(__APPLE__)
+    char** const environment = *::_NSGetEnviron();
+#else
+    char** const environment = ::environ;
+#endif
+    pid_t process = -1;
+    const auto spawned = configured ? ::posix_spawnp(&process,
+                                                     config.resolver_executable.c_str(),
+                                                     &actions,
+                                                     &attributes,
+                                                     arguments,
+                                                     environment)
+                                    : EINVAL;
+    ::posix_spawnattr_destroy(&attributes);
+    ::posix_spawn_file_actions_destroy(&actions);
+    ::close(descriptors[1]);
+    if (spawned != 0) {
+        ::close(descriptors[0]);
+        return std::unexpected(ConnectFailure::ResolverUnavailable);
+    }
+    std::string output;
+    int status = 0;
+    bool exited = false, eof = false;
+    auto failure = ConnectFailure::ResolverUnavailable;
+    while (!exited || !eof) {
+        if (request_revoked(true)) {
+            failure = ConnectFailure::RequestRevoked;
+            break;
+        }
+        const auto remaining = deadline - std::chrono::steady_clock::now();
+        if (remaining <= std::chrono::steady_clock::duration::zero()) {
+            failure = ConnectFailure::TimedOut;
+            break;
+        }
+        pollfd descriptor{descriptors[0], POLLIN, 0};
+        const auto ready = ::poll(&descriptor, 1, std::min(10, poll_milliseconds(remaining)));
+        if (ready < 0 && errno != EINTR) break;
+        if (ready > 0) {
+            char buffer[1024];
+            const auto count = ::read(descriptors[0], buffer, sizeof(buffer));
+            if (count == 0)
+                eof = true;
+            else if (count > 0) {
+                if (output.size() + static_cast<std::size_t>(count) > 16384) break;
+                output.append(buffer, static_cast<std::size_t>(count));
+            } else if (errno != EINTR && errno != EAGAIN && errno != EWOULDBLOCK)
+                break;
+        }
+        if (!exited) {
+            const auto waited = ::waitpid(process, &status, WNOHANG);
+            if (waited == process)
+                exited = true;
+            else if (waited < 0 && errno != EINTR)
+                break;
+        }
+    }
+    ::close(descriptors[0]);
+    if (!exited || !eof) {
+        // A stalled or invalid helper cannot outlive this connection attempt.
+        (void)::kill(-process, SIGKILL);
+        while (::waitpid(process, &status, 0) < 0 && errno == EINTR) {}
+        return std::unexpected(failure);
+    }
+    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0)
+        return std::unexpected(WIFEXITED(status) && WEXITSTATUS(status) == 2
+                                   ? ConnectFailure::HostUnresolved
+                                   : ConnectFailure::ResolverUnavailable);
+    const auto rows = nlohmann::json::parse(output, nullptr, false);
+    if (!rows.is_array() || rows.empty() || rows.size() > 64)
+        return std::unexpected(ConnectFailure::ResolverUnavailable);
+    std::vector<ResolvedAddress> result;
+    for (const auto& row : rows) {
+        if (!row.is_array() || row.size() != 3 || !row[0].is_number_integer() ||
+            !row[1].is_string() || !row[2].is_number_unsigned() ||
+            row[2].get<std::uint64_t>() > std::numeric_limits<std::uint32_t>::max())
+            return std::unexpected(ConnectFailure::ResolverUnavailable);
+        ResolvedAddress address;
+        const auto text = row[1].get_ref<const std::string&>();
+        if (text.empty() || text.size() >= INET6_ADDRSTRLEN || text.find('\0') != std::string::npos)
+            return std::unexpected(ConnectFailure::ResolverUnavailable);
+        if (row[0] == AF_INET && row[2] == 0) {
+            sockaddr_in value{};
+            value.sin_family = AF_INET;
+            value.sin_port = htons(config.port);
+            if (::inet_pton(AF_INET, text.c_str(), &value.sin_addr) != 1)
+                return std::unexpected(ConnectFailure::ResolverUnavailable);
+            address.size = sizeof(sockaddr_in);
+            std::memcpy(&address.storage, &value, address.size);
+        } else if (row[0] == AF_INET6) {
+            sockaddr_in6 value{};
+            value.sin6_family = AF_INET6;
+            value.sin6_port = htons(config.port);
+            value.sin6_scope_id = row[2].get<std::uint32_t>();
+            if (::inet_pton(AF_INET6, text.c_str(), &value.sin6_addr) != 1)
+                return std::unexpected(ConnectFailure::ResolverUnavailable);
+            address.size = sizeof(sockaddr_in6);
+            std::memcpy(&address.storage, &value, address.size);
+        } else
+            return std::unexpected(ConnectFailure::ResolverUnavailable);
+        result.push_back(address);
+    }
+    return result;
 }
 
 } // namespace
@@ -420,6 +654,8 @@ bool TcpTransport::connect() {
 
     set_state(ConnectionState::Connecting);
     socket_->reset();
+    bridge_identity_verified_ = false;
+    bridge_identity_error_.reset();
 
     const auto fail = [this](ConnectFailure failure) {
         last_connect_failure_ = failure;
@@ -428,43 +664,31 @@ bool TcpTransport::connect() {
     };
 
     if (config_.response_timeout <= std::chrono::milliseconds::zero() ||
-        config_.connect_timeout < std::chrono::milliseconds::zero()) {
+        config_.connect_timeout <= std::chrono::milliseconds::zero() || config_.port == 0 ||
+        config_.host.empty() || config_.host.size() > 1024 ||
+        config_.host.find('\0') != std::string::npos) {
         return fail(ConnectFailure::InvalidConfiguration);
     }
-
-    // getaddrinfo accepts host names as well as IPv4 and IPv6 literals. The
-    // host is resolved afresh on each connect, so a reconnect follows a
-    // changed address.
-    addrinfo hints{};
-    hints.ai_family = AF_UNSPEC;
-    hints.ai_socktype = SOCK_STREAM;
-    hints.ai_protocol = IPPROTO_TCP;
-    hints.ai_flags = AI_NUMERICSERV;
-    addrinfo* resolved = nullptr;
-    const auto service = std::to_string(config_.port);
-    if (::getaddrinfo(config_.host.c_str(), service.c_str(), &hints, &resolved) != 0 ||
-        resolved == nullptr) {
-        return fail(ConnectFailure::HostUnresolved);
+    // One deadline includes hostname resolution and every connect attempt.
+    // Resolve afresh after a reconnect; numeric literals need no subprocess.
+    if (request_revoked(true)) return fail(ConnectFailure::RequestRevoked);
+    const Deadline deadline =
+        request_bounded_deadline(std::chrono::steady_clock::now() + config_.connect_timeout);
+    auto addresses = numeric_addresses(config_);
+    if (addresses.empty()) {
+        if (config_.resolver_executable.empty() || config_.resolver_executable.size() > 4096 ||
+            config_.resolver_executable.find('\0') != std::string::npos)
+            return fail(ConnectFailure::ResolverUnavailable);
+        auto resolved = resolve_hostname(config_, deadline);
+        if (!resolved) return fail(resolved.error());
+        addresses = std::move(*resolved);
     }
-    const std::unique_ptr<addrinfo, decltype(&::freeaddrinfo)> addresses(resolved, &::freeaddrinfo);
-
-    // Sends stay bounded by the socket option; receives are bounded per
-    // exchange by poll against the response deadline.
-    timeval send_timeout{};
-    send_timeout.tv_sec = static_cast<time_t>(config_.response_timeout.count() / 1000);
-    send_timeout.tv_usec =
-        static_cast<suseconds_t>((config_.response_timeout.count() % 1000) * 1000);
-
-    // One deadline spans every resolved address, so a name with several
-    // addresses cannot multiply the wait.
-    const Deadline deadline = std::chrono::steady_clock::now() + config_.connect_timeout;
-    const auto attempt = [&](const addrinfo& address) -> std::optional<ConnectFailure> {
-        SocketHandle candidate{
-            ::socket(address.ai_family, address.ai_socktype, address.ai_protocol)};
+    const auto attempt = [&](const ResolvedAddress& address) -> std::optional<ConnectFailure> {
+        if (request_revoked(true)) return ConnectFailure::RequestRevoked;
+        if (std::chrono::steady_clock::now() >= deadline) return ConnectFailure::TimedOut;
+        SocketHandle candidate{::socket(address.storage.ss_family, SOCK_STREAM, IPPROTO_TCP)};
         if (!candidate) return ConnectFailure::SocketError;
-        if (::setsockopt(
-                candidate.get(), SOL_SOCKET, SO_SNDTIMEO, &send_timeout, sizeof(send_timeout)) <
-            0) {
+        if (::fcntl(candidate.get(), F_SETFD, FD_CLOEXEC) < 0) {
             return ConnectFailure::SocketError;
         }
         const int original_flags = ::fcntl(candidate.get(), F_GETFL, 0);
@@ -473,15 +697,20 @@ bool TcpTransport::connect() {
             return ConnectFailure::SocketError;
         }
 
-        if (::connect(candidate.get(), address.ai_addr, address.ai_addrlen) < 0) {
+        if (::connect(candidate.get(),
+                      reinterpret_cast<const sockaddr*>(&address.storage),
+                      address.size) < 0) {
             if (errno != EINPROGRESS) return ConnectFailure::Refused;
             pollfd descriptor{candidate.get(), POLLOUT, 0};
             int ready = 0;
             do {
+                if (request_revoked(true)) return ConnectFailure::RequestRevoked;
+                if (std::chrono::steady_clock::now() >= deadline) return ConnectFailure::TimedOut;
                 ready = ::poll(
-                    &descriptor, 1, poll_milliseconds(deadline - std::chrono::steady_clock::now()));
-            } while (ready < 0 && errno == EINTR);
-            if (ready == 0) return ConnectFailure::TimedOut;
+                    &descriptor,
+                    1,
+                    std::min(50, poll_milliseconds(deadline - std::chrono::steady_clock::now())));
+            } while (ready == 0 || (ready < 0 && errno == EINTR));
             if (ready < 0) return ConnectFailure::SocketError;
             int socket_error = 0;
             socklen_t error_size = sizeof(socket_error);
@@ -493,16 +722,15 @@ bool TcpTransport::connect() {
             if (socket_error != 0) return ConnectFailure::Refused;
         }
 
-        if (::fcntl(candidate.get(), F_SETFL, original_flags) < 0)
-            return ConnectFailure::SocketError;
+        // Keep the socket nonblocking: send and receive poll against their
+        // shared exchange deadline rather than extending per-syscall timers.
         socket_->reset(candidate.release());
         return std::nullopt;
     };
 
     std::optional<ConnectFailure> failure;
-    for (const addrinfo* address = addresses.get(); address != nullptr;
-         address = address->ai_next) {
-        const auto attempt_failure = attempt(*address);
+    for (const auto& address : addresses) {
+        const auto attempt_failure = attempt(address);
         if (!attempt_failure) {
             last_connect_failure_.reset();
             set_state(ConnectionState::Connected);
@@ -510,12 +738,17 @@ bool TcpTransport::connect() {
         }
         if (!failure || failure_rank(*attempt_failure) > failure_rank(*failure))
             failure = attempt_failure;
+        if (*attempt_failure == ConnectFailure::TimedOut ||
+            *attempt_failure == ConnectFailure::RequestRevoked)
+            break;
     }
     return fail(failure.value_or(ConnectFailure::HostUnresolved));
 }
 
 void TcpTransport::disconnect() {
     socket_->reset();
+    bridge_identity_verified_ = false;
+    bridge_identity_error_.reset();
     if (state_ != ConnectionState::Disconnected) {
         set_state(ConnectionState::Disconnected);
     }
@@ -523,51 +756,90 @@ void TcpTransport::disconnect() {
 
 void TcpTransport::abandon_connection() {
     socket_->reset();
+    bridge_identity_verified_ = false;
+    bridge_identity_error_.reset();
     set_state(ConnectionState::Error);
 }
 
-bool TcpTransport::peer_closed_idle_connection() const {
-    // Between exchanges nothing is owed to this process, so any readiness is
-    // end of stream (the zero-byte read of a closed peer), a socket error, or
-    // unsolicited bytes that would desynchronise the framing. None of them
-    // leaves a connection that can carry a request.
+TcpTransport::IdlePeer TcpTransport::idle_peer_state() const {
     pollfd descriptor{socket_->get(), POLLIN, 0};
     int ready = 0;
     do {
         ready = ::poll(&descriptor, 1, 0);
     } while (ready < 0 && errno == EINTR);
-    return ready != 0;
+    if (ready == 0) return IdlePeer::Quiet;
+    if (ready < 0) return IdlePeer::Closed;
+    char byte;
+    const auto received = ::recv(socket_->get(), &byte, 1, MSG_PEEK | MSG_DONTWAIT);
+    if (received > 0) return IdlePeer::UnsolicitedData;
+    if (received < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) return IdlePeer::Quiet;
+    return IdlePeer::Closed;
 }
 
 bool TcpTransport::replace_connection_if_peer_closed() {
-    if (!peer_closed_idle_connection()) return true;
+    const auto peer = idle_peer_state();
+    if (peer == IdlePeer::Quiet) return true;
+    if (peer == IdlePeer::UnsolicitedData) {
+        // The native listener may reject a second client before it reads any
+        // request. Consume only that exact small envelope; unexpected data
+        // never causes a reconnect or an ordinary request to be sent.
+        const Deadline deadline =
+            request_bounded_deadline(std::chrono::steady_clock::now() + config_.response_timeout);
+        std::uint32_t length = 0;
+        bool rejected_busy = false;
+        if (recv_all(&length, sizeof(length), deadline, true) == Receipt::Complete &&
+            ntohl(length) <= 1024) {
+            std::string payload(ntohl(length), '\0');
+            if (recv_all(payload.data(), payload.size(), deadline, true) == Receipt::Complete) {
+                const auto response = LomProtocol::deserialize_response(payload);
+                rejected_busy = response && !response->success && response->error &&
+                                *response->error == bridge_busy_error;
+            }
+        }
+        last_connect_failure_ = rejected_busy ? ConnectFailure::Busy : ConnectFailure::Refused;
+        abandon_connection();
+        return false;
+    }
     disconnect();
     return connect();
 }
 
-bool TcpTransport::send_all(const void* data, std::size_t n) {
+TcpTransport::Receipt
+TcpTransport::send_all(const void* data, std::size_t n, Deadline deadline, bool read_only) {
     const auto* ptr = static_cast<const char*>(data);
     std::size_t sent = 0;
     while (sent < n) {
+        if (request_revoked(read_only)) return Receipt::RequestRevoked;
+        const auto remaining = deadline - std::chrono::steady_clock::now();
+        if (remaining <= std::chrono::steady_clock::duration::zero())
+            return Receipt::DeadlineExpired;
+        pollfd descriptor{socket_->get(), POLLOUT, 0};
+        const auto ready = ::poll(&descriptor, 1, std::min(50, poll_milliseconds(remaining)));
+        if (ready < 0 && errno == EINTR) continue;
+        if (ready == 0) continue;
+        if (ready < 0) return Receipt::ConnectionClosed;
+        if (request_revoked(read_only)) return Receipt::RequestRevoked;
         auto r = ::send(socket_->get(), ptr + sent, n - sent, MSG_NOSIGNAL);
-        if (r < 0 && errno == EINTR) continue;
-        if (r <= 0) return false;
+        if (r < 0 && (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)) continue;
+        if (r <= 0) return Receipt::ConnectionClosed;
         sent += static_cast<std::size_t>(r);
     }
-    return true;
+    return Receipt::Complete;
 }
 
-TcpTransport::Receipt TcpTransport::recv_all(void* data, std::size_t n, Deadline deadline) {
+TcpTransport::Receipt
+TcpTransport::recv_all(void* data, std::size_t n, Deadline deadline, bool read_only) {
     auto* ptr = static_cast<char*>(data);
     std::size_t received = 0;
     while (received < n) {
+        if (request_revoked(read_only)) return Receipt::RequestRevoked;
         const auto remaining = deadline - std::chrono::steady_clock::now();
         if (remaining <= std::chrono::steady_clock::duration::zero())
             return Receipt::DeadlineExpired;
         pollfd descriptor{socket_->get(), POLLIN, 0};
-        const int ready = ::poll(&descriptor, 1, poll_milliseconds(remaining));
+        const int ready = ::poll(&descriptor, 1, std::min(50, poll_milliseconds(remaining)));
         if (ready < 0 && errno == EINTR) continue;
-        if (ready == 0) return Receipt::DeadlineExpired;
+        if (ready == 0) continue;
         if (ready < 0) return Receipt::ConnectionClosed;
         const auto r = ::recv(socket_->get(), ptr + received, n - received, 0);
         if (r < 0 && (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)) continue;
@@ -577,51 +849,117 @@ TcpTransport::Receipt TcpTransport::recv_all(void* data, std::size_t n, Deadline
     return Receipt::Complete;
 }
 
-LomResponse TcpTransport::send_and_receive(const std::string& json_payload) {
+bool TcpTransport::verify_bridge_identity() {
+    if (bridge_identity_verified_) return true;
+    if (bridge_identity_error_) return false;
+    const auto response = send_and_receive(LomProtocol::serialize_request(LomProtocol::call_method(
+                                               LomPaths::song(), "sunny_get_target_profile", {})),
+                                           false,
+                                           true);
+    const auto fail = [this](std::string reason) {
+        if (last_connect_failure_ == ConnectFailure::Busy || request_revoked(true))
+            bridge_identity_error_ = std::move(reason);
+        else
+            bridge_identity_error_ = std::move(reason) +
+                                     "; install the Sunny Remote Script folder exported from the "
+                                     "same server image, then reload the control surface";
+        return false;
+    };
+    if (!response.success || !response.value)
+        return fail("Bridge identity handshake failed: " +
+                    response.error.value_or("missing target profile response"));
+    const auto* value = std::get_if<nlohmann::json>(&*response.value);
+    if (!value || !value->is_object() || !value->contains("adapter") ||
+        !value->at("adapter").is_object() || !value->at("adapter").contains("source_sha256"))
+        return fail("Bridge identity is missing adapter.source_sha256 (expected " +
+                    std::string(SUNNY_BRIDGE_SOURCE_SHA256) + ")");
+    const auto& identity = value->at("adapter").at("source_sha256");
+    if (!identity.is_string()) return fail("Bridge adapter.source_sha256 must be a SHA256 string");
+    const auto& digest = identity.get_ref<const std::string&>();
+    if (digest.size() != 64 || !std::all_of(digest.begin(), digest.end(), [](char c) {
+            return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+        }))
+        return fail("Bridge adapter.source_sha256 must contain 64 lowercase hexadecimal digits");
+    if (digest != SUNNY_BRIDGE_SOURCE_SHA256)
+        return fail("Bridge source identity mismatch: expected " +
+                    std::string(SUNNY_BRIDGE_SOURCE_SHA256) + ", observed " + digest);
+    if (!target_profile_from_json(*value))
+        return fail("Bridge target profile has an incompatible protocol or adapter contract");
+    bridge_identity_verified_ = true;
+    return true;
+}
+
+LomResponse TcpTransport::send_and_receive(const std::string& json_payload,
+                                           bool require_identity,
+                                           bool read_only) {
+    if (request_revoked(read_only)) {
+        abandon_connection();
+        return LomResponse{
+            false,
+            std::nullopt,
+            std::string{
+                "owning request cancelled, expired or input closed before native frame entry"},
+            LomDeliveryState::NotSent};
+    }
     if (json_payload.size() > SUNNY_BRIDGE_MAX_WIRE_PAYLOAD) {
         return LomResponse{
             false, std::nullopt, std::string{"request too large"}, LomDeliveryState::NotSent};
     }
     if (!replace_connection_if_peer_closed()) {
-        std::string reason{"Remote Script closed the idle connection and reconnecting failed"};
+        std::string reason{"Bridge admission or idle reconnection failed"};
         if (last_connect_failure_) {
             reason += ": ";
             reason += describe(*last_connect_failure_);
         }
         return LomResponse{false, std::nullopt, std::move(reason), LomDeliveryState::NotSent};
     }
+    if (require_identity && !verify_bridge_identity()) {
+        // Only the read-only handshake was sent. The caller's ordinary request
+        // has not left this process, even if the handshake reply was lost.
+        return LomResponse{false, std::nullopt, *bridge_identity_error_, LomDeliveryState::NotSent};
+    }
 
     // The response deadline starts with the send, so it bounds the whole
     // exchange rather than each receive.
-    const Deadline deadline = std::chrono::steady_clock::now() + config_.response_timeout;
+    const Deadline deadline =
+        request_bounded_deadline(std::chrono::steady_clock::now() + config_.response_timeout);
 
     // Send: 4-byte big-endian length + payload
     std::uint32_t len = static_cast<std::uint32_t>(json_payload.size());
     std::uint32_t net_len = htonl(len);
 
-    if (!send_all(&net_len, sizeof(net_len)) || !send_all(json_payload.data(), len)) {
+    auto sent = send_all(&net_len, sizeof(net_len), deadline, read_only);
+    if (sent == Receipt::Complete) sent = send_all(json_payload.data(), len, deadline, read_only);
+    if (sent != Receipt::Complete) {
         // The frame never completed and the peer dispatches only complete
         // frames; closing the socket abandons the fragment, so it cannot run.
         abandon_connection();
-        return LomResponse{false,
-                           std::nullopt,
-                           std::string{"send failed before the request frame was complete"},
-                           LomDeliveryState::NotSent};
+        return LomResponse{
+            false,
+            std::nullopt,
+            std::string{sent == Receipt::RequestRevoked
+                            ? "owning request revoked before the request frame was complete"
+                        : sent == Receipt::DeadlineExpired
+                            ? "exchange deadline expired before the request frame was complete"
+                            : "send failed before the request frame was complete"},
+            LomDeliveryState::NotSent};
     }
 
     const auto undelivered = [this](Receipt receipt) {
         abandon_connection();
-        const auto reason = receipt == Receipt::DeadlineExpired
-                                ? "no complete response within " +
-                                      std::to_string(config_.response_timeout.count()) + " ms"
-                                : std::string{"the connection closed before the response"};
+        const auto reason =
+            receipt == Receipt::RequestRevoked
+                ? std::string{"owning request revoked after the complete frame was sent"}
+            : receipt == Receipt::DeadlineExpired
+                ? std::string{"no complete response before the shared exchange/request deadline"}
+                : std::string{"the connection closed before the response"};
         return LomResponse{
             false, std::nullopt, indeterminate(reason), LomDeliveryState::SentWithoutValidResponse};
     };
 
     // Receive: 4-byte big-endian length + payload
     std::uint32_t resp_net_len = 0;
-    if (const auto receipt = recv_all(&resp_net_len, sizeof(resp_net_len), deadline);
+    if (const auto receipt = recv_all(&resp_net_len, sizeof(resp_net_len), deadline, read_only);
         receipt != Receipt::Complete) {
         return undelivered(receipt);
     }
@@ -636,25 +974,31 @@ LomResponse TcpTransport::send_and_receive(const std::string& json_payload) {
     }
 
     std::string response_data(resp_len, '\0');
-    if (const auto receipt = recv_all(response_data.data(), resp_len, deadline);
+    if (const auto receipt = recv_all(response_data.data(), resp_len, deadline, read_only);
         receipt != Receipt::Complete) {
         return undelivered(receipt);
     }
 
     auto resp = LomProtocol::deserialize_response(response_data);
     if (!resp) {
-        // The frame boundary held, so the connection stays usable; only this
-        // response is unreadable.
+        // No valid acknowledgment exists for this frame. Drop the socket so
+        // an extra/late reply cannot be mistaken for a later request's result.
+        abandon_connection();
         return LomResponse{false,
                            std::nullopt,
                            indeterminate("the response is not a valid bridge envelope"),
                            LomDeliveryState::SentWithoutValidResponse};
     }
+    if (!resp->success && resp->error && *resp->error == bridge_busy_error) {
+        last_connect_failure_ = ConnectFailure::Busy;
+        abandon_connection();
+    }
     return *resp;
 }
 
 LomResponse TcpTransport::send(const LomRequest& request) {
-    if (!LomProtocol::validate_request(request)) {
+    const auto classification = LomProtocol::classify_request(request);
+    if (!classification) {
         return LomResponse{false,
                            std::nullopt,
                            std::string{"request outside Sunny bridge protocol v"} +
@@ -665,7 +1009,45 @@ LomResponse TcpTransport::send(const LomRequest& request) {
         return LomResponse{
             false, std::nullopt, std::string{"not connected"}, LomDeliveryState::NotSent};
     }
-    return send_and_receive(LomProtocol::serialize_request(request));
+    const bool requires_origin = classification->requires_native_origin;
+    const bool drain = classification->read_only && !requires_origin;
+    if (request_revoked(drain)) {
+        abandon_connection();
+        return LomResponse{false,
+                           std::nullopt,
+                           "owning request revoked before native transmission",
+                           LomDeliveryState::NotSent};
+    }
+    if (requires_origin) {
+        const auto control = current_request_control();
+        if (!control || !control->native_origin || !valid_native_origin(*control->native_origin)) {
+            return LomResponse{
+                false,
+                std::nullopt,
+                "native admission requires an immutable original epoch; run doctor_ableton first",
+                LomDeliveryState::NotSent};
+        }
+        const auto& origin = classification->native_origin;
+        if (!origin) {
+            return LomResponse{false,
+                               std::nullopt,
+                               "raw native mutation requires prepared scope authority",
+                               LomDeliveryState::NotSent};
+        }
+        if (origin->document_token != control->native_origin->document_token ||
+            (origin->bridge_instance &&
+             *origin->bridge_instance != control->native_origin->bridge_instance)) {
+            return LomResponse{false,
+                               std::nullopt,
+                               "native frame epoch differs from immutable request admission",
+                               LomDeliveryState::NotSent};
+        }
+    }
+    const bool diagnostic = request.type == LomRequestType::CallMethod &&
+                            request.path.to_string() == "song" &&
+                            (request.property_or_method == "sunny_get_target_profile" ||
+                             request.property_or_method == "sunny_get_remote_log");
+    return send_and_receive(LomProtocol::serialize_request(request), !diagnostic, drain);
 }
 
 LomResponse TcpTransport::send_notes(const LomPath& clip_path,
@@ -682,8 +1064,11 @@ LomResponse TcpTransport::send_notes(const LomPath& clip_path,
             false, std::nullopt, std::string{"not connected"}, LomDeliveryState::NotSent};
     }
 
-    return send_and_receive(
-        LomProtocol::serialize_request(LomProtocol::add_new_notes(clip_path, notes)));
+    if (request_revoked(false)) abandon_connection();
+    return LomResponse{false,
+                       std::nullopt,
+                       "raw native note mutation requires prepared scope authority",
+                       LomDeliveryState::NotSent};
 }
 
 bool TcpTransport::is_connected() const {

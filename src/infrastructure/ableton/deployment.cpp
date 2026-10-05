@@ -8,21 +8,6 @@
 
 namespace sunny::infrastructure {
 
-namespace {
-
-bool is_read_only_request(const LomRequest& request) {
-    if (request.type == LomRequestType::GetProperty) return true;
-    if (request.type != LomRequestType::CallMethod) return false;
-    return request.property_or_method == "get_notes_by_id" ||
-           request.property_or_method == "get_all_notes_extended" ||
-           request.property_or_method == "sunny_get_target_profile" ||
-           request.property_or_method == "sunny_get_target_snapshot" ||
-           request.property_or_method == "sunny_get_device_parameter" ||
-           request.property_or_method == "sunny_get_device_count";
-}
-
-} // namespace
-
 JournaledLomTransport::JournaledLomTransport(LomTransport& underlying,
                                              std::optional<AbletonTargetProfile> fixed_profile,
                                              std::span<const AbletonPlannedMutation> expected,
@@ -47,7 +32,10 @@ void JournaledLomTransport::record(const LomRequest& request,
     entry.request = request;
     entry.response_value = response.value;
     entry.response_error = response.error;
-    if (!sent || response.delivery == LomDeliveryState::NotSent) {
+    entry.legacy_receipt = response.legacy_receipt;
+    if (!sent || response.delivery == LomDeliveryState::NotSent ||
+        (response.legacy_receipt &&
+         response.legacy_receipt->outcome == LegacyOperationOutcome::Declined)) {
         entry.outcome = AbletonMutationOutcome::DeclinedBeforeSend;
     } else if (underlying_.records_without_execution() && response.success) {
         entry.outcome = AbletonMutationOutcome::RecordedOnly;
@@ -62,7 +50,7 @@ void JournaledLomTransport::record(const LomRequest& request,
 }
 
 LomResponse JournaledLomTransport::send(const LomRequest& request) {
-    const bool read_only = is_read_only_request(request);
+    const bool read_only = LomProtocol::is_read_only_request(request);
     if (!LomProtocol::validate_request(request)) {
         LomResponse response{false,
                              std::nullopt,

@@ -1,7 +1,7 @@
 /**
- * @name Beat construction with potentially zero denominator
- * @description Construction of Beat{numerator, denominator} where the denominator
- *              could be zero.
+ * @name Beat construction with constant zero denominator
+ * @description Construction of sunny::core::Beat with a constant zero denominator.
+ *              Dynamic denominators require separate validation.
  * @kind problem
  * @problem.severity error
  * @id sunny/beat-zero-denominator
@@ -11,10 +11,11 @@
 
 import cpp
 
-from AggregateLiteral al
+from ConstructorCall call
 where
-  al.getType().getName().matches("%Beat%")
-  and not al.getFile().getRelativePath().matches("%Test%")
-  and al.getNumChild() >= 2
-  and al.getChild(1).getValue() = "0"
-select al, "Beat constructed with zero denominator."
+  call.getTarget().getDeclaringType().hasQualifiedName("sunny::core", "", "Beat") and
+  not call.getFile().getRelativePath().matches("%Test%") and
+  not call.getFile().getRelativePath().matches("%test%") and
+  call.getNumberOfArguments() = 2 and
+  call.getArgument(1).getValue() = "0"
+select call, "Beat constructed with zero denominator."

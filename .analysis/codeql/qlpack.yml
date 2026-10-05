@@ -1,4 +1,6 @@
 name: sunny/custom-queries
 version: 0.0.1
+tests: test
+extractor: cpp
 dependencies:
   codeql/cpp-all: "*"

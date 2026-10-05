@@ -16,6 +16,7 @@ import queue
 import shlex
 import subprocess
 import threading
+import time
 from fractions import Fraction
 from pathlib import Path
 from typing import Any
@@ -53,6 +54,25 @@ class _LiveMainThread:
     def schedule_message(self, delay: int, callback: Any) -> None:
         self._callbacks.put(callback)
 
+    def call(self, callback: Any) -> Any:
+        """Construct native-owned state on the same thread that runs Live callbacks."""
+        complete = threading.Event()
+        outcome: dict[str, Any] = {}
+
+        def run() -> None:
+            try:
+                outcome["value"] = callback()
+            except BaseException as error:
+                outcome["error"] = error
+            finally:
+                complete.set()
+
+        self.schedule_message(0, run)
+        assert complete.wait(5), "The modelled Live main-thread call did not complete"
+        if "error" in outcome:
+            raise outcome["error"]
+        return outcome["value"]
+
     def _run(self) -> None:
         while (callback := self._callbacks.get()) is not None:
             callback()
@@ -69,13 +89,18 @@ class _McpClient:
         self,
         binary: Path | None,
         port: int,
-        host: str = "127.0.0.1",
+        host: str | None = "127.0.0.1",
         command: list[str] | None = None,
     ) -> None:
         # ``command`` replaces the binary, e.g. ``docker run -i --rm -e
         # SUNNY_ABLETON_HOST -e SUNNY_TCP_PORT sunny-mcp``; the host and port
         # still travel in the environment.
-        environment = dict(os.environ, SUNNY_ABLETON_HOST=host, SUNNY_TCP_PORT=str(port))
+        environment = dict(os.environ)
+        if host is None:
+            environment.pop("SUNNY_ABLETON_HOST", None)
+            environment.pop("SUNNY_TCP_PORT", None)
+        else:
+            environment.update(SUNNY_ABLETON_HOST=host, SUNNY_TCP_PORT=str(port))
         self._process = subprocess.Popen(
             command or [str(binary)],
             stdin=subprocess.PIPE,
@@ -125,21 +150,26 @@ class _McpClient:
 
 
 @pytest.fixture
-def bridge(request, monkeypatch):
+def bridge(request, monkeypatch, tmp_path):
     """Yield ``(live, client)``: a modelled Live Set behind the real bridge and an MCP client.
 
     SUNNY_MCP_COMMAND runs the server another way, such as through the Docker
-    image with host networking, so the same tests cover the container.
+    image with ordinary bridge networking, so the same tests cover the container.
     """
     command = os.environ.get("SUNNY_MCP_COMMAND")
     binary = None if command else _sunny_mcp_binary()
     # Tests may request another Live version with indirect parametrisation.
-    live = LiveSet(getattr(request, "param", (12, 3, 5))).install(monkeypatch)
+    live = LiveSet(getattr(request, "param", (12, 4, 0))).install(monkeypatch)
+    bind_host = os.environ.get("SUNNY_TEST_BRIDGE_BIND_HOST", "127.0.0.1")
+    client_host = os.environ.get("SUNNY_TEST_BRIDGE_HOST", "127.0.0.1")
     # Port 0 asks the OS for an ephemeral port; the surface's own parser
     # accepts only 1..65535, so the configuration is supplied directly.
-    monkeypatch.setattr(surface_module, "_server_configuration", lambda: ("127.0.0.1", 0))
+    monkeypatch.setattr(surface_module, "_server_configuration", lambda: (bind_host, 0))
     main_thread = _LiveMainThread()
-    surface = SunnyControlSurface(object())
+    surface = main_thread.call(lambda: SunnyControlSurface(object()))
+    # The test framework exposes no native c_instance.song binding. Supply only
+    # that host boundary; registry ownership still belongs to the callback thread.
+    monkeypatch.setattr(surface, "song", live.surface.song, raising=False)
     surface.schedule_message = main_thread.schedule_message
     client = None
     try:
@@ -150,8 +180,22 @@ def bridge(request, monkeypatch):
         client = _McpClient(
             binary,
             surface._server.bound_port,
+            host=client_host,
             command=shlex.split(command) if command else None,
         )
+        # Docker Desktop may advertise a newly bound WSL port after the local
+        # listener starts. The actual read-only doctor also pins this session's
+        # original native epoch before later planning or musical mutation.
+        deadline = time.monotonic() + 10.0
+        while True:
+            readiness = client.call("doctor_ableton")
+            if readiness.get("success") is True and readiness.get("read_only_ready") is True:
+                break
+            assert time.monotonic() < deadline, readiness
+            threading.Event().wait(0.1)
+        workspace = "/data/ordinary-workspace.json" if command else str(tmp_path / "workspace.json")
+        saved = client.call("workspace_save", path=workspace)
+        assert saved.get("durability_confirmed") is True, saved
         yield live, client
     finally:
         if client is not None:
@@ -175,6 +219,11 @@ def _beats(whole_notes: Fraction) -> float:
 
 
 def _clip_notes(clip) -> list[tuple[int, float, float, float, bool, float]]:
+    notes = (
+        clip.get_all_notes_extended()
+        if hasattr(clip, "get_all_notes_extended")
+        else clip.get_notes_extended(0, 128, 0.0, clip.end_marker)
+    )
     return sorted(
         (
             note.pitch,
@@ -184,7 +233,7 @@ def _clip_notes(clip) -> list[tuple[int, float, float, float, bool, float]]:
             note.mute,
             note.release_velocity,
         )
-        for note in clip.get_all_notes_extended()
+        for note in notes
     )
 
 
@@ -197,6 +246,7 @@ def _event_id(client: _McpClient, score_id: int, part_index: int, bar: int, offs
     raise AssertionError(f"no note at bar {bar} offset {offset}")
 
 
+@pytest.mark.parametrize("bridge", [(12, 3, 5), (12, 4, 0)], indirect=True)
 def test_score_compiles_to_exact_live_notes_with_a_tie_and_a_triplet(bridge):
     """A two-bar 4/4 score reaches Live as exactly the hand-derived notes."""
     live, client = bridge
@@ -431,12 +481,12 @@ def test_progression_clip_and_session_state_reach_live(bridge):
     assert state["track_count"] == 1
     assert state["return_track_count"] == 1
     assert state["tempo"] == 120.0
-    assert state["target_profile"]["live"]["version"]["string"] == "12.3.5"
+    assert state["target_profile"]["live"]["version"]["string"] == "12.4.0"
 
 
-@pytest.mark.parametrize("bridge", [(11, 3, 0)], indirect=True)
-def test_project_plan_applies_against_live_11_without_take_lanes(bridge):
-    """A Live 11 Set has no take lanes; planning and applying a project still completes."""
+@pytest.mark.parametrize("bridge", [(11, 0, 0), (11, 3, 0)], indirect=True)
+def test_project_plan_applies_against_live_11_with_unobserved_take_lanes(bridge):
+    """Missing take-lane API evidence stays unavailable without blocking note authoring."""
     live, client = bridge
     existing = live.song.create_midi_track(-1)
     existing.name = "User Track"
@@ -483,13 +533,20 @@ def test_project_plan_applies_against_live_11_without_take_lanes(bridge):
     assert {entry["outcome"] for entry in applied["deployment"]["mutation_journal"]} == {
         "acknowledged"
     }
-    # Live 11 has no take lanes, so their absence and the clip's identity verify
-    # without take-lane evidence.
+    # Live 11 has take lanes, but this adapter cannot inspect them. Neither
+    # their absence nor the complete identity tuple follows from a null field.
     postconditions = applied["postconditions"]
     assert postconditions["track_gates"][0]["take_lane_topology_observed"] is False
-    assert postconditions["track_gates"][0]["take_lanes_absent_verified"] is True
+    assert postconditions["track_gates"][0]["take_lanes_absent_verified"] is False
     assert postconditions["clips"][0]["observed_is_take_lane_clip"] is None
-    assert postconditions["clips"][0]["clip_identity_verified"] is True
+    assert postconditions["clips"][0]["clip_identity_verified"] is False
+    note_evidence = postconditions["note_batches"][0]
+    legacy_range = live.application.version_tuple() < (11, 1)
+    assert note_evidence["identity_verified"] is True
+    assert note_evidence["properties_verified"] is True
+    assert note_evidence["entire_clip_population_observed"] is not legacy_range
+    assert note_evidence["observed_time_span"] == (4.0 if legacy_range else None)
+    assert note_evidence["verified"] is not legacy_range
     assert [track.name for track in live.song.tracks] == ["Lead", "User Track"]
     lead = live.song.tracks[0]
     assert _clip_notes(lead.clip_slots[0].clip) == [(60, 0.0, 1.0, 80.0, False, 64.0)]
@@ -509,7 +566,7 @@ def test_remote_log_reports_what_happened_inside_live(bridge):
         "duration_beats": 2.0,
     }
     assert client.call("create_progression_clip", **clip).get("success") is True
-    # Live refuses create_clip on an occupied slot; the refusal happens inside Live.
+    # Native preparation refuses the occupied target before any setter executes.
     refused = client.call("create_progression_clip", **clip)
     assert refused.get("success") is False, refused
     assert refused["outcome"] == "not_applied"
@@ -518,11 +575,17 @@ def test_remote_log_reports_what_happened_inside_live(bridge):
     assert log.get("success") is True, log
     assert log["truncated"] is False
     messages = [entry["message"] for entry in log["entries"]]
-    assert any("create_clip: ok" in message for message in messages), messages
+    assert any(
+        message.startswith("call song sunny_ordinary_execute ")
+        and message.endswith(": acknowledged")
+        for message in messages
+    ), messages
     refusals = [
         entry
         for entry in log["entries"]
-        if entry["level"] == "WARNING" and "create_clip" in entry["message"]
+        if entry["level"] == "WARNING"
+        and entry["message"].startswith("call song sunny_ordinary_prepare ")
+        and ": declined:" in entry["message"]
     ]
     assert len(refusals) == 1, messages
     sequences = [entry["sequence"] for entry in log["entries"]]
@@ -533,7 +596,23 @@ def test_remote_log_reports_what_happened_inside_live(bridge):
     newer = client.call("get_ableton_remote_log", after_sequence=log["next_sequence"])
     assert newer["entries"], newer
     assert all(entry["sequence"] > log["next_sequence"] for entry in newer["entries"])
-    assert not any("create_clip" in entry["message"] for entry in newer["entries"])
+    assert not any("sunny_ordinary_" in entry["message"] for entry in newer["entries"])
+
+    # The optional epoch cursor traverses the real MCP/native/TCP/handler path.
+    empty = client.call(
+        "get_ableton_remote_log",
+        after_sequence=newer["next_sequence"],
+        stream_id=newer["stream_id"],
+    )
+    assert empty["success"] is True and empty["entries"] == []
+    assert empty["reset"] is False and empty["has_more"] is False
+    assert empty["next_sequence"] == empty["latest_sequence"] == newer["next_sequence"]
+    assert empty["observed_at"] >= newer["observed_at"]
+    reset = client.call(
+        "get_ableton_remote_log", after_sequence=1, stream_id="00000000000000000000000000000000"
+    )
+    assert reset["success"] is True and reset["reset"] is True
+    assert reset["entries"][0]["sequence"] == 1
 
 
 def test_the_live_smoke_scenario_passes_against_the_offline_model(bridge):

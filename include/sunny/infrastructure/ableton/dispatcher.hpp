@@ -18,6 +18,7 @@
 
 #include <string>
 #include <sunny/infrastructure/ableton/lom_protocol.hpp>
+#include <sunny/infrastructure/ableton/realization_store.hpp>
 #include <sunny/infrastructure/ableton/transport.hpp>
 #include <sunny/infrastructure/orchestrator.hpp>
 #include <vector>
@@ -33,8 +34,23 @@ namespace sunny::infrastructure {
  */
 class BridgeDispatcher final : public BridgeDelivery {
   public:
+    using OrdinaryStoreProvider = std::function<std::shared_ptr<RealizationStore>(bool mutation)>;
+    void set_ordinary_store_provider(OrdinaryStoreProvider provider) {
+        ordinary_store_provider_ = std::move(provider);
+    }
+    [[nodiscard]] bool records_without_execution() const noexcept override {
+        return transport_ && transport_->records_without_execution();
+    }
+    [[nodiscard]] DispatchReport dispatch_clip(const std::vector<BridgeMessage>& messages,
+                                               const std::string& action,
+                                               const std::optional<OrdinaryClipReceipt>& authority,
+                                               const std::string& workspace_namespace) override;
+    [[nodiscard]] DispatchReport reconcile_clip(const OrdinaryClipReceipt& receipt,
+                                                const std::string& workspace_namespace) override;
     /// Construct with a borrowed transport; nullptr means no host is configured
     explicit BridgeDispatcher(LomTransport* transport = nullptr) : transport_(transport) {}
+    BridgeDispatcher(LomTransport* transport, const TcpTransport* diagnostics)
+        : transport_(transport), tcp_transport_(diagnostics) {}
 
     /// Construct over a TCP transport, which can also explain a failed connection
     explicit BridgeDispatcher(TcpTransport& transport)
@@ -81,6 +97,7 @@ class BridgeDispatcher final : public BridgeDelivery {
   private:
     LomTransport* transport_;
     const TcpTransport* tcp_transport_{nullptr}; ///< same object as transport_, when TCP
+    OrdinaryStoreProvider ordinary_store_provider_;
 };
 
 } // namespace sunny::infrastructure
