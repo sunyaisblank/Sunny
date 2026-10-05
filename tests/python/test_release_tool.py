@@ -11,9 +11,11 @@ import hashlib
 import importlib.util
 import io
 import json
+import os
 import shutil
 import subprocess
 import tarfile
+import uuid
 from pathlib import Path
 from types import ModuleType
 
@@ -562,6 +564,15 @@ def test_locked_docker_defaults_match_machine_inputs(release_tool):
     dockerfile = (PROJECT / "Dockerfile").read_text()
     assert dockerfile.count("FROM " + lock["base_image"]["reference"]) == 2
     assert dockerfile.count("ARG SUNNY_APT_SNAPSHOT=" + lock["ubuntu"]["snapshot"]) == 2
+    bootstrap = lock["ubuntu"]["packages"]["ca-certificates"]
+    url = (
+        lock["ubuntu"]["snapshot_service"]
+        + lock["ubuntu"]["snapshot"]
+        + "/"
+        + bootstrap["filename"]
+    )
+    assert dockerfile.count("ARG SUNNY_CA_CERTIFICATES_URL=" + url) == 2
+    assert dockerfile.count("ARG SUNNY_CA_CERTIFICATES_SHA256=" + bootstrap["sha256"]) == 2
     for stage, argument in (
         ("builder", "SUNNY_BUILD_PACKAGES"),
         ("runtime", "SUNNY_RUNTIME_PACKAGES"),
@@ -576,6 +587,99 @@ def test_locked_docker_defaults_match_machine_inputs(release_tool):
     assert "COPY --from=builder /build/tools/windows/ /opt/sunny/installer/windows/" in dockerfile
     assert "COPY tools/doctor.py ./tools/doctor.py" in dockerfile
     assert "COPY --from=builder /build/tools/doctor.py /opt/sunny/operator/doctor.py" in dockerfile
+
+
+@pytest.mark.skipif(
+    os.environ.get("SUNNY_RELEASE_APT_TESTS") != "1",
+    reason="Opt in to the isolated local Docker prerequisite and public locked snapshot downloads",
+)
+def test_actual_locked_apt_recipe_before_compiling_sunny(release_tool, tmp_path):
+    """Run the actual first Docker stage only through apt, with exact package/hash readback."""
+    executable = shutil.which("docker")
+    assert executable is not None, "The authorized local Docker prerequisite needs Docker"
+    environment_host = os.environ.get("DOCKER_HOST")
+    assert not environment_host or environment_host.startswith(("unix://", "npipe://"))
+    context = release_tool.run(executable, "context", "show")
+    endpoint = release_tool.run(
+        executable, "context", "inspect", context, "--format", "{{.Endpoints.docker.Host}}"
+    )
+    assert endpoint.startswith(("unix://", "npipe://")), "Remote Docker is outside this witness"
+    isolated = tmp_path / "context"
+    (isolated / "tools").mkdir(parents=True)
+    # Use the actual production recipe through its first install, never compile
+    # Sunny or copy in a test replacement of the bootstrap implementation.
+    prefix = (PROJECT / "Dockerfile").read_text().split("\nWORKDIR /build", 1)[0]
+    (isolated / "Dockerfile").write_text(prefix + "\n")
+    shutil.copyfile(PROJECT / "tools/apt_snapshot.sh", isolated / "tools/apt_snapshot.sh")
+    tag = "sunny-apt-prerequisite:" + uuid.uuid4().hex
+    container = None
+    log = tmp_path / "apt-build.log"
+    try:
+        with log.open("wb") as output:
+            built = subprocess.run(
+                [
+                    executable,
+                    "buildx",
+                    "build",
+                    "--platform",
+                    "linux/amd64",
+                    "--load",
+                    "--tag",
+                    tag,
+                    str(isolated),
+                ],
+                stdout=output,
+                stderr=subprocess.STDOUT,
+                timeout=300,
+            )
+        assert built.returncode == 0, log.read_text()[-8000:]
+        container = release_tool.run(executable, "create", "--network", "none", tag)
+        for name in ("builder-packages.tsv", "builder-apt-metadata.txt"):
+            release_tool.run(executable, "cp", container + ":/" + name, str(tmp_path / name))
+        sources = tmp_path / "ubuntu.sources"
+        release_tool.run(
+            executable, "cp", container + ":/etc/apt/sources.list.d/ubuntu.sources", str(sources)
+        )
+        lock = json.loads((PROJECT / "release/build-inputs.json").read_text())
+        release_tool.package_inventory(tmp_path / "builder-packages.tsv", lock, "builder")
+        release_tool.apt_metadata(tmp_path / "builder-apt-metadata.txt", lock, "builder")
+        assert sources.read_text().splitlines() == [
+            "Types: deb",
+            "URIs: " + lock["ubuntu"]["snapshot_service"] + lock["ubuntu"]["snapshot"] + "/",
+            "Suites: noble noble-updates noble-security",
+            "Components: main universe",
+            "Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg",
+        ]
+        # An empty package cache used to turn missing g++ into a broad regex
+        # selection. This independent pinned-base fault must name only g++.
+        refused = subprocess.run(
+            [
+                executable,
+                "run",
+                "--rm",
+                "--network",
+                "none",
+                "--pull=never",
+                lock["base_image"]["reference"],
+                "apt-get",
+                "-s",
+                "-o",
+                "APT::Cmd::Pattern-Only=true",
+                "install",
+                "g++=4:13.2.0-7ubuntu1",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        assert refused.returncode == 100
+        assert "Unable to locate package g++" in refused.stderr
+        assert "regex" not in refused.stdout + refused.stderr
+        assert "Version '4:13.2.0-7ubuntu1'" not in refused.stderr
+    finally:
+        if container:
+            release_tool.run(executable, "rm", container)
+        subprocess.run([executable, "image", "rm", tag], capture_output=True, timeout=15)
 
 
 def test_build_freezes_actual_committed_tree_before_concurrent_edits(

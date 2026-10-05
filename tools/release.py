@@ -661,6 +661,11 @@ def build_release(output: Path, tag: str) -> dict:
         ]
         inputs = {
             "SUNNY_APT_SNAPSHOT": lock["ubuntu"]["snapshot"],
+            "SUNNY_CA_CERTIFICATES_URL": lock["ubuntu"]["snapshot_service"]
+            + lock["ubuntu"]["snapshot"]
+            + "/"
+            + lock["ubuntu"]["packages"]["ca-certificates"]["filename"],
+            "SUNNY_CA_CERTIFICATES_SHA256": lock["ubuntu"]["packages"]["ca-certificates"]["sha256"],
             "SUNNY_SOURCE_REVISION": revision,
             "SUNNY_VERSION": json.loads(
                 (ROOT / "pyproject.toml").read_text().split("version = ", 1)[1].splitlines()[0]
