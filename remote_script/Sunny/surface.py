@@ -65,15 +65,21 @@ LOM_REQUEST_TIMEOUT_SECONDS = 10.0
 def _server_configuration() -> tuple[str, int]:
     """Read and validate the Remote Script's bridge configuration."""
     host = os.environ.get("SUNNY_BIND_HOST", DEFAULT_BIND_HOST)
+    if not host:
+        raise ValueError("SUNNY_BIND_HOST must not be empty")
     raw_port = os.environ.get("SUNNY_TCP_PORT", str(DEFAULT_PORT))
-    try:
-        port = int(raw_port)
-    except ValueError:
-        logger.warning("Invalid SUNNY_TCP_PORT=%r; using %d", raw_port, DEFAULT_PORT)
-        port = DEFAULT_PORT
-    if not 1 <= port <= 65_535:
-        logger.warning("Out-of-range SUNNY_TCP_PORT=%r; using %d", raw_port, DEFAULT_PORT)
-        port = DEFAULT_PORT
+    if (
+        not raw_port
+        or raw_port[0] not in "123456789"
+        or any(digit not in "0123456789" for digit in raw_port)
+        or len(raw_port) > 5
+        or not 1 <= int(raw_port) <= 65_535
+    ):
+        raise ValueError(
+            "SUNNY_TCP_PORT must be an ASCII decimal port from 1 to 65535 "
+            "without signs, whitespace, or leading zeros"
+        )
+    port = int(raw_port)
     return host, port
 
 

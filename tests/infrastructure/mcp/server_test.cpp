@@ -81,6 +81,142 @@ json call_tool(McpServer& server, const std::string& name, const json& arguments
     return json::parse(response["result"]["content"][0]["text"].get<std::string>());
 }
 
+class DoctorTransport final : public LomTransport {
+  public:
+    json profile = json::parse(
+        R"({"bridge_protocol_version":46,"adapter":{"name":"Sunny Remote Script","runtime":"control_surface_python","contract":"version_coupled_private","source_sha256":"SOURCE"},"live":{"version":{"major":12,"minor":4,"bugfix":5,"string":"12.4.5"}},"capabilities":{"clip_add_new_notes":"available","track_insert_device_native":"available","automation_envelope_authoring":"unavailable","group_track_creation":"unavailable","arbitrary_browser_loading":"unavailable","structural_snapshot":"available","max_for_live":"unknown"}})");
+    json context = json::parse(
+        R"({"schema_version":1,"bridge_instance":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","document_token":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"})");
+    bool connected = true;
+    bool change_session = false;
+    std::string fail_property;
+    std::vector<std::string> wire;
+
+    DoctorTransport() { profile["adapter"]["source_sha256"] = SUNNY_BRIDGE_SOURCE_SHA256; }
+    LomResponse send(const LomRequest& request) override {
+        REQUIRE(LomProtocol::validate_request(request));
+        wire.push_back(LomProtocol::serialize_request(request));
+        if (request.property_or_method == "sunny_get_target_profile")
+            return {true, LomValue{profile}, std::nullopt};
+        if (request.property_or_method == "sunny_managed_context") {
+            auto current = context;
+            if (change_session && wire.size() == 6)
+                current["document_token"] = "cccccccccccccccccccccccccccccccc";
+            return {true, LomValue{current}, std::nullopt};
+        }
+        if (request.property_or_method == fail_property)
+            return {false, std::nullopt, "password=NEVER_EXPORT_NATIVE_ERROR_OR_SET_CONTENT"};
+        return *LomProtocol::deserialize_response(
+            R"({"bridge_protocol_version":46,"success":true,"value":false})");
+    }
+    LomResponse send_notes(const LomPath&, const std::vector<LomNoteData>&) override {
+        FAIL("Doctor cannot send note mutations");
+        return {};
+    }
+    bool is_connected() const override { return connected; }
+};
+
+TEST_CASE("Doctor performs only six minimal reads in one freshly observed session",
+          "[mcp][doctor]") {
+    DoctorTransport transport;
+    Orchestrator orchestrator;
+    BridgeDispatcher dispatcher(&transport);
+    McpServer server;
+    register_sunny_tools(server, orchestrator, dispatcher);
+    transport.profile["live"]["version"]["string"] = "12.4.5 secret=OMIT_VERSION_SUFFIX";
+    const auto report =
+        call_tool(server, "doctor_ableton", {{"request_id", "doctor-witness-1"}}, 1);
+    REQUIRE(report.at("success") == true);
+    CHECK(report.at("read_only_ready") == true);
+    CHECK(report.at("request_id") == "doctor-witness-1");
+    CHECK(report.at("expected_bridge") == report.at("observed_bridge"));
+    CHECK(report.at("session") == transport.context);
+    CHECK(report.at("capabilities").at("basis") == "version_floor_claims_not_host_qualification");
+    CHECK(report.at("capabilities").at("reported").at("max_for_live") == "unknown");
+    CHECK((report.at("capabilities").at("live_version") ==
+           json{{"major", 12}, {"minor", 4}, {"bugfix", 5}}));
+    CHECK(report.dump().find("OMIT_VERSION_SUFFIX") == std::string::npos);
+    const std::vector<std::string> expected = {
+        R"({"bridge_protocol_version":46,"name":"sunny_get_target_profile","path":"song","type":"call"})",
+        R"({"bridge_protocol_version":46,"name":"sunny_managed_context","path":"song","type":"call"})",
+        R"({"bridge_protocol_version":46,"name":"is_playing","path":"song","type":"get"})",
+        R"({"bridge_protocol_version":46,"name":"session_record","path":"song","type":"get"})",
+        R"({"bridge_protocol_version":46,"name":"record_mode","path":"song","type":"get"})",
+        R"({"bridge_protocol_version":46,"name":"sunny_managed_context","path":"song","type":"call"})"};
+    CHECK(transport.wire == expected);
+    const auto previous_time = report.at("observed_at").get<double>();
+    transport.connected = false;
+    const auto disconnected =
+        call_tool(server, "doctor_ableton", {{"request_id", "doctor-witness-2"}}, 2);
+    CHECK(disconnected.at("success") == false);
+    CHECK(disconnected.at("read_only_ready") == false);
+    CHECK(disconnected.at("session").is_null());
+    CHECK(disconnected.at("observed_bridge").is_null());
+    CHECK(disconnected.at("observed_at").get<double>() >= previous_time);
+    CHECK(disconnected.at("checks").back().at("code") == "bridge_unreachable");
+    CHECK(transport.wire == expected);
+}
+
+TEST_CASE("Doctor declines mismatches, invalid sessions, lost reads and Set changes",
+          "[mcp][doctor]") {
+    DoctorTransport transport;
+    Orchestrator orchestrator;
+    BridgeDispatcher dispatcher(&transport);
+    McpServer server;
+    register_sunny_tools(server, orchestrator, dispatcher);
+    std::string expected;
+    std::size_t calls = 0;
+    SECTION("Source mismatch stays diagnosable and prevents readiness reads") {
+        transport.profile["adapter"]["source_sha256"] = std::string(64, '0');
+        expected = "bridge_mismatch";
+        calls = 1;
+    }
+    SECTION("Unexpected profile fields fail the closed contract") {
+        transport.profile["private_set"] = "NEVER_EXPORT_NATIVE_ERROR_OR_SET_CONTENT";
+        expected = "profile_contract_invalid";
+        calls = 1;
+    }
+    SECTION("Floating session schema version is malformed") {
+        transport.context["schema_version"] = 1.0;
+        expected = "session_unavailable";
+        calls = 2;
+    }
+    SECTION("Lost native read does not export a native error or infer readiness") {
+        transport.fail_property = "session_record";
+        expected = "native_read_unavailable";
+        calls = 4;
+    }
+    SECTION("Session change invalidates otherwise successful native reads") {
+        transport.change_session = true;
+        expected = "session_changed";
+        calls = 6;
+    }
+    const auto report = call_tool(server, "doctor_ableton", json::object(), 1);
+    CHECK(report.at("success") == false);
+    CHECK(report.at("read_only_ready") == false);
+    CHECK(report.at("native_state").is_null());
+    CHECK(report.at("checks").back().at("code") == expected);
+    CHECK(report.dump().find("NEVER_EXPORT_NATIVE_ERROR_OR_SET_CONTENT") == std::string::npos);
+    CHECK(transport.wire.size() == calls);
+}
+
+TEST_CASE("Doctor rejects unsafe request correlations before native access", "[mcp][doctor]") {
+    DoctorTransport transport;
+    Orchestrator orchestrator;
+    BridgeDispatcher dispatcher(&transport);
+    McpServer server;
+    register_sunny_tools(server, orchestrator, dispatcher);
+    for (const auto& request_id : {std::string(),
+                                   std::string(65, 'a'),
+                                   std::string("token=secret"),
+                                   std::string("line\nbreak")}) {
+        CAPTURE(request_id);
+        CHECK(call_tool(server, "doctor_ableton", {{"request_id", request_id}}, 1).at("success") ==
+              false);
+    }
+    CHECK(transport.wire.empty());
+}
+
 TEST_CASE("Remote log MCP preserves sequence API and forwards explicit stream cursors",
           "[mcp][remote-log]") {
     RemoteLogTransport transport;
@@ -957,7 +1093,7 @@ TEST_CASE("all public tools advertise object-shaped JSON Schemas", "[mcp][tools]
     auto response =
         server.process_request({{"jsonrpc", "2.0"}, {"method", "tools/list"}, {"id", 30}});
     const auto& tools = response["result"]["tools"];
-    REQUIRE(tools.size() == 190);
+    REQUIRE(tools.size() == 191);
     for (const auto& tool : tools) {
         CAPTURE(tool["name"]);
         const auto& schema = tool["inputSchema"];

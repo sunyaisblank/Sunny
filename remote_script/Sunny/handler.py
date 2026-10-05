@@ -49,6 +49,8 @@ _SONG_GETS = frozenset(
         "signature_numerator",
         "signature_denominator",
         "is_playing",
+        "session_record",
+        "record_mode",
         "current_song_time",
     }
 )

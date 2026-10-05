@@ -245,6 +245,30 @@ TEST_CASE("serialize get_property request", "[bridge][serialize]") {
     CHECK(json_str.find("\"path\":\"song\"") != std::string::npos);
 }
 
+TEST_CASE("Doctor transport flags have a literal closed read-only wire contract", "[bridge][protocol][doctor]") {
+    for (const auto* literal : {
+             R"({"bridge_protocol_version":46,"name":"session_record","path":"song","type":"get"})",
+             R"({"bridge_protocol_version":46,"name":"record_mode","path":"song","type":"get"})"}) {
+        const auto request = LomProtocol::deserialize_request(nlohmann::json::parse(literal));
+        REQUIRE(request);
+        CHECK(LomProtocol::serialize_request(*request) == literal);
+        CHECK_FALSE(LomProtocol::validate_request(
+            LomProtocol::set_property(LomPaths::song(), request->property_or_method, false)));
+        CHECK_FALSE(LomProtocol::validate_request(
+            LomProtocol::call_method(LomPaths::song(), request->property_or_method)));
+        CHECK_FALSE(LomProtocol::validate_request(
+            LomProtocol::get_property(LomPaths::track(0), request->property_or_method)));
+        auto with_argument = *request;
+        with_argument.args = {false};
+        CHECK_FALSE(LomProtocol::validate_request(with_argument));
+    }
+    const auto boolean = LomProtocol::deserialize_response(
+        R"({"bridge_protocol_version":46,"success":true,"value":false})");
+    REQUIRE(boolean);
+    REQUIRE(boolean->value);
+    CHECK(std::get<bool>(*boolean->value) == false);
+}
+
 TEST_CASE("serialize set_property request", "[bridge][serialize]") {
     auto req = LomProtocol::set_property(LomPaths::track(0), "volume", 0.75);
     auto json_str = LomProtocol::serialize_request(req);

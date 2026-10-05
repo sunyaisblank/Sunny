@@ -48,6 +48,10 @@
 namespace {
 
 std::optional<std::uint16_t> parse_port(std::string_view text) noexcept {
+    // One canonical ASCII representation is shared with the native script.
+    if (text.empty() || text.front() < '1' || text.front() > '9') return std::nullopt;
+    for (const char digit : text)
+        if (digit < '0' || digit > '9') return std::nullopt;
     unsigned int parsed = 0;
     const auto [end, error] = std::from_chars(text.data(), text.data() + text.size(), parsed);
     if (error != std::errc{} || end != text.data() + text.size() || parsed == 0 ||
@@ -102,14 +106,16 @@ int run_server() {
     // runs offline and Ableton-mutating tools decline loudly.
     std::unique_ptr<TcpTransport> transport;
     if (const char* host = std::getenv("SUNNY_ABLETON_HOST")) {
+        if (*host == '\0') throw std::runtime_error("SUNNY_ABLETON_HOST must not be empty");
         TcpConfig config;
         config.host = host;
         if (const char* port = std::getenv("SUNNY_TCP_PORT")) {
             if (const auto parsed_port = parse_port(port)) {
                 config.port = *parsed_port;
             } else {
-                std::cerr << "sunny-mcp: ignoring invalid SUNNY_TCP_PORT; using " << config.port
-                          << "\n";
+                throw std::runtime_error(
+                    "SUNNY_TCP_PORT must be an ASCII decimal port from 1 to 65535 "
+                    "without signs, whitespace, or leading zeros");
             }
         }
 

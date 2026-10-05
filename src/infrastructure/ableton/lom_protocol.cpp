@@ -533,6 +533,8 @@ sunny::core::Result<void> LomProtocol::validate_request(const LomRequest& reques
                                                                        "signature_numerator",
                                                                        "signature_denominator",
                                                                        "is_playing",
+                                                                       "session_record",
+                                                                       "record_mode",
                                                                        "current_song_time"})) ||
             (request.type == LomRequestType::SetProperty &&
              is_one_of(name, {"tempo", "signature_numerator", "signature_denominator"})) ||

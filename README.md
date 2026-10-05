@@ -174,47 +174,59 @@ Point your MCP client at the built server:
 
 Without `SUNNY_ABLETON_HOST` the server runs offline: theory, document and notation tools work,
 and tools that change Live decline with an explicit error. `SUNNY_TCP_PORT` defaults to 9001.
+An explicitly configured port must be ASCII decimal 1–65535 without signs, whitespace or leading
+zeros. Invalid ports and empty host addresses refuse startup instead of selecting another endpoint.
 Under WSL2 with Live on the Windows host, use the Windows host's IP address.
 
 Docker is the normal delivery path. It needs Docker installed on the client machine; a native
 Sunny build is optional. MCP still travels over standard input and output, so the client starts
 the container itself:
 
-```bash
-docker build -t sunny-mcp:0.4.0 .
-docker image inspect sunny-mcp:0.4.0 --format '{{.Id}}'
-```
-
-Keep the returned `sha256:...` image ID. Use that same ID when exporting the bridge and in
-the MCP configuration below, so rebuilding a tag cannot silently select different sources.
-The image includes its exact installable Remote Script:
+Build a paired candidate from a clean committed checkout with Python 3.10+ and Docker Buildx:
 
 ```bash
-docker create --name sunny-bridge-export sunny-mcp:0.4.0
-docker cp sunny-bridge-export:/opt/sunny/remote-script/Sunny ./Sunny
-docker rm sunny-bridge-export
+python3 tools/release.py build --output /new/path/sunny-release --tag sunny-mcp:local-release
+python3 tools/release.py verify --release /new/path/sunny-release \
+  --expected-manifest-sha256 REPLACE_WITH_RECORDED_MANIFEST_SHA256
 ```
 
-These commands create a stopped container and export files; they do not start Sunny or Live.
-Replace the image tag in `docker create` with the retained image ID if the tag has changed.
-The exported `Sunny/source.sha256` identifies the bundled Python sources.
+Keep the printed manifest checksum separately. The directory contains `image.tar`, the exact
+`native/Sunny` bridge, a Windows installer, the doctor CLI, dependency inventories and `release.json`.
+The build freezes its committed source and pins the Ubuntu platform image, dated apt snapshot and
+dependency commits in `release/build-inputs.json`. It records actual compiler/package inputs;
+this does not promise byte-identical output from independent compilers. Ordinary `docker build`
+remains a development route and does not produce the verified release directory.
+
+For offline transfer, copy that whole directory and verify it against the retained manifest hash.
+On the destination client, load it from a matching checkout:
+
+```bash
+python3 tools/release.py load --release /path/to/sunny-release \
+  --expected-manifest-sha256 REPLACE_WITH_RECORDED_MANIFEST_SHA256
+```
+
+Use its printed
+`loaded_image_local_immutable_id` when launching MCP. The manifest distinguishes the producing
+store's local ID, archived OCI index/manifest/config digests, and any registry digest. A tag or a
+local Docker ID is insufficient evidence of registry publication. Publication is pending an approved
+destination; current manifests explicitly retain configuration and native qualification as pending.
 
 ```json
 {
   "mcpServers": {
     "sunny": {
       "command": "docker",
-      "args": ["run", "-i", "--rm", "--mount", "type=volume,source=sunny-data,target=/data", "-e", "SUNNY_ABLETON_HOST=host.docker.internal", "-e", "SUNNY_TCP_PORT=9001", "sha256:REPLACE_WITH_IMAGE_ID"]
+      "args": ["run", "-i", "--rm", "--mount", "type=volume,source=sunny-data,target=/data", "sha256:REPLACE_WITH_LOADED_IMAGE_ID"]
     }
   }
 }
 ```
 
-This example uses Docker Desktop with Live on the same computer. Configure the bridge listener
-as described below. For Live on another LAN computer, replace `host.docker.internal` with that
-computer's address, such as `192.168.1.20`. On Linux Docker Engine, add
-`"--add-host", "host.docker.internal:host-gateway"` to use the host machine. No `-p` or inbound
-container port is needed: MCP uses stdio and the container connects outbound to TCP 9001.
+This launches an offline authoring session. Each MCP client owns one container's stdio; do not
+share one unattended stdin among clients or add a TTY. Live remains native. The remote production
+profile requires an approved SSH route to the loopback bridge and its machine qualification;
+that integration remains under [issue #38](https://github.com/sunyaisblank/Sunny/issues/38).
+Raw TCP across a LAN is unauthenticated and is outside the supported production profile.
 
 For a native `sunny-mcp` on the same computer as Live, `SUNNY_ABLETON_HOST=127.0.0.1` connects to
 the default loopback listener. Inside an ordinary Docker container, `127.0.0.1` refers to that
@@ -257,8 +269,8 @@ authored Score, with concert pitch in MIDI and instrument-transposed written pit
 
 Live 12.4 is the primary target, with Live 12.3 compatibility retained. The finite operation
 version floors below also describe limited legacy use; they do not qualify an untested future release.
-Export the `Sunny` folder from the same image ID used by your MCP client, then copy that folder
-into `Remote Scripts` under your configured Live User Library. Select Sunny as a control surface
+Install the `native/Sunny` folder from the same verified release used by your MCP client into
+`Remote Scripts` under your configured Live User Library. Select Sunny as a control surface
 in Live's Preferences, Link/Tempo/MIDI. For a native build, use the generated
 `.bin/remote_script/Sunny` folder from that build. Restart or reload the control surface after
 replacing the folder.
@@ -267,11 +279,41 @@ The script listens on TCP port 9001, bound to `127.0.0.1` unless `SUNNY_BIND_HOS
 environment of the Live process. If you bind to another interface, restrict access with a
 firewall: the port accepts commands that change your Live Set.
 
-For Docker Desktop on the Live computer, or for a client on another LAN computer, set
-`SUNNY_BIND_HOST=0.0.0.0` in the environment that launches Live and permit TCP 9001 only from
-the intended client or local Docker network. Keep the default `127.0.0.1` binding for a native
-client on the same computer. One bridge client is served at a time; close another connected
-Sunny client before starting a replacement. Do not expose the listener to the public internet.
+Keep the default `127.0.0.1` binding for local operation and the selected SSH route. One bridge
+client is served at a time; close another connected Sunny client before starting a replacement.
+Remote access approval and effective forwarding/firewall scope are final machine setup steps.
+
+The Windows release installer supports PowerShell 5.1+, the current user and a physical local NTFS
+User Library. Supply the existing path shown in Live Settings > Library; it does not guess a default
+folder, change Control Surface settings, stop Live, create SSH trust, or alter firewall settings.
+Preview before installation:
+
+```powershell
+$installer = 'D:\Sunny Release\installer\windows\Sunny.ps1'
+$library = 'D:\Actual User Library'
+$release = 'D:\Sunny Release'
+$hash = 'REPLACE_WITH_VERIFIED_MANIFEST_SHA256'
+& $installer -Action Plan -UserLibraryPath $library -ReleaseDirectory $release -ExpectedManifestSHA256 $hash
+# Save Sets and quit Live before Install, Rollback, Recover or Uninstall.
+& $installer -Action Install -UserLibraryPath $library -ReleaseDirectory $release -ExpectedManifestSHA256 $hash
+```
+
+Install verifies the whole release, stages only its bridge, and records ownership and an atomic state
+commit under `Remote Scripts/.sunny-managed`. An identical rerun makes no backup. Unknown or edited
+Sunny content is preserved and reported. `Status` reads the recorded state. `Recover` restores the
+old release before commit or finishes the new release after commit, including partial transfer and
+cleanup failures. Updates use `Install` with the new verified directory. `Rollback` exchanges the
+recorded active and previous releases. `Uninstall` removes the managed active script, reports the
+retained backup, and leaves user Sets, settings, unrelated scripts and management state intact.
+Remove Sunny from its Control Surface slot manually after uninstall.
+
+After starting Live and selecting Sunny with Input/Output None, export a doctor result from the
+configured route. `Confirm -DoctorReport PATH` accepts only fresh correlated read-only readiness
+for the active source/protocol with successful launcher cleanup. Verify that route refers to this host and library before confirming;
+the report cannot establish that association itself. A further forward update cannot retire the
+older backup until confirmation. Rollback and uninstall stay available. Confirmation does not
+qualify sound, licences or musical mutations. These transitions have isolated Windows filesystem
+tests; real-host deployment, cross-user profiles and sudden power loss remain qualification gates.
 
 Protocol version 46 and a SHA256 of all bundled Python sources must match the server. The first
 ordinary request on each connection checks the bridge's source identity; reconnects check again.
@@ -322,15 +364,13 @@ not author saved envelopes.
 Development and CI need no Ableton. A real Live Set is checked last, from any machine that can
 reach the one running Live:
 
-1. On the Live machine, install the Remote Script as above and let it listen beyond loopback by
-   setting `SUNNY_BIND_HOST=0.0.0.0` in the environment Live starts with (a user environment
-   variable on Windows, `launchctl setenv` on macOS), then restart Live. Allow TCP 9001 through
-   the firewall from the testing machine only.
+1. Install the matching bridge as above and establish the approved route to its loopback listener.
+   Keep transport/access setup separate from proof that the loaded script responds.
 2. Open an empty or scratch Set: the check adds two tracks.
 3. On the testing machine, run the check through the local build or the Docker image:
 
    ```bash
-   export SUNNY_LIVE_HOST=192.168.1.20
+   export SUNNY_LIVE_HOST=REPLACE_WITH_APPROVED_FORWARDED_ENDPOINT
    export SUNNY_MCP_COMMAND="docker run -i --rm -e SUNNY_ABLETON_HOST -e SUNNY_TCP_PORT sunny-mcp"
    pytest tests/python/test_live_host.py -s
    ```
@@ -354,8 +394,31 @@ epoch and freshness metadata is explicitly unavailable.
 This log route needs a working bridge and shares its command channel. It cannot diagnose a script
 that never loaded or service a second request while the first remains in progress. `sunny-mcp`
 writes its own diagnostics to standard error. Docker logs cover container output; native Live
-`Log.txt` requires its separately authorized host route. General doctor and host-log support are
-being completed under the [operating lifecycle contract](https://github.com/sunyaisblank/Sunny/issues/36).
+`Log.txt` requires its separately authorized host route, which remains pending under the
+[operating lifecycle contract](https://github.com/sunyaisblank/Sunny/issues/36).
+
+`doctor_ableton` observes paired source/protocol, current bridge/Set tokens, and three transport
+booleans with a second identity check. It does not collect a Set snapshot or mutate Live. The CLI
+also checks actual process launch, stdio initialization and tool inventory, with a finite deadline:
+
+```bash
+python3 tools/doctor.py --timeout 30 --cleanup-timeout 10 --poll-seconds 5 --export /new/path/diagnosis.json -- \
+  docker run -i --rm --mount type=volume,source=sunny-data,target=/data sha256:REPLACE_WITH_IMAGE_ID
+```
+
+The release copy is `operator/doctor.py`. Add the configured bridge route to the launch arguments
+when diagnosing Live; an offline launch reports a precise bridge failure. Polling validates epochs,
+gaps and page bounds, backs off on failures, and records incomplete/stale outcomes. Export is opt-in,
+exclusive and bounded to 1 MiB, with credential redaction and no automatic project-content capture.
+After diagnosis, a separate cleanup budget verifies that its owned processes and any launched
+container are gone. Direct attached `docker run -i` is supported on Linux and Windows; the CLI
+assigns a private container ID file and ownership label, checks the daemon identity, and removes
+only its own container. On Linux, a private supervisor also reaps owned native child processes.
+Windows standalone native launches and Docker wrappers, `exec`, detached or TTY launches are
+currently unsupported by this CLI. Failed cleanup makes the report unsuccessful and leaves
+its ownership identifier for scoped recovery. Installer confirmation requires successful cleanup.
+Reported version-floor capabilities remain claims for later host qualification. Image identity,
+installed host/library, audio, licences and independent host logs need their own evidence.
 
 The maintained final-host tooling is in `tools/live_qualification/`. Its `obligations.json` retains
 all 23 original validation groups, their required evidence and applicability. Local toolkit tests

@@ -1917,8 +1917,40 @@ def test_remote_script_defaults_to_loopback(monkeypatch):
     assert _server_configuration() == (DEFAULT_BIND_HOST, DEFAULT_PORT)
 
 
-def test_remote_script_rejects_invalid_port(monkeypatch):
-    """Malformed environment configuration falls back to the safe default."""
-    monkeypatch.setenv("SUNNY_TCP_PORT", "70000")
+@pytest.mark.parametrize(
+    "port",
+    [
+        "",
+        "0",
+        "65536",
+        "70000",
+        "+9001",
+        "-1",
+        "09001",
+        " 9001",
+        "9001 ",
+        "９００１",
+        "1.0",
+        "0x2329",
+    ],
+)
+def test_remote_script_rejects_invalid_port(monkeypatch, port):
+    """Invalid configuration refuses before listening on another endpoint."""
+    monkeypatch.setenv("SUNNY_TCP_PORT", port)
+    with pytest.raises(ValueError, match="SUNNY_TCP_PORT must"):
+        _server_configuration()
 
-    assert _server_configuration() == (DEFAULT_BIND_HOST, DEFAULT_PORT)
+
+@pytest.mark.parametrize("port", ["1", "9001", "65535"])
+def test_remote_script_accepts_canonical_port(monkeypatch, port):
+    """Both endpoint bounds and the ordinary port share the canonical grammar."""
+    monkeypatch.setenv("SUNNY_TCP_PORT", port)
+    monkeypatch.delenv("SUNNY_BIND_HOST", raising=False)
+    assert _server_configuration() == (DEFAULT_BIND_HOST, int(port))
+
+
+def test_remote_script_rejects_empty_host(monkeypatch):
+    """An empty bind address must not accidentally expose every interface."""
+    monkeypatch.setenv("SUNNY_BIND_HOST", "")
+    with pytest.raises(ValueError, match="SUNNY_BIND_HOST must"):
+        _server_configuration()

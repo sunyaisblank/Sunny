@@ -1,64 +1,81 @@
-# Sunny MCP Server Docker Image
-# Builds the C++ sunny-mcp binary; the container speaks MCP on stdio and
-# connects to Sunny's Ableton Remote Script when SUNNY_ABLETON_HOST is set.
+# Linux/amd64 release inputs are locked in release/build-inputs.json. Developer
+# CMake builds retain their normal system-package/fallback behavior. Produce a
+# reviewable offline release with tools/release.py; it records a clean commit.
+FROM ubuntu:24.04@sha256:f610ab94648195aa356059f5b41d6085c9d4d903c072430cdd1af7bdb646106b AS builder
 
-# =============================================================================
-# Build Stage
-# =============================================================================
-FROM ubuntu:24.04 AS builder
+ARG SUNNY_APT_SNAPSHOT=20261001T000000Z
+ARG SUNNY_BUILD_PACKAGES="ca-certificates=20260601~24.04.1 cmake=3.28.3-1build7 g++=4:13.2.0-7ubuntu1 git=1:2.43.0-1ubuntu7.3 ninja-build=1.11.1-2 python3-minimal=3.12.3-0ubuntu2.1"
+ARG SUNNY_SOURCE_REVISION=unrecorded-development-build
+ARG SOURCE_DATE_EPOCH=0
 
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-        g++ cmake ninja-build git ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
+RUN apt-get update --snapshot "$SUNNY_APT_SNAPSHOT" && \
+    apt-get install -y --no-install-recommends --snapshot "$SUNNY_APT_SNAPSHOT" $SUNNY_BUILD_PACKAGES && \
+    dpkg-query -W -f='${Package}\t${Version}\t${Architecture}\n' > /builder-packages.tsv && \
+    apt-cache show $SUNNY_BUILD_PACKAGES > /builder-apt-metadata.txt && \
+    rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
-
 COPY CMakeLists.txt CMakePresets.json pyproject.toml ./
 COPY apps ./apps
 COPY cmake ./cmake
 COPY include ./include
 COPY src ./src
-# Configure-time inputs: the bridge contract generates the protocol header,
-# and the version gate compares the Python and Max package metadata.
+COPY release/build-inputs.json ./release/build-inputs.json
+COPY tools/release.py ./tools/release.py
+COPY tools/doctor.py ./tools/doctor.py
+COPY tools/windows ./tools/windows
 COPY remote_script/Sunny ./remote_script/Sunny
 COPY python/sunny/__init__.py ./python/sunny/__init__.py
 COPY max-package/CMakeLists.txt max-package/package-info.json ./max-package/
 
-# Lean server build: no tests, no Python bindings
 RUN cmake -B .bin -G Ninja \
         -DCMAKE_BUILD_TYPE=Release \
+        -DSUNNY_RELEASE_BUILD=ON \
         -DSUNNY_BUILD_TESTS=OFF \
-        -DSUNNY_BUILD_PYTHON_BINDINGS=OFF \
-    && cmake --build .bin --target sunny-mcp --parallel 2
+        -DSUNNY_BUILD_PYTHON_BINDINGS=OFF && \
+    cmake --build .bin --target sunny-mcp --parallel 2 && \
+    python3 tools/release.py record-build \
+        --source-revision "$SUNNY_SOURCE_REVISION" \
+        --source-date-epoch "$SOURCE_DATE_EPOCH" \
+        --build-directory .bin --packages /builder-packages.tsv \
+        --apt-metadata /builder-apt-metadata.txt \
+        --output .bin/release
 
-# =============================================================================
-# Runtime Stage
-# =============================================================================
-FROM ubuntu:24.04 AS runtime
+FROM ubuntu:24.04@sha256:f610ab94648195aa356059f5b41d6085c9d4d903c072430cdd1af7bdb646106b AS runtime
 
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends libstdc++6 \
-    && rm -rf /var/lib/apt/lists/* \
-    && useradd --create-home --shell /bin/bash sunny \
-    && mkdir /data && chown sunny:sunny /data
+ARG SUNNY_APT_SNAPSHOT=20261001T000000Z
+ARG SUNNY_RUNTIME_PACKAGES="libstdc++6=14.2.0-4ubuntu2~24.04.1"
+ARG SUNNY_SOURCE_REVISION=unrecorded-development-build
+ARG SUNNY_VERSION=0.4.0
+ARG SUNNY_BUILD_INPUTS_SHA256
+
+RUN apt-get update --snapshot "$SUNNY_APT_SNAPSHOT" && \
+    apt-get install -y --no-install-recommends --snapshot "$SUNNY_APT_SNAPSHOT" $SUNNY_RUNTIME_PACKAGES && \
+    mkdir -p /opt/sunny/release && \
+    dpkg-query -W -f='${Package}\t${Version}\t${Architecture}\n' > /opt/sunny/release/runtime-packages.tsv && \
+    apt-cache show $SUNNY_RUNTIME_PACKAGES > /opt/sunny/release/runtime-apt-metadata.txt && \
+    rm -rf /var/lib/apt/lists/* && \
+    groupadd --gid 1001 sunny && \
+    useradd --uid 1001 --gid 1001 --create-home --shell /bin/bash sunny && \
+    mkdir /data && chown sunny:sunny /data
 
 COPY --from=builder /build/.bin/sunny-mcp /usr/local/bin/sunny-mcp
 COPY --from=builder /build/.bin/remote_script/Sunny /opt/sunny/remote-script/Sunny
+COPY --from=builder /build/.bin/release/ /opt/sunny/release/
+COPY --from=builder /build/tools/windows/ /opt/sunny/installer/windows/
+COPY --from=builder /build/tools/doctor.py /opt/sunny/operator/doctor.py
 
 USER sunny
-
-# Mount a named volume at /data. Explicit workspace_save retains authored state;
-# a later container restores the supported main file before accepting MCP requests.
 ENV SUNNY_WORKSPACE_PATH=/data/workspace.sunny.json
-
-# MCP protocol runs on stdio; the Ableton TCP connection is outbound and
-# opt-in via SUNNY_ABLETON_HOST / SUNNY_TCP_PORT (see .env.example).
 ENTRYPOINT ["sunny-mcp"]
 
-# =============================================================================
-# Labels
-# =============================================================================
-LABEL org.opencontainers.image.title="Sunny"
-LABEL org.opencontainers.image.description="Music theory MCP server with Ableton Live integration"
-LABEL org.opencontainers.image.vendor="Sunny Project"
+LABEL org.opencontainers.image.title="Sunny" \
+      org.opencontainers.image.description="Music theory MCP server with Ableton Live integration" \
+      org.opencontainers.image.vendor="Sunny Project" \
+      org.opencontainers.image.source="https://github.com/sunyaisblank/Sunny" \
+      org.opencontainers.image.version="$SUNNY_VERSION" \
+      org.opencontainers.image.revision="$SUNNY_SOURCE_REVISION" \
+      org.opencontainers.image.base.name="ubuntu:24.04" \
+      org.opencontainers.image.base.digest="sha256:f610ab94648195aa356059f5b41d6085c9d4d903c072430cdd1af7bdb646106b" \
+      org.sunny.build-inputs.sha256="$SUNNY_BUILD_INPUTS_SHA256" \
+      org.sunny.configuration.contract="legacy_environment"
