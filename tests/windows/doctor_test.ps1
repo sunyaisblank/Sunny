@@ -4,9 +4,24 @@ Set-StrictMode -Version Latest
 $root=Join-Path $env:TEMP ('Sunny Doctor Café '+[Guid]::NewGuid().ToString('N'))
 $null=[IO.Directory]::CreateDirectory($root)
 $passed=[Collections.Generic.List[string]]::new()
+$fixturePhase='fixture_setup';$fixturePrimaryPhase=$null;$fixtureFailure=$null
 function Check([bool]$Value,[string]$Message){if(-not$Value){throw $Message}}
 function Fails($Run,[string]$Pattern){$failed=$false;try{&$Run|Out-Null}catch{if($_.Exception.Message-notmatch$Pattern){throw};$failed=$true};Check $failed ('Expected refusal: '+$Pattern)}
 function Text([string]$Path,[string]$Value){[IO.File]::WriteAllText($Path,$Value,[Text.UTF8Encoding]::new($false))}
+function FixtureFailureJson($Failure,[string]$Phase,[string]$Kind){
+ # PositionMessage's first line and ScriptStackTrace contain locations, not
+ # invocation source/arguments. No child output or project contents are logged.
+ $position=if($null-ne$Failure.InvocationInfo){([string]$Failure.InvocationInfo.PositionMessage-split"`n",2)[0].TrimEnd("`r")}else{''}
+ $message=[string]$Failure.Exception.Message
+ $exception=if($message-ceq'Remote command deadline expired; inspect status before repeating a state change.'){$message}elseif($message.StartsWith('Remote input pipe failed;')){'Remote input pipe failed; code=input_pipe_failure; child diagnostics omitted.'}else{$Failure.Exception.GetType().FullName+'; code=unclassified_fixture_exception'}
+ $record=[ordered]@{fixture_failure_schema_version=1;kind=$Kind;phase=$Phase;last_completed_group=$(if($passed.Count){$passed[$passed.Count-1]}else{'none'});exception=$exception;position_message=$position;script_stack_trace=[string]$Failure.ScriptStackTrace}
+ foreach($field in @('kind','phase','last_completed_group','exception','position_message','script_stack_trace')){
+  $limit=if($field-ceq'script_stack_trace'){1024}elseif($field-ceq'exception'){512}elseif($field-ceq'position_message'){256}else{160}
+  if($record[$field].Length-gt$limit){$record[$field]=$record[$field].Substring(0,$limit)}
+ }
+ return ($record|ConvertTo-Json -Depth 3 -Compress)
+}
+function WriteFixtureFailure($Failure,[string]$Phase,[string]$Kind){[Console]::Error.WriteLine('SUNNY_DOCTOR_FIXTURE_FAILURE '+(FixtureFailureJson $Failure $Phase $Kind))}
 try{
  foreach($pair in @(@('Sunny.ps1','__INSTALLER_SOURCE__'),@('SunnyRemote.ps1','__REMOTE_SOURCE__'),@('SunnyClient.ps1','__CLIENT_SOURCE__'),@('SunnyDoctor.ps1','__DOCTOR_SOURCE__'))){
   [IO.File]::WriteAllBytes((Join-Path $root $pair[0]),[Convert]::FromBase64String($pair[1]))
@@ -168,6 +183,43 @@ exit 0
  foreach($mode in @('late_noise','late_stderr','bad_exit')){$run=Run $mode;Check (-not$run.report.success-and$run.report.cleanup.success) ('Invalid close accepted: '+$mode)}
  $passed.Add('normal_exit_and_trailing_output_are_part_of_readiness')
  foreach($mode in @('timeout','overflow_err','overflow_out')){$watch=[Diagnostics.Stopwatch]::StartNew();$run=Run $mode 2;Check (-not$run.report.success-and$watch.Elapsed.TotalSeconds-lt11) ('Unbounded failed peer: '+$mode)}
+ # Exercise the exact diagnostic writer with a real owned helper timeout. Keep
+ # its stderr private to this control; the successful fixture emits only JSON.
+ $fixturePhase='forced_owned_process_timeout';$forcedFailure=$null
+ $forcedDirectory=Join-Path $root 'forced bounded process';$null=[IO.Directory]::CreateDirectory($forcedDirectory)
+ $forcedMarker=Join-Path $forcedDirectory 'peer.json';$diagnosticSink=[IO.StringWriter]::new();$originalErrorWriter=[Console]::Error
+ try{
+  [Console]::SetError($diagnosticSink)
+  $forcedOriginal=$null
+  try{
+   try{$null=Invoke-SunnyBoundedProcess $shell @('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',$peer,'-Mode','timeout','-Marker',$forcedMarker) '' 2}
+   catch{$forcedOriginal=$_;WriteFixtureFailure $_ $fixturePhase 'operation_failure';throw}
+   finally{
+    # An independent literal cleanup refusal cannot replace the real timeout.
+    try{throw 'Literal fixture cleanup refusal'}
+    catch{WriteFixtureFailure $_ 'forced_cleanup_refusal' 'cleanup_failure';if($null-eq$forcedOriginal){throw}}
+   }
+  }catch{$forcedFailure=$_}
+ }finally{[Console]::SetError($originalErrorWriter)}
+ $diagnostic=$diagnosticSink.ToString();$diagnosticSink.Dispose()
+ Check ($null-ne$forcedFailure-and$forcedFailure.Exception.Message-match'deadline expired') 'Actual bounded-process timeout control did not fail'
+ Check ($diagnostic.StartsWith('SUNNY_DOCTOR_FIXTURE_FAILURE ')-and[Text.Encoding]::UTF8.GetByteCount($diagnostic)-lt16384) 'Failure context is absent or unbounded'
+ $diagnosticLines=$diagnostic.Trim()-split"`r?`n"
+ Check ($diagnosticLines.Count-eq2) 'Original timeout and cleanup failure were not separately retained'
+ $context=ConvertFrom-SunnyDoctorJson ([Text.Encoding]::UTF8.GetBytes($diagnosticLines[0].Substring(29)))
+ $cleanupContext=ConvertFrom-SunnyDoctorJson ([Text.Encoding]::UTF8.GetBytes($diagnosticLines[1].Substring(29)))
+ Check ($cleanupContext.kind-ceq'cleanup_failure'-and$cleanupContext.phase-ceq'forced_cleanup_refusal'-and$cleanupContext.exception-match'code=unclassified_fixture_exception$') 'Cleanup failure was lost or mislabeled'
+ Check ($context.phase-ceq$fixturePhase-and$context.kind-ceq'operation_failure'-and$context.last_completed_group-ceq'normal_exit_and_trailing_output_are_part_of_readiness') 'Failure context lost its literal phase or completed group'
+ Check ($context.exception-match'deadline expired'-and$context.position_message-match'SunnyRemote.ps1'-and$context.script_stack_trace-match'Invoke-SunnyBoundedProcess') 'Failure context lost the actual exception or source stack'
+ $forcedPeer=ConvertFrom-SunnyDoctorJson (Read-SunnyDoctorFile $forcedMarker 4096)
+ Check (($forcedPeer.parent_pid-is[int]-or$forcedPeer.parent_pid-is[long])-and$forcedPeer.parent_pid-gt0-and$forcedPeer.parent_pid-ne$PID-and$forcedPeer.parent_started-cmatch'^[0-9]{1,19}$') 'Forced timeout lacks its actual positive owned process identity'
+ Check ($null-eq(Get-Process -Id $forcedPeer.parent_pid -ErrorAction SilentlyContinue)) 'Forced timeout retained its actual owned child'
+ foreach($privateMessage in @('Remote input pipe failed; outcome unknown; child stderr=SUNNY_PRIVATE_CHILD; input error=SUNNY_PRIVATE_ARGUMENT','Unknown SUNNY_PRIVATE_CHILD SUNNY_PRIVATE_ARGUMENT')){
+  $privateFailure=[Management.Automation.ErrorRecord]::new([IO.IOException]::new($privateMessage),'private-fixture',[Management.Automation.ErrorCategory]::NotSpecified,$null)
+  $safeContext=FixtureFailureJson $privateFailure 'private_message_control' 'operation_failure'
+  Check ($safeContext-notmatch'SUNNY_PRIVATE_CHILD|SUNNY_PRIVATE_ARGUMENT|child stderr|input error') 'Failure context exported child diagnostics or arguments'
+ }
+ $fixturePhase='protocol_fixture_checks'
  $passed.Add('deadline_and_stdout_stderr_bounds_reap_actual_owned_process')
  $descendant=Run 'descendant'
  $childId=[int][IO.File]::ReadAllText($descendant.marker+'.descendant')
@@ -370,24 +422,35 @@ if($WorkspaceVolume-eq'bad_exit'){exit 9};exit 0
  # Actual local Docker daemon orphan: only the captured name/CID/label is
  # removed. An independent foreign owner and its container remain untouched.
  $docker=(Get-Command docker.exe -ErrorAction Stop).Source;$dockerWitness=$false
+ $fixturePhase='docker_busybox_availability'
  $available=Invoke-SunnyBoundedProcess $docker @('--context','desktop-linux','image','inspect','busybox:1.36') '' 5
  if($available.exit_code-eq0){
   $fixtureVolume='sunny-doctor-fixture-'+[Guid]::NewGuid().ToString('N')
+  $fixturePhase='docker_volume_create'
   $null=Invoke-SunnyClientDocker $docker 'desktop-linux' @('volume','create',$fixtureVolume) 10
+  $fixturePhase='docker_volume_seed'
   $null=Invoke-SunnyClientDocker $docker 'desktop-linux' @('run','--rm','--mount',('type=volume,source='+$fixtureVolume+',target=/data'),'busybox:1.36','sh','-c','printf durable-fixture > /data/sentinel') 10
   $env:SUNNY_DOCTOR_FIXTURE_VOLUME=$fixtureVolume
+  $fixturePhase='docker_foreign_create'
   $foreignOwner=[Guid]::NewGuid().ToString('N');$foreign=Invoke-SunnyClientDocker $docker 'desktop-linux' @('run','-d','--name',('sunny-client-'+$foreignOwner+'-run'),'--label',('org.sunny.client.owner='+$foreignOwner),'busybox:1.36','sleep','90') 10
+  $dockerFailure=$null
   try{
+   $fixturePhase='docker_owned_orphan_exchange'
    $script:realDocker=$true;$orphan=Run 'docker_orphan' 12;$script:realDocker=$false
    Check ($orphan.report.success-and$orphan.report.cleanup.container_absence_confirmed) 'Exact real daemon orphan cleanup failed'
+   $fixturePhase='docker_owned_absence'
    $cid=[IO.File]::ReadAllText($orphan.marker+'.cid');$remaining=Invoke-SunnyClientDocker $docker 'desktop-linux' @('ps','-aq','--no-trunc','--filter',('id='+$cid)) 5
    Check (-not$remaining) 'Owned real container remains'
+   $fixturePhase='docker_foreign_readback'
    $foreignStill=Invoke-SunnyClientDocker $docker 'desktop-linux' @('ps','-q','--no-trunc','--filter',('id='+$foreign)) 5
    Check ($foreignStill-ceq$foreign) 'Foreign actual daemon container changed'
    # Recreate only this fixture's proved owner as an interrupted-session
    # orphan. Recovery uses actual expired process identities, never a name glob.
+   $fixturePhase='docker_recovery_orphan_create'
    $residual=Invoke-SunnyClientDocker $docker 'desktop-linux' @('run','-d','--name',('sunny-client-'+$orphan.journal.owner+'-run'),'--label',('org.sunny.client.owner='+$orphan.journal.owner),'busybox:1.36','sleep','90') 10
+   $residualFailure=$null
    try{
+    $fixturePhase='expired_doctor_pid_peer'
     $identity=Invoke-SunnyBoundedProcess $shell @('-NoProfile','-NonInteractive','-Command','@{pid=$PID;started=(Get-Process -Id $PID).StartTime.ToUniversalTime().Ticks.ToString()}|ConvertTo-Json -Compress') '' 5
     $expired=ConvertFrom-SunnyDoctorJson ([Text.Encoding]::UTF8.GetBytes($identity.stdout.Trim()))
     Check ($identity.exit_code-eq0-and$null-eq(Get-Process -Id $expired.pid -ErrorAction SilentlyContinue)) 'Independent former doctor process did not exit'
@@ -396,34 +459,55 @@ if($WorkspaceVolume-eq'bad_exit'){exit 9};exit 0
     $recoverState=@{schema_version=1;owner_sid=Get-SunnyOwner;owner=[IO.Path]::GetFileName($recoverDirectory).Substring(13);parent_pid=$expired.pid;parent_started=$expired.started;child_pid=$orphan.journal.parent_pid;child_started=$orphan.journal.parent_started;client_scope=$orphan.state.client_scope;cleanup_confirmed=$false;manifest_sha256=$hash;operator_sources=$captured.identities}
     $recoverFile=Join-Path $recoverDirectory 'doctor.json';Write-SunnyDoctorState $recoverFile $recoverState -Initial
     $realDaemon=$recoverState.client_scope.daemon_id;$recoverState.client_scope.daemon_id='different-literal-daemon';Write-SunnyDoctorState $recoverFile $recoverState
+    $fixturePhase='docker_recovery_changed_daemon_refusal'
     Fails {Recover-SunnyDoctor $recoverDirectory $artifact $hash 10} 'daemon identity changed'
     Check (Test-Path -LiteralPath $recoverFile) 'Changed daemon recovery discarded ownership record'
     $recoverState.client_scope.daemon_id=$realDaemon;Write-SunnyDoctorState $recoverFile $recoverState
     Text (Join-Path $recoverDirectory 'user.als') 'independent user bytes'
+    $fixturePhase='docker_recovery_foreign_file_refusal'
     Fails {Recover-SunnyDoctor $recoverDirectory $artifact $hash 10} 'Unexpected'
     Check ([IO.File]::ReadAllText((Join-Path $recoverDirectory 'user.als'))-ceq'independent user bytes') 'Unexpected user content changed'
     [IO.File]::Delete((Join-Path $recoverDirectory 'user.als'))
+    $fixturePhase='docker_exact_recovery'
     $receipt=Recover-SunnyDoctor $recoverDirectory $artifact $hash 10
     Check ($receipt.containers_absent-and$receipt.recorded_processes_absent-and-not$receipt.project_volume_removed-and-not(Test-Path -LiteralPath $recoverDirectory)) 'Exact durable recovery failed'
+    $fixturePhase='docker_recovered_absence'
     $remaining=Invoke-SunnyClientDocker $docker 'desktop-linux' @('ps','-aq','--no-trunc','--filter',('id='+$residual)) 5
     Check (-not$remaining) 'Recovered original-daemon fixture container remains'
+    $fixturePhase='docker_recovery_foreign_readback'
     $foreignStill=Invoke-SunnyClientDocker $docker 'desktop-linux' @('ps','-q','--no-trunc','--filter',('id='+$foreign)) 5
     Check ($foreignStill-ceq$foreign) 'Recovery changed foreign actual daemon container'
+    $fixturePhase='docker_volume_readback'
     $sentinel=Invoke-SunnyClientDocker $docker 'desktop-linux' @('run','--rm','--mount',('type=volume,source='+$fixtureVolume+',target=/data,readonly'),'busybox:1.36','cat','/data/sentinel') 10
     Check ($sentinel-ceq'durable-fixture') 'Doctor cleanup or recovery altered project-volume bytes'
+   }catch{
+    $residualFailure=$_;if($null-eq$fixturePrimaryPhase){$fixturePrimaryPhase=$fixturePhase};WriteFixtureFailure $_ $fixturePrimaryPhase 'operation_failure';throw
    }finally{
-    $residualLeft=Invoke-SunnyClientDocker $docker 'desktop-linux' @('ps','-aq','--no-trunc','--filter',('id='+$residual)) 5
-    if($residualLeft){$null=Invoke-SunnyClientDocker $docker 'desktop-linux' @('container','rm','--force',$residual) 10}
+    $fixturePhase='docker_residual_cleanup'
+    try{
+     $residualLeft=Invoke-SunnyClientDocker $docker 'desktop-linux' @('ps','-aq','--no-trunc','--filter',('id='+$residual)) 5
+     if($residualLeft){$null=Invoke-SunnyClientDocker $docker 'desktop-linux' @('container','rm','--force',$residual) 10}
+    }catch{WriteFixtureFailure $_ $fixturePhase 'cleanup_failure';if($null-eq$residualFailure){throw}}
    }
    $dockerWitness=$true
-  }finally{$script:realDocker=$false;$null=Invoke-SunnyClientDocker $docker 'desktop-linux' @('container','rm','--force',$foreign) 10;$env:SUNNY_DOCTOR_FIXTURE_VOLUME=$null;$null=Invoke-SunnyClientDocker $docker 'desktop-linux' @('volume','rm',$fixtureVolume) 10}
+  }catch{
+   $dockerFailure=$_;if($null-eq$fixturePrimaryPhase){$fixturePrimaryPhase=$fixturePhase};WriteFixtureFailure $_ $fixturePrimaryPhase 'operation_failure';throw
+  }finally{
+   $fixturePhase='docker_foreign_and_volume_cleanup';$script:realDocker=$false
+   try{$null=Invoke-SunnyClientDocker $docker 'desktop-linux' @('container','rm','--force',$foreign) 10;$env:SUNNY_DOCTOR_FIXTURE_VOLUME=$null;$null=Invoke-SunnyClientDocker $docker 'desktop-linux' @('volume','rm',$fixtureVolume) 10}
+   catch{WriteFixtureFailure $_ $fixturePhase 'cleanup_failure';if($null-eq$dockerFailure){throw}}
+  }
  }
  if($dockerWitness){$passed.Add('actual_local_docker_orphan_exact_cleanup_and_foreign_preservation')}else{$passed.Add('docker_orphan_fixture_not_run_without_preloaded_busybox')}
  @{passed=$passed;ssh_executed=$false;native_live_executed=$false;physical_kernel_stalls_tested=$false;incremental_polling_fixtures_passed=$true;actual_docker_witness=$dockerWitness}|ConvertTo-Json -Depth 5 -Compress
+}catch{
+ $fixtureFailure=$_;if($null-eq$fixturePrimaryPhase){$fixturePrimaryPhase=$fixturePhase};WriteFixtureFailure $_ $fixturePrimaryPhase 'operation_failure';throw
 }finally{
  # Fixture-only teardown; production preserves every unproved directory.
- foreach($item in Get-ChildItem -LiteralPath $root -Filter 'peer.json' -Recurse -ErrorAction SilentlyContinue){
-  try{$record=Get-Content -LiteralPath $item.FullName -Raw|ConvertFrom-Json;$path=Join-Path ([IO.Path]::GetTempPath()) ('Sunny-client-'+$record.owner);if(Test-Path -LiteralPath $path){Remove-Item -LiteralPath $path -Recurse -Force}}catch{}
- }
- if(Test-Path -LiteralPath $root){Remove-Item -LiteralPath $root -Recurse -Force}
+ try{
+  foreach($item in Get-ChildItem -LiteralPath $root -Filter 'peer.json' -Recurse -ErrorAction SilentlyContinue){
+   try{$record=Get-Content -LiteralPath $item.FullName -Raw|ConvertFrom-Json;$path=Join-Path ([IO.Path]::GetTempPath()) ('Sunny-client-'+$record.owner);if(Test-Path -LiteralPath $path){Remove-Item -LiteralPath $path -Recurse -Force}}catch{}
+  }
+  if(Test-Path -LiteralPath $root){Remove-Item -LiteralPath $root -Recurse -Force}
+ }catch{WriteFixtureFailure $_ 'fixture_directory_cleanup' 'cleanup_failure';if($null-eq$fixtureFailure){throw}}
 }
