@@ -95,6 +95,10 @@ def _make_release(
     compiled_schema=1,
     legacy_environment=None,
     operator_files: dict[str, bytes] | None = None,
+    base_representation="gzip",
+    different_base=False,
+    legacy_base_lock=False,
+    base_lock_override=None,
 ) -> dict:
     root.mkdir()
     bridge = _bridge(root / "native/Sunny", native_schema=native_schema)
@@ -114,6 +118,10 @@ def _make_release(
     base_tar = _tar({"etc/os-release": b"synthetic fixture\n"})
     base_layer = gzip.compress(base_tar, mtime=0)
     lock["base_image"]["layer_digests"] = ["sha256:" + _hash(base_layer)]
+    lock["base_image"]["diff_ids"] = ["sha256:" + _hash(base_tar)]
+    if legacy_base_lock:
+        del lock["base_image"]["diff_ids"]
+    lock["base_image"].update(base_lock_override or {})
     _json(provenance_dir / "build-inputs.json", lock)
     packages = {}
     for stage in ("builder", "runtime"):
@@ -180,7 +188,13 @@ def _make_release(
                 payload[prefix + path.relative_to(directory).as_posix()] = path.read_bytes()
     layer_tar = _tar({**(before_payload or {}), **payload, **(after_payload or {})})
     layer = gzip.compress(layer_tar, mtime=0)
-    layers = [(base_tar, base_layer), (layer_tar, layer)]
+    actual_base_tar = _tar({"etc/os-release": b"different base\n"}) if different_base else base_tar
+    actual_base_layer = (
+        actual_base_tar
+        if base_representation == "plain"
+        else gzip.compress(actual_base_tar, mtime=1 if base_representation == "recompressed" else 0)
+    )
+    layers = [(actual_base_tar, actual_base_layer), (layer_tar, layer)]
     if upper_layer is not None:
         upper_tar = _tar(upper_layer)
         layers.append((upper_tar, gzip.compress(upper_tar, mtime=0)))
@@ -228,8 +242,13 @@ def _make_release(
             "mediaType": tool.OCI_MANIFEST,
             "config": config_desc,
             "layers": [
-                descriptor(compressed, "application/vnd.oci.image.layer.v1.tar+gzip")
-                for _, compressed in layers
+                descriptor(
+                    compressed,
+                    "application/vnd.oci.image.layer.v1.tar"
+                    if index == 0 and base_representation == "plain"
+                    else "application/vnd.oci.image.layer.v1.tar+gzip",
+                )
+                for index, (_, compressed) in enumerate(layers)
             ],
         }
     ).encode()
@@ -298,6 +317,55 @@ def test_verified_archive_distinguishes_index_manifest_config_and_registry(relea
     assert expected["qualification"]["native_live"] == "pending"
     with pytest.raises(ValueError, match="trusted checksum"):
         release_tool.verify_release(root, "f" * 64)
+
+
+@pytest.mark.parametrize("representation", ["gzip", "recompressed", "plain"])
+def test_exact_locked_base_content_survives_store_compression(
+    release_tool, tmp_path, representation
+):
+    """Different archive representations retain the independently locked exact base tar."""
+    root = tmp_path / "release"
+    expected = _make_release(root, release_tool, base_representation=representation)
+    image = release_tool.archive_info(root / "image.tar")
+    lock = json.loads((root / "provenance/build-inputs.json").read_text())
+    assert image["config"]["rootfs"]["diff_ids"][:1] == lock["base_image"]["diff_ids"]
+    assert (image["layer_digests"][:1] == lock["base_image"]["layer_digests"]) is (
+        representation == "gzip"
+    )
+    assert (
+        release_tool.verify_release(root, _hash((root / "release.json").read_bytes())) == expected
+    )
+
+
+@pytest.mark.parametrize("representation", ["recompressed", "plain"])
+def test_changed_base_cannot_use_self_consistent_store_hashes(
+    release_tool, tmp_path, representation
+):
+    """Authentic local descriptors cannot excuse changed base tar bytes."""
+    root = tmp_path / "release"
+    _make_release(root, release_tool, base_representation=representation, different_base=True)
+    with pytest.raises(ValueError, match="OCI base rootfs differs"):
+        release_tool.verify_release(root)
+
+
+@pytest.mark.parametrize(
+    "override",
+    [{"diff_ids": value} for value in [None, [], "invalid", [1], ["sha256:" + "0" * 64] * 2]]
+    + [{"layer_digests": []}, {"layer_digests": "invalid"}],
+)
+def test_invalid_locked_base_identity_refuses(release_tool, tmp_path, override):
+    """Expected base evidence must be typed, nonempty and match the locked layer count."""
+    root = tmp_path / "release"
+    _make_release(root, release_tool, base_lock_override=override)
+    with pytest.raises(ValueError, match="Invalid locked base"):
+        release_tool.verify_release(root)
+
+
+def test_previous_compressed_base_lock_remains_verifiable(release_tool, tmp_path):
+    """Previous releases retain their original compressed comparison without inferred DiffIDs."""
+    root = tmp_path / "release"
+    expected = _make_release(root, release_tool, legacy_base_lock=True)
+    assert release_tool.verify_release(root) == expected
 
 
 def test_wrong_native_pair_fails_even_with_self_consistent_manifest(release_tool, tmp_path):
@@ -1022,6 +1090,51 @@ def test_buildkit_missing_config_digest_uses_the_independently_hashed_archive(
     assert verified["image"]["oci_config_digest"] == manifest["image"]["oci_config_digest"]
     assert metadata.read_bytes() == original
     assert "containerimage.config.digest" not in json.loads(metadata.read_bytes())
+
+
+@pytest.mark.parametrize("representation", ["recompressed", "plain"])
+@pytest.mark.parametrize("include_config", [False, True])
+def test_buildkit_correlates_changed_store_representation_only_by_exact_config(
+    release_tool, tmp_path, representation, include_config
+):
+    """Two real archive graphs differ in compression and retain the same exact config/rootfs."""
+    original = _make_release(tmp_path / "original", release_tool)
+    root = tmp_path / "saved"
+    saved = _make_release(root, release_tool, base_representation=representation)
+    assert original["image"]["oci_manifest_digest"] != saved["image"]["oci_manifest_digest"]
+    assert original["image"]["oci_config_digest"] == saved["image"]["oci_config_digest"]
+    metadata = {"containerimage.digest": original["image"]["oci_manifest_digest"]}
+    if include_config:
+        metadata["containerimage.config.digest"] = original["image"]["oci_config_digest"]
+    path = root / "provenance/buildkit-metadata.json"
+    _json(path, metadata)
+    raw = path.read_bytes()
+    _refresh_inventory(root, release_tool)
+    if include_config:
+        assert release_tool.verify_release(root) == json.loads((root / "release.json").read_bytes())
+    else:
+        with pytest.raises(ValueError, match="BuildKit OCI digest differs"):
+            release_tool.verify_release(root)
+    assert path.read_bytes() == raw
+
+
+@pytest.mark.parametrize("digest", [None, 42, [], "", "sha256:invalid"])
+def test_buildkit_config_match_cannot_replace_valid_mandatory_digest(
+    release_tool, tmp_path, digest
+):
+    """Exact supplied config correlation cannot excuse absent or malformed raw image evidence."""
+    root = tmp_path / "release"
+    manifest = _make_release(root, release_tool)
+    _json(
+        root / "provenance/buildkit-metadata.json",
+        {
+            "containerimage.digest": digest,
+            "containerimage.config.digest": manifest["image"]["oci_config_digest"],
+        },
+    )
+    _refresh_inventory(root, release_tool)
+    with pytest.raises(ValueError, match="BuildKit OCI digest differs"):
+        release_tool.verify_release(root)
 
 
 @pytest.mark.parametrize("value", [None, 42, [], ["sha256:" + "a" * 64], "", "sha256:" + "f" * 64])

@@ -12,6 +12,9 @@
     "provenance": "https://hub.docker.com/_/ubuntu",
     "layer_digests": [
       "sha256:a60ef8ec184edb5ed91f5983f00261359fb2fe20f603e8d488b9477d32fcad70"
+    ],
+    "diff_ids": [
+      "sha256:d81fb2a7c6ee3be05fdefaa7fd223be219c1ab172083ec1b994c3ecda33ac0a8"
     ]
   },
   "ubuntu": {
@@ -155,6 +158,7 @@
   },
   "provenance_notes": [
     "Base platform manifest and config were read from the official Ubuntu image with docker buildx imagetools inspect.",
+    "The ordered base DiffID was independently read from registry config bytes verified against config_digest; compressed layer descriptors may change across Docker stores.",
     "Package versions, filenames and SHA256 values were read from the named snapshot Packages.gz indexes. apt verifies signed Release metadata during the build.",
     "Dependency revisions were independently observed in the candidate fetched git source checkouts; release CMake verifies actual checkout HEAD.",
     "SOURCE_DATE_EPOCH is the concrete source commit time. Input closure does not claim independent builders produce byte-identical compiler output."

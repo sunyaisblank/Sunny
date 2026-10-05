@@ -250,6 +250,7 @@ jobs:
       - name: Install test driver
         run: python -m pip install pytest
       - name: Exercise Windows installation, transfer and owned doctor recovery
+        shell: powershell
         run: >-
           python -m pytest
           tests/python/test_windows_installer.py

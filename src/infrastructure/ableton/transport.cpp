@@ -16,6 +16,9 @@
 #include <cstdint>
 #include <cstring>
 #include <ctime>
+#if defined(__APPLE__)
+#include <crt_externs.h>
+#endif
 #include <fcntl.h>
 #include <limits>
 #include <netdb.h>
@@ -528,13 +531,20 @@ except Exception: sys.exit(3)
                                const_cast<char*>(config.host.c_str()),
                                const_cast<char*>(service.c_str()),
                                nullptr};
+    // Darwin exposes the process environment through its CRT accessor;
+    // unistd.h does not declare a global environ in the Apple SDK.
+#if defined(__APPLE__)
+    char** const environment = *::_NSGetEnviron();
+#else
+    char** const environment = ::environ;
+#endif
     pid_t process = -1;
     const auto spawned = configured ? ::posix_spawnp(&process,
                                                      config.resolver_executable.c_str(),
                                                      &actions,
                                                      &attributes,
                                                      arguments,
-                                                     ::environ)
+                                                     environment)
                                     : EINVAL;
     ::posix_spawnattr_destroy(&attributes);
     ::posix_spawn_file_actions_destroy(&actions);

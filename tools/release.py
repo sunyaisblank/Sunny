@@ -78,9 +78,7 @@ def check_buildkit_metadata(metadata: dict, image: dict) -> None:
     require(isinstance(metadata, dict), "BuildKit metadata requires an object")
     digest = metadata.get("containerimage.digest")
     require(
-        isinstance(digest, str)
-        and DIGEST.fullmatch(digest)
-        and digest in (image["oci_index_digest"], image["oci_manifest_digest"]),
+        isinstance(digest, str) and DIGEST.fullmatch(digest),
         "BuildKit OCI digest differs from archive",
     )
     if "containerimage.config.digest" in metadata:
@@ -91,6 +89,14 @@ def check_buildkit_metadata(metadata: dict, image: dict) -> None:
             and config == image["oci_config_digest"],
             "BuildKit config digest differs from archive",
         )
+    # Store recompression changes the saved manifest without changing config or
+    # exact ordered rootfs bytes. A supplied matching config can correlate those
+    # distinct representations; omission still requires direct graph identity.
+    require(
+        digest in (image["oci_index_digest"], image["oci_manifest_digest"])
+        or metadata.get("containerimage.config.digest") == image["oci_config_digest"],
+        "BuildKit OCI digest differs from archive",
+    )
 
 
 def bridge_info(root: Path) -> dict:
@@ -529,12 +535,37 @@ def check_pair(root: Path, image: dict) -> tuple[dict, dict, dict]:
         image["payload"][BINARY]["sha256"] == provenance["binary_sha256"],
         "Binary provenance mismatch",
     )
-    base_layers = lock["base_image"]["layer_digests"]
-    require(
-        image["layer_digests"][: len(base_layers)] == base_layers,
-        "OCI base layers differ from input lock",
-    )
     config = image["config"]
+    base = lock["base_image"]
+    base_layers = base["layer_digests"]
+    require(
+        isinstance(base_layers, list)
+        and len(base_layers) > 0
+        and all(isinstance(value, str) and DIGEST.fullmatch(value) for value in base_layers),
+        "Invalid locked base layer digests",
+    )
+    if "diff_ids" in base:
+        # Stores may recompress or export plain layers. Compare exact base tar
+        # bytes against independently locked config evidence, while archive_info
+        # still verifies every saved descriptor, blob and decompressed DiffID.
+        base_diff_ids = base["diff_ids"]
+        require(
+            isinstance(base_diff_ids, list)
+            and len(base_diff_ids) > 0
+            and len(base_diff_ids) == len(base_layers)
+            and all(isinstance(value, str) and DIGEST.fullmatch(value) for value in base_diff_ids),
+            "Invalid locked base DiffIDs",
+        )
+        require(
+            config["rootfs"]["diff_ids"][: len(base_diff_ids)] == base_diff_ids,
+            "OCI base rootfs differs from input lock",
+        )
+    else:
+        # Retain verification of older releases with their original lock.
+        require(
+            image["layer_digests"][: len(base_layers)] == base_layers,
+            "OCI base layers differ from input lock",
+        )
     labels = config["config"].get("Labels") or {}
     require(
         labels.get("org.opencontainers.image.revision") == provenance["source_revision"]
