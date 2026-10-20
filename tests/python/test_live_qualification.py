@@ -93,6 +93,14 @@ def configuration(server):
     }
 
 
+def await_client_release(server):
+    """Join the previous RPC worker before probing a new independent client."""
+    worker = server._client_thread
+    assert worker is not None
+    worker.join(timeout=3)
+    assert not worker.is_alive(), "Previous qualification client did not release the bridge"
+
+
 def test_all_original_host_groups_keep_their_evidence_and_pending_state():
     """The literal original obligations stay intact; local checks never mark Live passed."""
     data = json.loads((KIT / "obligations.json").read_text())
@@ -119,6 +127,7 @@ def test_shipped_read_requests_reach_the_production_handler(common, running_brid
         "bugfix": 5,
         "string": "12.3.5",
     }
+    await_client_release(server)
     scene = json.loads((KIT / "requests" / "scene0-read.json").read_text())
     response = common.bridge_rpc(config, scene, log)
     assert response["bridge_protocol_version"] == 47 and response["success"] is True
@@ -144,6 +153,7 @@ def test_missing_wrong_and_rejected_requests_cannot_be_successful_observations(
         response = common.rpc(config["bridge_host"], config["bridge_port"], invalid, log)
         assert response["success"] is False
         assert "Unsupported bridge protocol version" in response["error"]
+        await_client_release(server)
     assert len(received) == 2
     rejected = {
         "bridge_protocol_version": 47,
@@ -152,9 +162,12 @@ def test_missing_wrong_and_rejected_requests_cannot_be_successful_observations(
         "name": "sunny_get_device_parameter",
         "args": ["Gain", "value"],
     }
-    with pytest.raises(RuntimeError, match="Preserve evidence"):
+    with pytest.raises(RuntimeError, match="Preserve evidence") as failure:
         common.bridge_rpc(config, rejected, log)
     assert len(received) == 3
+    assert received[-1] == rejected
+    assert failure.value.args[0]["response"]["bridge_protocol_version"] == 47
+    assert failure.value.args[0]["response"]["success"] is False
 
 
 def test_snapshot_timing_cli_validates_a_successful_actual_wire_response(running_bridge, tmp_path):
