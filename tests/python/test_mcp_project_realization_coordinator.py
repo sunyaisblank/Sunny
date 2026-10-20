@@ -10,7 +10,6 @@ import copy
 import json
 
 import pytest
-import test_live_end_to_end as mcp_fixture
 from test_mcp_native_effect_workflow import _assert_native_effect_values, _native_writes
 from test_mcp_native_effect_workflow import effect_workflow as effect_workflow
 from test_mcp_native_mixer_workflow import _attempts
@@ -32,9 +31,8 @@ from test_mcp_workspace_workflow import _call as _ok
 
 
 @pytest.fixture
-def coordinator_workflow(request, monkeypatch):
-    """Allow one bounded request to await all serialized durable family phases."""
-    monkeypatch.setattr(mcp_fixture, "RESPONSE_TIMEOUT_SECONDS", 120.0)
+def coordinator_workflow(request):
+    """Run selected project phases against the routing provider."""
     return request.getfixturevalue("routing_workflow")
 
 

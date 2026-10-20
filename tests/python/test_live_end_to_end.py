@@ -28,7 +28,9 @@ from Sunny import surface as surface_module
 from Sunny.surface import SunnyControlSurface
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-RESPONSE_TIMEOUT_SECONDS = 30.0
+# Match MCP_REQUEST_TIMEOUT in infrastructure/request_control.hpp. Multi-phase
+# authoring shares that bounded request budget with every other MCP tool.
+RESPONSE_TIMEOUT_SECONDS = 120.0
 
 
 def _sunny_mcp_binary() -> Path:
