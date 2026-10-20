@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import sys
 import tempfile
 import zipfile
@@ -36,6 +37,12 @@ def package(root: Path, output: Path) -> dict:
     ):
         if not (root / name).is_file():
             raise ValueError("This image lacks the paired qualification helper: " + name)
+    # New runbooks link their image-owned guides. Historical self-contained
+    # runbooks remain exportable without borrowing documentation from a checkout.
+    runbook = (root / "operator/README.md").read_text(encoding="utf-8")
+    for guide in re.findall(r"\]\((docs/[a-z_-]+\.md)(?:#[^)]*)?\)", runbook):
+        if not (root / "operator" / guide).is_file():
+            raise ValueError("This image lacks the paired qualification helper: operator/" + guide)
     created = False
     try:
         with output.open("xb") as stream:

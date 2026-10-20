@@ -21,8 +21,9 @@ ENV/
 .git/
 .gitignore
 
-# Documentation
-docs/
+# Ship the operator guides; formal source specifications stay in the checkout.
+docs/*
+!docs/*.md
 
 # Tests (keeping for CI in image)
 # tests/

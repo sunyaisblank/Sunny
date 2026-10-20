@@ -31,6 +31,10 @@ def paired(tmp_path, producer, omit=None):
     operators = {"release.py": (PROJECT / "tools/release.py").read_bytes()}
     if omit != "runbook":
         operators["README.md"] = (PROJECT / "README.md").read_bytes()
+        for path in sorted((PROJECT / "docs").glob("*.md")):
+            relative = "docs/" + path.name
+            if relative != omit:
+                operators[relative] = path.read_bytes()
     if omit != "kit":
         for name in (
             "common.py",
@@ -72,7 +76,25 @@ def test_zip_contains_exact_full_paired_release_and_inventory(tmp_path, producer
     assert not list(root.rglob("__pycache__"))
 
 
-@pytest.mark.parametrize("missing", ["kit", "runbook", "configuration.json", "obligations.json"])
+def test_historical_self_contained_runbook_remains_exportable(tmp_path, producer):
+    """Splitting new guides does not invalidate a previously self-contained release."""
+    root = paired(tmp_path, producer)
+    legacy = tmp_path / "historical release"
+    operators = {
+        path.relative_to(root / "operator").as_posix(): path.read_bytes()
+        for path in (root / "operator").rglob("*")
+        if path.is_file() and "docs" not in path.relative_to(root / "operator").parts
+    }
+    operators["README.md"] = b"# Sunny\n\nSelf-contained historical runbook.\n"
+    _make_release(legacy, producer.release, operator_files=operators)
+    result = producer.package(legacy, tmp_path / "historical.zip")
+    assert result["host_executed"] is False
+
+
+@pytest.mark.parametrize(
+    "missing",
+    ["kit", "runbook", "docs/operations.md", "configuration.json", "obligations.json"],
+)
 def test_old_image_cannot_borrow_the_present_checkout_kit(tmp_path, producer, missing):
     """A valid release lacking image-owned helpers fails before producing a plausible ZIP."""
     root = paired(tmp_path, producer, omit=missing)
