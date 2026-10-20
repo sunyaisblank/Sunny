@@ -24,6 +24,12 @@ history outside authored undo and resolves current objects through the bridge.
 The configure-time layer check prevents dependencies from pointing back up this
 chain. Formal specifications describe contracts; Git and issues retain history.
 
+For managed native work, start with `realization_tools.cpp` for the MCP endpoint.
+Its private `realization_state` module admits the owning revision, derives the
+musical projection, selects retained history and fences dispatch. Reading saved
+history does not grant current native authority. `realization_coordinator.cpp`
+composes the selected endpoints into project phases and bounds their replies.
+
 ## Building
 
 You need CMake 3.28 or later, a C++23 compiler (GCC 13+ or Clang 16+) and, for the optional

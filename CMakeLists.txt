@@ -286,6 +286,7 @@ target_sources(
         src/infrastructure/mcp/mix_tools.cpp
         src/infrastructure/mcp/project_tools.cpp
         src/infrastructure/mcp/project_session.cpp
+        src/infrastructure/mcp/realization_state.cpp
         src/infrastructure/mcp/realization_tools.cpp
         src/infrastructure/mcp/realization_coordinator.cpp
         src/infrastructure/mcp/project_timeline.cpp
