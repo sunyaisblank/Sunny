@@ -18,6 +18,7 @@
 #include <cstdint>
 #include <fstream>
 #include <functional>
+#include <future>
 #include <mutex>
 #include <netinet/in.h>
 #include <nlohmann/json.hpp>
@@ -289,6 +290,21 @@ class ResolverPeer {
         CHECK(absent_errno == ESRCH);
         int status = 0;
         const auto waited = ::waitpid(identifier, &status, WNOHANG);
+        const auto reaped_errno = errno;
+        CHECK(waited == -1);
+        CHECK(reaped_errno == ECHILD);
+    }
+    void check_timeout_reaped() const {
+        std::ifstream input(pid_path_);
+        if (input && input.peek() != std::ifstream::traits_type::eof()) {
+            check_reaped();
+            return;
+        }
+        // The deadline may kill the child before Python can report its PID.
+        // This test process owns no other children: ECHILD proves that neither
+        // a live resolver nor an unreaped resolver remains in that case.
+        int status = 0;
+        const auto waited = ::waitpid(-1, &status, WNOHANG);
         const auto reaped_errno = errno;
         CHECK(waited == -1);
         CHECK(reaped_errno == ECHILD);
@@ -821,7 +837,7 @@ TEST_CASE("Resolver failures are finite and every owned resolver PID is reaped",
         CHECK_FALSE(transport.connect());
         CHECK(std::chrono::steady_clock::now() - started < 250ms);
         CHECK(transport.last_connect_failure() == ConnectFailure::TimedOut);
-        resolver.check_reaped();
+        resolver.check_timeout_reaped();
     }
     SECTION("nonzero runtime failure cannot become unresolved-name evidence") {
         ResolverPeer resolver("sys.exit(3)");
@@ -860,11 +876,15 @@ TEST_CASE("Resolver failures are finite and every owned resolver PID is reaped",
 TEST_CASE("A stalled large request expires during send and is never replayed",
           "[bridge][transport][loopback][deadline]") {
     std::atomic<unsigned> full_requests = 0;
+    std::promise<std::chrono::steady_clock::time_point> handshake_observed;
+    auto exchange_start = handshake_observed.get_future();
     ScriptedPeer peer({[&](int client) {
         int window = 1024;
         ::setsockopt(client, SOL_SOCKET, SO_RCVBUF, &window, sizeof(window));
         const auto identity = read_frame(client);
-        if (!identity || !answer_identity_request(client, *identity)) return;
+        if (!identity) return;
+        handshake_observed.set_value(std::chrono::steady_clock::now());
+        if (!answer_identity_request(client, *identity)) return;
         std::this_thread::sleep_for(300ms);
         window = 1024 * 1024;
         ::setsockopt(client, SOL_SOCKET, SO_RCVBUF, &window, sizeof(window));
@@ -888,14 +908,17 @@ TEST_CASE("A stalled large request expires during send and is never replayed",
     command.erase("bridge_protocol_version");
     const auto request = prepared_mutation(std::move(command));
     REQUIRE(LomProtocol::validate_request(request));
-    const auto started = std::chrono::steady_clock::now();
     const auto response = transport.send(request);
+    const auto finished = std::chrono::steady_clock::now();
     CHECK_FALSE(response.success);
     CHECK(response.delivery == LomDeliveryState::NotSent);
     REQUIRE(response.error);
     CHECK(response.error->find("deadline expired before the request frame was complete") !=
           std::string::npos);
-    CHECK(std::chrono::steady_clock::now() - started < 1s);
+    // Serialization precedes the wire exchange and has no minimum throughput
+    // contract. The observed handshake starts this actual socket-lifetime bound.
+    REQUIRE(exchange_start.wait_for(0s) == std::future_status::ready);
+    CHECK(finished - exchange_start.get() < 1s);
     CHECK_FALSE(transport.is_connected());
     CHECK_FALSE(transport.send(request).success);
     peer.wait_for_closed_sessions(1);
