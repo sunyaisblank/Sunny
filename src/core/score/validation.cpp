@@ -2915,7 +2915,7 @@ void validate_s24(const Score& score, std::vector<Diagnostic>& out) {
 }
 
 // =============================================================================
-// S25: Event payload and closed-enum domains
+// S25: Part and Event payload and closed-enum domains
 // =============================================================================
 
 void validate_s25(const Score& score, std::vector<Diagnostic>& out) {
@@ -2930,6 +2930,10 @@ void validate_s25(const Score& score, std::vector<Diagnostic>& out) {
     const auto valid_pitch = [](const SpelledPitch& pitch) { return pitch.letter <= 6; };
 
     for (const auto& part : score.parts) {
+        if (static_cast<std::uint8_t>(part.definition.instrument_type) >
+            static_cast<std::uint8_t>(InstrumentType::Custom))
+            event_error(
+                "Part instrument_type is outside the modelled enumeration", SCORE_START, part.id);
         for (const auto& measure : part.measures) {
             for (const auto& voice : measure.voices) {
                 for (const auto& event : voice.events) {

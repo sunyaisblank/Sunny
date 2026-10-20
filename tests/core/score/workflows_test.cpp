@@ -10,6 +10,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <limits>
 #include <sunny/core/score/midi_compiler.hpp>
+#include <sunny/core/score/serialization.hpp>
 #include <sunny/core/score/validation.hpp>
 #include <sunny/core/score/views.hpp>
 #include <sunny/core/score/workflows.hpp>
@@ -20,6 +21,44 @@ using namespace sunny::core;
 // =============================================================================
 // create_score
 // =============================================================================
+
+TEST_CASE("Instrument admission matches the persisted Score domain",
+          "[score-ir][workflow][instrument][regression]") {
+    ScoreSpec spec;
+    spec.title = "Instrument domain";
+    spec.total_bars = 1;
+    spec.bpm = 120;
+    spec.key_root = SpelledPitch{0, 0, 4};
+    spec.parts.emplace_back();
+    spec.parts.front().name = "Part";
+    const auto baseline = create_score(spec);
+    REQUIRE(baseline.has_value());
+    const auto before = score_to_json(*baseline);
+
+    // InstrumentType occupies one byte. Every defined value is durable; none
+    // of the remaining representations may enter an authored Score or history.
+    for (int value = 0; value <= 255; ++value) {
+        CAPTURE(value);
+        spec.parts.front().instrument_type = static_cast<InstrumentType>(value);
+        const auto created = create_score(spec);
+        if (value <= static_cast<int>(InstrumentType::Custom)) {
+            REQUIRE(created.has_value());
+            const auto encoded = score_to_json(*created);
+            const auto reopened = score_from_json(encoded);
+            REQUIRE(reopened.has_value());
+            CHECK(score_to_json(*reopened) == encoded);
+        } else {
+            CHECK_FALSE(created.has_value());
+            auto score = *baseline;
+            UndoStack history;
+            CHECK_FALSE(add_part(score, spec.parts.front(), &history).has_value());
+            CHECK(score_to_json(score) == before);
+            CHECK_FALSE(history.can_undo());
+            score.parts.front().definition.instrument_type = static_cast<InstrumentType>(value);
+            CHECK_FALSE(is_compilable(score));
+        }
+    }
+}
 
 TEST_CASE("create_score produces valid score", "[score-ir][workflow]") {
     ScoreSpec spec;

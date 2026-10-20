@@ -89,10 +89,8 @@ std::optional<ScoreTime> score_time_from_json(const json& j) {
 /// Which end of a score's history a history tool moves.
 enum class HistoryDirection : std::uint8_t { Undo, Redo };
 
-/// Upper bound of instrument_type accepted at the MCP boundary. It exceeds the
-/// last enumerator (Custom) because existing clients and tests send values up
-/// to 80; unlisted values fall back to an unconstrained standard profile.
-constexpr int MAX_INSTRUMENT_TYPE = 80;
+/// Match the closed InstrumentType domain used by the Score codec.
+constexpr int MAX_INSTRUMENT_TYPE = static_cast<int>(InstrumentType::Custom);
 
 /// MCP regions name whole bars with an inclusive end_bar, matching
 /// score_set_formal_plan: {start_bar 1, end_bar 1} is bar 1 alone. The core

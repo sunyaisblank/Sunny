@@ -559,17 +559,20 @@ TEST_CASE("Score MCP authors one complete tuning atomically and exposes target r
     for (int note = 0; note < 128; ++note)
         cents.push_back((note - 69) * 100.0);
     cents[60] = -900.75;
-    const auto created = call_tool(server,
-                                   "score_create",
-                                   {{"title", "Tuned"},
-                                    {"total_bars", 1},
-                                    {"parts", {{{"name", "Instrument"}, {"instrument_type", 80}}}},
-                                    {"tuning",
-                                     {{"name", "creation tuning"},
-                                      {"reference_midi_note", 69},
-                                      {"reference_frequency_hz", 440.0},
-                                      {"cents_from_reference", cents}}}},
-                                   3020);
+    const auto created =
+        call_tool(server,
+                  "score_create",
+                  {{"title", "Tuned"},
+                   {"total_bars", 1},
+                   {"parts",
+                    {{{"name", "Instrument"},
+                      {"instrument_type", static_cast<int>(sunny::core::InstrumentType::Custom)}}}},
+                   {"tuning",
+                    {{"name", "creation tuning"},
+                     {"reference_midi_note", 69},
+                     {"reference_frequency_hz", 440.0},
+                     {"cents_from_reference", cents}}}},
+                  3020);
 
     const auto initial =
         call_tool(server, "score_get_json", {{"score_id", created["score_id"]}}, 30201);

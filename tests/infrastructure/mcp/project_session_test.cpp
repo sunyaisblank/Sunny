@@ -13,6 +13,7 @@
 #include <sunny/infrastructure/mcp/project_tools.hpp>
 #include <sunny/infrastructure/mcp/score_tools.hpp>
 #include <sunny/infrastructure/mcp/timbre_tools.hpp>
+#include <sunny/infrastructure/mcp/workspace_state.hpp>
 
 using namespace sunny::infrastructure;
 using namespace sunny::core;
@@ -105,6 +106,38 @@ struct ProjectFixture {
 };
 
 } // namespace
+
+TEST_CASE("Undefined instruments cannot poison a durable owning project",
+          "[mcp][project][instrument][workspace][regression]") {
+    ProjectFixture fixture;
+    const auto before = workspace_to_json(fixture.session);
+    REQUIRE(before.has_value());
+    for (const int value : {-1, static_cast<int>(InstrumentType::Custom) + 1, 80, 255, 256}) {
+        CAPTURE(value);
+        CHECK(fixture
+                  .call("score_create",
+                        {{"total_bars", 1},
+                         {"parts", {{{"name", "Invalid"}, {"instrument_type", value}}}}})
+                  .contains("error"));
+        CHECK(fixture
+                  .call("score_add_part",
+                        {{"score_id", 1}, {"name", "Invalid"}, {"instrument_type", value}})
+                  .contains("error"));
+        const auto after = workspace_to_json(fixture.session);
+        REQUIRE(after.has_value());
+        CHECK(*after == *before);
+    }
+    const auto added =
+        fixture.call("score_add_part",
+                     {{"score_id", 1},
+                      {"name", "Custom"},
+                      {"instrument_type", static_cast<int>(InstrumentType::Custom)}});
+    REQUIRE_FALSE(added.contains("error"));
+    CHECK(added.at("part_id") == 2);
+    REQUIRE(workspace_to_json(fixture.session).has_value());
+    REQUIRE_FALSE(fixture.call("score_undo", {{"score_id", 1}}).contains("error"));
+    CHECK(fixture.state().at("documents").at("score").at("parts").size() == 1);
+}
 
 TEST_CASE("Owning Channel flags return exact booleans and follow project undo redo",
           "[mcp][project][channel-flags]") {
