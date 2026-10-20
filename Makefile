@@ -49,6 +49,8 @@ LLVM_PROFDATA := llvm-profdata-18
 
 # Directories
 BUILD_DIR     := .bin
+SUNNY_NATIVE_BUILD_DIR ?= $(abspath $(BUILD_DIR))/python
+SUNNY_MCP_BINARY ?= $(abspath $(BUILD_DIR))/sunny-mcp
 MAX_SDK_HEADER_DIR := $(BUILD_DIR)-max-sdk-headers
 MULL_DIR      := .mull-build
 CODEQL_DB     := .codeql-db
@@ -100,7 +102,7 @@ all: build test
 configure: $(BUILD_DIR)/CMakeCache.txt
 
 $(BUILD_DIR)/CMakeCache.txt: CMakeLists.txt CMakePresets.json
-	cmake --preset release $(CMAKE_FLAGS)
+	cmake --preset release -B "$(BUILD_DIR)" $(CMAKE_FLAGS)
 
 compile: configure
 	cmake --build $(BUILD_DIR) -j$(JOBS)
@@ -285,8 +287,10 @@ full: build test analysis coverage
 # Python targets
 # =============================================================================
 
-python-test:
-	PYTHONPATH=python:remote_script:.bin/python uv run pytest tests/python/ -v --tb=short
+python-test: build
+	SUNNY_NATIVE_BUILD_DIR="$(SUNNY_NATIVE_BUILD_DIR)" \
+	SUNNY_MCP_BINARY="$(SUNNY_MCP_BINARY)" \
+	PYTHONPATH=python:remote_script uv run pytest tests/python/ -v --tb=short
 
 python-lint:
 	uv run ruff format --check .
@@ -296,7 +300,7 @@ python-typecheck:
 	uv run mypy python/sunny --ignore-missing-imports
 
 python-stubtest: build
-	SUNNY_NATIVE_BUILD_DIR=$(BUILD_DIR)/python uv run python tests/python/run_native_stubtest.py
+	SUNNY_NATIVE_BUILD_DIR="$(SUNNY_NATIVE_BUILD_DIR)" uv run python tests/python/run_native_stubtest.py
 
 python-check: python-lint python-typecheck python-stubtest python-test
 

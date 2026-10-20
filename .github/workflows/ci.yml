@@ -121,6 +121,7 @@ jobs:
           SUNNY_LILYPOND_COMMAND: ${{ matrix.python-version == '3.12' && 'lilypond' || '' }}
         run: |
           PYTHONPATH=python:remote_script:.bin-python/python \
+          SUNNY_NATIVE_BUILD_DIR=.bin-python/python \
           SUNNY_MCP_BINARY=.bin-python/sunny-mcp \
           uv run pytest tests/python/ -v --tb=short
 

@@ -101,6 +101,20 @@ engine.generate_progression("C", "major", ["I", "vi", "IV", "V"])
 
 The package raises an error if its native module is missing rather than approximating.
 
+For tests against an existing build outside the checkout, select its extension
+and MCP executable together:
+
+```bash
+SUNNY_NATIVE_BUILD_DIR=/tmp/sunny-build/python \
+SUNNY_MCP_BINARY=/tmp/sunny-build/sunny-mcp \
+uv run pytest tests/python/
+```
+
+The explicit native directory must contain the extension; pytest and the stub
+checker refuse a different installed copy. Without that selector, pytest honours
+an extension on `PYTHONPATH`, then falls back to `.bin/python`.
+`make python-check BUILD_DIR=/tmp/sunny-build` builds and checks that directory.
+
 ## How it is tested
 
 Development does not require Ableton. The C++ and Python suites exercise the engine, the
