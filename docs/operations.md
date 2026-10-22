@@ -2,7 +2,7 @@
 
 Use this guide for the paired Docker/Windows release, configuration, installation, recovery and diagnosis. These procedures describe the supported operating profile; final native qualification is still open.
 
-[Sunny](../README.md) · [Authoring](authoring.md) · [Operation](operations.md) · [Development](development.md) · [Completion](completion.md)
+[Sunny](../README.md) · [Authoring](authoring.md) · [Operation](operations.md) · [Development](development.md) · [Qualification](qualification.md)
 
 ## Find a procedure
 
@@ -567,4 +567,3 @@ exclusive export and actual local Docker orphan recovery while preserving a fore
 named-volume sentinel. They do not exercise real SSH/Live, physical disk saturation/power loss or
 preemption of synchronous kernel/Live stalls. A doctor pass cannot qualify musical effects,
 installed libraries, licences, sound or the original 23 groups.
-

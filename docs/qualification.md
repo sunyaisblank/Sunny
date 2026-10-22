@@ -2,7 +2,7 @@
 
 This is the final stage after independent software work. The kit preserves every original obligation; a model, a doctor pass or a smoke test cannot replace the required native observations.
 
-[Sunny](../README.md) · [Authoring](authoring.md) · [Operation](operations.md) · [Development](development.md) · [Completion](completion.md)
+[Sunny](../README.md) · [Authoring](authoring.md) · [Operation](operations.md) · [Development](development.md) · [Qualification](qualification.md)
 
 ## Native capability limits
 
@@ -160,4 +160,3 @@ these groups passed. Keep evidence outside the release and against the exact art
 [native qualification issue #22](https://github.com/sunyaisblank/Sunny/issues/22) and
 [the lifecycle evidence contract](https://github.com/sunyaisblank/Sunny/issues/36). A blocked prerequisite
 stays pending; final release/publication claims wait for the full required evidence and approved destination.
-

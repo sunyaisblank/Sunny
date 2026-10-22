@@ -2,7 +2,7 @@
 
 The engine and ordinary development tests work without Ableton. Start with CMake and the affected product workflow; the optional analysis tools answer separate questions.
 
-[Sunny](../README.md) · [Authoring](authoring.md) · [Operation](operations.md) · [Development](development.md) · [Completion](completion.md)
+[Sunny](../README.md) · [Authoring](authoring.md) · [Operation](operations.md) · [Development](development.md) · [Qualification](qualification.md)
 
 ## Source ownership
 
@@ -29,6 +29,21 @@ Its private `realization_state` module admits the owning revision, derives the
 musical projection, selects retained history and fences dispatch. Reading saved
 history does not grant current native authority. `realization_coordinator.cpp`
 composes the selected endpoints into project phases and bounds their replies.
+
+## Related design references
+
+Sunny connects checked symbolic music, production intent and durable native
+editing. These related systems help explain the choices at those boundaries:
+
+| Reference | Relevant design | Sunny boundary |
+|---|---|---|
+| [music21](https://music21.org/music21docs/about/what.html) | Symbolic composition, notation and analysis introduced through executable musical examples | The [first phrase](authoring.md#a-first-phrase-without-live) connects document creation, inspection, saving and export. |
+| [MuseScore](https://handbook.musescore.org/basics/parts) | Instrument parts stay connected to a common score while their presentation can differ | Stable Part identities connect Score, Timbre and Mix through edits, undo and reopen. |
+| [Ardour](https://manual.ardour.org/working-with-sessions/session-templates/) | Session templates retain track, bus, plugin and routing setup | Authored workspace, machine configuration and native history have separate ownership and [recovery rules](operations.md). |
+| [TidalCycles](https://tidalcycles.org/docs/innards/what_is_a_pattern/) | Patterns map rational time spans to events | Rational Score durations use whole-note units; target compilation converts them to quarter-note beats while preserving sounding-versus-attack semantics. |
+
+These are design references; the [authoring guide](authoring.md) defines Sunny's
+actual capabilities and native limits.
 
 ## Building
 
@@ -125,8 +140,12 @@ the real `sunny-mcp` over MCP, through TCP and the real Remote Script, into that
 the resulting Set: notes in beats, tracks, devices, mixer values, routing and the change journal,
 for both Live 11 and Live 12.
 
-Expected values in tests come from the relevant standard or a hand derivation, never from the
-code under test. CI defines Linux/macOS engine and end-to-end checks, a locked release producer →
+Some checks compare musical output with standards or hand-derived examples.
+Others check lossless round trips, preserved state or relationships between
+transformed inputs and outputs. These properties support different claims:
+round-trip equality alone does not establish musical correctness.
+
+CI defines Linux/macOS engine and end-to-end checks, a locked release producer →
 archive verifier → same-image full-release ZIP gate, named-volume crash/restore checks, actual
 Windows installer/transfer/doctor fixtures, and Max builds on macOS/Windows. These workflow
 definitions are not a claim that the current changes have run successfully in CI. Local source/model
@@ -150,4 +169,3 @@ and Windows fixture results remain distinct from final released-image and native
 
 The layering rule is enforced at configure time: `core` depends on nothing else in Sunny,
 `render` only on `core`, and `infrastructure` on both.
-

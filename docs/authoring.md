@@ -2,7 +2,7 @@
 
 Start with an authored project. Its Score owns the musical structure; Timbre and Mix attach to its stable Part identities. Live is a destination for that project.
 
-[Sunny](../README.md) · [Authoring](authoring.md) · [Operation](operations.md) · [Development](development.md) · [Completion](completion.md)
+[Sunny](../README.md) · [Authoring](authoring.md) · [Operation](operations.md) · [Development](development.md) · [Qualification](qualification.md)
 
 ## A first phrase, without Live
 
@@ -66,6 +66,32 @@ AI client ──MCP (stdio)──▶ sunny-mcp ──approved local route──�
                              │
                              └── theory engine and documents (no Live needed)
 ```
+
+## Supported native intent
+
+The primary operating target is Windows 11, Docker Desktop Linux/amd64 and
+native Live 12.4.5 Suite. Live 12.3 candidates and limited Live 11 operations
+have separate compatibility requirements. See the [version boundaries](qualification.md#native-capability-limits).
+An unavailable older API does not prove absent musical content.
+
+Managed realization covers MIDI note/event and Clip geometry revisions,
+constant Song tempo and initial meter, selected Drift cutoff/ADSR, EQ Eight and
+Utility stages, static Mixer controls, selected advertised routing, Aux sends
+and Step pan envelopes. The workflows below describe their admission and
+recovery contracts.
+
+The documents can express more than this native subset. Unsupported mandatory
+intent must decline before mutation; unselected or unapplied intent remains
+visible. Native Group creation/regrouping, Return processing and Pre/Post
+policy, general device/modulation/automation translation, arbitrary plugin
+state and later tempo events are outside the managed subset. A successful
+selected plan reports only its selected domains.
+
+Sunny does not provide an audio engine, recorder, mastering analysis or
+graphical notation editor. Audio measurements must be supplied as evidence;
+native parameter readback cannot establish sound or saved `.als` behaviour.
+The Max externals have build/package checks but still require actual Max/Max
+for Live loading. Live's current-scale setting is readable but is not written.
 
 ## Choose the native workflow
 
@@ -184,4 +210,3 @@ Restart preserves query history; it does not restore the in-memory undo stack.
 
 A separate `max-package/` builds five Max externals (`sunny.lfo~`, `sunny.adsr~`, `sunny.hold~`,
 `sunny.clock~`, `sunny.events`) from the same render code. See the [Max package guide](https://github.com/sunyaisblank/Sunny/blob/lifecycle-distribution/max-package/readme.md).
-

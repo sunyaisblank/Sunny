@@ -8,17 +8,19 @@ mixing rather than a sequence of raw MIDI commands.
 Most of Sunny works without Ableton. The engine can author, analyse, save and
 export a project offline. Applying that project to a Live Set is a separate step.
 
-**Status:** an offline candidate with passing [CI at `df74ec8`](https://github.com/sunyaisblank/Sunny/actions/runs/37341484021).
-Final native Ableton qualification is still open. That CI result applies to its
-committed source; subsequent changes need their own relevant checks.
+Native Ableton qualification is still open. [Build and test results](https://github.com/sunyaisblank/Sunny/actions/workflows/ci.yml)
+record verification for each source revision.
 
 ## Start here
 
 - [Author music](docs/authoring.md): the project model, a first phrase, editing and native realization.
 - [Install and operate](docs/operations.md): the paired release, Windows/Docker setup, configuration, backup and recovery.
 - [Develop Sunny](docs/development.md): build, tests, source ownership and optional analysis tools.
-- [What complete means](docs/completion.md): the finite product contract, limits and comparison with related projects.
 - [Final qualification](docs/qualification.md): the remaining exact-host, save/reopen, visual and audio checks.
+
+The [project goal](https://github.com/sunyaisblank/Sunny/issues/1#issuecomment-6301306386)
+and [operating lifecycle](https://github.com/sunyaisblank/Sunny/issues/36) track
+the accepted scope, remaining work and completion evidence.
 
 These guides ship together in the offline release's `operator/` directory.
 The detailed [formal specifications](https://github.com/sunyaisblank/Sunny/tree/lifecycle-distribution/docs/formal)
@@ -79,7 +81,7 @@ the managed revision workflow.
 No exact host/version combination has passed all final gates. Live 12.3 and
 limited Live 11 compatibility remain separately unqualified. The engine does
 not render or measure audio; native parameter readback cannot establish sound
-or saved `.als` behavior. See [limits and completion](docs/completion.md).
+or saved `.als` behavior. See the [supported native intent](docs/authoring.md#supported-native-intent).
 
 ## Licence
 
