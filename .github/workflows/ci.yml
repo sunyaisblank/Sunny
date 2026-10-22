@@ -144,21 +144,32 @@ jobs:
   # container as the server, against the real Remote Script and the offline Live model.
   docker-image:
     runs-on: ubuntu-latest
+    outputs:
+      manifest_sha256: ${{ steps.release.outputs.manifest_sha256 }}
+      daemon_id: ${{ steps.release.outputs.daemon_id }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Build and verify the paired release
+        id: release
         run: |
           python3 tools/release.py build --tag sunny-mcp:ci \
             --output "${{ runner.temp }}/sunny-ci-release" \
             > "${{ runner.temp }}/sunny-release-report.json"
           python3 - <<'PY'
-          import json, os
+          import json, os, subprocess
           from pathlib import Path
           report = json.loads((Path(os.environ['RUNNER_TEMP']) / 'sunny-release-report.json').read_text())
           with open(os.environ['GITHUB_ENV'], 'a') as stream:
               stream.write('SUNNY_CI_RELEASE_SHA256=' + report['release_manifest_sha256'] + '\n')
               stream.write('SUNNY_RELEASE_VOLUME_IMAGE=' + report['manifest']['image']['local_immutable_id'] + '\n')
+          daemon = subprocess.check_output(['docker', 'info', '--format', '{{.ID}}'], text=True).strip()
+          assert daemon
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as stream:
+              stream.write('manifest_sha256=' + report['release_manifest_sha256'] + '\n')
+              stream.write('daemon_id=' + daemon + '\n')
           PY
 
       - name: Verify full image-owned release inventory
@@ -239,6 +250,92 @@ jobs:
           SUNNY_WORKSPACE_MCP_COMMAND="docker run -i --rm --user $(id -u):$(id -g) --network none --mount type=bind,source={workspace_dir},target=/data -e SUNNY_WORKSPACE_PATH -e SUNNY_WORKSPACE_RECOVERY sunny-mcp:ci" \
           PYTHONPATH=remote_script:python \
           python -m pytest tests/python/test_mcp_workspace_workflow.py tests/python/test_mcp_native_timbre_plan.py -v --tb=short
+
+      - name: Retain the verified release for independent import
+        uses: actions/upload-artifact@v4
+        with:
+          name: sunny-ci-release
+          path: ${{ runner.temp }}/sunny-ci-release
+          if-no-files-found: error
+          include-hidden-files: true
+          compression-level: 0
+          retention-days: 7
+
+  # A fresh runner imports the producer's exact bytes without a source checkout.
+  release-import:
+    needs: docker-image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: sunny-ci-release
+          path: ${{ runner.temp }}/sunny-ci-release
+
+      - name: Verify and execute the release in an independent Docker store
+        env:
+          EXPECTED_MANIFEST_SHA256: ${{ needs.docker-image.outputs.manifest_sha256 }}
+          PRODUCER_DAEMON_ID: ${{ needs.docker-image.outputs.daemon_id }}
+          EXPECTED_SOURCE_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          python3 -B - <<'PY'
+          import hashlib, json, os, subprocess, sys
+          from pathlib import Path
+          root = Path(os.environ['RUNNER_TEMP']) / 'sunny-ci-release'
+          trusted = os.environ['EXPECTED_MANIFEST_SHA256']
+          assert hashlib.sha256((root / 'release.json').read_bytes()).hexdigest() == trusted
+          manifest = json.loads((root / 'release.json').read_text())
+          assert manifest['source']['revision'] == os.environ['EXPECTED_SOURCE_REVISION']
+          helper = root / 'operator/release.py'
+          helper_entry = next(entry for entry in manifest['files'] if entry['path'] == 'operator/release.py')
+          assert hashlib.sha256(helper.read_bytes()).hexdigest() == helper_entry['sha256']
+          daemon = subprocess.check_output(['docker', 'info', '--format', '{{.ID}}'], text=True).strip()
+          producer = os.environ['PRODUCER_DAEMON_ID']
+          assert producer and daemon and daemon != producer, 'An independent Docker engine is required'
+          for key in ('local_immutable_id', 'oci_config_digest', 'oci_manifest_digest'):
+              absent = subprocess.run(['docker', 'image', 'inspect', manifest['image'][key]], capture_output=True)
+              assert absent.returncode != 0, 'Destination already contains the release image'
+          loaded = json.loads(subprocess.check_output([
+              sys.executable, '-I', '-B', str(helper), 'load', '--release', str(root),
+              '--expected-manifest-sha256', trusted,
+          ], text=True, timeout=360))
+          assert loaded['release_manifest_sha256'] == trusted
+          assert loaded['oci_manifest_digest'] == manifest['image']['oci_manifest_digest']
+          image = loaded['loaded_image_local_immutable_id']
+          actual_binary = subprocess.check_output([
+              'docker', 'run', '--rm', '--pull=never', '--network', 'none',
+              '--entrypoint', 'sha256sum', image, '/usr/local/bin/sunny-mcp',
+          ], text=True, timeout=30).split()[0]
+          assert actual_binary == manifest['image']['binary_sha256']
+          actual_bridge = subprocess.check_output([
+              'docker', 'run', '--rm', '--pull=never', '--network', 'none',
+              '--entrypoint', 'cat', image, '/opt/sunny/remote-script/Sunny/source.sha256',
+          ], text=True, timeout=30).strip()
+          assert actual_bridge == manifest['bridge']['source_sha256']
+          requests = [
+              {'jsonrpc': '2.0', 'id': 1, 'method': 'initialize', 'params': {
+                  'protocolVersion': '2025-11-25', 'capabilities': {},
+                  'clientInfo': {'name': 'independent-store', 'version': '1'},
+              }},
+              {'jsonrpc': '2.0', 'id': 2, 'method': 'tools/list'},
+          ]
+          wire = ''.join(json.dumps(request) + '\n' for request in requests)
+          output = subprocess.check_output([
+              'docker', 'run', '-i', '--rm', '--pull=never', '--network', 'none', image,
+          ], input=wire, text=True, timeout=30)
+          replies = [json.loads(line) for line in output.splitlines()]
+          assert [reply['id'] for reply in replies] == [1, 2]
+          assert replies[0]['result']['serverInfo']['name'] == 'sunny-mcp'
+          names = {tool['name'] for tool in replies[1]['result']['tools']}
+          assert {'score_create', 'workspace_save', 'project_realization_apply'} <= names
+          print(json.dumps({
+              'producer_daemon_id': producer, 'destination_daemon_id': daemon,
+              'release_manifest_sha256': trusted, 'source_revision': manifest['source']['revision'],
+              'source_image_local_id': manifest['image']['local_immutable_id'],
+              'loaded_image_local_id': image, 'binary_sha256': actual_binary,
+              'bridge_source_sha256': actual_bridge,
+              'mcp_offline': 'passed', 'native_host_executed': False,
+          }, indent=2))
+          PY
 
   # Actual PowerShell/NTFS transition witnesses do not require Live, SSH or Python on operator PCs.
   windows-lifecycle:
