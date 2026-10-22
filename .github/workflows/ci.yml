@@ -147,6 +147,7 @@ jobs:
     outputs:
       manifest_sha256: ${{ steps.release.outputs.manifest_sha256 }}
       daemon_id: ${{ steps.release.outputs.daemon_id }}
+      runner_name: ${{ runner.name }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -275,6 +276,8 @@ jobs:
         env:
           EXPECTED_MANIFEST_SHA256: ${{ needs.docker-image.outputs.manifest_sha256 }}
           PRODUCER_DAEMON_ID: ${{ needs.docker-image.outputs.daemon_id }}
+          PRODUCER_RUNNER_NAME: ${{ needs.docker-image.outputs.runner_name }}
+          DESTINATION_RUNNER_NAME: ${{ runner.name }}
           EXPECTED_SOURCE_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           python3 -B - <<'PY'
@@ -290,7 +293,14 @@ jobs:
           assert hashlib.sha256(helper.read_bytes()).hexdigest() == helper_entry['sha256']
           daemon = subprocess.check_output(['docker', 'info', '--format', '{{.ID}}'], text=True).strip()
           producer = os.environ['PRODUCER_DAEMON_ID']
-          assert producer and daemon and daemon != producer, 'An independent Docker engine is required'
+          producer_runner = os.environ['PRODUCER_RUNNER_NAME']
+          destination_runner = os.environ['DESTINATION_RUNNER_NAME']
+          print(json.dumps({'producer_runner': producer_runner, 'destination_runner': destination_runner,
+                            'producer_daemon_id': producer, 'destination_daemon_id': daemon}), flush=True)
+          # Hosted VMs can inherit a daemon ID from their common runner image.
+          # Require distinct hosted jobs and an actually empty destination below.
+          assert producer and daemon, 'Both Docker engines must expose their identities'
+          assert producer_runner and destination_runner and producer_runner != destination_runner, 'An independent hosted runner is required'
           for key in ('local_immutable_id', 'oci_config_digest', 'oci_manifest_digest'):
               absent = subprocess.run(['docker', 'image', 'inspect', manifest['image'][key]], capture_output=True)
               assert absent.returncode != 0, 'Destination already contains the release image'
@@ -328,6 +338,7 @@ jobs:
           names = {tool['name'] for tool in replies[1]['result']['tools']}
           assert {'score_create', 'workspace_save', 'project_realization_apply'} <= names
           print(json.dumps({
+              'producer_runner': producer_runner, 'destination_runner': destination_runner,
               'producer_daemon_id': producer, 'destination_daemon_id': daemon,
               'release_manifest_sha256': trusted, 'source_revision': manifest['source']['revision'],
               'source_image_local_id': manifest['image']['local_immutable_id'],
