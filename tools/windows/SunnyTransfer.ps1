@@ -645,8 +645,11 @@ function Invoke-SunnyTransfer([string]$Operation,[string]$ConnectionPath,[string
     $installer=Read-SunnyOperatorSource $Root $manifest 'installer/windows/Sunny.ps1'
     $transfer=Read-SunnyOperatorSource $Root $manifest 'installer/windows/SunnyTransfer.ps1'
     if ($Operation -eq 'Plan') {
+        # Windows PowerShell 5.1 Measure-Object cannot select dictionary keys.
+        [long]$totalBytes=0
+        foreach ($file in $plan.files) { $totalBytes += $file.bytes }
         return @{transfer_schema_version=1;status='plan';manifest_sha256=$Hash;destination=$plan.destination;
-            bytes=($plan.files | Measure-Object bytes -Sum).Sum;files=$plan.files.Count;remote_action_executed=$false;
+            bytes=$totalBytes;files=$plan.files.Count;remote_action_executed=$false;
             security_settings_changed=$false;next_step='Use approved existing SSH access; Transfer never installs or starts Live.'}
     }
     $ssh=(Get-Command ssh.exe -ErrorAction Stop).Source

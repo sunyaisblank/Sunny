@@ -63,6 +63,21 @@ try {
         bridge=@{source_sha256=('a'*64);contract=@{bridge_protocol_version=47;target_snapshot_schema_version=35};files=$bridge};files=$files}
     WriteText (Join-Path $source 'release.json') ($manifest | ConvertTo-Json -Depth 8)
     $manifestHash=(Get-FileHash -LiteralPath (Join-Path $source 'release.json') -Algorithm SHA256).Hash.ToLowerInvariant()
+    $identityPath=Join-Path $root 'unused identity'
+    $knownHostsPath=Join-Path $root 'unused known hosts'
+    WriteText $identityPath 'Plan must not use this fixture identity'
+    WriteText $knownHostsPath 'Plan must not contact this fixture host'
+    $connectionPath=Join-Path $root 'plan connection.json'
+    WriteText $connectionPath (@{connection_schema_version=1;host='192.0.2.1';port=2222;user='sunny';
+        identity_file=$identityPath;known_hosts_file=$knownHostsPath} | ConvertTo-Json)
+    $remoteDestination=Join-Path $root 'nonexistent remote parent\release'
+    $preview=Invoke-SunnyTransfer 'Plan' $connectionPath $source $manifestHash $remoteDestination 30
+    $expectedBytes=(Get-ChildItem -LiteralPath $source -File -Recurse | Measure-Object -Property Length -Sum).Sum
+    Check ($preview.bytes -is [long] -and $preview.bytes -eq $expectedBytes -and $preview.files -eq 8) 'Public Plan reported incorrect release bytes/files'
+    Check ($preview.status -ceq 'plan' -and $preview.manifest_sha256 -ceq $manifestHash) 'Public Plan lost release identity'
+    Check (-not $preview.remote_action_executed -and -not $preview.security_settings_changed -and
+        -not (Test-Path -LiteralPath ([IO.Path]::GetDirectoryName($remoteDestination)))) 'Public Plan performed a remote/filesystem action'
+    $passed.Add('public_plan_literal_bytes_without_remote_access')
     $plan=NewPlan 'fresh destination Café with spaces'
     Receiver $plan
     Check ((Get-FileHash -LiteralPath (Join-Path $plan.destination 'image.tar')).Hash.ToLowerInvariant() -ceq (Get-SunnyTransferHash $binary)) 'Binary content changed'

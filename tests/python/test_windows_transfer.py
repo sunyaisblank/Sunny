@@ -71,6 +71,7 @@ def test_windows_release_transfer_foundation():
     assert report["ssh_executed"] is False and report["native_live_executed"] is False
     assert report["literal_disk_saturation_tested"] is False
     assert report["passed"] == [
+        "public_plan_literal_bytes_without_remote_access",
         "full_binary_unicode_repeat_read_only_status",
         "truncated_chunk_resume_source_prefix",
         "changed_prefix_preserved_by_recovery_and_clean",
