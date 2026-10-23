@@ -30,8 +30,9 @@ Live 12.4.5 Suite. The normal Windows operator needs no installed Python interpr
 | Live 11 | Limited legacy note operations | Version-specific runtime types and real-host behaviour remain unqualified |
 | POSIX native executable or developer Python tooling | Source build, offline tools, direct diagnostics and qualification kit | Development profile; does not replace the Windows operator |
 
-The Windows operator requires physical local NTFS paths and the current user's actual User
-Library. UNC or linked installation trees, shared-network project volumes, Windows containers,
+The Windows operator requires local NTFS paths and the current user's actual User Library.
+The User Library may use OneDrive Cloud Files folders; junctions, symbolic links and unknown
+reparse types are refused. UNC installation trees, shared-network project volumes, Windows containers,
 ARM release images and future Live versions are outside this production profile. Paths may contain
 spaces and Unicode; Docker bind-mount paths in these examples must not contain commas.
 

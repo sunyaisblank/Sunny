@@ -58,6 +58,38 @@ function Write-SunnyState([string]$Path, $State) {
     else { [IO.File]::Move($temporary, $Path) }
 }
 
+function Test-SunnyCloudPath([string]$Path) {
+    if (-not ('SunnyReparseInfo' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
+public static class SunnyReparseInfo {
+    [StructLayout(LayoutKind.Sequential)] struct TagInfo { public uint attributes, tag; }
+    [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+    static extern SafeFileHandle CreateFile(string path, uint access, uint share, IntPtr security, uint creation, uint flags, IntPtr template);
+    [DllImport("kernel32.dll", SetLastError=true)]
+    static extern bool GetFileInformationByHandleEx(SafeFileHandle handle, int kind, out TagInfo info, uint size);
+    public static bool IsCloudTag(uint tag) {
+        // Only Microsoft's CLOUD through CLOUD_F family; no name-surrogate tags.
+        return (tag & ~0x0000F000u) == 0x9000001Au;
+    }
+    public static bool IsCloudPath(string path) {
+        // OPEN_REPARSE_POINT | BACKUP_SEMANTICS: inspect the entry itself, including directories.
+        using (var handle = CreateFile(path, 0, 7, IntPtr.Zero, 3, 0x02200000, IntPtr.Zero)) {
+            if (handle.IsInvalid) throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+            TagInfo info;
+            if (!GetFileInformationByHandleEx(handle, 9, out info, 8))
+                throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+            return (info.attributes & 0x400) != 0 && IsCloudTag(info.tag);
+        }
+    }
+}
+'@
+    }
+    return [SunnyReparseInfo]::IsCloudPath($Path)
+}
+
 function Assert-SunnyPhysicalPath([string]$Path) {
     $full = [IO.Path]::GetFullPath($Path)
     if ($full.StartsWith('\\')) { throw 'The managed installer supports a local Windows volume, not a network share.' }
@@ -65,7 +97,8 @@ function Assert-SunnyPhysicalPath([string]$Path) {
     while ($cursor) {
         if (Test-Path -LiteralPath $cursor) {
             $item = Get-Item -LiteralPath $cursor -Force
-            if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+            if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -and
+                -not (Test-SunnyCloudPath $cursor)) {
                 throw ('Use a physical path; linked files or directories are unsupported: ' + $cursor)
             }
         }
@@ -123,7 +156,8 @@ function Assert-SunnyTree([string]$Root, $Files, [switch]$Partial) {
     Assert-SunnyFileMap $Files
     $observed = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
     foreach ($item in Get-ChildItem -LiteralPath $Root -Recurse -Force) {
-        if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'A managed tree contains a linked entry.' }
+        if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -and
+            -not (Test-SunnyCloudPath $item.FullName)) { throw 'A managed tree contains a linked entry.' }
         $relative = $item.FullName.Substring($Root.Length + 1).Replace('\', '/')
         if ($item.PSIsContainer) {
             if ($relative -cne '__pycache__') { throw ('Unmanaged directory in Sunny: ' + $relative) }

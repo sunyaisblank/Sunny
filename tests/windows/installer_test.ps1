@@ -90,6 +90,41 @@ try {
     $remoteScript = Join-Path $root 'SunnyRemote.ps1'
     [IO.File]::WriteAllBytes($remoteScript, [Convert]::FromBase64String('__REMOTE_SOURCE__'))
     . $remoteScript
+    Check (-not (Test-SunnyCloudPath $root)) 'Ordinary NTFS directory is not a cloud placeholder'
+    # Literal WinNT.h values, independent of the production family's mask.
+    foreach ($tag in @('9000001A','9000101A','9000201A','9000301A','9000401A','9000501A','9000601A','9000701A',
+                      '9000801A','9000901A','9000A01A','9000B01A','9000C01A','9000D01A','9000E01A','9000F01A')) {
+        Check ([SunnyReparseInfo]::IsCloudTag([Convert]::ToUInt32($tag,16))) ('Cloud Files tag refused: ' + $tag)
+    }
+    foreach ($tag in @('00000000','FFFFFFFF','A0000003','A000000C','8000001B','9001001A','9000601B','A000601A')) {
+        Check (-not [SunnyReparseInfo]::IsCloudTag([Convert]::ToUInt32($tag,16))) ('Unknown or redirecting tag admitted: ' + $tag)
+    }
+    $tree = Join-Path $root 'Tree with a junction'
+    $target = Join-Path $root 'Unrelated junction target'
+    [IO.Directory]::CreateDirectory($tree) | Out-Null
+    [IO.Directory]::CreateDirectory($target) | Out-Null
+    $ownedFile = Join-Path $tree '__init__.py'
+    WriteText $ownedFile '# ordinary native file'
+    WriteText (Join-Path $tree 'bridge_contract.json') '{"bridge_protocol_version":47,"target_snapshot_schema_version":35}'
+    WriteText (Join-Path $tree 'source.sha256') ('a' * 64)
+    $sentinel = Join-Path $target 'preserve.txt'
+    WriteText $sentinel 'Unrelated literal content'
+    $map = @{}
+    foreach ($file in Get-ChildItem -LiteralPath $tree -File) {
+        $map[$file.Name] = @{bytes=$file.Length;sha256=(Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()}
+    }
+    $junction = Join-Path $tree 'linked'
+    $null = & cmd.exe /d /c ('mklink /J "' + $junction + '" "' + $target + '"')
+    Check ($LASTEXITCODE -eq 0) 'Could not create the owned junction fixture'
+    try {
+        Fails { Assert-SunnyPhysicalPath (Join-Path $junction 'preserve.txt') } 'physical path'
+        Fails { Assert-SunnyTree $tree $map } 'linked entry'
+        Check ((Get-Content -LiteralPath $sentinel -Raw) -ceq 'Unrelated literal content') 'Junction target changed'
+    } finally {
+        $null = & cmd.exe /d /c ('rmdir "' + $junction + '"')
+        Check ($LASTEXITCODE -eq 0) 'Could not remove the owned junction without traversing its target'
+    }
+    $passed.Add('cloud_tags_and_actual_junction_refusal')
     $library = Join-Path $root 'Different User Library with spaces'
     [IO.Directory]::CreateDirectory((Join-Path $library 'Remote Scripts\Unrelated')) | Out-Null
     WriteText (Join-Path $library 'user-set.als') 'unsaved-work-fixture'

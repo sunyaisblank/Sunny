@@ -74,6 +74,7 @@ def test_windows_managed_installer_lifecycle():
     result = json.loads(completed.stdout.strip())
     assert result["native_live_executed"] is False
     assert result["passed"] == [
+        "cloud_tags_and_actual_junction_refusal",
         "verified_plan_fresh_repeat",
         "interrupted_transfer_checksum",
         "partial_copy_recovery",
