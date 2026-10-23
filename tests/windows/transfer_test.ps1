@@ -1,6 +1,7 @@
 $ErrorActionPreference='Stop'
 [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)
 Set-StrictMode -Version Latest
+$receiverExecutable='__RECEIVER_EXECUTABLE__'
 $root=Join-Path $env:TEMP ('Sunny Transfer '+[Guid]::NewGuid().ToString('N'))
 [IO.Directory]::CreateDirectory($root) | Out-Null
 $passed=[Collections.Generic.List[string]]::new()
@@ -264,25 +265,30 @@ try {
     Check ((Read-SunnyJson ($budgetMove.destination+'.sunny-transfer.json')).phase -ceq 'committed') 'Post-move budget recovery failed'
     $passed.Add('expired_filesystem_phase_budgets_preserve_recoverable_states')
 
-    # The exact bootstrap + raw STDIO is exercised using an actual child powershell.
+    # Windows5.1 owns local operators; PowerShell7 owns the remote binary stream.
     # This proves Windows pipe/framing; it makes no SSH connection or OCI claim.
     $pipe=NewPlan 'actual pipe destination'
     $originalInputEncoding=[Console]::InputEncoding
     try {
         [Console]::InputEncoding=[Text.UTF8Encoding]::new($true)
         $bomInputEncoding=[Console]::InputEncoding
-        $result=Invoke-SunnyTransferExchange (Get-Process -Id $PID).Path @('-NoProfile','-NonInteractive','-EncodedCommand',(Get-SunnyTransferStarter)) $source $pipe ([IO.File]::ReadAllText($installerPath)) ([IO.File]::ReadAllText($transferPath)) 30
+        $result=Invoke-SunnyTransferExchange $receiverExecutable @('-NoProfile','-NonInteractive','-EncodedCommand',(Get-SunnyTransferStarter)) $source $pipe ([IO.File]::ReadAllText($installerPath)) ([IO.File]::ReadAllText($transferPath)) 30
         Check ($bomInputEncoding.Equals([Console]::InputEncoding)) 'Binary transfer changed the caller input Encoding'
     } finally { [Console]::InputEncoding=$originalInputEncoding }
     Check ($result.status -ceq 'committed') 'Actual binary pipe exchange failed'
     Check ((Get-FileHash -LiteralPath (Join-Path $pipe.destination 'image.tar')).Hash.ToLowerInvariant() -ceq (Get-SunnyTransferHash $binary)) 'Actual pipe altered bytes'
     try {
         [Console]::InputEncoding=[Text.UTF8Encoding]::new($true)
-        $repeat=Invoke-SunnyTransferExchange (Get-Process -Id $PID).Path @('-NoProfile','-NonInteractive','-EncodedCommand',(Get-SunnyTransferStarter)) $source $pipe ([IO.File]::ReadAllText($installerPath)) ([IO.File]::ReadAllText($transferPath)) 30
+        $repeat=Invoke-SunnyTransferExchange $receiverExecutable @('-NoProfile','-NonInteractive','-EncodedCommand',(Get-SunnyTransferStarter)) $source $pipe ([IO.File]::ReadAllText($installerPath)) ([IO.File]::ReadAllText($transferPath)) 30
     } finally { [Console]::InputEncoding=$originalInputEncoding }
     Check ($originalInputEncoding.Equals([Console]::InputEncoding)) 'Transfer repeat did not restore the original input Encoding'
     Check (-not $repeat.payload_required -and $repeat.status -ceq 'committed') 'Idempotent pipe sent payload'
     $passed.Add('real_windows_binary_pipe_bootstrap_and_zero_payload_repeat')
+
+    $legacy=NewPlan 'unsupported Windows5 receiver'
+    Fails { Invoke-SunnyTransferExchange (Get-Process -Id $PID).Path @('-NoProfile','-NonInteractive','-EncodedCommand',(Get-SunnyTransferStarter)) $source $legacy ([IO.File]::ReadAllText($installerPath)) ([IO.File]::ReadAllText($transferPath)) 30 } 'requires PowerShell 7'
+    Check (-not(Test-Path -LiteralPath $legacy.destination)-and-not(Test-Path -LiteralPath ($legacy.destination+'.sunny-transfer.json'))) 'Unsupported receiver created transfer state'
+    $passed.Add('powershell5_binary_receiver_rejected_before_staging')
 
     # Fault peers use the real bootstrap and preserve ownership, but emit invalid
     # acknowledgments or too much output. No artifact payload may follow.
@@ -306,7 +312,7 @@ function Send-SunnyTransferAck($Value) {
 }
 '@
         $faultSource=$faultSource.Replace('__FAULT_DATA__',$faultData)
-        Fails { Invoke-SunnyTransferExchange (Get-Process -Id $PID).Path @('-NoProfile','-NonInteractive','-EncodedCommand',(Get-SunnyTransferStarter)) $source $bad ([IO.File]::ReadAllText($installerPath)) $faultSource 30 } 'integer|unknown|uncorrelated|source mismatch|64 KiB'
+        Fails { Invoke-SunnyTransferExchange $receiverExecutable @('-NoProfile','-NonInteractive','-EncodedCommand',(Get-SunnyTransferStarter)) $source $bad ([IO.File]::ReadAllText($installerPath)) $faultSource 30 } 'integer|unknown|uncorrelated|source mismatch|64 KiB'
         Check ($null -eq (Get-Process -Id ([int][IO.File]::ReadAllText($pidPath)) -ErrorAction SilentlyContinue)) 'Fault peer process survived'
         Check ((Get-Item -LiteralPath ($bad.destination+'.sunny-stage')).PSIsContainer) 'Fault peer lost owned stage'
         Check (-not (Test-Path -LiteralPath $bad.destination)) 'Fault peer published a release'
@@ -319,7 +325,7 @@ function Send-SunnyTransferAck($Value) {
     # launched child when no readiness acknowledgment arrives. No SSH is used.
     $silent=NewPlan 'receiver-timeout';$silent.timeout_seconds=30
     $start=[Diagnostics.ProcessStartInfo]::new()
-    $start.FileName=(Get-Process -Id $PID).Path
+    $start.FileName=$receiverExecutable
     $start.Arguments=(@(@('-NoProfile','-NonInteractive','-EncodedCommand',(Get-SunnyTransferStarter)) | ForEach-Object { ConvertTo-SunnyWindowsArgument $_ }) -join ' ')
     $start.UseShellExecute=$false;$start.RedirectStandardInput=$true;$start.RedirectStandardOutput=$true;$start.RedirectStandardError=$true
     $child=Start-SunnyUtf8PipeProcess $start;$childPID=$child.Id

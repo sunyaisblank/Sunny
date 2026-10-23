@@ -478,6 +478,7 @@ function Get-SunnyTransferStarter {
 $ErrorActionPreference='Stop'
 $ProgressPreference='SilentlyContinue'
 try {
+ if($PSVersionTable.PSVersion.Major-lt7){throw 'SSH binary transfer requires PowerShell 7 (pwsh.exe) on the receiving PC.'}
  $started=[Diagnostics.Stopwatch]::StartNew()
  $s=[Console]::OpenStandardInput()
  function ReadSunnyBootstrap([int]$n) {
@@ -650,10 +651,10 @@ function Invoke-SunnyTransfer([string]$Operation,[string]$ConnectionPath,[string
         foreach ($file in $plan.files) { $totalBytes += $file.bytes }
         return @{transfer_schema_version=1;status='plan';manifest_sha256=$Hash;destination=$plan.destination;
             bytes=$totalBytes;files=$plan.files.Count;remote_action_executed=$false;
-            security_settings_changed=$false;next_step='Use approved existing SSH access; Transfer never installs or starts Live.'}
+            security_settings_changed=$false;next_step='Use approved existing SSH access and PowerShell 7 (pwsh.exe) on the receiving PC; Transfer never installs or starts Live.'}
     }
     $ssh=(Get-Command ssh.exe -ErrorAction Stop).Source
-    $arguments=@(Get-SunnySshArguments $connection)+@('powershell.exe','-NoProfile','-NonInteractive','-EncodedCommand',(Get-SunnyTransferStarter))
+    $arguments=@(Get-SunnySshArguments $connection)+@('pwsh.exe','-NoProfile','-NonInteractive','-EncodedCommand',(Get-SunnyTransferStarter))
     return Invoke-SunnyTransferExchange $ssh $arguments $Root $plan $installer $transfer $Seconds
 }
 if ($MyInvocation.InvocationName -ne '.') {

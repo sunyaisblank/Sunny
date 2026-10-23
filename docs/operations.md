@@ -293,7 +293,10 @@ After the recorded client ends, run `SunnyClient.ps1 -Action Recover -SessionDir
 Docker context/daemon and refuses changed or foreign scope before removal.
 
 Transfer requires this release's exact `SunnyTransfer.ps1` hash in `release.json`, a new explicit
-destination and an existing physical NTFS parent on the Live PC. It never installs Sunny or starts Live:
+destination, an existing physical NTFS parent and PowerShell 7 (`pwsh.exe` on PATH) on the Live PC.
+The client operator still runs in Windows PowerShell 5.1. Windows5.1's redirected binary-input
+path failed actual-host qualification; the receiver therefore requires PowerShell7 explicitly.
+Transfer never installs either PowerShell or Sunny, changes host settings, or starts Live:
 
 ```powershell
 $transfer = Join-Path $ReleaseDirectory 'installer\windows\SunnyTransfer.ps1'

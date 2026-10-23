@@ -18,6 +18,9 @@ def test_windows_release_transfer_foundation():
     powershell = shutil.which("powershell.exe")
     if powershell is None:
         pytest.skip("Windows PowerShell interop is required for the NTFS transfer witness")
+    receiver = shutil.which("pwsh.exe")
+    if receiver is None:
+        pytest.skip("PowerShell 7 is required for the binary transfer receiver")
     root = Path(__file__).resolve().parents[2]
     driver = (root / "tests/windows/transfer_test.ps1").read_text()
     for placeholder, name in (
@@ -36,6 +39,12 @@ def test_windows_release_transfer_foundation():
     converter = shutil.which("wslpath")
     if os.name != "nt" and converter is None:
         pytest.skip("Windows path conversion is unavailable")
+    selected_receiver = (
+        receiver
+        if os.name == "nt"
+        else subprocess.check_output([converter, "-w", receiver], text=True).strip()
+    )
+    driver = driver.replace("__RECEIVER_EXECUTABLE__", selected_receiver.replace("'", "''"))
     local = (
         temporary
         if os.name == "nt"
@@ -84,6 +93,7 @@ def test_windows_release_transfer_foundation():
         "post_proof_cleanup_drift_preserved",
         "expired_filesystem_phase_budgets_preserve_recoverable_states",
         "real_windows_binary_pipe_bootstrap_and_zero_payload_repeat",
+        "powershell5_binary_receiver_rejected_before_staging",
         "actual_invalid_acknowledgments_and_output_bounds_reap_owned_peer",
         "actual_sender_receiver_deadlines_pid_absence_and_recovery",
     ]
