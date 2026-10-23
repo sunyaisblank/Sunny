@@ -9,11 +9,18 @@
  *           reorchestrate
  */
 
+#include "../../../src/core/score/id_allocator.hpp"
+
 #include <catch2/catch_test_macros.hpp>
 #include <limits>
+#include <sunny/core/score/midi_compiler.hpp>
 #include <sunny/core/score/mutations.hpp>
+#include <sunny/core/score/projection.hpp>
 #include <sunny/core/score/serialization.hpp>
+#include <sunny/core/score/time.hpp>
+#include <sunny/core/score/tuplets.hpp>
 #include <sunny/core/score/validation.hpp>
+#include <sunny/core/score/workflows.hpp>
 
 using namespace sunny::core;
 
@@ -1227,4 +1234,513 @@ TEST_CASE("reorchestration does not invent cross-Part Voice-span identity",
     CHECK_FALSE(first->slur_start);
     CHECK_FALSE(second->slur_end);
     CHECK(is_compilable(score));
+}
+
+TEST_CASE("retired Event and Part IDs survive deletion and undo",
+          "[score-ir][identity][reservation]") {
+    auto score = make_valid_score(1);
+    UndoStack history;
+    ChordSymbolEvent chord;
+    chord.root = SpelledPitch{0, 0, 4};
+    chord.quality = "major";
+    const auto point_id = [&] {
+        for (const auto& event : score.parts[0].measures[0].voices[0].events)
+            if (std::holds_alternative<ChordSymbolEvent>(event.payload)) return event.id;
+        return EventId{};
+    };
+    REQUIRE(insert_chord_symbol(score, PartId{100}, 1, 0, Beat{1, 4}, chord, &history));
+    REQUIRE(point_id() == EventId{1});
+    SECTION("delete then allocate") {
+        REQUIRE(delete_event(score, EventId{1}, &history));
+    }
+    SECTION("undo then allocate") {
+        REQUIRE(undo(score, history));
+    }
+    REQUIRE(score.identity_reservations.events.contains(EventId{1}));
+    REQUIRE(insert_chord_symbol(score, PartId{100}, 1, 0, Beat{1, 4}, chord, &history));
+    REQUIRE(point_id() == EventId{2});
+    REQUIRE_FALSE(history.can_redo());
+
+    PartDefinition violin;
+    violin.name = "Violin";
+    violin.instrument_type = InstrumentType::Violin;
+    REQUIRE(add_part(score, violin, 1, &history));
+    REQUIRE(score.parts[1].id == PartId{1}); // Typed domains remain independent.
+    const auto removed_part = score.parts[1].id;
+    REQUIRE(remove_part(score, removed_part));
+    REQUIRE(score.identity_reservations.parts.contains(removed_part));
+    REQUIRE(add_part(score, violin, 1));
+    REQUIRE(score.parts[1].id == PartId{2});
+    REQUIRE(is_compilable(score));
+}
+
+TEST_CASE("identity reservations survive save/load and failed candidate edits",
+          "[score-ir][identity][reservation][atomicity]") {
+    auto score = make_valid_score(1);
+    ChordSymbolEvent chord;
+    chord.root = SpelledPitch{0, 0, 4};
+    chord.quality = "major";
+    REQUIRE(insert_chord_symbol(score, PartId{100}, 1, 0, Beat{1, 4}, chord));
+    REQUIRE(delete_event(score, EventId{1}));
+    const auto stored = score_to_json_string(score);
+    auto loaded = score_from_json_string(stored);
+    REQUIRE(loaded);
+    REQUIRE(loaded->identity_reservations == score.identity_reservations);
+    auto clean = *loaded;
+    UndoStack history;
+    ChordSymbolEvent invalid = chord;
+    invalid.quality.clear();
+    const auto before = score_to_json(*loaded);
+    REQUIRE_FALSE(insert_chord_symbol(*loaded, PartId{100}, 1, 0, Beat{1, 4}, invalid, &history));
+    REQUIRE(score_to_json(*loaded) == before);
+    REQUIRE_FALSE(history.can_undo());
+    REQUIRE(insert_chord_symbol(*loaded, PartId{100}, 1, 0, Beat{1, 4}, chord));
+    REQUIRE(insert_chord_symbol(clean, PartId{100}, 1, 0, Beat{1, 4}, chord));
+    REQUIRE(score_to_json(*loaded) == score_to_json(clean));
+    REQUIRE(loaded->identity_reservations.events.contains(EventId{2}));
+}
+
+TEST_CASE("retired Tuplet and Beam IDs participate in lowest-free allocation",
+          "[score-ir][identity][reservation]") {
+    auto score = make_valid_score(2);
+    const Note c{SpelledPitch{0, 0, 4}, VelocityValue{{}, 80}};
+    REQUIRE(insert_note(score, PartId{100}, 1, 0, Beat::zero(), c, Beat{1, 12}));
+    REQUIRE(score.identity_reservations.tuplets == std::set<TupletId>{TupletId{1}});
+    REQUIRE(delete_measures(score, 1, 1));
+    REQUIRE(insert_note(score, PartId{100}, 1, 0, Beat::zero(), c, Beat{1, 12}));
+    const auto& group = *score.parts[0].measures[0].voices[0].events[0].as_note_group();
+    REQUIRE(group.tuplet_context->id == TupletId{2});
+    REQUIRE(score.identity_reservations.tuplets.contains(TupletId{1}));
+
+    auto beamed = make_valid_score(1);
+    place_primary_beam_in_bar(beamed, 1, 31, 1);
+    REQUIRE(is_compilable(beamed));
+    // An exactly coincident eighth joins the first chord and explicitly
+    // removes its intersected primary beam; a quarter would overlap two groups.
+    REQUIRE(insert_note(beamed, PartId{100}, 1, 0, Beat::zero(), c, Beat{1, 8}));
+    REQUIRE(beamed.parts[0].measures[0].voices[0].beam_groups.empty());
+    REQUIRE(beamed.identity_reservations.beams.contains(BeamGroupId{1}));
+    auto beams = detail::beam_id_allocator(beamed);
+    REQUIRE(beams.allocate().value() == BeamGroupId{2});
+    REQUIRE(is_compilable(beamed));
+}
+
+TEST_CASE("retired Section IDs and imported maxima reserve values rather than ranges",
+          "[score-ir][identity][reservation]") {
+    auto score = make_valid_score(1);
+    const std::vector<SectionDefinition> plan{{"A", 1, 1, std::nullopt}};
+    UndoStack history;
+    REQUIRE(set_formal_plan(score, plan, &history));
+    REQUIRE(score.section_map[0].id == SectionId{1});
+    REQUIRE(undo(score, history));
+    REQUIRE(set_formal_plan(score, plan));
+    REQUIRE(score.section_map[0].id == SectionId{2});
+    REQUIRE(set_formal_plan(score, plan));
+    REQUIRE(score.section_map[0].id == SectionId{3});
+    REQUIRE(score.identity_reservations.sections ==
+            std::set<SectionId>{SectionId{1}, SectionId{2}, SectionId{3}});
+
+    Score imported = make_valid_score(1);
+    const auto maximum = std::numeric_limits<std::uint64_t>::max();
+    imported.parts[0].id = PartId{maximum};
+    imported.parts[0].measures[0].voices[0].events[0].id = EventId{maximum};
+    auto legacy = score_to_json(imported);
+    legacy["schema_version"] = 8;
+    legacy.erase("identity_reservations");
+    auto migrated = score_from_json(legacy);
+    REQUIRE(migrated);
+    REQUIRE(migrated->identity_reservations.events == std::set<EventId>{EventId{maximum}});
+    REQUIRE(migrated->identity_reservations.parts == std::set<PartId>{PartId{maximum}});
+    auto events = detail::event_id_allocator(*migrated);
+    auto parts = detail::part_id_allocator(*migrated);
+    REQUIRE(events.allocate().value() == EventId{1});
+    REQUIRE(parts.allocate().value() == PartId{1});
+}
+
+// =============================================================================
+// Exact tempo / standalone tuplet authoring and instrument profiles (issue #25)
+// =============================================================================
+
+namespace {
+
+Score make_unannotated_tuplet(std::uint8_t count, Beat member_duration, bool middle_rest = false) {
+    auto score = make_valid_score(1);
+    auto& events = score.parts[0].measures[0].voices[0].events;
+    events.clear();
+    Beat offset = Beat::zero();
+    for (std::uint8_t index = 0; index < count; ++index) {
+        EventPayload payload;
+        if (middle_rest && index == 1)
+            payload = RestEvent{member_duration, true};
+        else {
+            NoteGroup group;
+            group.duration = member_duration;
+            group.notes = {Note{SpelledPitch{index, 0, 4}, VelocityValue{{}, 80}}};
+            payload = group;
+        }
+        events.push_back(Event{EventId{1400000ULL + index}, offset, payload});
+        offset = offset + member_duration;
+    }
+    events.push_back(Event{EventId{1400100}, offset, RestEvent{Beat::one() - offset, true}});
+    REQUIRE(is_compilable(score));
+    return score;
+}
+
+std::vector<EventId> first_member_ids(const Score& score, std::size_t count) {
+    std::vector<EventId> ids;
+    for (std::size_t index = 0; index < count; ++index)
+        ids.push_back(score.parts[0].measures[0].voices[0].events[index].id);
+    return ids;
+}
+
+} // namespace
+
+TEST_CASE("ordered tempo replacement preserves exact units, incoming ramps and modulation",
+          "[score-ir][mutation][tempo][authoring]") {
+    auto score = make_valid_score();
+    UndoStack history;
+    TempoMap tempos{score.tempo_map.front(), score.tempo_map.front(), score.tempo_map.front()};
+    tempos[0].beat_unit = BeatUnit::DottedQuarter; // 120 dotted quarters = 180 quarters/min
+    tempos[1].position = {3, Beat::zero()};
+    tempos[1].bpm = PositiveRational{60, 1};
+    tempos[1].transition_type = TempoTransitionType::Linear;
+    tempos[1].linear_duration = Beat{2, 1};
+    tempos[2].position = {4, Beat::zero()};
+    tempos[2].bpm = PositiveRational{60, 1};
+    tempos[2].beat_unit = BeatUnit::DottedQuarter;
+    tempos[2].transition_type = TempoTransitionType::MetricModulation;
+    tempos[2].old_unit = BeatUnit::Quarter;
+    tempos[2].new_unit = BeatUnit::DottedQuarter; // previous quarter = current dotted quarter
+    REQUIRE(set_tempo_map(score, tempos, &history));
+    CHECK(score.tempo_map[0].beat_unit == BeatUnit::DottedQuarter);
+    CHECK(score.tempo_map[1].linear_duration == Beat{2, 1});
+    CHECK(score.tempo_map[2].bpm == PositiveRational{60, 1});
+    CHECK(score.version == 2);
+    CHECK(history.undo_entries.size() == 1);
+    const auto middle =
+        effective_quarter_tempo_at({2, Beat::zero()}, score.tempo_map, score.time_map);
+    REQUIRE(middle);
+    CHECK(*middle == PositiveRational{120, 1});
+    const auto modulated =
+        effective_quarter_tempo_at({4, Beat::zero()}, score.tempo_map, score.time_map);
+    REQUIRE(modulated);
+    CHECK(*modulated == PositiveRational{90, 1});
+    REQUIRE(undo(score, history));
+    CHECK(score.tempo_map.size() == 1);
+    CHECK(score.version == 3);
+    REQUIRE(redo(score, history));
+    CHECK(score.tempo_map.size() == 3);
+    CHECK(score.version == 4);
+}
+
+TEST_CASE("tempo replacement rejects incoherent payloads without repair or history changes",
+          "[score-ir][mutation][tempo][atomicity]") {
+    auto score = make_valid_score();
+    UndoStack history;
+    const auto before = score_to_json(score);
+    auto later = score.tempo_map.front();
+    later.position = {3, Beat::zero()};
+    later.bpm = PositiveRational{60, 1};
+    later.transition_type = TempoTransitionType::Linear;
+    later.linear_duration = Beat{1, 1}; // actual previous-event span is two whole notes
+    CHECK_FALSE(set_tempo_map(score, {score.tempo_map.front(), later}, &history));
+    later.linear_duration = Beat{2, 1};
+    CHECK_FALSE(
+        set_tempo_map(score, {later, score.tempo_map.front()}, &history)); // order is authoritative
+    later.transition_type = TempoTransitionType::MetricModulation;
+    later.linear_duration = Beat::zero();
+    later.beat_unit = BeatUnit::DottedQuarter;
+    later.old_unit = BeatUnit::Quarter;
+    later.new_unit = BeatUnit::DottedQuarter;
+    later.bpm = PositiveRational{61, 1}; // exact modulation requires 120 dotted quarters/min
+    CHECK_FALSE(set_tempo_map(score, {score.tempo_map.front(), later}, &history));
+    CHECK_FALSE(set_tempo_map(score, {}, &history));
+    CHECK(score_to_json(score) == before);
+    CHECK(history.undo_entries.empty());
+    CHECK(history.redo_entries.empty());
+}
+
+TEST_CASE("standalone triplet notation retains scaled intervals, identities and retired group IDs",
+          "[score-ir][mutation][tuplet][authoring][identity]") {
+    auto score = make_unannotated_tuplet(3, Beat{1, 12});
+    UndoStack history;
+    const auto members = first_member_ids(score, 3);
+    const auto before_midi = compile_to_midi(score);
+    REQUIRE(before_midi);
+    const auto created =
+        create_tuplet_group(score, members, 3, 2, Beat{1, 8}, Beat{1, 4}, &history);
+    REQUIRE(created);
+    CHECK(*created == TupletId{1});
+    const auto& events = score.parts[0].measures[0].voices[0].events;
+    for (std::size_t index = 0; index < 3; ++index) {
+        CHECK(events[index].id == members[index]);
+        CHECK(events[index].offset == Beat{static_cast<std::int64_t>(index), 12});
+        CHECK(events[index].duration() == Beat{1, 12});
+        REQUIRE(event_tuplet_context(events[index]));
+        CHECK(event_tuplet_context(events[index])->id == *created);
+    }
+    REQUIRE(remove_tuplet_group(score, *created, &history));
+    CHECK(score.identity_reservations.tuplets.contains(*created));
+    const auto after_midi = compile_to_midi(score);
+    REQUIRE(after_midi);
+    REQUIRE(after_midi->midi.notes.size() == 3);
+    for (std::size_t index = 0; index < 3; ++index) {
+        CHECK_FALSE(event_tuplet_context(score.parts[0].measures[0].voices[0].events[index]));
+        CHECK(after_midi->midi.notes[index].tick == static_cast<std::int64_t>(index * 160));
+        CHECK(after_midi->midi.notes[index].duration_ticks == 160);
+        CHECK(after_midi->midi.notes[index].note == before_midi->midi.notes[index].note);
+    }
+    REQUIRE(undo(score, history)); // restores group 1
+    REQUIRE(undo(score, history)); // restores plain durations, retains retired group 1
+    const auto next = create_tuplet_group(score, members, 3, 2, Beat{1, 8}, Beat{1, 4}, &history);
+    REQUIRE(next);
+    CHECK(*next == TupletId{2});
+    REQUIRE(remove_tuplet_group(score, *next, &history));
+    const auto restored = score_from_json(score_to_json(score));
+    REQUIRE(restored);
+    score = *restored;
+    const auto after_restart = create_tuplet_group(score, members, 3, 2, Beat{1, 8}, Beat{1, 4});
+    REQUIRE(after_restart);
+    CHECK(*after_restart == TupletId{3});
+}
+
+TEST_CASE("fivelet creation counts first-class rest members without scaling them twice",
+          "[score-ir][mutation][tuplet][authoring]") {
+    auto score = make_unannotated_tuplet(5, Beat{1, 20}, true);
+    auto members = first_member_ids(score, 5);
+    std::reverse(members.begin(),
+                 members.end()); // source topology, not caller order, governs membership
+    const auto group = create_tuplet_group(score, members, 5, 4, Beat{1, 16}, Beat{1, 4});
+    REQUIRE(group);
+    const auto& events = score.parts[0].measures[0].voices[0].events;
+    REQUIRE(events[1].is_rest());
+    for (std::size_t index = 0; index < 5; ++index) {
+        CHECK(events[index].duration() == Beat{1, 20});
+        REQUIRE(event_tuplet_context(events[index]));
+        CHECK(event_tuplet_context(events[index])->actual == 5);
+        CHECK(event_tuplet_context(events[index])->normal == 4);
+    }
+    REQUIRE(remove_tuplet_group(score, *group));
+    CHECK(score.parts[0].measures[0].voices[0].events[1].duration() == Beat{1, 20});
+}
+
+TEST_CASE("mixed-duration triplet creation retains literal quarter-plus-eighth allocations",
+          "[score-ir][mutation][tuplet][authoring][mixed-tuplet]") {
+    auto score = make_valid_score(1);
+    NoteGroup quarter;
+    quarter.notes = {{SpelledPitch{0, 0, 4}, VelocityValue{{}, 80}}};
+    quarter.duration = Beat{1, 6};
+    NoteGroup eighth;
+    eighth.notes = {{SpelledPitch{2, 0, 4}, VelocityValue{{}, 80}}};
+    eighth.duration = Beat{1, 12};
+    score.parts[0].measures[0].voices[0].events = {
+        {EventId{8601}, Beat::zero(), quarter},
+        {EventId{8602}, Beat{1, 6}, eighth},
+        {EventId{8603}, Beat{1, 4}, RestEvent{Beat{3, 4}, true}}};
+    REQUIRE(is_compilable(score));
+    const std::array members{EventId{8601}, EventId{8602}};
+    UndoStack history;
+    const auto annotated =
+        create_tuplet_group(score, members, 3, 2, Beat{1, 8}, Beat{1, 4}, &history);
+    REQUIRE(annotated);
+    CHECK(*annotated == TupletId{1});
+    REQUIRE(is_compilable(score));
+    const auto midi = compile_to_midi(score);
+    REQUIRE(midi);
+    REQUIRE(midi->midi.notes.size() == 2);
+    CHECK(midi->midi.notes[0].note == 60);
+    CHECK(midi->midi.notes[0].tick == 0);
+    CHECK(midi->midi.notes[0].duration_ticks == 320);
+    CHECK(midi->midi.notes[1].note == 64);
+    CHECK(midi->midi.notes[1].tick == 320);
+    CHECK(midi->midi.notes[1].duration_ticks == 160);
+    REQUIRE(remove_tuplet_group(score, *annotated, &history));
+    CHECK(score.parts[0].measures[0].voices[0].events[0].duration() == Beat{1, 6});
+    CHECK(score.parts[0].measures[0].voices[0].events[1].duration() == Beat{1, 12});
+    REQUIRE(undo(score, history));
+    CHECK(event_tuplet_context(score.parts[0].measures[0].voices[0].events[0])->id == *annotated);
+}
+
+TEST_CASE("inserting a folded tied-triplet phrase can split an inferred tuplet unit",
+          "[score-ir][mutation][tuplet][mixed-tuplet][ingestion]") {
+    auto score = make_valid_score(1);
+    const Note c{SpelledPitch{0, 0, 4}, VelocityValue{{}, 80}};
+    const Note e{SpelledPitch{2, 0, 4}, VelocityValue{{}, 80}};
+    // MIDI merges the first two tied eighth-triplet notes into C4 [0,1/6),
+    // followed by E4 [1/6,1/4). Inserting that exact performance must retain it.
+    REQUIRE(insert_note(score, PartId{100}, 1, 0, Beat::zero(), c, Beat{1, 6}));
+    REQUIRE(insert_note(score, PartId{100}, 1, 0, Beat{1, 6}, e, Beat{1, 12}));
+    REQUIRE(is_compilable(score));
+    const auto notes = project_symbolic_notes(score);
+    REQUIRE(notes);
+    REQUIRE(notes->size() == 2);
+    CHECK((*notes)[0].pitch == SpelledPitch{0, 0, 4});
+    CHECK((*notes)[0].start == Beat::zero());
+    CHECK((*notes)[0].end == Beat{1, 6});
+    CHECK((*notes)[1].pitch == SpelledPitch{2, 0, 4});
+    CHECK((*notes)[1].start == Beat{1, 6});
+    CHECK((*notes)[1].end == Beat{1, 4});
+    const auto& events = score.parts[0].measures[0].voices[0].events;
+    REQUIRE(events.size() == 5);
+    // The inferred quarter-note triplet has four mixed-duration direct events:
+    // quarter, eighth, eighth rest, quarter rest in written units.
+    for (std::size_t index = 0; index < 4; ++index) {
+        REQUIRE(event_tuplet_context(events[index]));
+        CHECK(event_tuplet_context(events[index])->actual == 3);
+        CHECK(event_tuplet_context(events[index])->normal_type == Beat{1, 4});
+    }
+    const auto midi = compile_to_midi(score);
+    REQUIRE(midi);
+    REQUIRE(midi->midi.notes.size() == 2);
+    CHECK(midi->midi.notes[0].tick == 0);
+    CHECK(midi->midi.notes[0].duration_ticks == 320);
+    CHECK(midi->midi.notes[1].tick == 320);
+    CHECK(midi->midi.notes[1].duration_ticks == 160);
+}
+
+TEST_CASE("tuplet member, span, nesting and postvalidation failures are atomic",
+          "[score-ir][mutation][tuplet][atomicity]") {
+    auto score = make_unannotated_tuplet(3, Beat{1, 12});
+    UndoStack history;
+    const auto members = first_member_ids(score, 3);
+    const auto before = score_to_json(score);
+    const std::array duplicate{members[0], members[0], members[2]};
+    CHECK_FALSE(create_tuplet_group(score, duplicate, 3, 2, Beat{1, 8}, Beat{1, 4}, &history));
+    CHECK_FALSE(create_tuplet_group(score, members, 3, 2, Beat{1, 8}, Beat{1, 2}, &history));
+    CHECK_FALSE(create_tuplet_group(score, members, 3, 2, Beat{1, 4}, Beat{1, 2}, &history));
+    const std::array noncontiguous{members[0], members[2]};
+    CHECK_FALSE(create_tuplet_group(score, noncontiguous, 2, 2, Beat{1, 12}, Beat{1, 6}, &history));
+    CHECK_FALSE(remove_tuplet_group(score, TupletId{99}, &history));
+    CHECK(score_to_json(score) == before);
+    CHECK(history.undo_entries.empty());
+
+    // Allocation can occur inside a private candidate before unrelated S7
+    // rejects it. The failed candidate must not publish the new TupletId.
+    std::get<NoteGroup>(score.parts[0].measures[0].voices[0].events[2].payload)
+        .notes[0]
+        .tie_forward = true;
+    const auto invalid_before = score_to_json(score);
+    CHECK_FALSE(create_tuplet_group(score, members, 3, 2, Beat{1, 8}, Beat{1, 4}, &history));
+    CHECK(score_to_json(score) == invalid_before);
+    std::get<NoteGroup>(score.parts[0].measures[0].voices[0].events[2].payload)
+        .notes[0]
+        .tie_forward = false;
+    const auto group = create_tuplet_group(score, members, 3, 2, Beat{1, 8}, Beat{1, 4}, &history);
+    REQUIRE(group);
+    CHECK(*group == TupletId{1});
+    const auto with_group = score_to_json(score);
+    CHECK_FALSE(create_tuplet_group(score, members, 3, 2, Beat{1, 8}, Beat{1, 4}, &history));
+    CHECK(score_to_json(score) == with_group);
+}
+
+TEST_CASE("nested tuplets cannot be removed by the standalone notation editor",
+          "[score-ir][mutation][tuplet][nesting][atomicity]") {
+    auto score = make_valid_score(1);
+    const TupletContext outer{TupletId{40}, 3, 2, Beat{1, 4}, std::nullopt};
+    const TupletContext inner{TupletId{41}, 3, 2, Beat{1, 8}, TupletId{40}};
+    auto& events = score.parts[0].measures[0].voices[0].events;
+    events.clear();
+    const auto group = [](Beat duration, TupletContext context) {
+        NoteGroup result;
+        result.notes = {Note{SpelledPitch{0, 0, 4}, VelocityValue{{}, 80}}};
+        result.duration = duration;
+        result.tuplet_context = context;
+        return result;
+    };
+    events = {{EventId{1500001}, Beat::zero(), group(Beat{1, 6}, outer)},
+              {EventId{1500002}, Beat{1, 6}, group(Beat{1, 6}, outer)},
+              {EventId{1500003}, Beat{1, 3}, group(Beat{1, 18}, inner)},
+              {EventId{1500004}, Beat{7, 18}, group(Beat{1, 18}, inner)},
+              {EventId{1500005}, Beat{4, 9}, group(Beat{1, 18}, inner)},
+              {EventId{1500006}, Beat{1, 2}, RestEvent{Beat{1, 2}, true}}};
+    REQUIRE(is_compilable(score));
+    const auto before = score_to_json(score);
+    CHECK_FALSE(remove_tuplet_group(score, TupletId{40}));
+    CHECK_FALSE(remove_tuplet_group(score, TupletId{41}));
+    CHECK(score_to_json(score) == before);
+}
+
+TEST_CASE("instrument assignment applies the standard profile and preserves concert content and "
+          "custom configuration",
+          "[score-ir][mutation][instrument][authoring]") {
+    auto score = make_valid_score(1);
+    place_note_in_bar(score, 1, SpelledPitch{0, 0, 4}, Beat::one());
+    auto& definition = score.parts[0].definition;
+    definition.staff_clefs = {Clef::Bass};
+    definition.rendering.midi_channel = 7;
+    definition.custom_descriptor = "Explicit routing";
+    definition.articulation_vocabulary = {ArticulationType::Staccato};
+    ArticulationMapping custom;
+    custom.type = ArticulationMapping::Type::CC;
+    custom.cc_number = 20;
+    custom.cc_value = 96;
+    definition.rendering.articulation_map[ArticulationType::Staccato] = custom;
+    REQUIRE(is_compilable(score));
+    UndoStack history;
+    REQUIRE(assign_instrument(score, PartId{100}, InstrumentType::Clarinet, &history));
+    const auto& assigned = score.parts[0].definition;
+    CHECK(assigned.transposition == -2);
+    CHECK(assigned.clef == Clef::Treble);
+    CHECK(assigned.range.absolute_low == SpelledPitch{1, 0, 3});
+    CHECK(assigned.range.absolute_high == SpelledPitch{6, -1, 6});
+    CHECK(assigned.staff_clefs == std::vector<Clef>{Clef::Bass});
+    CHECK(assigned.rendering.midi_channel == 7);
+    CHECK(assigned.custom_descriptor == "Explicit routing");
+    CHECK(assigned.articulation_vocabulary ==
+          std::vector<ArticulationType>{ArticulationType::Staccato});
+    CHECK(assigned.rendering.articulation_map.at(ArticulationType::Staccato).cc_value == 96);
+    CHECK(std::get<NoteGroup>(score.parts[0].measures[0].voices[0].events[0].payload)
+              .notes[0]
+              .pitch == SpelledPitch{0, 0, 4});
+    const auto midi = compile_to_midi(score);
+    REQUIRE(midi);
+    REQUIRE(midi->midi.notes.size() == 1);
+    CHECK(midi->midi.notes[0].note == 60);
+    CHECK(midi->midi.notes[0].channel == 7);
+    REQUIRE(undo(score, history));
+    CHECK(score.parts[0].definition.instrument_type == InstrumentType::Piano);
+}
+
+TEST_CASE("instrument assignment rejects unknown enums and percussion role migration atomically",
+          "[score-ir][mutation][instrument][atomicity]") {
+    auto score = make_valid_score(1);
+    UndoStack history;
+    const auto before = score_to_json(score);
+    CHECK_FALSE(assign_instrument(score, PartId{100}, static_cast<InstrumentType>(255), &history));
+    CHECK_FALSE(assign_instrument(score, PartId{100}, InstrumentType::SnareDrum, &history));
+    CHECK(score_to_json(score) == before);
+    CHECK(history.undo_entries.empty());
+    score.parts[0].definition.rendering.midi_channel = 0;
+    const auto invalid_rendering = score_to_json(score);
+    CHECK_FALSE(assign_instrument(score, PartId{100}, InstrumentType::Clarinet, &history));
+    CHECK(score_to_json(score) == invalid_rendering);
+    // Same-role custom non-GM channel routing is retained, not normalized.
+    score.parts[0].definition.instrument_type = InstrumentType::SnareDrum;
+    score.parts[0].definition.rendering.midi_channel = 4;
+    REQUIRE(is_compilable(score));
+    REQUIRE(assign_instrument(score, PartId{100}, InstrumentType::BassDrum, &history));
+    CHECK(score.parts[0].definition.rendering.midi_channel == 4);
+}
+
+TEST_CASE("new authoring mutations give version exhaustion precedence and consume nothing",
+          "[score-ir][mutation][authoring][version]") {
+    auto score = make_valid_score(1);
+    score.version = std::numeric_limits<std::uint64_t>::max();
+    UndoStack history;
+    const auto before = score_to_json(score);
+    const auto tempo = set_tempo_map(score, {}, &history);
+    const auto create = create_tuplet_group(score, {}, 0, 0, Beat::zero(), Beat::zero(), &history);
+    const auto remove = remove_tuplet_group(score, TupletId{0}, &history);
+    const auto instrument =
+        assign_instrument(score, PartId{0}, static_cast<InstrumentType>(255), &history);
+    REQUIRE_FALSE(tempo);
+    REQUIRE_FALSE(create);
+    REQUIRE_FALSE(remove);
+    REQUIRE_FALSE(instrument);
+    CHECK(tempo.error() == ErrorCode::ArithmeticOverflow);
+    CHECK(create.error() == ErrorCode::ArithmeticOverflow);
+    CHECK(remove.error() == ErrorCode::ArithmeticOverflow);
+    CHECK(instrument.error() == ErrorCode::ArithmeticOverflow);
+    CHECK(score_to_json(score) == before);
+    CHECK(history.undo_entries.empty());
 }

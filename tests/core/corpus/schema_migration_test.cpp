@@ -1240,8 +1240,8 @@ TEST_CASE("v4 ComposerProfile round-trip preserves every style and pattern-data 
     CHECK(std::holds_alternative<std::string>(p.style_profile.signature_patterns[3].pattern_data));
 }
 
-TEST_CASE("v4 JSON projection names every authoritative corpus field",
-          "[corpus-ir][serialisation][v4][schema]") {
+TEST_CASE("v5 JSON projection names every authoritative corpus field",
+          "[corpus-ir][serialisation][v5][schema]") {
     const auto work = ingested_work_to_json(make_work());
     check_keys(work,
                {"schema_version",
@@ -1285,7 +1285,8 @@ TEST_CASE("v4 JSON projection names every authoritative corpus field",
                 "textural_analysis",
                 "dynamic_analysis",
                 "orchestration_analysis",
-                "motivic_analysis"});
+                "motivic_analysis",
+                "evidence"});
     const auto& harmonic = analysis["harmonic_analysis"];
     check_keys(harmonic,
                {"chord_vocabulary",
@@ -1311,9 +1312,14 @@ TEST_CASE("v4 JSON projection names every authoritative corpus field",
     check_keys(harmonic["tonal_plan"]["key_sequence"][0], {"key", "relationship", "start_bar"});
 
     const auto& melodic = analysis["melodic_analysis"];
-    check_keys(melodic, {"per_voice_analysis", "primary_melody_voice", "thematic_material"});
+    check_keys(melodic,
+               {"per_voice_analysis",
+                "primary_melody_voice",
+                "primary_melody_voice_index",
+                "thematic_material"});
     check_keys(melodic["per_voice_analysis"][0],
                {"part_id",
+                "voice_index",
                 "note_count",
                 "range_low",
                 "range_high",
@@ -1338,7 +1344,7 @@ TEST_CASE("v4 JSON projection names every authoritative corpus field",
     check_keys(melodic["thematic_material"][0],
                {"id", "label", "intervals", "rhythm", "contour", "occurrences"});
     check_keys(melodic["thematic_material"][0]["occurrences"][0],
-               {"position", "part_id", "transformation", "key"});
+               {"position", "part_id", "voice_index", "end", "transformation", "key"});
 
     const auto& rhythmic = analysis["rhythmic_analysis"];
     check_keys(rhythmic,
@@ -1778,9 +1784,9 @@ TEST_CASE("missing schema_version is refused", "[corpus-ir][serialisation]") {
     CHECK(corpus_result.error() == ErrorCode::FormatError);
 }
 
-TEST_CASE("schema_version 5 is refused", "[corpus-ir][serialisation]") {
+TEST_CASE("future corpus schema version is refused", "[corpus-ir][serialisation]") {
     auto j = corpus_to_json(make_corpus());
-    j["schema_version"] = 5;
+    j["schema_version"] = CORPUS_IR_SCHEMA_VERSION + 1;
     auto result = corpus_from_json(j);
     REQUIRE_FALSE(result.has_value());
     CHECK(result.error() == ErrorCode::FormatError);

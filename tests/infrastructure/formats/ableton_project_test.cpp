@@ -302,6 +302,17 @@ AbletonTargetSnapshot make_post_snapshot(const Score& score, const MixGraph& mix
 
 class ProjectFailureTransport final : public LomTransport {
   public:
+    Result<std::optional<LegacyPlanningAuthority>> capture_legacy_authority() override {
+        return std::optional(
+            LegacyPlanningAuthority{nlohmann::json{{"schema_version", 1},
+                                                   {"bridge_instance", std::string(32, 'b')},
+                                                   {"document_token", std::string(32, 'd')},
+                                                   {"scope_id", std::string(32, 'a')}},
+                                    0,
+                                    std::string(32, '1')});
+    }
+    Result<void> activate_legacy_workflow(const LegacyWorkflowRecipe&) override { return {}; }
+
     explicit ProjectFailureTransport(std::size_t fail_at) : fail_at_(fail_at) {}
 
     LomResponse send(const LomRequest& request) override {
@@ -367,6 +378,17 @@ enum class FinalParameterMode : std::uint8_t {
 
 class ProjectNoteTransport final : public LomTransport {
   public:
+    Result<std::optional<LegacyPlanningAuthority>> capture_legacy_authority() override {
+        return std::optional(
+            LegacyPlanningAuthority{nlohmann::json{{"schema_version", 1},
+                                                   {"bridge_instance", std::string(32, 'b')},
+                                                   {"document_token", std::string(32, 'd')},
+                                                   {"scope_id", std::string(32, 'a')}},
+                                    0,
+                                    std::string(32, '1')});
+    }
+    Result<void> activate_legacy_workflow(const LegacyWorkflowRecipe&) override { return {}; }
+
     ProjectNoteTransport(AbletonTargetSnapshot before,
                          AbletonTargetSnapshot after,
                          FinalNoteMode mode = FinalNoteMode::Exact,

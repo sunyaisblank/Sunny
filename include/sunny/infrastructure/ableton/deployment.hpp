@@ -36,6 +36,7 @@ struct AbletonMutationJournalEntry {
     AbletonMutationOutcome outcome = AbletonMutationOutcome::Indeterminate;
     std::optional<LomValue> response_value;
     std::optional<std::string> response_error;
+    std::shared_ptr<const LegacyOperationReceipt> legacy_receipt = nullptr;
 
     [[nodiscard]] bool target_may_have_mutated() const {
         return outcome == AbletonMutationOutcome::Acknowledged ||
@@ -69,6 +70,18 @@ class JournaledLomTransport final : public LomTransport {
     [[nodiscard]] sunny::core::Result<std::optional<std::uint32_t>> return_track_count() override;
     [[nodiscard]] sunny::core::Result<std::optional<std::uint32_t>>
     device_count(const LomPath& track_path) override;
+
+    sunny::core::Result<std::optional<LegacyPlanningAuthority>>
+    capture_legacy_authority() override {
+        return underlying_.capture_legacy_authority();
+    }
+    sunny::core::Result<void>
+    activate_legacy_workflow(const LegacyWorkflowRecipe& recipe) override {
+        return underlying_.activate_legacy_workflow(recipe);
+    }
+    sunny::core::Result<void> finish_legacy_workflow(bool completed) override {
+        return underlying_.finish_legacy_workflow(completed);
+    }
 
     void set_phase(AbletonDeploymentPhase phase) { phase_ = phase; }
     [[nodiscard]] const std::vector<AbletonMutationJournalEntry>& journal() const {

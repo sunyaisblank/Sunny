@@ -11,9 +11,11 @@
 #include <limits>
 #include <map>
 #include <set>
+#include <sunny/core/score/projection.hpp>
 #include <sunny/core/score/queries.hpp>
 #include <sunny/core/score/time.hpp>
 #include <sunny/core/score/views.hpp>
+#include <tuple>
 
 namespace sunny::core {
 
@@ -54,16 +56,19 @@ struct CollectedNote {
     Beat duration;
     bool is_melody = false;
     bool is_bass = false;
+    PartId source_part{};
+    std::uint8_t source_voice = 0;
 };
 
-std::vector<CollectedNote> collect_notes_from_measure(const Measure& measure) {
+std::vector<CollectedNote> collect_notes_from_measure(const Measure& measure, PartId part_id) {
     std::vector<CollectedNote> notes;
     for (const auto& voice : measure.voices) {
         for (const auto& event : voice.events) {
             const auto* ng = event.as_note_group();
             if (!ng) continue;
             for (const auto& note : ng->notes) {
-                notes.push_back({note, event.offset, ng->duration});
+                notes.push_back(
+                    {note, event.offset, ng->duration, false, false, part_id, voice.voice_index});
             }
         }
     }
@@ -89,10 +94,10 @@ EventId allocate_view_event_id(DerivedEventIdCursor& event_ids) {
 
 /// Build a Voice from collected notes, grouping simultaneous notes into chords
 /// and filling gaps with rests. The notes vector is sorted by offset internally.
-Voice build_voice_from_collected(std::vector<CollectedNote>& notes,
-                                 Beat measure_dur,
-                                 std::uint8_t voice_index,
-                                 DerivedEventIdCursor& event_ids) {
+Result<Voice> build_voice_from_collected(std::vector<CollectedNote>& notes,
+                                         Beat measure_dur,
+                                         std::uint8_t voice_index,
+                                         DerivedEventIdCursor& event_ids) {
     Voice voice{voice_index, {}, {}};
 
     if (notes.empty()) {
@@ -101,36 +106,117 @@ Voice build_voice_from_collected(std::vector<CollectedNote>& notes,
         return voice;
     }
 
-    std::sort(notes.begin(), notes.end(), [](const CollectedNote& a, const CollectedNote& b) {
-        return a.offset < b.offset;
-    });
-
-    Beat current = Beat::zero();
-    std::size_t i = 0;
-    while (i < notes.size()) {
-        Beat off = notes[i].offset;
-        if (current < off) {
+    std::vector<SymbolicNoteSpan> spans;
+    spans.reserve(notes.size());
+    for (const auto& note : notes) {
+        auto end = checked_add(note.offset, note.duration);
+        if (!end) return std::unexpected(end.error());
+        SymbolicNoteSpan span;
+        span.pitch = note.note.pitch;
+        span.start = note.offset;
+        span.end = *end;
+        spans.push_back(span);
+    }
+    const std::array<Beat, 2> bounds{Beat::zero(), measure_dur};
+    auto slices = partition_symbolic_notes(spans, bounds);
+    if (!slices) return std::unexpected(slices.error());
+    for (const auto& slice : *slices) {
+        auto duration = checked_sub(slice.end, slice.start);
+        if (!duration) return std::unexpected(duration.error());
+        if (slice.sounding_indices.empty()) {
             voice.events.push_back(
-                Event{allocate_view_event_id(event_ids), current, RestEvent{off - current, true}});
-            current = off;
+                Event{allocate_view_event_id(event_ids), slice.start, RestEvent{*duration, true}});
+        } else {
+            NoteGroup group;
+            group.duration = *duration;
+            for (auto index : slice.sounding_indices) {
+                Note note = notes[index].note;
+                // Splitting an ordinary allocation creates a continuation, not
+                // a new attack. Tuplet scaling is already in the exact duration;
+                // the derived notation respells segments without the old bracket.
+                if (!note.grace && slice.end < spans[index].end) note.tie_forward = true;
+                group.notes.push_back(std::move(note));
+            }
+            voice.events.push_back(
+                Event{allocate_view_event_id(event_ids), slice.start, std::move(group)});
         }
-        NoteGroup ng;
-        Beat dur = notes[i].duration;
-        while (i < notes.size() && notes[i].offset == off) {
-            ng.notes.push_back(notes[i].note);
-            dur = notes[i].duration;
-            ++i;
-        }
-        ng.duration = dur;
-        voice.events.push_back(Event{allocate_view_event_id(event_ids), current, std::move(ng)});
-        current = current + dur;
     }
-    if (current < measure_dur) {
-        voice.events.push_back(Event{
-            allocate_view_event_id(event_ids), current, RestEvent{measure_dur - current, true}});
-    }
-
     return voice;
+}
+
+using SourceVoice = std::tuple<PartId, std::uint8_t, std::uint8_t>;
+using ReductionLanes = std::map<SourceVoice, std::uint8_t>;
+
+/** Assign whole source voices so duration ties retain their lane across bars. */
+Result<ReductionLanes> assign_reduction_lanes(std::span<const SymbolicNoteSpan> spans,
+                                              const std::set<PartId>& parts) {
+    std::map<SourceVoice, std::vector<SymbolicNoteSpan>> sources;
+    for (const auto& span : spans) {
+        if (!parts.empty() && !parts.contains(span.part_id)) continue;
+        const std::uint8_t staff = midi_value(span.pitch) >= 60 ? 0 : 1;
+        sources[{span.part_id, span.voice_index, staff}].push_back(span);
+    }
+    std::array<std::vector<std::vector<SymbolicNoteSpan>>, 2> lanes;
+    lanes[0].resize(1);
+    lanes[1].resize(1);
+    std::array<std::vector<std::uint8_t>, 2> indices{{{0}, {1}}};
+    std::uint16_t next = 2;
+    ReductionLanes result;
+    for (const auto& [source, notes] : sources) {
+        const auto staff = std::get<2>(source);
+        const auto compatible = [&](const std::vector<SymbolicNoteSpan>& lane) {
+            for (const auto& note : notes) {
+                for (const auto& existing : lane) {
+                    if (note.start >= existing.end || existing.start >= note.end) continue;
+                    if (note.pitch == existing.pitch || note.grace_type != existing.grace_type)
+                        return false;
+                    if (note.grace && (note.start != existing.start || note.end != existing.end))
+                        return false;
+                }
+            }
+            return true;
+        };
+        auto lane = std::find_if(lanes[staff].begin(), lanes[staff].end(), compatible);
+        if (lane == lanes[staff].end()) {
+            if (next > std::numeric_limits<std::uint8_t>::max())
+                return std::unexpected(ErrorCode::ExcessiveVoices);
+            lanes[staff].push_back(notes);
+            indices[staff].push_back(static_cast<std::uint8_t>(next++));
+            result[source] = indices[staff].back();
+        } else {
+            const auto index = static_cast<std::size_t>(lane - lanes[staff].begin());
+            lane->insert(lane->end(), notes.begin(), notes.end());
+            result[source] = indices[staff][index];
+        }
+    }
+    return result;
+}
+
+/** Keep grace types and independent overlapping unisons in their assigned voices. */
+Result<std::vector<Voice>> build_staff_voices(std::vector<CollectedNote>& notes,
+                                              Beat measure_dur,
+                                              std::uint8_t primary_index,
+                                              std::uint8_t staff_index,
+                                              const ReductionLanes& assignments,
+                                              DerivedEventIdCursor& event_ids) {
+    std::map<std::uint8_t, std::vector<CollectedNote>> lanes;
+    lanes.try_emplace(primary_index);
+    for (const auto& [source, index] : assignments) {
+        if (std::get<2>(source) == staff_index) lanes.try_emplace(index);
+    }
+    for (const auto& note : notes) {
+        const auto lane = assignments.find({note.source_part, note.source_voice, staff_index});
+        if (lane == assignments.end()) return std::unexpected(ErrorCode::InvariantViolation);
+        lanes[lane->second].push_back(note);
+    }
+    std::vector<Voice> result;
+    for (auto& [index, lane] : lanes) {
+        auto voice = build_voice_from_collected(lane, measure_dur, index, event_ids);
+        if (!voice) return std::unexpected(voice.error());
+        voice->staff_index = staff_index;
+        result.push_back(std::move(*voice));
+    }
+    return result;
 }
 
 /// Display name for an InstrumentFamily.
@@ -323,11 +409,15 @@ void mark_inner_cue(std::vector<CollectedNote>& notes) {
 // piano_reduction
 // =============================================================================
 
-Score piano_reduction(const Score& score, ScoreId result_id) {
+Result<Score> piano_reduction(const Score& score, ScoreId result_id) {
+    auto source_intervals = project_symbolic_notes(score);
+    if (!source_intervals) return std::unexpected(source_intervals.error());
     Score result = copy_score_skeleton(score, result_id);
     DerivedEventIdCursor event_ids;
 
     if (score.metadata.total_bars == 0) return result;
+    auto lane_plan = assign_reduction_lanes(*source_intervals, {});
+    if (!lane_plan) return std::unexpected(lane_plan.error());
 
     Part piano;
     piano.id = PartId{900000};
@@ -339,6 +429,16 @@ Score piano_reduction(const Score& score, ScoreId result_id) {
     piano.definition.staff_clefs = {Clef::Treble, Clef::Bass};
     piano.definition.range = PitchRange{
         SpelledPitch{5, 0, 0}, SpelledPitch{0, 0, 8}, SpelledPitch{0, 0, 2}, SpelledPitch{0, 0, 7}};
+    // A reduction retains symbolic pitches even when a pianist cannot play
+    // their register; the comfortable range still supplies that advisory.
+    for (const auto& source : score.parts) {
+        if (midi_value(source.definition.range.absolute_low) <
+            midi_value(piano.definition.range.absolute_low))
+            piano.definition.range.absolute_low = source.definition.range.absolute_low;
+        if (midi_value(source.definition.range.absolute_high) >
+            midi_value(piano.definition.range.absolute_high))
+            piano.definition.range.absolute_high = source.definition.range.absolute_high;
+    }
 
     // Determine whether orchestration annotations exist for melody/bass tagging
     bool has_orchestration = !score.orchestration_annotations.empty();
@@ -399,7 +499,7 @@ Score piano_reduction(const Score& score, ScoreId result_id) {
 
         for (const auto& part : score.parts) {
             if (bar - 1 >= part.measures.size()) continue;
-            auto collected = collect_notes_from_measure(part.measures[bar - 1]);
+            auto collected = collect_notes_from_measure(part.measures[bar - 1], part.id);
             for (auto& cn : collected) {
                 int mv = midi_value(cn.note.pitch);
                 // Tag melody and bass notes
@@ -423,12 +523,15 @@ Score piano_reduction(const Score& score, ScoreId result_id) {
             limit_voices(bass_notes, false, 4);
         }
 
-        Voice treble_voice = build_voice_from_collected(treble_notes, measure_dur, 0, event_ids);
-        Voice bass_voice = build_voice_from_collected(bass_notes, measure_dur, 1, event_ids);
-        treble_voice.staff_index = 0;
-        bass_voice.staff_index = 1;
-
-        Measure measure{bar, {treble_voice, bass_voice}, std::nullopt, std::nullopt};
+        auto voices = build_staff_voices(treble_notes, measure_dur, 0, 0, *lane_plan, event_ids);
+        auto bass_voices = build_staff_voices(bass_notes, measure_dur, 1, 1, *lane_plan, event_ids);
+        if (!voices) return std::unexpected(voices.error());
+        if (!bass_voices) return std::unexpected(bass_voices.error());
+        voices->insert(voices->end(), bass_voices->begin(), bass_voices->end());
+        std::sort(voices->begin(), voices->end(), [](const Voice& a, const Voice& b) {
+            return a.voice_index < b.voice_index;
+        });
+        Measure measure{bar, std::move(*voices), std::nullopt, std::nullopt};
         piano.measures.push_back(std::move(measure));
     }
 
@@ -440,7 +543,9 @@ Score piano_reduction(const Score& score, ScoreId result_id) {
 // short_score
 // =============================================================================
 
-Score short_score(const Score& score, ScoreId result_id) {
+Result<Score> short_score(const Score& score, ScoreId result_id) {
+    auto source_intervals = project_symbolic_notes(score);
+    if (!source_intervals) return std::unexpected(source_intervals.error());
     Score result = copy_score_skeleton(score, result_id);
     DerivedEventIdCursor event_ids;
 
@@ -463,12 +568,30 @@ Score short_score(const Score& score, ScoreId result_id) {
             }
         }
         if (!has_notes) continue;
+        std::set<PartId> family_ids;
+        for (const auto* part : parts)
+            family_ids.insert(part->id);
+        auto lane_plan = assign_reduction_lanes(*source_intervals, family_ids);
+        if (!lane_plan) return std::unexpected(lane_plan.error());
 
         Part family_part;
         family_part.id = PartId{part_id_counter++};
         family_part.definition.name = family_display_name(family);
         family_part.definition.abbreviation = family_display_name(family).substr(0, 4) + ".";
         family_part.definition.instrument_type = parts[0]->definition.instrument_type;
+        family_part.definition.range = parts[0]->definition.range;
+        for (const auto* source : parts) {
+            const auto& range = source->definition.range;
+            auto& target = family_part.definition.range;
+            if (midi_value(range.absolute_low) < midi_value(target.absolute_low))
+                target.absolute_low = range.absolute_low;
+            if (midi_value(range.absolute_high) > midi_value(target.absolute_high))
+                target.absolute_high = range.absolute_high;
+            if (midi_value(range.comfortable_low) < midi_value(target.comfortable_low))
+                target.comfortable_low = range.comfortable_low;
+            if (midi_value(range.comfortable_high) > midi_value(target.comfortable_high))
+                target.comfortable_high = range.comfortable_high;
+        }
         family_part.definition.staff_count = 2;
         family_part.definition.staff_clefs = {Clef::Treble, Clef::Bass};
 
@@ -481,7 +604,7 @@ Score short_score(const Score& score, ScoreId result_id) {
 
             for (const auto* part : parts) {
                 if (bar - 1 >= part->measures.size()) continue;
-                auto collected = collect_notes_from_measure(part->measures[bar - 1]);
+                auto collected = collect_notes_from_measure(part->measures[bar - 1], part->id);
                 for (const auto& cn : collected) {
                     int mv = midi_value(cn.note.pitch);
                     if (mv >= 60) {
@@ -496,12 +619,17 @@ Score short_score(const Score& score, ScoreId result_id) {
             mark_inner_cue(treble_notes);
             mark_inner_cue(bass_notes);
 
-            Voice treble = build_voice_from_collected(treble_notes, measure_dur, 0, event_ids);
-            Voice bass = build_voice_from_collected(bass_notes, measure_dur, 1, event_ids);
-            treble.staff_index = 0;
-            bass.staff_index = 1;
-
-            Measure measure{bar, {treble, bass}, std::nullopt, std::nullopt};
+            auto voices =
+                build_staff_voices(treble_notes, measure_dur, 0, 0, *lane_plan, event_ids);
+            auto bass_voices =
+                build_staff_voices(bass_notes, measure_dur, 1, 1, *lane_plan, event_ids);
+            if (!voices) return std::unexpected(voices.error());
+            if (!bass_voices) return std::unexpected(bass_voices.error());
+            voices->insert(voices->end(), bass_voices->begin(), bass_voices->end());
+            std::sort(voices->begin(), voices->end(), [](const Voice& a, const Voice& b) {
+                return a.voice_index < b.voice_index;
+            });
+            Measure measure{bar, std::move(*voices), std::nullopt, std::nullopt};
             family_part.measures.push_back(std::move(measure));
         }
 

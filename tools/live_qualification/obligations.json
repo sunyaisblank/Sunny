@@ -1,0 +1,259 @@
+{
+  "source_url": "https://github.com/sunyaisblank/Sunny/issues/22",
+  "read_at": "2026-10-05",
+  "every_obligation": [
+    {
+      "id": "runtime_containers",
+      "obligation": "StringVector/IntVector/Vector, value_items/scale_intervals/scenes/arrangement_clips/take_lanes",
+      "probe": "diagnostic inventory + note_shapes",
+      "required_evidence": "raw Python type, iterable shape and nonempty/manual take-lane witness",
+      "boundary": "missing getter stays unknown",
+      "status": "untested",
+      "actual_version": null,
+      "log": null,
+      "manual_evidence": null
+    },
+    {
+      "id": "display_value",
+      "obligation": "Actual DeviceParameter getter/setter version introduction",
+      "probe": "inventory + display_same_value_set per claimed host",
+      "required_evidence": "raw getter type, setter outcome/internal readback and exact host version",
+      "boundary": "modern str_for_value pass does not establish legacy display_value",
+      "status": "untested",
+      "actual_version": null,
+      "log": null,
+      "manual_evidence": null
+    },
+    {
+      "id": "scene_flags",
+      "obligation": "tempo_enabled/time_signature_enabled on11/current",
+      "probe": "manual diagnostic Scene + scene_flags_same_value_set",
+      "required_evidence": "actual property types and same-value setter outcomes",
+      "boundary": "unknown cannot be unconditional legacy support",
+      "status": "untested",
+      "actual_version": null,
+      "log": null,
+      "manual_evidence": null
+    },
+    {
+      "id": "groove_none",
+      "obligation": "clip.groove=None clearing",
+      "probe": "UI load real Groove; inventory; clear_groove",
+      "required_evidence": "before has_groove true, real Groove object, after false/no groove",
+      "boundary": "do not test only already-empty clip",
+      "status": "untested",
+      "actual_version": null,
+      "log": null,
+      "manual_evidence": null
+    },
+    {
+      "id": "schedule_zero",
+      "obligation": "schedule_message(0) invoked from socket thread",
+      "probe": "independent HostProbe socket/callback thread trace + normal Sunny requests",
+      "required_evidence": "callback off socket thread/current constructor thread; latency/UI behavior",
+      "boundary": "one host behavior observation, no blanket thread-safety proof",
+      "status": "untested",
+      "actual_version": null,
+      "log": null,
+      "manual_evidence": null
+    },
+    {
+      "id": "insertion_return",
+      "obligation": "add_new_notes exact Python return",
+      "probe": "note_shapes",
+      "required_evidence": "native return type/None/IDs vs independently queried population",
+      "boundary": "no synthetic IDs/retry after partial create",
+      "status": "untested",
+      "actual_version": null,
+      "log": null,
+      "manual_evidence": null
+    },
+    {
+      "id": "note_float_precision",
+      "obligation": "Triplet float32/float64 readback",
+      "probe": "note_shapes + independent_notes",
+      "required_evidence": "raw hex/type and absolute time error",
+      "boundary": "roundoff warning; API/container mismatch is failure",
+      "status": "untested",
+      "actual_version": null,
+      "log": null,
+      "manual_evidence": null
+    },
+    {
+      "id": "chorus_phaser_names",
+      "obligation": "Chorus-Ensemble/Phaser-Flanger names and Flanger mode",
+      "probe": "manual diagnostic device chain + inventory",
+      "required_evidence": "exact browser/display/class/original controls; actual Flanger mode",
+      "boundary": "same shared browser entry alone is insufficient",
+      "status": "untested",
+      "actual_version": null,
+      "log": null,
+      "manual_evidence": null
+    },
+    {
+      "id": "running_cue",
+      "obligation": "sunny_set_cue temporarily changes current_song_time while running",
+      "probe": "running_cue.py in separately saved silent scratch Set",
+      "required_evidence": "before/after time/cues/playback, actual native response, UI/audible record",
+      "boundary": "no unrelated performance Set; no implicit retry",
+      "status": "untested",
+      "actual_version": null,
+      "log": null,
+      "manual_evidence": null
+    },
+    {
+      "id": "large_set",
+      "obligation": "sunny_get_target_snapshot duration vs timeout",
+      "probe": "manual size-series + snapshot-timing + actual coordinator plan",
+      "required_evidence": "counts, framebytes, timings against10s admission/20s response/16MiB",
+      "boundary": "routing256 bound remains explicit;257 unsupported-before-fence",
+      "status": "untested",
+      "actual_version": null,
+      "log": null,
+      "manual_evidence": null
+    },
+    {
+      "id": "legacy_11_range",
+      "obligation": "11.0 range shape/coverage and outside notes",
+      "probe": "note_shapes on exact11.0; bridge ranged/ID queries",
+      "required_evidence": "onlystarts0,1/3,3.75 in[0,4); crossingduration1; outsideIDs4,8 retained; fullAPI absent",
+      "boundary": "entire_clip_population_observed=false; no inaccessible take-lane absence",
+      "status": "untested",
+      "actual_version": null,
+      "log": null,
+      "manual_evidence": null
+    },
+    {
+      "id": "modern_note_branch",
+      "obligation": "11.1+/selected12 full-population shape",
+      "probe": "note_shapes + actual whole author/revise",
+      "required_evidence": "full five note population;9fields+IDs and literals in owning workflow",
+      "boundary": "11.0 optional branch does not qualify12 ABI",
+      "status": "untested",
+      "actual_version": null,
+      "log": null,
+      "manual_evidence": null
+    },
+    {
+      "id": "host_matrix",
+      "obligation": "Exact build/edition/license/OS/commit/bridge/container topology",
+      "probe": "candidate/config/About metadata",
+      "required_evidence": "byte hashes + actual version/license facts per row",
+      "boundary": "12.4 primary;12.3 candidate; no Suite/Max assumption",
+      "status": "untested",
+      "actual_version": null,
+      "log": null,
+      "manual_evidence": null
+    },
+    {
+      "id": "complete_owning_authoring",
+      "obligation": "Owned complete project create/inspect/revise with no duplicate tracks or scene replacement",
+      "probe": "host_runner author/reconnect/revise + independent UI/native observations",
+      "required_evidence": "literal notes, retained actual IDs/cohorts, native modes/physical/Mixer/Return/send/Song/lane",
+      "boundary": "selected contract only; no completeproject/DSP flags",
+      "status": "untested",
+      "actual_version": null,
+      "log": null,
+      "manual_evidence": null
+    },
+    {
+      "id": "restart_lost_reply",
+      "obligation": "Restart/reconnect/original journal query and no duplicate effects",
+      "probe": "fault_proxy + reconcile/resume; actual process/container restarts",
+      "required_evidence": "predispatch durable may_have_sent fence and real withheld reply; original terminal evidence",
+      "boundary": "no compensation/automatic replay; unknown_epoch is not absence",
+      "status": "untested",
+      "actual_version": null,
+      "log": null,
+      "manual_evidence": null
+    },
+    {
+      "id": "native_envelope_persistence",
+      "obligation": "Native Session envelope survives actual Save As/Live close/reopen",
+      "probe": "manual Save As/close/reopen then reopen-readback before recover",
+      "required_evidence": "independent native lookup/samples and visible envelope; no reauthor/native parameter write",
+      "boundary": "static values/samples/persistence are distinct; no live.remote~",
+      "status": "untested",
+      "actual_version": null,
+      "log": null,
+      "manual_evidence": null
+    },
+    {
+      "id": "take_lane_versions",
+      "obligation": "Live11 take lanes exist independently of missing LOM API",
+      "probe": "manual nonempty take lane + direct getter inventory",
+      "required_evidence": "exact version/API availability vs UI lane existence",
+      "boundary": "no missingAPI=>no lanes inference",
+      "status": "untested",
+      "actual_version": null,
+      "log": null,
+      "manual_evidence": null
+    },
+    {
+      "id": "fader_send_floor",
+      "obligation": "Finite-70 model assumption versus actual -inf/UI/SDK",
+      "probe": "manually set dedicated fader/send minimum then inventory",
+      "required_evidence": "actual internal/min/max/display_value/str_for_value type+unit/infinity",
+      "boundary": "no fabricated finite fallback",
+      "status": "untested",
+      "actual_version": null,
+      "log": null,
+      "manual_evidence": null
+    },
+    {
+      "id": "routing_names",
+      "obligation": "Output channel disabled empty string/Track In/native locale",
+      "probe": "inventory routing rows + actual public preview/apply phases",
+      "required_evidence": "actual current labels/advertised objects/attachments/type and channel readbacks",
+      "boundary": "no English/category default synthesis",
+      "status": "untested",
+      "actual_version": null,
+      "log": null,
+      "manual_evidence": null
+    },
+    {
+      "id": "routing_category",
+      "obligation": "RoutingType.category availability/numeric values",
+      "probe": "direct inventory routing_native_rows",
+      "required_evidence": "raw category type/numeric/hash/attached native target on exacthost",
+      "boundary": "managed hash identity differs from legacy category:name; epoch-only",
+      "status": "untested",
+      "actual_version": null,
+      "log": null,
+      "manual_evidence": null
+    },
+    {
+      "id": "track_devices_mixer",
+      "obligation": "Whether Track.devices includes MixerDevice",
+      "probe": "inventory + retained Selected proof",
+      "required_evidence": "actual full container/cohort and mixer equality; parameter accessor errors",
+      "boundary": "never assume Mixer.parameters if absent",
+      "status": "untested",
+      "actual_version": null,
+      "log": null,
+      "manual_evidence": null
+    },
+    {
+      "id": "dry_wet_table",
+      "obligation": "Native Dry/Wet table from ableton_timbre.cpp",
+      "probe": "manually insert Saturator/Delay/Reverb/Chorus-Ensemble/Phaser-Flanger/Compressor and inventory",
+      "required_evidence": "actual unique Dry/Wet original parameter/type/domain/unit across selected modes",
+      "boundary": "documentation table alone is not host evidence",
+      "status": "untested",
+      "actual_version": null,
+      "log": null,
+      "manual_evidence": null
+    },
+    {
+      "id": "routing_and_modes_persistence",
+      "obligation": "Exact native modes/units/routing and saved reopen",
+      "probe": "whole coordinator + direct native capture + manual output routes/Group recovery",
+      "required_evidence": "actual advertised labels, native properties, finite values, independent persisted proof",
+      "boundary": "Groups hierarchy/Return/Mixer grants separate; unsupported portions precise",
+      "status": "untested",
+      "actual_version": null,
+      "log": null,
+      "manual_evidence": null
+    }
+  ]
+}

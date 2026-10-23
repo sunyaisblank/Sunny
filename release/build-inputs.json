@@ -1,0 +1,167 @@
+{
+  "build_inputs_schema_version": 1,
+  "release_platform": "linux/amd64",
+  "configuration_schema_version": 1,
+  "base_image": {
+    "reference": "ubuntu:24.04@sha256:f610ab94648195aa356059f5b41d6085c9d4d903c072430cdd1af7bdb646106b",
+    "manifest_digest": "sha256:f610ab94648195aa356059f5b41d6085c9d4d903c072430cdd1af7bdb646106b",
+    "config_digest": "sha256:69f919497cada9a8611f3de61df902d9f94bf20f84552ef5bd93125c38608ef9",
+    "source": "https://git.launchpad.net/cloud-images/+oci/ubuntu-base",
+    "source_revision": "ab7012ab5b3136a47103c5453cb27d07445ac13d",
+    "created": "2026-09-17T00:00:00Z",
+    "provenance": "https://hub.docker.com/_/ubuntu",
+    "layer_digests": [
+      "sha256:a60ef8ec184edb5ed91f5983f00261359fb2fe20f603e8d488b9477d32fcad70"
+    ],
+    "diff_ids": [
+      "sha256:d81fb2a7c6ee3be05fdefaa7fd223be219c1ab172083ec1b994c3ecda33ac0a8"
+    ]
+  },
+  "ubuntu": {
+    "snapshot": "20261001T000000Z",
+    "snapshot_service": "https://snapshot.ubuntu.com/ubuntu/",
+    "suites": [
+      "noble",
+      "noble-updates",
+      "noble-security"
+    ],
+    "components": [
+      "main",
+      "universe"
+    ],
+    "package_indexes": [
+      {
+        "suite": "noble",
+        "component": "main",
+        "sha256": "e0d7e4cbb09d2aa7f9e104a1488817417bc9d85f3e5d9a21156a52ec641ae531"
+      },
+      {
+        "suite": "noble-security",
+        "component": "main",
+        "sha256": "7e93cf7e90a4ae33375e128933b3d51284d4116e88517660851e5eb76e001dea"
+      },
+      {
+        "suite": "noble-security",
+        "component": "universe",
+        "sha256": "acecfdfae25d87836e93914266d9a69b4a5c1ffb49f1b6c4c14891c51e75e609"
+      },
+      {
+        "suite": "noble",
+        "component": "universe",
+        "sha256": "ce57756edcce0a5f7993ceb89057e1510148e04e3b85a066d780e4bc00485c8a"
+      },
+      {
+        "suite": "noble-updates",
+        "component": "main",
+        "sha256": "d1f1263046ce96b3ebceb94b2dbb26698a8498ff36a6cbcd8c83dac2eae37133"
+      },
+      {
+        "suite": "noble-updates",
+        "component": "universe",
+        "sha256": "8d82d5539392eb9a3007742ad34f56c6f7f1b3628bb9558a925d8db6a646c156"
+      }
+    ],
+    "builder_packages": [
+      "ca-certificates",
+      "cmake",
+      "g++",
+      "git",
+      "ninja-build",
+      "python3"
+    ],
+    "runtime_packages": [
+      "libstdc++6",
+      "python3"
+    ],
+    "packages": {
+      "ca-certificates": {
+        "version": "20260601~24.04.1",
+        "suite": "noble-updates",
+        "component": "main",
+        "filename": "pool/main/c/ca-certificates/ca-certificates_20260601~24.04.1_all.deb",
+        "sha256": "6bac2a01979e210d9eac1d4d56747ec709ea60654744d66705dc3c36e7629e50"
+      },
+      "cmake": {
+        "version": "3.28.3-1build7",
+        "suite": "noble",
+        "component": "main",
+        "filename": "pool/main/c/cmake/cmake_3.28.3-1build7_amd64.deb",
+        "sha256": "4b0a7f8c0daf27b26b46997d994ae5d1ee7a3d11dfcda9f7627bb1462c162295"
+      },
+      "g++": {
+        "version": "4:13.2.0-7ubuntu1",
+        "suite": "noble",
+        "component": "main",
+        "filename": "pool/main/g/gcc-defaults/g++_13.2.0-7ubuntu1_amd64.deb",
+        "sha256": "800a84b369c64b18d65f0fb5c1533de0446c880ee4f1cadad64e3363327f63f0"
+      },
+      "git": {
+        "version": "1:2.43.0-1ubuntu7.3",
+        "suite": "noble-updates",
+        "component": "main",
+        "filename": "pool/main/g/git/git_2.43.0-1ubuntu7.3_amd64.deb",
+        "sha256": "099bb129f543adc4c14203334b0fa0a909f8bf038c4d56bc9cc7c774ebf78f87"
+      },
+      "libstdc++6": {
+        "version": "14.2.0-4ubuntu2~24.04.1",
+        "suite": "noble-updates",
+        "component": "main",
+        "filename": "pool/main/g/gcc-14/libstdc++6_14.2.0-4ubuntu2~24.04.1_amd64.deb",
+        "sha256": "a51f8de7829211db961a31f02158058ad1a95f92ac6d0a5dff6350e2821c54c0"
+      },
+      "ninja-build": {
+        "version": "1.11.1-2",
+        "suite": "noble",
+        "component": "universe",
+        "filename": "pool/universe/n/ninja-build/ninja-build_1.11.1-2_amd64.deb",
+        "sha256": "6a17f76a0f75586f1292f6c61a9b07fd0dec963baf6a102b17673f601c6b323a"
+      },
+      "python3": {
+        "version": "3.12.3-0ubuntu2.1",
+        "suite": "noble-updates",
+        "component": "main",
+        "filename": "pool/main/p/python3-defaults/python3_3.12.3-0ubuntu2.1_amd64.deb",
+        "sha256": "e691b9cc40841c41bbdc50bd794c876cb1b1801306ea27b06e9a1458180df1e9"
+      }
+    },
+    "resolution": "Pinned base plus the signed immutable snapshot fixes transitive apt inputs; release provenance records complete installed inventories."
+  },
+  "dependencies": {
+    "json": {
+      "repository": "https://github.com/nlohmann/json.git",
+      "revision": "9cca280a4d0ccf0c08f47a99aa71d1b0e52f8d03",
+      "version": "3.11.3"
+    },
+    "pugixml": {
+      "repository": "https://github.com/zeux/pugixml.git",
+      "revision": "db78afc2b7d8f043b4bc6b185635d949ea2ed2a8",
+      "version": "1.14"
+    },
+    "Catch2": {
+      "repository": "https://github.com/catchorg/Catch2.git",
+      "revision": "6e79e682b726f524310d55dec8ddac4e9c52fb5f",
+      "version": "3.4.0"
+    },
+    "pybind11": {
+      "repository": "https://github.com/pybind/pybind11.git",
+      "revision": "8a099e44b3d5f85b20f05828d919d2332a8de841",
+      "version": "2.11.1"
+    }
+  },
+  "release_build": {
+    "build_type": "Release",
+    "tests": false,
+    "python_bindings": false,
+    "parallel": 2,
+    "runtime_uid": 1001,
+    "runtime_gid": 1001
+  },
+  "provenance_notes": [
+    "Base platform manifest and config were read from the official Ubuntu image with docker buildx imagetools inspect.",
+    "The ordered base DiffID was independently read from registry config bytes verified against config_digest; compressed layer descriptors may change across Docker stores.",
+    "Package versions, filenames and SHA256 values were read from the named snapshot Packages.gz indexes. apt verifies signed Release metadata during the build.",
+    "Dependency revisions were independently observed in the candidate fetched git source checkouts; release CMake verifies actual checkout HEAD.",
+    "SOURCE_DATE_EPOCH is the concrete source commit time. Input closure does not claim independent builders produce byte-identical compiler output."
+  ],
+  "configuration_contract": "versioned_json"
+}

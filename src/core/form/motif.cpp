@@ -16,6 +16,9 @@ namespace sunny::core {
 // =============================================================================
 
 Result<std::vector<MidiNote>> motif_transpose(std::span<const MidiNote> pitches, int semitones) {
+    if (!pitches.empty() && (semitones < -127 || semitones > 127)) {
+        return std::unexpected(ErrorCode::InvalidMidiNote);
+    }
     std::vector<MidiNote> result;
     result.reserve(pitches.size());
     for (auto p : pitches) {
@@ -161,16 +164,12 @@ MotivicTransform classify_transformation(std::span<const MidiNote> original,
     }
     if (is_transposition) return MotivicTransform::Transposition;
 
-    // Check inversion (intervals negated, relative to first note)
-    auto inv_result = motif_invert(original);
-    if (!inv_result) return MotivicTransform::Unknown;
-    auto& inv = *inv_result;
-    // Inversion preserves first note; check if transformed matches inversion transposed
-    int inv_diff = static_cast<int>(transformed[0]) - static_cast<int>(inv[0]);
+    // Classification compares mathematical pitch relations. An intermediate
+    // first-note-axis inversion need not itself fit the MIDI generation domain.
+    int inv_sum = static_cast<int>(transformed[0]) + static_cast<int>(original[0]);
     bool is_inversion = true;
     for (std::size_t i = 0; i < original.size(); ++i) {
-        int expected = static_cast<int>(inv[i]) + inv_diff;
-        if (static_cast<int>(transformed[i]) != expected) {
+        if (static_cast<int>(transformed[i]) + static_cast<int>(original[i]) != inv_sum) {
             is_inversion = false;
             break;
         }
@@ -178,11 +177,12 @@ MotivicTransform classify_transformation(std::span<const MidiNote> original,
     if (is_inversion) return MotivicTransform::Inversion;
 
     // Check retrograde
-    auto retro = motif_retrograde(original);
-    int retro_diff = static_cast<int>(transformed[0]) - static_cast<int>(retro[0]);
+    int retro_diff = static_cast<int>(transformed[0]) - static_cast<int>(original.back());
     bool is_retrograde = true;
     for (std::size_t i = 0; i < original.size(); ++i) {
-        if (static_cast<int>(transformed[i]) - static_cast<int>(retro[i]) != retro_diff) {
+        if (static_cast<int>(transformed[i]) -
+                static_cast<int>(original[original.size() - 1 - i]) !=
+            retro_diff) {
             is_retrograde = false;
             break;
         }
@@ -190,13 +190,12 @@ MotivicTransform classify_transformation(std::span<const MidiNote> original,
     if (is_retrograde) return MotivicTransform::Retrograde;
 
     // Check retrograde-inversion
-    auto ri_result = motif_retrograde_inversion(original);
-    if (!ri_result) return MotivicTransform::Unknown;
-    auto& ri = *ri_result;
-    int ri_diff = static_cast<int>(transformed[0]) - static_cast<int>(ri[0]);
+    int ri_sum = static_cast<int>(transformed[0]) + static_cast<int>(original.back());
     bool is_ri = true;
     for (std::size_t i = 0; i < original.size(); ++i) {
-        if (static_cast<int>(transformed[i]) - static_cast<int>(ri[i]) != ri_diff) {
+        if (static_cast<int>(transformed[i]) +
+                static_cast<int>(original[original.size() - 1 - i]) !=
+            ri_sum) {
             is_ri = false;
             break;
         }

@@ -7,6 +7,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
+#include <limits>
 #include <sunny/core/form/motif.hpp>
 #include <sunny/core/form/structure.hpp>
 
@@ -366,4 +367,19 @@ TEST_CASE("transform_name returns correct strings", "[form][core]") {
     REQUIRE(transform_name(MotivicTransform::Transposition) == "Transposition");
     REQUIRE(transform_name(MotivicTransform::Retrograde) == "Retrograde");
     REQUIRE(transform_name(MotivicTransform::RetrogradeInversion) == "Retrograde-Inversion");
+}
+
+TEST_CASE("motif classification does not depend on intermediate MIDI feasibility",
+          "[form][core][theory-domain]") {
+    const std::array<MidiNote, 3> original{0, 120, 100};
+    const std::array<MidiNote, 3> retrograde{100, 120, 0};
+    const std::array<MidiNote, 3> inverted{127, 7, 27};
+    const std::array<MidiNote, 3> retro_inverted{27, 7, 127};
+    REQUIRE_FALSE(motif_invert(original).has_value());
+    REQUIRE(classify_transformation(original, retrograde) == MotivicTransform::Retrograde);
+    REQUIRE(classify_transformation(original, inverted) == MotivicTransform::Inversion);
+    REQUIRE(classify_transformation(original, retro_inverted) ==
+            MotivicTransform::RetrogradeInversion);
+    REQUIRE_FALSE(motif_transpose(original, std::numeric_limits<int>::max()).has_value());
+    REQUIRE_FALSE(motif_transpose(original, std::numeric_limits<int>::min()).has_value());
 }

@@ -49,12 +49,18 @@ struct TendencyTone {
     int resolution_degree; ///< 0-based
 };
 
+enum class SequenceLayout : std::uint8_t {
+    Adjacent,      ///< Each motif has length+1 notes; no shared notes.
+    SharedEndpoint ///< Consecutive motifs share their last/first note.
+};
+
 struct DetectedSequence {
     std::size_t start_index;
     std::size_t pattern_length; ///< in intervals
     int repetition_count;
     int transposition_interval;
     bool is_real; ///< real (chromatic) vs tonal (diatonic)
+    SequenceLayout layout = SequenceLayout::Adjacent;
 };
 
 // =============================================================================
@@ -136,22 +142,32 @@ standard_tendency_tones(std::span<const Interval> intervals);
  * @brief Detect real (chromatic) sequences
  *
  * A real sequence is a pattern of directed intervals repeated at a
- * fixed transposition level.
+ * fixed transposition increment (zero admits exact repetition).
+ * min_length counts intervals and must be >=1; min_reps includes the
+ * initial motif and must be >=2. Adjacent motifs are the default; use
+ * SharedEndpoint to compare overlapping interval windows explicitly.
+ * Invalid controls or fewer than two notes return InvalidMelody.
  */
 [[nodiscard]] Result<std::vector<DetectedSequence>>
-detect_real_sequences(std::span<const MidiNote> notes, int min_length = 3, int min_reps = 2);
+detect_real_sequences(std::span<const MidiNote> notes,
+                      int min_length = 3,
+                      int min_reps = 2,
+                      SequenceLayout layout = SequenceLayout::Adjacent);
 
 /**
  * @brief Detect tonal sequences within a scale
  *
  * A tonal sequence preserves diatonic interval patterns (in scale degrees)
- * rather than chromatic intervals.
+ * rather than chromatic intervals. Coordinates retain octave/register;
+ * non-scale notes prevent a match. Scale offsets must be strictly increasing
+ * in [0,11], starting at zero. Controls and layout follow detect_real_sequences.
  */
 [[nodiscard]] Result<std::vector<DetectedSequence>>
 detect_tonal_sequences(std::span<const MidiNote> notes,
                        PitchClass key_root,
                        std::span<const Interval> intervals,
                        int min_length = 3,
-                       int min_reps = 2);
+                       int min_reps = 2,
+                       SequenceLayout layout = SequenceLayout::Adjacent);
 
 } // namespace sunny::core

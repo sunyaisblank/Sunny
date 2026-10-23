@@ -203,6 +203,8 @@ struct ThematicOccurrence {
     PartId part_id{};
     ThematicTransformation transformation = ThematicTransformation::Original;
     std::string key;
+    std::optional<std::uint8_t> voice_index = std::nullopt;
+    std::optional<ScoreTime> end = std::nullopt;
 };
 
 struct ThematicUnit {
@@ -229,12 +231,14 @@ struct VoiceMelodicAnalysis {
     std::uint8_t longest_ascending_run = 0;
     std::uint8_t longest_descending_run = 0;
     float chromaticism_rate = 0.0f;
+    std::optional<std::uint8_t> voice_index = std::nullopt;
 };
 
 struct MelodicAnalysisRecord {
     std::vector<VoiceMelodicAnalysis> per_voice_analysis;
     PartId primary_melody_voice{};
     std::vector<ThematicUnit> thematic_material;
+    std::optional<std::uint8_t> primary_melody_voice_index = std::nullopt;
 };
 
 // =============================================================================
@@ -457,6 +461,22 @@ struct MotivicAnalysisRecord {
 // §2.2 WorkAnalysis (aggregate)
 // =============================================================================
 
+enum class AnalysisEvidenceKind : std::uint8_t {
+    Unqualified,
+    ExactSymbolic,
+    Heuristic,
+    Unavailable
+};
+
+/** Method and limits of one analytical domain; absent legacy metadata is unqualified. */
+struct AnalysisEvidence {
+    AnalysisEvidenceKind kind = AnalysisEvidenceKind::Unqualified;
+    std::string method;
+    std::optional<std::string> unavailable_reason;
+    std::vector<std::string> unavailable_fields;
+    std::uint64_t observations = 0;
+};
+
 struct WorkAnalysis {
     HarmonicAnalysisRecord harmonic_analysis;
     MelodicAnalysisRecord melodic_analysis;
@@ -467,6 +487,7 @@ struct WorkAnalysis {
     DynamicAnalysisRecord dynamic_analysis;
     std::optional<OrchestrationAnalysisRecord> orchestration_analysis;
     MotivicAnalysisRecord motivic_analysis;
+    std::map<std::string, AnalysisEvidence> evidence = {};
 };
 
 // =============================================================================

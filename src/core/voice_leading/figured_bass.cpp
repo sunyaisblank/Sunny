@@ -5,9 +5,10 @@
  */
 
 #include <algorithm>
+#include <bit>
 #include <cstdlib>
+#include <functional>
 #include <sunny/core/voice_leading/figured_bass.hpp>
-#include <sunny/core/voice_leading/voice_leading.hpp>
 
 namespace sunny::core {
 
@@ -56,43 +57,27 @@ Result<FiguredBassSymbol> parse_figured_bass(std::string_view text) {
         return symbol;
     }
 
-    // Parse individual figures separated by '/'
-    // Each figure: optional accidental (#, b) + digit
-    std::string_view remaining = text;
-    while (!remaining.empty()) {
+    // Explicit figures are single digits, separated by '/'. Compact strings
+    // are accepted only for the conventional shorthands above.
+    std::size_t pos = 0;
+    while (pos < text.size()) {
         FigureAccidental acc = FigureAccidental::Natural;
-
-        // Skip separator
-        if (remaining.front() == '/') {
-            remaining.remove_prefix(1);
-            if (remaining.empty()) break;
+        if (text[pos] == '#' || text[pos] == 'b') {
+            acc = text[pos++] == '#' ? FigureAccidental::Sharp : FigureAccidental::Flat;
         }
-
-        // Check for accidental prefix
-        if (remaining.front() == '#') {
-            acc = FigureAccidental::Sharp;
-            remaining.remove_prefix(1);
-        } else if (remaining.front() == 'b') {
-            acc = FigureAccidental::Flat;
-            remaining.remove_prefix(1);
-        }
-
-        // Parse digit
-        if (remaining.empty() || remaining.front() < '1' || remaining.front() > '9') {
+        if (pos == text.size() || text[pos] < '1' || text[pos] > '9') {
             return std::unexpected(ErrorCode::VoiceLeadingFailed);
         }
-        int interval = remaining.front() - '0';
-        remaining.remove_prefix(1);
-
-        symbol.figures.push_back({interval, acc});
+        symbol.figures.push_back({text[pos++] - '0', acc});
+        if (symbol.figures.size() > MAX_FIGURED_BASS_VOICES) {
+            return std::unexpected(ErrorCode::VoiceLeadingFailed);
+        }
+        if (pos == text.size()) break;
+        if (text[pos++] != '/' || pos == text.size()) {
+            return std::unexpected(ErrorCode::VoiceLeadingFailed);
+        }
     }
-
-    if (symbol.figures.empty()) {
-        // Default to root position triad
-        symbol.figures.push_back({3, FigureAccidental::Natural});
-        symbol.figures.push_back({5, FigureAccidental::Natural});
-    }
-
+    if (symbol.figures.empty()) return std::unexpected(ErrorCode::VoiceLeadingFailed);
     return symbol;
 }
 
@@ -102,179 +87,224 @@ Result<FiguredBassSymbol> parse_figured_bass(std::string_view text) {
 
 namespace {
 
-/**
- * @brief Compute the pitch class that is 'generic_interval' diatonic steps
- * above bass_pc in the given scale.
- *
- * Generic interval 1 = unison, 2 = 2nd, 3 = 3rd, etc.
- *
- * @pre generic_interval >= 1
- * @pre scale is non-empty
- */
-PitchClass diatonic_above(PitchClass bass_pc,
-                          int generic_interval,
-                          PitchClass key_root,
-                          std::span<const Interval> scale) {
-    // generic_interval < 1 is a precondition violation: 1 = unison, 2 = 2nd, etc.
-    // Callers must validate; return key_root as a safe fallback.
-    if (generic_interval < 1 || scale.empty()) {
-        return key_root;
+struct UpperRequirement {
+    PitchClass pitch_class;
+    int minimum; // Actual MIDI pitch of the required generic interval.
+};
+
+struct BassRequirements {
+    MidiNote bass;
+    std::vector<UpperRequirement> upper;
+};
+
+Result<void> validate_figures(const FiguredBassSymbol& symbol, std::span<const Interval> scale) {
+    if (scale.size() != 7 || scale.front() != 0 || scale.back() > 11 ||
+        std::adjacent_find(scale.begin(), scale.end(), std::greater_equal<>{}) != scale.end()) {
+        return std::unexpected(ErrorCode::InvalidScaleName);
     }
-
-    // Find the scale degree of the bass note
-    int bass_offset = ((static_cast<int>(bass_pc) - static_cast<int>(key_root)) % 12 + 12) % 12;
-
-    int bass_degree = -1;
-    int scale_size = static_cast<int>(scale.size());
-    for (int i = 0; i < scale_size; ++i) {
-        if (scale[i] == bass_offset) {
-            bass_degree = i;
-            break;
+    if (symbol.figures.empty() || symbol.figures.size() > MAX_FIGURED_BASS_VOICES) {
+        return std::unexpected(ErrorCode::VoiceLeadingFailed);
+    }
+    for (const auto& fig : symbol.figures) {
+        if (fig.interval < 1 || fig.interval > 9 ||
+            (fig.accidental != FigureAccidental::Natural &&
+             fig.accidental != FigureAccidental::Sharp &&
+             fig.accidental != FigureAccidental::Flat)) {
+            return std::unexpected(ErrorCode::VoiceLeadingFailed);
         }
     }
+    return {};
+}
 
-    // If bass is not in scale, find nearest degree below
-    if (bass_degree < 0) {
-        for (int i = scale_size - 1; i >= 0; --i) {
-            if (scale[i] < bass_offset) {
-                bass_degree = i;
-                break;
+int alteration(FigureAccidental accidental) {
+    if (accidental == FigureAccidental::Sharp) return 1;
+    if (accidental == FigureAccidental::Flat) return -1;
+    return 0;
+}
+
+Result<BassRequirements> requirements(MidiNote bass,
+                                      const FiguredBassSymbol& symbol,
+                                      PitchClass root,
+                                      std::span<const Interval> scale) {
+    auto valid = validate_figures(symbol, scale);
+    if (!valid) return std::unexpected(valid.error());
+    int degree = -1;
+    const int offset = (static_cast<int>(pitch_class(bass)) - static_cast<int>(root) + 12) % 12;
+    for (int d = 0; d < 7; ++d) {
+        if (scale[d] == offset) degree = d;
+    }
+    if (degree < 0) return std::unexpected(ErrorCode::InvalidSpelledPitch);
+    BassRequirements result{bass, {}};
+    for (const auto& fig : symbol.figures) {
+        const int target = degree + fig.interval - 1;
+        const int minimum = static_cast<int>(bass) + scale[target % 7] + 12 * (target / 7) -
+                            scale[degree] + alteration(fig.accidental);
+        result.upper.push_back({PitchClass::wrapped(minimum), minimum});
+    }
+    return result;
+}
+
+Result<BassRequirements> requirements(SpelledPitch bass,
+                                      const FiguredBassSymbol& symbol,
+                                      SpelledPitch root,
+                                      std::span<const Interval> scale) {
+    auto valid = validate_figures(symbol, scale);
+    if (!valid) return std::unexpected(valid.error());
+    if (bass.letter >= 7 || root.letter >= 7) {
+        return std::unexpected(ErrorCode::InvalidLetterName);
+    }
+    auto bass_midi = midi(bass);
+    if (!bass_midi) return std::unexpected(bass_midi.error());
+    BassRequirements result{*bass_midi, {}};
+    for (const auto& fig : symbol.figures) {
+        const int target_letter = bass.letter + fig.interval - 1;
+        const int letter = target_letter % 7;
+        const int degree = (letter - root.letter + 7) % 7;
+        // Spell each scale degree on the next letter above the tonic.
+        // This keeps Cb/B#, and chromatic Bb versus A#, distinct.
+        const int key_accidental = static_cast<int>(nat(root.letter)) + root.accidental +
+                                   scale[degree] - static_cast<int>(nat(letter)) -
+                                   12 * ((root.letter + degree) / 7);
+        const int minimum = 12 * (bass.octave + 1 + target_letter / 7) +
+                            static_cast<int>(nat(letter)) + key_accidental +
+                            alteration(fig.accidental);
+        result.upper.push_back({PitchClass::wrapped(minimum), minimum});
+    }
+    return result;
+}
+
+FiguredBassRealisation assemble(MidiNote bass, std::vector<MidiNote> upper) {
+    FiguredBassRealisation result{bass, std::move(upper), {bass}};
+    std::sort(result.upper.begin(), result.upper.end());
+    result.all_notes.insert(result.all_notes.end(), result.upper.begin(), result.upper.end());
+    return result;
+}
+
+Result<FiguredBassRealisation> place_upper(const BassRequirements& req, int octave) {
+    if (octave < -1 || octave > 9) return std::unexpected(ErrorCode::InvalidOctave);
+    if (octave == -1) octave = std::clamp(static_cast<int>(req.bass) / 12, 0, 9);
+    std::vector<MidiNote> upper;
+    for (const auto& target : req.upper) {
+        int note = 12 * (octave + 1) + static_cast<int>(target.pitch_class);
+        const int lower_bound = std::max(static_cast<int>(req.bass) + 1, target.minimum);
+        while (note < lower_bound)
+            note += 12;
+        auto checked = MidiNote::from_int(note);
+        if (!checked) return std::unexpected(checked.error());
+        upper.push_back(*checked);
+    }
+    return assemble(req.bass, std::move(upper));
+}
+
+// Exact finite search for sorted-voice L1 motion, with target figure identity
+// retained. The state is (used figures, last MIDI pitch); at most 2^12*128
+// states. Equal pitches are allowed for independent upper voices.
+Result<std::vector<MidiNote>> lead_upper(std::span<const MidiNote> source,
+                                         const BassRequirements& target) {
+    const auto count = target.upper.size();
+    const auto complete = (std::size_t{1} << count) - 1;
+    constexpr int infinity = 4096; // Every 12-voice MIDI cost is <=1524.
+    std::vector<int> costs((complete + 1) * 128, -1);
+    std::vector<int> choices(costs.size(), -1);
+    std::vector<std::vector<int>> candidates(count);
+    for (std::size_t j = 0; j < count; ++j) {
+        const auto& required = target.upper[j];
+        const int minimum = std::max(static_cast<int>(target.bass) + 1, required.minimum);
+        for (int pitch = static_cast<int>(required.pitch_class); pitch <= 127; pitch += 12) {
+            if (pitch >= minimum) candidates[j].push_back(pitch);
+        }
+    }
+    std::function<int(std::size_t, int)> solve = [&](std::size_t mask, int last) -> int {
+        if (mask == complete) return 0;
+        const auto state = mask * 128 + static_cast<std::size_t>(last);
+        if (costs[state] >= 0) return costs[state];
+        int best = infinity;
+        const auto voice = std::popcount(mask);
+        for (std::size_t j = 0; j < count; ++j) {
+            if (mask & (std::size_t{1} << j)) continue;
+            for (int pitch : candidates[j]) {
+                if (pitch < last) continue;
+                const int cost = std::abs(static_cast<int>(source[voice]) - pitch) +
+                                 solve(mask | (std::size_t{1} << j), pitch);
+                if (cost < best) {
+                    best = cost;
+                    choices[state] = static_cast<int>(j) * 128 + pitch;
+                }
             }
         }
-        if (bass_degree < 0) bass_degree = 0;
+        return costs[state] = best;
+    };
+    int last = static_cast<int>(target.bass);
+    if (solve(0, last) == infinity) return std::unexpected(ErrorCode::VoiceLeadingFailed);
+    std::vector<MidiNote> upper;
+    std::size_t mask = 0;
+    while (mask != complete) {
+        const int choice = choices[mask * 128 + static_cast<std::size_t>(last)];
+        const auto j = static_cast<std::size_t>(choice / 128);
+        last = choice % 128;
+        auto note = MidiNote::from_int(last);
+        if (!note) return std::unexpected(note.error());
+        upper.push_back(*note);
+        mask |= std::size_t{1} << j;
     }
+    return upper;
+}
 
-    // Move up by (generic_interval - 1) scale degrees.
-    // Safe positive modulo to prevent negative index when bass_degree
-    // + generic_interval - 1 is negative (cannot happen with guard above,
-    // but protects against future callers).
-    int raw = bass_degree + generic_interval - 1;
-    int target_degree = ((raw % scale_size) + scale_size) % scale_size;
-    int target_offset = scale[target_degree];
-    return PitchClass::wrapped(static_cast<int>(key_root) + target_offset);
+template <class Event, class Root>
+Result<FiguredBassSequenceResult>
+realise_sequence(std::span<const Event> events, Root root, std::span<const Interval> scale) {
+    if (events.empty()) return std::unexpected(ErrorCode::VoiceLeadingFailed);
+    FiguredBassSequenceResult result;
+    result.realisations.reserve(events.size());
+    for (const auto& event : events) {
+        auto req = requirements(event.bass_note, event.symbol, root, scale);
+        if (!req) return std::unexpected(req.error());
+        if (!result.realisations.empty() &&
+            result.realisations.back().upper.size() == req->upper.size()) {
+            auto upper = lead_upper(result.realisations.back().upper, *req);
+            if (!upper) return std::unexpected(upper.error());
+            result.realisations.push_back(assemble(req->bass, std::move(*upper)));
+        } else {
+            auto direct = place_upper(*req, -1);
+            if (!direct) return std::unexpected(direct.error());
+            result.realisations.push_back(std::move(*direct));
+        }
+    }
+    return result;
 }
 
 } // namespace
 
-Result<FiguredBassRealisation> realise_figured_bass(MidiNote bass_note,
+Result<FiguredBassRealisation> realise_figured_bass(MidiNote bass,
                                                     const FiguredBassSymbol& symbol,
-                                                    PitchClass key_root,
-                                                    std::span<const Interval> key_scale,
+                                                    PitchClass root,
+                                                    std::span<const Interval> scale,
                                                     int upper_octave) {
-    // bass_note ∈ [0, 127] is enforced by the MidiNote invariant; the old
-    // defensive range check here was redundant and has been removed.
-    if (key_scale.empty()) {
-        return std::unexpected(ErrorCode::InvalidScaleName);
-    }
-
-    PitchClass bass_pc = pitch_class(bass_note);
-    int bass_oct = (bass_note / 12) - 1; // MIDI octave convention
-
-    if (upper_octave < 0) {
-        upper_octave = bass_oct + 1;
-    }
-
-    FiguredBassRealisation result;
-    result.bass = bass_note;
-
-    // Generate upper voices
-    for (const auto& fig : symbol.figures) {
-        PitchClass target_pc = diatonic_above(bass_pc, fig.interval, key_root, key_scale);
-
-        // Apply accidental
-        int pc_val = static_cast<int>(target_pc);
-        if (fig.accidental == FigureAccidental::Sharp) {
-            pc_val = (pc_val + 1) % 12;
-        } else if (fig.accidental == FigureAccidental::Flat) {
-            pc_val = (pc_val + 11) % 12;
-        }
-
-        // Place in upper octave, ensuring above bass. Octave shifts run in
-        // int space; the validated store refuses an upper voice outside
-        // MIDI range (an octave request beyond 9 used to truncate silently).
-        int note_val = (upper_octave + 1) * 12 + pc_val;
-        while (note_val <= bass_note && note_val < 120) {
-            note_val += 12;
-        }
-
-        auto note = MidiNote::from_int(note_val);
-        if (!note) {
-            return std::unexpected(ErrorCode::InvalidMidiNote);
-        }
-        result.upper.push_back(*note);
-    }
-
-    // Sort upper voices ascending
-    std::sort(result.upper.begin(), result.upper.end());
-
-    // Build complete voicing
-    result.all_notes.push_back(bass_note);
-    result.all_notes.insert(result.all_notes.end(), result.upper.begin(), result.upper.end());
-
-    return result;
+    auto req = requirements(bass, symbol, root, scale);
+    if (!req) return std::unexpected(req.error());
+    return place_upper(*req, upper_octave);
 }
 
-// =============================================================================
-// Sequence Realisation (voice-led)
-// =============================================================================
+Result<FiguredBassRealisation> realise_figured_bass(SpelledPitch bass,
+                                                    const FiguredBassSymbol& symbol,
+                                                    SpelledPitch root,
+                                                    std::span<const Interval> scale,
+                                                    int upper_octave) {
+    auto req = requirements(bass, symbol, root, scale);
+    if (!req) return std::unexpected(req.error());
+    return place_upper(*req, upper_octave);
+}
+
+Result<FiguredBassSequenceResult> realise_figured_bass_sequence(
+    std::span<const FiguredBassEvent> events, PitchClass root, std::span<const Interval> scale) {
+    return realise_sequence(events, root, scale);
+}
 
 Result<FiguredBassSequenceResult>
-realise_figured_bass_sequence(std::span<const FiguredBassEvent> events,
-                              PitchClass key_root,
-                              std::span<const Interval> key_scale) {
-    if (events.empty()) {
-        return std::unexpected(ErrorCode::VoiceLeadingFailed);
-    }
-
-    FiguredBassSequenceResult seq;
-    seq.realisations.reserve(events.size());
-
-    // First event: direct realisation
-    auto first = realise_figured_bass(events[0].bass_note, events[0].symbol, key_root, key_scale);
-    if (!first) return std::unexpected(first.error());
-    seq.realisations.push_back(std::move(*first));
-
-    // Subsequent events: realise then voice-lead upper voices
-    for (std::size_t i = 1; i < events.size(); ++i) {
-        auto target =
-            realise_figured_bass(events[i].bass_note, events[i].symbol, key_root, key_scale);
-        if (!target) return std::unexpected(target.error());
-
-        const auto& prev_upper = seq.realisations[i - 1].upper;
-        const auto& new_upper = target->upper;
-
-        // Voice-led connection requires matching cardinality between successive
-        // upper-voice sets. When figured bass symbols produce different numbers of
-        // upper voices (e.g., "5/3" yields 2 upper voices, "7" yields 3), the
-        // cardinalities differ and optimal voice leading cannot establish a bijection.
-        // In that case, fall back to direct realisation for the current chord,
-        // accepting the positional discontinuity as unavoidable.
-        if (!prev_upper.empty() && prev_upper.size() == new_upper.size()) {
-            // Extract target pitch classes
-            std::vector<PitchClass> target_pcs;
-            target_pcs.reserve(new_upper.size());
-            for (auto n : new_upper) {
-                target_pcs.push_back(pitch_class(n));
-            }
-
-            auto vl = voice_lead_optimal(prev_upper, target_pcs);
-            if (vl) {
-                FiguredBassRealisation led;
-                led.bass = events[i].bass_note;
-                led.upper = vl->voiced_notes;
-                std::sort(led.upper.begin(), led.upper.end());
-                led.all_notes.push_back(led.bass);
-                led.all_notes.insert(led.all_notes.end(), led.upper.begin(), led.upper.end());
-                seq.realisations.push_back(std::move(led));
-                continue;
-            }
-        }
-
-        // Fallback: use the direct realisation
-        seq.realisations.push_back(std::move(*target));
-    }
-
-    return seq;
+realise_figured_bass_sequence(std::span<const SpelledFiguredBassEvent> events,
+                              SpelledPitch root,
+                              std::span<const Interval> scale) {
+    return realise_sequence(events, root, scale);
 }
 
 } // namespace sunny::core

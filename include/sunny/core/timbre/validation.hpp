@@ -5,7 +5,7 @@
  *
  * Implements the validation rules from Timbre Spec §10:
  *
- *   Structural (T1-T12):
+ *   Structural (T1-T13):
  *     T1 Error:   Every Score IR Part has a corresponding TimbreProfile
  *     T2 Error:   SoundSource type is valid and all required fields present
  *     T3 Warning: Filter cutoff exceeds Nyquist frequency
@@ -18,12 +18,14 @@
  *     T10 Error:  Rendering mapping cannot be resolved or materialised
  *     T11 Error:  Timbral automation is structurally invalid
  *     T12 Error:  An owned modulation generator or macro is invalid
+ *     T13 Error:  An intrinsic source/effect/descriptor domain is invalid,
+ *                 an effect identity is zero/duplicated, or sample rate is invalid
  *
  * Validation produces a vector of Diagnostic. Error-level
  * diagnostics block compilation; warnings and info do not.
  *
  * Invariants:
- * - validate_timbre runs all single-profile rules (T2-T12)
+ * - validate_timbre runs all single-profile rules (T2-T13)
  * - validate_timbre_correspondence runs T1
  * - Diagnostics are deterministic given the same input
  */
@@ -42,7 +44,7 @@ namespace sunny::core {
 // =============================================================================
 
 /**
- * @brief Run all single-profile validation rules (T2-T12) on a TimbreProfile
+ * @brief Run all single-profile validation rules (T2-T13) on a TimbreProfile
  *
  * @param profile           The timbre profile to validate
  * @param sample_rate_hz    System sample rate for Nyquist checks (default 44100)

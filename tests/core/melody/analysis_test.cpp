@@ -6,6 +6,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
+#include <limits>
 #include <sunny/core/melody/analysis.hpp>
 #include <sunny/core/pitch/pitch_class.hpp>
 #include <sunny/core/scale/definitions.hpp>
@@ -231,10 +232,9 @@ TEST_CASE("detect_tonal_sequences in C major", "[melody][core]") {
     // Ascending thirds tonal sequence in C major:
     // C(60) E(64) | D(62) F(65) | E(64) G(67)
     // Degrees:  0  2 | 1  3 | 2  4
-    // Degree intervals: [+2, -1, +2, -1, +2]
-    // Pattern [+2, -1] repeats at indices 0 and 2
+    // Each adjacent two-note motif has one interval (+2 degrees).
     std::array<MidiNote, 6> notes = {60, 64, 62, 65, 64, 67};
-    auto seqs = detect_tonal_sequences(notes, 0, SCALE_MAJOR, 2, 2);
+    auto seqs = detect_tonal_sequences(notes, 0, SCALE_MAJOR, 1, 2);
     REQUIRE(seqs.has_value());
     REQUIRE_FALSE(seqs->empty());
 
@@ -318,4 +318,94 @@ TEST_CASE("contour reduction with plateau", "[melody][core]") {
     REQUIRE((*reduced)[0] == 60);
     REQUIRE((*reduced)[1] == 65);
     REQUIRE((*reduced)[2] == 60);
+}
+
+TEST_CASE("sequence controls reject invalid domains without division or overflow",
+          "[melody][core][theory-domain]") {
+    const std::array<MidiNote, 3> notes{60, 62, 64};
+    for (const auto& [length, reps] : std::array<std::pair<int, int>, 6>{
+             {{2, 0},
+              {2, -1},
+              {2, 1},
+              {0, 2},
+              {-1, 2},
+              {std::numeric_limits<int>::min(), std::numeric_limits<int>::max()}}}) {
+        REQUIRE(detect_real_sequences(notes, length, reps).error() == ErrorCode::InvalidMelody);
+        REQUIRE(detect_tonal_sequences(notes, 0, SCALE_MAJOR, length, reps).error() ==
+                ErrorCode::InvalidMelody);
+    }
+    REQUIRE(detect_real_sequences(notes, std::numeric_limits<int>::max(), 2)->empty());
+    REQUIRE(detect_real_sequences(notes, 1, std::numeric_limits<int>::max())->empty());
+    REQUIRE(detect_real_sequences(notes, 1, 2, static_cast<SequenceLayout>(255)).error() ==
+            ErrorCode::InvalidMelody);
+    const std::array<Interval, 3> unsorted{0, 7, 2};
+    const std::array<Interval, 3> duplicate{0, 2, 2};
+    const std::array<Interval, 3> not_rooted{1, 2, 4};
+    const std::array<Interval, 3> too_wide{0, 2, 12};
+    for (auto scale : {std::span<const Interval>{},
+                       std::span<const Interval>(unsorted),
+                       std::span<const Interval>(duplicate),
+                       std::span<const Interval>(not_rooted),
+                       std::span<const Interval>(too_wide)}) {
+        REQUIRE(detect_tonal_sequences(notes, 0, scale, 1, 2).error() ==
+                ErrorCode::InvalidScaleName);
+    }
+}
+
+TEST_CASE("real sequence layout distinguishes adjacent and shared endpoint motifs",
+          "[melody][core][theory-domain]") {
+    const std::array<MidiNote, 9> adjacent{60, 62, 64, 62, 64, 66, 64, 66, 68};
+    auto detected = detect_real_sequences(adjacent, 2, 3);
+    REQUIRE(detected.has_value());
+    REQUIRE(detected->size() == 1);
+    REQUIRE(detected->front().start_index == 0);
+    REQUIRE(detected->front().pattern_length == 2);
+    REQUIRE(detected->front().repetition_count == 3);
+    REQUIRE(detected->front().transposition_interval == 2);
+    REQUIRE(detected->front().layout == SequenceLayout::Adjacent);
+    const std::array<MidiNote, 6> just_two{60, 62, 64, 62, 64, 66};
+    REQUIRE(detect_real_sequences(just_two, 2, 2)->front().repetition_count == 2);
+
+    const std::array<MidiNote, 5> shared{60, 62, 64, 66, 68};
+    REQUIRE(detect_real_sequences(shared, 2, 2)->empty());
+    auto overlap = detect_real_sequences(shared, 2, 2, SequenceLayout::SharedEndpoint);
+    REQUIRE(overlap->size() == 1);
+    REQUIRE(overlap->front().start_index == 0);
+    REQUIRE(overlap->front().transposition_interval == 4);
+    REQUIRE(overlap->front().layout == SequenceLayout::SharedEndpoint);
+    const std::array<MidiNote, 6> exact_repeat{60, 62, 64, 60, 62, 64};
+    REQUIRE(detect_real_sequences(exact_repeat, 2, 2)->front().transposition_interval == 0);
+}
+
+TEST_CASE("tonal sequences carry register and fixed degree transposition",
+          "[melody][core][theory-domain]") {
+    // A4-B4-C5 | B4-C5-D5: generic seconds retained, chromatic sizes vary.
+    const std::array<MidiNote, 6> ascending{69, 71, 72, 71, 72, 74};
+    auto result = detect_tonal_sequences(ascending, 0, SCALE_MAJOR, 2, 2);
+    REQUIRE(result->size() == 1);
+    REQUIRE(result->front().start_index == 0);
+    REQUIRE(result->front().transposition_interval == 1);
+    REQUIRE_FALSE(result->front().is_real);
+    REQUIRE(detect_real_sequences(ascending, 2, 2)->empty());
+
+    const std::array<MidiNote, 6> descending{74, 72, 71, 72, 71, 69};
+    REQUIRE(
+        detect_tonal_sequences(descending, 0, SCALE_MAJOR, 2, 2)->front().transposition_interval ==
+        -1);
+    // Below B(-1), C#-D#-E | D#-E-F#: valid negative degree coordinates.
+    const std::array<MidiNote, 6> low{1, 3, 4, 3, 4, 6};
+    REQUIRE(detect_tonal_sequences(low, 11, SCALE_MAJOR, 2, 2)->front().transposition_interval ==
+            1);
+    const std::array<MidiNote, 6> octave_jump{60, 62, 64, 72, 74, 76};
+    REQUIRE(
+        detect_tonal_sequences(octave_jump, 0, SCALE_MAJOR, 2, 2)->front().transposition_interval ==
+        7);
+    const std::array<MidiNote, 9> inconsistent{60, 62, 64, 62, 64, 65, 65, 67, 69};
+    REQUIRE(detect_tonal_sequences(inconsistent, 0, SCALE_MAJOR, 2, 3)->empty());
+    const std::array<MidiNote, 6> chromatic{60, 61, 64, 62, 63, 65};
+    REQUIRE(detect_tonal_sequences(chromatic, 0, SCALE_MAJOR, 2, 2)->empty());
+    const std::array<MidiNote, 5> shared{69, 71, 72, 74, 76};
+    REQUIRE(detect_tonal_sequences(shared, 0, SCALE_MAJOR, 2, 2, SequenceLayout::SharedEndpoint)
+                ->front()
+                .transposition_interval == 2);
 }

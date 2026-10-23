@@ -10,15 +10,19 @@
 
 #include "evidence_encoding.hpp"
 
+#include <array>
 #include <limits>
 #include <map>
 #include <memory>
+#include <set>
 #include <sunny/core/corpus/serialization.hpp>
 #include <sunny/core/corpus/workflows.hpp>
 #include <sunny/core/detail/serialization_integer.hpp>
+#include <sunny/core/score/serialization_primitives.hpp>
 #include <sunny/infrastructure/compilation_workflows.hpp>
 #include <sunny/infrastructure/corpus/ingestion.hpp>
 #include <sunny/infrastructure/mcp/corpus_tools.hpp>
+#include <sunny/infrastructure/mcp/session_ids.hpp>
 
 namespace sunny::infrastructure {
 
@@ -31,8 +35,203 @@ json error_response(const std::string& msg) {
     return {{"error", msg}};
 }
 
+json corpus_allocation_error(const std::string& kind, ErrorCode code) {
+    return {{"error",
+             kind + (code == ErrorCode::ArithmeticOverflow
+                         ? " identity counter is exhausted or invalid"
+                         : " identity counter does not exceed existing identities")},
+            {"error_code", static_cast<int>(code)}};
+}
+
+json ingestion_error_response(const std::string& format, ErrorCode code) {
+    std::string message;
+    switch (code) {
+    case ErrorCode::InvalidMidiFile:
+        message = "Invalid MIDI file";
+        break;
+    case ErrorCode::InvalidMusicXml:
+        message = "Invalid MusicXML document";
+        break;
+    case ErrorCode::InvalidMidiPPQ:
+        message = "Invalid MIDI pulse resolution";
+        break;
+    case ErrorCode::InvalidMidiTempo:
+        message = "Invalid MIDI tempo";
+        break;
+    case ErrorCode::InvalidMidiTimeSig:
+        message = "Invalid MIDI time signature";
+        break;
+    case ErrorCode::InvalidTimeSignature:
+        message = "Invalid time signature";
+        break;
+    case ErrorCode::InvalidBeat:
+        message = "Invalid beat value";
+        break;
+    case ErrorCode::ArithmeticOverflow:
+        message = "Exact musical arithmetic overflow";
+        break;
+    case ErrorCode::DocumentStructure:
+        message = "Invalid Score document structure";
+        break;
+    case ErrorCode::MeasureCountMismatch:
+        message = "Score measure counts disagree";
+        break;
+    case ErrorCode::InvalidOffset:
+        message = "Invalid event offset";
+        break;
+    case ErrorCode::OverlappingEvents:
+        message = "Overlapping events in one Score voice";
+        break;
+    case ErrorCode::TieMismatch:
+        message = "Invalid Score tie chain";
+        break;
+    case ErrorCode::MeasureFillError:
+        message = "Score voice does not fill its measure";
+        break;
+    case ErrorCode::TupletSpanError:
+        message = "Invalid Score tuplet span";
+        break;
+    case ErrorCode::InvalidScoreTime:
+        message = "Invalid Score time";
+        break;
+    case ErrorCode::InvalidMutation:
+        message = "Input cannot be represented by the core model";
+        break;
+    case ErrorCode::ScoreValidationFailed:
+        message = "Ingested Score failed structural validation";
+        break;
+    case ErrorCode::IngestionFailed:
+        message = "Source parsing or Score projection failed";
+        break;
+    case ErrorCode::AnalysisFailed:
+        message = "Corpus analysis failed";
+        break;
+    case ErrorCode::CorpusInvalidParameter:
+        message = "Invalid corpus ingestion parameter";
+        break;
+    case ErrorCode::CorpusNotFound:
+        message = "Corpus work or composer not found";
+        break;
+    case ErrorCode::CorpusDuplicateId:
+        message = "Corpus identity already exists";
+        break;
+    default:
+        message = "Core ingestion or analysis rejected the input";
+        break;
+    }
+    return {{"error", format + " ingestion failed"},
+            {"error_code", static_cast<int>(code)},
+            {"message", std::move(message)}};
+}
+
 json ok_response() {
     return {{"ok", true}};
+}
+
+constexpr std::array<const char*, 9> analysis_domains = {"harmonic",
+                                                         "melodic",
+                                                         "rhythmic",
+                                                         "formal",
+                                                         "voice_leading",
+                                                         "textural",
+                                                         "dynamic",
+                                                         "orchestration",
+                                                         "motivic"};
+
+json analysis_availability(const IngestedWork& work) {
+    json result = json::object();
+    for (const auto* domain : analysis_domains) {
+        const auto found = work.analysis.evidence.find(domain);
+        const bool qualified = work.analysis_complete && found != work.analysis.evidence.end() &&
+                               (found->second.kind == AnalysisEvidenceKind::ExactSymbolic ||
+                                found->second.kind == AnalysisEvidenceKind::Heuristic);
+        const bool unavailable = found != work.analysis.evidence.end() &&
+                                 found->second.kind == AnalysisEvidenceKind::Unavailable;
+        result[domain] = {{"available", qualified},
+                          {"status",
+                           qualified     ? "computed"
+                           : unavailable ? "unavailable"
+                                         : "unqualified"},
+                          {"unavailable_fields",
+                           found == work.analysis.evidence.end()
+                               ? std::vector<std::string>{}
+                               : found->second.unavailable_fields}};
+    }
+    return result;
+}
+
+json profile_availability(const CorpusDatabase& corpus, const ComposerProfile& composer) {
+    json result = json::object();
+    for (const auto* domain : analysis_domains) {
+        std::uint64_t computed = 0, unavailable = 0, unqualified = 0;
+        std::set<std::string> methods;
+        std::set<std::uint64_t> seen;
+        for (const auto id : composer.works) {
+            if (!seen.insert(id.value).second) continue;
+            const auto found = corpus.works.find(id.value);
+            if (found == corpus.works.end() || !found->second.analysis_complete) continue;
+            const auto evidence = found->second.analysis.evidence.find(domain);
+            if (evidence == found->second.analysis.evidence.end() ||
+                evidence->second.kind == AnalysisEvidenceKind::Unqualified) {
+                ++unqualified;
+            } else if (evidence->second.kind == AnalysisEvidenceKind::Unavailable) {
+                ++unavailable;
+            } else {
+                ++computed;
+                methods.insert(evidence->second.method);
+            }
+        }
+        result[domain] = {{"computed_works", computed},
+                          {"unavailable_works", unavailable},
+                          {"unqualified_works", unqualified},
+                          {"methods", methods},
+                          {"fully_qualified", computed > 0 && unqualified == 0},
+                          {"fields", json::object()}};
+    }
+    for (const auto field : style_profile_fields()) {
+        std::uint64_t computed = 0, unavailable = 0, unqualified = 0;
+        std::set<std::string> methods;
+        std::set<std::uint64_t> seen;
+        for (const auto id : composer.works) {
+            if (!seen.insert(id.value).second) continue;
+            const auto found = corpus.works.find(id.value);
+            if (found == corpus.works.end() || !found->second.analysis_complete) continue;
+            const auto kind =
+                style_profile_field_evidence(found->second.analysis, field.domain, field.name);
+            if (kind == AnalysisEvidenceKind::Unavailable)
+                ++unavailable;
+            else if (kind == AnalysisEvidenceKind::Unqualified)
+                ++unqualified;
+            else
+                ++computed;
+            if (kind != AnalysisEvidenceKind::Unavailable) {
+                for (const auto source : style_profile_field_sources(field.domain, field.name)) {
+                    const auto evidence =
+                        found->second.analysis.evidence.find(std::string{source.domain});
+                    if (evidence != found->second.analysis.evidence.end() &&
+                        !evidence->second.method.empty())
+                        methods.insert(evidence->second.method);
+                }
+            }
+        }
+        json sources = json::array();
+        for (const auto source : style_profile_field_sources(field.domain, field.name))
+            sources.push_back({{"domain", source.domain}, {"path", source.path}});
+        result[std::string{field.domain}]["fields"][std::string{field.name}] = {
+            {"computed_works", computed},
+            {"unavailable_works", unavailable},
+            {"unqualified_works", unqualified},
+            {"contributing_works", computed + unqualified},
+            {"available", computed + unqualified > 0},
+            {"status",
+             computed > 0      ? (unqualified > 0 ? "mixed" : "computed")
+             : unqualified > 0 ? "unqualified"
+                               : "unavailable"},
+            {"fully_qualified", computed > 0 && unqualified == 0},
+            {"methods", methods},
+            {"source_fields", std::move(sources)}};
+    }
+    return result;
 }
 
 /// Serialise an AnnotatedExample to JSON
@@ -41,6 +240,8 @@ json example_j(const AnnotatedExample& e) {
               {"analysis_summary", e.analysis_summary},
               {"formal_context", e.formal_context}};
     j["work_id"] = e.work_id.value;
+    j["region_start"] = score_time_to_json(e.region_start);
+    j["region_end"] = score_time_to_json(e.region_end);
     if (!e.harmonic_reduction.empty()) {
         j["harmonic_reduction"] = e.harmonic_reduction;
     }
@@ -213,7 +414,11 @@ void register_corpus_tools(McpServer& server, std::shared_ptr<CorpusSession> ses
             if (birth_year && death_year && *birth_year > *death_year)
                 return error_response("birth_year must not exceed death_year");
 
-            auto id = ComposerProfileId{session->next_composer_id};
+            const auto allocation = mcp_detail::checked_session_id_batch(
+                session->next_composer_id,
+                mcp_detail::maximum_session_store_id(session->corpus.composers));
+            if (!allocation) return corpus_allocation_error("Composer", allocation.error());
+            auto id = ComposerProfileId{allocation->first};
             auto profile = create_composer_profile(id, name);
 
             profile.birth_year = birth_year;
@@ -221,10 +426,16 @@ void register_corpus_tools(McpServer& server, std::shared_ptr<CorpusSession> ses
             if (params.contains("tradition"))
                 profile.tradition = params["tradition"].get<std::string>();
 
-            session->corpus.composers[id.value] = profile;
-            ++session->next_composer_id;
-
-            return {{"composer_id", id.value}, {"name", name}};
+            json response = {{"composer_id", id.value}, {"name", name}};
+            (void)response.dump();
+            (void)composer_profile_to_json(profile).dump();
+            const auto [position, inserted] =
+                session->corpus.composers.emplace(id.value, std::move(profile));
+            (void)position;
+            if (!inserted)
+                return corpus_allocation_error("Composer", ErrorCode::InvariantViolation);
+            session->next_composer_id = allocation->next;
+            return response;
         });
 
     server.register_tool(
@@ -264,22 +475,26 @@ void register_corpus_tools(McpServer& server, std::shared_ptr<CorpusSession> ses
             if (params.contains("instrumentation"))
                 meta.instrumentation = params["instrumentation"].get<std::string>();
 
-            auto id = IngestedWorkId{session->next_work_id};
+            const auto allocation = mcp_detail::checked_session_id_batch(
+                session->next_work_id, mcp_detail::maximum_session_store_id(session->corpus.works));
+            if (!allocation) return corpus_allocation_error("Work", allocation.error());
+            auto id = IngestedWorkId{allocation->first};
             auto work = create_ingested_work(id, meta);
-
-            session->corpus.works[id.value] = work;
+            auto candidate = session->corpus;
+            if (!candidate.works.emplace(id.value, std::move(work)).second)
+                return corpus_allocation_error("Work", ErrorCode::InvariantViolation);
 
             // Auto-assign to composer if provided
             if (composer_id) {
-                auto r = assign_work_to_composer(session->corpus, id, *composer_id);
-                if (!r) {
-                    session->corpus.works.erase(id.value);
-                    return error_response("failed to assign to composer");
-                }
+                auto r = assign_work_to_composer(candidate, id, *composer_id);
+                if (!r) return error_response("failed to assign to composer");
             }
-            ++session->next_work_id;
-
-            return {{"work_id", id.value}, {"title", title}};
+            json response = {{"work_id", id.value}, {"title", title}};
+            (void)response.dump();
+            (void)corpus_to_json(candidate).dump();
+            std::swap(session->corpus, candidate);
+            session->next_work_id = allocation->next;
+            return response;
         });
 
     server.register_tool(
@@ -424,6 +639,21 @@ void register_corpus_tools(McpServer& server, std::shared_ptr<CorpusSession> ses
     // Analysis
     // =========================================================================
 
+    server.register_tool(
+        "get_work_analysis",
+        "Inspect one work's complete analysis, exact thematic passages, methods and limitations",
+        {{"work_id", "integer"}},
+        [session](const json& params) -> json {
+            const auto id = detail::checked_integer<std::uint64_t>(params.at("work_id"), "work id");
+            const auto found = session->corpus.works.find(id);
+            if (found == session->corpus.works.end()) return error_response("work not found");
+            return {{"work_id", id},
+                    {"analysis_complete", found->second.analysis_complete},
+                    {"schema_version", CORPUS_IR_SCHEMA_VERSION},
+                    {"availability", analysis_availability(found->second)},
+                    {"analysis", work_analysis_to_json(found->second.analysis)}};
+        });
+
     server.register_tool("analyze_work",
                          "Run analytical decomposition on an ingested work",
                          {{"work_id", "integer"}},
@@ -462,12 +692,31 @@ void register_corpus_tools(McpServer& server, std::shared_ptr<CorpusSession> ses
         [session](const json& params) -> json {
             auto cid = ComposerProfileId{
                 detail::checked_integer_or<std::uint64_t>(params, "composer_id", 0, "composer id")};
-            auto r = detect_signature_patterns(session->corpus, cid);
+            SignatureDetectionEvidence evidence;
+            auto r = detect_signature_patterns(session->corpus, cid, &evidence);
             if (!r) return error_response("detection failed: composer not found");
 
             auto it = session->corpus.composers.find(cid.value);
+            json target_works = json::array();
+            json baseline_works = json::array();
+            for (const auto id : evidence.target_works)
+                target_works.push_back(id.value);
+            for (const auto id : evidence.baseline_works)
+                baseline_works.push_back(id.value);
             return {{"composer_id", cid.value},
-                    {"pattern_count", it->second.style_profile.signature_patterns.size()}};
+                    {"pattern_count", it->second.style_profile.signature_patterns.size()},
+                    {"available", evidence.available},
+                    {"method", "observed_harmonic_bigram_pooled_proportion_z"},
+                    {"interpretation",
+                     "descriptive contrast; overlapping windows; no calibrated significance"},
+                    {"target_windows", evidence.target_windows},
+                    {"baseline_windows", evidence.baseline_windows},
+                    {"target_works", target_works},
+                    {"baseline_works", baseline_works},
+                    {"unavailable_reason",
+                     evidence.available ? json(nullptr)
+                                        : json("Analysed harmonic bigram observations are required "
+                                               "for the target and at least one other composer")}};
         });
 
     // =========================================================================
@@ -517,11 +766,19 @@ void register_corpus_tools(McpServer& server, std::shared_ptr<CorpusSession> ses
             if (!r) return error_response("query failed: composer not found");
 
             const auto* sp = *r;
-            return {{"composer_id", cid.value},
-                    {"sample_size", sp->sample_size},
-                    {"confidence", sp->confidence},
-                    {"harmonic_vocabulary_size", sp->harmonic_profile.chord_vocabulary_size},
-                    {"signature_pattern_count", sp->signature_patterns.size()}};
+            return {
+                {"composer_id", cid.value},
+                {"sample_size", sp->sample_size},
+                {"confidence", sp->confidence},
+                {"confidence_interpretation",
+                 "sample-size heuristic, not calibrated analytical accuracy"},
+                {"profile",
+                 composer_profile_to_json(session->corpus.composers.at(cid.value))
+                     .at("style_profile")},
+                {"availability",
+                 profile_availability(session->corpus, session->corpus.composers.at(cid.value))},
+                {"harmonic_vocabulary_size", sp->harmonic_profile.chord_vocabulary_size},
+                {"signature_pattern_count", sp->signature_patterns.size()}};
         });
 
     server.register_tool("find_examples",
@@ -537,7 +794,11 @@ void register_corpus_tools(McpServer& server, std::shared_ptr<CorpusSession> ses
                              json arr = json::array();
                              for (const auto& e : examples)
                                  arr.push_back(example_j(e));
-                             return {{"examples", arr}, {"count", examples.size()}};
+                             return {{"examples", arr},
+                                     {"count", examples.size()},
+                                     {"method", "all_significant_tokens_in_annotated_section"},
+                                     {"relevance_interpretation",
+                                      "lexical match coverage, not calibrated semantic relevance"}};
                          });
 
     server.register_tool(
@@ -621,7 +882,23 @@ void register_corpus_tools(McpServer& server, std::shared_ptr<CorpusSession> ses
 
             return {{"relevant_examples", examples},
                     {"statistical_tendencies", tendencies},
-                    {"signature_patterns", patterns}};
+                    {"signature_patterns", patterns},
+                    {"available", !result.relevant_examples.empty()},
+                    {"statistics_available", !result.statistical_tendencies.empty()},
+                    {"statistics_unavailable_reason",
+                     !result.statistical_tendencies.empty()
+                         ? json(nullptr)
+                         : json("No complete finite nonnegative per-bar observations support the "
+                                "matching passages")},
+                    {"method", "annotated_section_lexical_match_and_matched_bar_aggregation"},
+                    {"confidence_interpretation",
+                     "arithmetic aggregation of supplied observations; not calibrated musical or "
+                     "statistical confidence"},
+                    {"unavailable_reason",
+                     !result.relevant_examples.empty()
+                         ? json(nullptr)
+                         : json("No annotated section matches all significant query tokens; no "
+                                "contextual inference is available")}};
         });
 
     // =========================================================================
@@ -694,15 +971,21 @@ void register_corpus_tools(McpServer& server, std::shared_ptr<CorpusSession> ses
             if (opts.quantise_grid <= 0 || opts.quantise_grid > 65535)
                 return error_response("quantise_grid must be between 1 and 65535");
 
-            auto wid = IngestedWorkId{session->next_work_id};
+            const auto allocation = mcp_detail::checked_session_id_batch(
+                session->next_work_id, mcp_detail::maximum_session_store_id(session->corpus.works));
+            if (!allocation) return corpus_allocation_error("Work", allocation.error());
+            auto wid = IngestedWorkId{allocation->first};
             auto cid = ComposerProfileId{cid_val};
+            auto candidate = session->corpus;
 
-            auto r =
-                ingest_midi(session->corpus, std::span<const std::uint8_t>(*data), wid, cid, opts);
-            if (!r) return error_response("MIDI ingestion failed");
-            ++session->next_work_id;
-
-            return {{"work_id", wid.value}, {"title", title}, {"analysis_complete", true}};
+            auto r = ingest_midi(candidate, std::span<const std::uint8_t>(*data), wid, cid, opts);
+            if (!r) return ingestion_error_response("MIDI", r.error());
+            json response = {{"work_id", wid.value}, {"title", title}, {"analysis_complete", true}};
+            (void)response.dump();
+            (void)corpus_to_json(candidate).dump();
+            std::swap(session->corpus, candidate);
+            session->next_work_id = allocation->next;
+            return response;
         });
 
     server.register_tool(
@@ -728,14 +1011,21 @@ void register_corpus_tools(McpServer& server, std::shared_ptr<CorpusSession> ses
             if (params.contains("instrumentation"))
                 opts.instrumentation = params["instrumentation"].get<std::string>();
 
-            auto wid = IngestedWorkId{session->next_work_id};
+            const auto allocation = mcp_detail::checked_session_id_batch(
+                session->next_work_id, mcp_detail::maximum_session_store_id(session->corpus.works));
+            if (!allocation) return corpus_allocation_error("Work", allocation.error());
+            auto wid = IngestedWorkId{allocation->first};
             auto cid = ComposerProfileId{cid_val};
+            auto candidate = session->corpus;
 
-            auto r = ingest_musicxml(session->corpus, xml, wid, cid, opts);
-            if (!r) return error_response("MusicXML ingestion failed");
-            ++session->next_work_id;
-
-            return {{"work_id", wid.value}, {"title", title}, {"analysis_complete", true}};
+            auto r = ingest_musicxml(candidate, xml, wid, cid, opts);
+            if (!r) return ingestion_error_response("MusicXML", r.error());
+            json response = {{"work_id", wid.value}, {"title", title}, {"analysis_complete", true}};
+            (void)response.dump();
+            (void)corpus_to_json(candidate).dump();
+            std::swap(session->corpus, candidate);
+            session->next_work_id = allocation->next;
+            return response;
         });
 
     server.register_tool(
@@ -784,8 +1074,18 @@ void register_corpus_tools(McpServer& server, std::shared_ptr<CorpusSession> ses
                     continue;
                 }
 
-                auto wid = IngestedWorkId{session->next_work_id};
+                const auto allocation = mcp_detail::checked_session_id_batch(
+                    session->next_work_id,
+                    mcp_detail::maximum_session_store_id(session->corpus.works));
+                if (!allocation) {
+                    auto failure = corpus_allocation_error("Work", allocation.error());
+                    failure["title"] = title;
+                    results.push_back(std::move(failure));
+                    continue;
+                }
+                auto wid = IngestedWorkId{allocation->first};
                 auto cid = ComposerProfileId{cid_val};
+                auto candidate = session->corpus;
 
                 if (format == "midi") {
                     auto b64 = entry.value("data", "");
@@ -795,12 +1095,18 @@ void register_corpus_tools(McpServer& server, std::shared_ptr<CorpusSession> ses
                         continue;
                     }
                     auto r = ingest_midi(
-                        session->corpus, std::span<const std::uint8_t>(*data), wid, cid, opts);
+                        candidate, std::span<const std::uint8_t>(*data), wid, cid, opts);
                     if (r) {
-                        results.push_back({{"work_id", wid.value}, {"title", title}, {"ok", true}});
-                        ++session->next_work_id;
+                        json response = {{"work_id", wid.value}, {"title", title}, {"ok", true}};
+                        (void)response.dump();
+                        (void)corpus_to_json(candidate).dump();
+                        results.push_back(std::move(response));
+                        std::swap(session->corpus, candidate);
+                        session->next_work_id = allocation->next;
                     } else {
-                        results.push_back({{"title", title}, {"error", "MIDI ingestion failed"}});
+                        auto failure = ingestion_error_response("MIDI", r.error());
+                        failure["title"] = title;
+                        results.push_back(std::move(failure));
                     }
                 } else if (format == "musicxml") {
                     auto xml = entry.value("musicxml", "");
@@ -808,13 +1114,18 @@ void register_corpus_tools(McpServer& server, std::shared_ptr<CorpusSession> ses
                         results.push_back({{"title", title}, {"error", "musicxml is required"}});
                         continue;
                     }
-                    auto r = ingest_musicxml(session->corpus, xml, wid, cid, opts);
+                    auto r = ingest_musicxml(candidate, xml, wid, cid, opts);
                     if (r) {
-                        results.push_back({{"work_id", wid.value}, {"title", title}, {"ok", true}});
-                        ++session->next_work_id;
+                        json response = {{"work_id", wid.value}, {"title", title}, {"ok", true}};
+                        (void)response.dump();
+                        (void)corpus_to_json(candidate).dump();
+                        results.push_back(std::move(response));
+                        std::swap(session->corpus, candidate);
+                        session->next_work_id = allocation->next;
                     } else {
-                        results.push_back(
-                            {{"title", title}, {"error", "MusicXML ingestion failed"}});
+                        auto failure = ingestion_error_response("MusicXML", r.error());
+                        failure["title"] = title;
+                        results.push_back(std::move(failure));
                     }
                 }
             }

@@ -645,7 +645,8 @@ TEST_CASE("empty and single-pitch scores produce empty harmonic analysis",
 
         // create_score fills every measure with whole-measure rests
         auto harmonic = analyze_harmonic(*score_result);
-        CHECK(harmonic.chord_vocabulary.empty());
+        REQUIRE(harmonic);
+        CHECK(harmonic->chord_vocabulary.empty());
     }
 
     SECTION("single pitch per beat is excluded from chord recognition") {
@@ -662,7 +663,8 @@ TEST_CASE("empty and single-pitch scores produce empty harmonic analysis",
         // recognize_chord requires >= 2 pitch classes, so a single
         // pitch produces no chord vocabulary entries
         auto harmonic = analyze_harmonic(score);
-        CHECK(harmonic.chord_vocabulary.empty());
+        REQUIRE(harmonic);
+        CHECK(harmonic->chord_vocabulary.empty());
     }
 }
 

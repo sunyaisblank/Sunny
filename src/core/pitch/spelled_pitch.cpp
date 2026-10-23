@@ -5,6 +5,7 @@
  */
 
 #include <cctype>
+#include <charconv>
 #include <sunny/core/pitch/spelled_pitch.hpp>
 
 namespace sunny::core {
@@ -93,38 +94,10 @@ Result<SpelledPitch> from_spn(std::string_view s) {
         return std::unexpected(ErrorCode::InvalidSpelledPitch);
     }
 
-    // Handle negative octave
-    bool neg_octave = false;
-    if (s[pos] == '-') {
-        neg_octave = true;
-        ++pos;
-    }
-
-    if (pos >= s.size()) {
-        return std::unexpected(ErrorCode::InvalidSpelledPitch);
-    }
-
     int octave_val = 0;
-    bool has_digit = false;
-    while (pos < s.size()) {
-        if (s[pos] >= '0' && s[pos] <= '9') {
-            octave_val = octave_val * 10 + (s[pos] - '0');
-            has_digit = true;
-            ++pos;
-        } else {
-            return std::unexpected(ErrorCode::InvalidSpelledPitch);
-        }
-    }
-
-    if (!has_digit) {
-        return std::unexpected(ErrorCode::InvalidSpelledPitch);
-    }
-
-    if (neg_octave) {
-        octave_val = -octave_val;
-    }
-
-    if (octave_val < -128 || octave_val > 127) {
+    const auto* end = s.data() + s.size();
+    const auto parsed = std::from_chars(s.data() + pos, end, octave_val);
+    if (parsed.ec != std::errc{} || parsed.ptr != end || octave_val < -128 || octave_val > 127) {
         return std::unexpected(ErrorCode::InvalidSpelledPitch);
     }
 

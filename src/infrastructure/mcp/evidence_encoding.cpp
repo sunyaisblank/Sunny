@@ -236,6 +236,10 @@ nlohmann::json encode_note_deployments(
              {"observed_notes", std::move(observed)},
              {"action", sunny::infrastructure::formats::note_action_name(deployment.action)},
              {"cardinality_verified", deployment.cardinality_verified},
+             {"entire_clip_population_observed", deployment.entire_clip_population_observed},
+             {"observed_time_span",
+              deployment.observed_time_span ? nlohmann::json(*deployment.observed_time_span)
+                                            : nlohmann::json(nullptr)},
              {"properties_verified", deployment.properties_verified}});
     }
     return encoded;

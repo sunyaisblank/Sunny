@@ -11,6 +11,7 @@
 #pragma once
 
 #include <cstdint>
+#include <memory>
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <string>
@@ -20,6 +21,7 @@
 #include <vector>
 
 namespace sunny::infrastructure {
+struct LegacyOperationReceipt;
 
 /// LOM path segments
 struct LomPath {
@@ -68,6 +70,23 @@ struct LomResponse {
     std::optional<LomValue> value;
     std::optional<std::string> error;
     LomDeliveryState delivery = LomDeliveryState::ResponseReceived;
+    // Internal typed evidence; never serialized in the bridge envelope.
+    std::shared_ptr<const LegacyOperationReceipt> legacy_receipt = nullptr;
+};
+
+/// Original epoch carried by a validated stateful native-family frame. Existing
+/// Managed envelopes carry D only; their production authority wrapper verifies B.
+struct NativeFrameOrigin {
+    std::string document_token;
+    std::optional<std::string> bridge_instance;
+};
+
+/// One complete closed validation plus its transport admission classification.
+/// A valid raw mutation requires origin but carries no native-family authority.
+struct LomRequestClassification {
+    bool read_only = false;
+    bool requires_native_origin = false;
+    std::optional<NativeFrameOrigin> native_origin = std::nullopt;
 };
 
 /// Note data for clip operations
@@ -91,6 +110,15 @@ class LomProtocol {
   public:
     /// Prove that a request belongs to the complete current peer algebra.
     [[nodiscard]] static sunny::core::Result<void> validate_request(const LomRequest& request);
+    /// Validate once; consumers should reuse all three returned admission fields.
+    [[nodiscard]] static sunny::core::Result<LomRequestClassification>
+    classify_request(const LomRequest& request);
+    [[nodiscard]] static bool is_read_only_request(const LomRequest& request) noexcept;
+    /// Includes retained previews, which observe Live without changing musical state.
+    [[nodiscard]] static bool requires_native_origin(const LomRequest& request) noexcept;
+    /// Only top-level stateful Managed/Ordinary/Legacy envelopes can carry authority.
+    [[nodiscard]] static sunny::core::Result<NativeFrameOrigin>
+    native_frame_origin(const LomRequest& request);
 
     /// Prove the canonical Clip.add_new_notes request represented by this batch.
     [[nodiscard]] static sunny::core::Result<void>

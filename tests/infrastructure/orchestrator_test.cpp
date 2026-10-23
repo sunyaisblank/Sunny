@@ -221,6 +221,7 @@ namespace {
 /// BridgeDelivery contract requires.
 class ScriptedDelivery final : public BridgeDelivery {
   public:
+    bool records_without_execution() const noexcept override { return true; }
     std::vector<BridgeMessage> offered;
     std::vector<std::size_t> failing_positions;
     bool indeterminate_failures{false};

@@ -391,7 +391,7 @@ struct AbletonClipPostconditionEvidence {
     bool verified = false;
 };
 
-/** Final full-Clip note evidence for one requested nonempty Part batch. */
+/** Final note evidence for one requested nonempty Part batch, with explicit query coverage. */
 struct AbletonNotePostconditionEvidence {
     sunny::core::PartId part_id;
     int track_index = 0;
@@ -402,6 +402,8 @@ struct AbletonNotePostconditionEvidence {
     std::vector<AbletonNoteDeployment::ObservedNote> observed_notes;
     bool identity_verified = false;
     bool properties_verified = false;
+    bool entire_clip_population_observed = false;
+    std::optional<double> observed_time_span;
     bool verified = false;
 };
 
@@ -631,6 +633,7 @@ struct AbletonProjectDeploymentPlan {
     AbletonProjectCompilationResult preview;
     std::vector<AbletonPlannedMutation> mutations;
     bool consumed = false;
+    std::optional<LegacyPlanningAuthority> planning_authority = std::nullopt;
 };
 
 enum class AbletonProjectDeploymentStatus : std::uint8_t {

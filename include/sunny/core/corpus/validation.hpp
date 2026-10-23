@@ -1,6 +1,6 @@
 /**
  * @file validation.hpp
- * @brief Corpus IR validation — C1–C16 rules
+ * @brief Corpus IR validation — C1–C17 rules
  *
  *
  * Validates ingested works, analysis completeness, and profile quality.
@@ -12,6 +12,7 @@
  *   C14:     Corpus graph consistency
  *   C15:     Derived aggregate freshness
  *   C16:     Ingestion-confidence numeric domains
+ *   C17:     Analysis method, availability and exact passage provenance
  */
 
 #pragma once
@@ -25,7 +26,7 @@ namespace sunny::core {
 // =============================================================================
 
 /**
- * @brief Validate an ingested work (C1–C9, C16).
+ * @brief Validate an ingested work (C1–C9, C16–C17).
  */
 [[nodiscard]] std::vector<Diagnostic> validate_ingested_work(const IngestedWork& work);
 
@@ -49,7 +50,8 @@ namespace sunny::core {
  *
  * Only Error-severity structural rules gate loading: an embedded Score that
  * fails structural validation (C2), contradictory identities (C14), stale
- * derived aggregates (C15) and out-of-domain confidence records (C16).
+ * derived aggregates (C15), out-of-domain confidence records (C16), and
+ * contradictory analysis evidence/provenance (C17).
  * Ingestion and analysis quality rules (C1, C3-C13) describe the evidence
  * rather than the document's integrity, so a state produced by Sunny's own
  * tools always reloads; they remain diagnostics for validate_corpus.

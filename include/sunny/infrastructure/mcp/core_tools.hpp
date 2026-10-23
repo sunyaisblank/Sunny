@@ -27,6 +27,8 @@ namespace sunny::infrastructure {
  * - generate_negative_harmony
  * - voice_lead
  * - get_ableton_session_state
+ * - doctor_ableton (read-only bridge, pairing, identity and readiness checks)
+ * - get_ableton_remote_log
  * - undo_ableton_operation
  * - redo_ableton_operation
  *

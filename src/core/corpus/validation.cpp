@@ -7,11 +7,14 @@
  */
 
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <limits>
 #include <map>
 #include <set>
 #include <sunny/core/corpus/validation.hpp>
 #include <sunny/core/corpus/workflows.hpp>
+#include <sunny/core/score/time.hpp>
 #include <sunny/core/score/validation.hpp>
 
 namespace sunny::core {
@@ -109,9 +112,126 @@ std::vector<Diagnostic> validate_ingested_work(const IngestedWork& work) {
     c5_done:;
     }
 
-    if (!work.analysis_complete) {
-        return diags;
+    // C17: method/availability evidence and optional exact passage identities
+    // must agree with their closed domains. Legacy records without evidence or
+    // voice/end provenance remain unqualified; no identities are invented.
+    const auto invalid_analysis = [&diags](const std::string& message) {
+        diags.push_back(make_diag(
+            ValidationSeverity::Error, "C17", message, ErrorCode::CorpusInvalidParameter));
+    };
+    constexpr std::array domains = {"harmonic",
+                                    "melodic",
+                                    "rhythmic",
+                                    "formal",
+                                    "voice_leading",
+                                    "textural",
+                                    "dynamic",
+                                    "orchestration",
+                                    "motivic"};
+    for (const auto& [domain, evidence] : work.analysis.evidence) {
+        if (std::ranges::find(domains, domain) == domains.end())
+            invalid_analysis("Unknown analysis evidence domain: " + domain);
+        if (evidence.kind < AnalysisEvidenceKind::Unqualified ||
+            evidence.kind > AnalysisEvidenceKind::Unavailable) {
+            invalid_analysis("Invalid analysis evidence kind: " + domain);
+            continue;
+        }
+        if (evidence.kind != AnalysisEvidenceKind::Unqualified && evidence.method.empty())
+            invalid_analysis("Analysis evidence requires its method: " + domain);
+        if (evidence.kind == AnalysisEvidenceKind::Unavailable) {
+            if (!evidence.unavailable_reason || evidence.unavailable_reason->empty() ||
+                evidence.observations != 0)
+                invalid_analysis("Unavailable analysis requires a reason and zero observations: " +
+                                 domain);
+        } else if (evidence.kind != AnalysisEvidenceKind::Unqualified &&
+                   (evidence.observations == 0 || evidence.unavailable_reason)) {
+            invalid_analysis("Computed analysis requires observations and no unavailable reason: " +
+                             domain);
+        }
+        std::set<std::string> fields;
+        for (const auto& field : evidence.unavailable_fields)
+            if (field.empty() || !fields.insert(field).second)
+                invalid_analysis("Unavailable analysis fields must be nonempty and distinct: " +
+                                 domain);
     }
+
+    const auto check_melodic_lane = [&](PartId part_id, std::uint8_t voice_index) {
+        if (!work.score) return;
+        const auto part = std::ranges::find(work.score->parts, part_id, &Part::id);
+        if (part == work.score->parts.end()) {
+            invalid_analysis("Melodic lane references a missing Part");
+            return;
+        }
+        const bool exists = std::ranges::any_of(part->measures, [&](const auto& measure) {
+            return std::ranges::any_of(measure.voices, [&](const auto& voice) {
+                return voice.voice_index == voice_index;
+            });
+        });
+        if (!exists) invalid_analysis("Melodic lane references a missing voice");
+    };
+    const auto& melodic = work.analysis.melodic_analysis;
+    if (melodic.primary_melody_voice_index)
+        check_melodic_lane(melodic.primary_melody_voice, *melodic.primary_melody_voice_index);
+    for (const auto& lane : melodic.per_voice_analysis)
+        if (lane.voice_index) check_melodic_lane(lane.part_id, *lane.voice_index);
+
+    const auto check_themes = [&](const std::vector<ThematicUnit>& themes) {
+        for (const auto& theme : themes) {
+            for (const auto& occurrence : theme.occurrences) {
+                if (!occurrence.end && !occurrence.voice_index) continue;
+                if (occurrence.position.bar == 0 || occurrence.position.beat < Beat::zero() ||
+                    (occurrence.end &&
+                     (occurrence.end->bar == 0 || occurrence.end->beat < Beat::zero() ||
+                      *occurrence.end <= occurrence.position))) {
+                    invalid_analysis("Thematic passage must have a positive exact span");
+                    continue;
+                }
+                if (!work.score) continue;
+                const auto part =
+                    std::ranges::find(work.score->parts, occurrence.part_id, &Part::id);
+                if (part == work.score->parts.end()) {
+                    invalid_analysis("Thematic passage references a missing Part");
+                    continue;
+                }
+                const auto total_bars = work.score->metadata.total_bars;
+                const auto final_bar = static_cast<std::uint64_t>(total_bars) + 1;
+                if (occurrence.position.bar > total_bars ||
+                    (occurrence.end &&
+                     (occurrence.end->bar > final_bar || (occurrence.end->bar == final_bar &&
+                                                          occurrence.end->beat != Beat::zero()))) ||
+                    final_bar > std::numeric_limits<std::uint32_t>::max()) {
+                    invalid_analysis("Thematic passage lies outside its embedded Score");
+                    continue;
+                }
+                const auto start =
+                    score_time_to_absolute_beat(occurrence.position, work.score->time_map);
+                const auto end = occurrence.end ? score_time_to_absolute_beat(*occurrence.end,
+                                                                              work.score->time_map)
+                                                : start;
+                const auto score_end = score_time_to_absolute_beat(
+                    ScoreTime{static_cast<std::uint32_t>(final_bar), Beat::zero()},
+                    work.score->time_map);
+                if (!start || !end || !score_end || *start >= *score_end || *end > *score_end)
+                    invalid_analysis("Thematic passage lies outside its embedded Score");
+                if (occurrence.voice_index) {
+                    const auto measure = std::ranges::find(
+                        part->measures, occurrence.position.bar, &Measure::bar_number);
+                    const bool exists =
+                        measure != part->measures.end() &&
+                        std::ranges::any_of(measure->voices, [&](const auto& voice) {
+                            return voice.voice_index == *occurrence.voice_index;
+                        });
+                    if (!exists)
+                        invalid_analysis(
+                            "Thematic passage references a missing voice at its start");
+                }
+            }
+        }
+    };
+    check_themes(work.analysis.melodic_analysis.thematic_material);
+    check_themes(work.analysis.motivic_analysis.thematic_units);
+
+    if (!work.analysis_complete) return diags;
 
     // C6: Harmonic analysis coverage is the proportion of bars carrying at
     // least one recognised chord. Counting chords instead would let several
@@ -419,7 +539,7 @@ std::vector<Diagnostic> validate_corpus(const CorpusDatabase& corpus) {
 bool blocks_corpus_load(const Diagnostic& diagnostic) {
     if (diagnostic.severity != ValidationSeverity::Error) return false;
     return diagnostic.rule == "C2" || diagnostic.rule == "C14" || diagnostic.rule == "C15" ||
-           diagnostic.rule == "C16";
+           diagnostic.rule == "C16" || diagnostic.rule == "C17";
 }
 
 bool is_corpus_valid(const CorpusDatabase& corpus) {

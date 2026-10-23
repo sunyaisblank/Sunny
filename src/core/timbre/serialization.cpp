@@ -1404,6 +1404,18 @@ TimbreRenderingConfig render_config_f(const json& j, int schema_version) {
 // Public API
 // =============================================================================
 
+json timbre_preset_to_json(const TimbrePreset& preset) {
+    return preset_j(preset);
+}
+
+Result<TimbrePreset> timbre_preset_from_json(const json& encoded) {
+    try {
+        return preset_f(encoded);
+    } catch (const json::exception&) {
+        return std::unexpected(ErrorCode::FormatError);
+    }
+}
+
 json timbre_to_json(const TimbreProfile& profile) {
     json j;
     j["schema_version"] = TIMBRE_IR_SCHEMA_VERSION;

@@ -137,11 +137,20 @@ struct AbletonNoteDeployment {
     AbletonNoteAction action = AbletonNoteAction::RecordedOnly;
     bool cardinality_verified = false;
     bool properties_verified = false;
+    /** Live 11.0 ranged readback cannot exclude notes outside the queried interval. */
+    bool entire_clip_population_observed = false;
+    /** When present, readback covered [0, time_span) in quarter-note beats, all pitches. */
+    std::optional<double> observed_time_span;
 };
 
 /** Parse one exact, closed Clip note-readback response without imposing expected membership. */
 [[nodiscard]] sunny::core::Result<std::vector<AbletonNoteDeployment::ObservedNote>>
 parse_ableton_note_readback(const LomResponse& response);
+
+/** Select documented full readback (11.1+) or finite ranged readback (11.0). */
+[[nodiscard]] LomRequest ableton_note_population_request(const LomPath& clip_path,
+                                                         const AbletonTargetProfile& profile,
+                                                         double clip_end);
 
 /**
  * @brief Summary of an Ableton compilation

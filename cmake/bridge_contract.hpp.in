@@ -1,6 +1,6 @@
 /**
  * @file bridge_contract.hpp
- * @brief Generated Ableton bridge contract versions
+ * @brief Generated Ableton bridge versions and exact Python source identity
  *
  * Generated from remote_script/Sunny/bridge_contract.json. Do not edit this
  * file or its generated output by hand.
@@ -16,5 +16,6 @@ inline constexpr std::uint32_t SUNNY_BRIDGE_PROTOCOL_VERSION =
     static_cast<std::uint32_t>(@SUNNY_BRIDGE_PROTOCOL_VERSION_VALUE@);
 inline constexpr std::uint32_t SUNNY_TARGET_SNAPSHOT_SCHEMA_VERSION =
     static_cast<std::uint32_t>(@SUNNY_TARGET_SNAPSHOT_SCHEMA_VERSION_VALUE@);
+inline constexpr char SUNNY_BRIDGE_SOURCE_SHA256[] = "@SUNNY_BRIDGE_SOURCE_SHA256_VALUE@";
 
 } // namespace sunny::infrastructure

@@ -34,9 +34,13 @@ namespace sunny::core {
  *
  * @param score Source score
  * @param result_id Repository-selected identity for the independent output Score
- * @return New score with one Piano part and two voices per measure
+ * @return New score with one Piano part; two primary staff voices and any
+ *         additional voices required by grace notes or overlapping unisons.
+ *         Invalid source topology/arithmetic or more than 256 derived voices
+ *         returns an error. Structural allocations are retained exactly;
+ *         split ordinary notes use ties and durations are respelled.
  */
-[[nodiscard]] Score piano_reduction(const Score& score, ScoreId result_id);
+[[nodiscard]] Result<Score> piano_reduction(const Score& score, ScoreId result_id);
 
 /**
  * @brief Collapse parts by instrument family into two-staff condensed score
@@ -48,9 +52,10 @@ namespace sunny::core {
  *
  * @param score Source score
  * @param result_id Repository-selected identity for the independent output Score
- * @return New score with one part per active instrument family
+ * @return New score with one part per active instrument family, or an error
+ *         when source allocations or the 256-voice output domain are invalid.
  */
-[[nodiscard]] Score short_score(const Score& score, ScoreId result_id);
+[[nodiscard]] Result<Score> short_score(const Score& score, ScoreId result_id);
 
 /**
  * @brief Extract a single part as a standalone score

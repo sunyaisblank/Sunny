@@ -22,6 +22,9 @@
  * - search_presets, load_preset, save_preset
  * - morph_presets
  * - validate_timbre
+ * - get_timbre_json, replace_timbre_effect
+ * - remove_timbre_automation, remove_timbre_modulation, remove_timbre_macro
+ * - remove_timbre_parameter_mapping
  */
 
 #pragma once

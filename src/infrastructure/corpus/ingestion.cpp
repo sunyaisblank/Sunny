@@ -926,7 +926,9 @@ Result<IngestedWork> ingest_midi(std::span<const std::uint8_t> midi_data,
                       "program-change without a source-semantic Score carrier");
 
     // Run analysis
-    work.analysis = analyze_score(*work.score);
+    auto analysis = analyze_score(*work.score);
+    if (!analysis) return std::unexpected(analysis.error());
+    work.analysis = std::move(*analysis);
     work.analysis_complete = true;
 
     return work;
@@ -1173,7 +1175,9 @@ Result<IngestedWork> ingest_musicxml(std::string_view musicxml,
     work.ingestion_confidence.duration_quantisation_residual = 0.0f;
     work.ingestion_confidence.source_format = "musicxml";
 
-    work.analysis = analyze_score(*work.score);
+    auto analysis = analyze_score(*work.score);
+    if (!analysis) return std::unexpected(analysis.error());
+    work.analysis = std::move(*analysis);
     work.analysis_complete = true;
 
     return work;

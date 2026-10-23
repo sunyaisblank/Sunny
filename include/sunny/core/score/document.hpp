@@ -24,6 +24,7 @@
 
 #include <map>
 #include <optional>
+#include <set>
 #include <string>
 #include <sunny/core/harmony/cadence.hpp>
 #include <sunny/core/post_tonal/twelve_tone.hpp>
@@ -433,9 +434,9 @@ written_to_sounding_interval(const PartDefinition& definition) noexcept {
  */
 struct TupletContext {
     TupletId id{};
-    std::uint8_t actual{};               ///< Notes in tuplet (m in m:n)
-    std::uint8_t normal{};               ///< Notes in normal division (n in m:n)
-    Beat normal_type{};                  ///< Duration of each normal note
+    std::uint8_t actual{};               ///< Nominal rhythmic units in tuplet (m in m:n)
+    std::uint8_t normal{};               ///< Nominal rhythmic units in normal span (n in m:n)
+    Beat normal_type{};                  ///< Written duration of a nominal rhythmic unit
     std::optional<TupletId> nested_in{}; ///< Parent tuplet if nested
 };
 
@@ -883,6 +884,20 @@ enum class VoiceLeadingStyle : std::uint8_t {
  * - time_map has entry at bar 1
  * - version increases monotonically (including through undo/redo)
  */
+/** IDs actually exposed by this Score's history, including retired identities.
+ * Sets are typed and document-local. A high imported ID reserves only itself;
+ * untouched lower holes remain available to the lowest-free allocator.
+ */
+struct ScoreIdentityReservations {
+    std::set<EventId> events;
+    std::set<PartId> parts;
+    std::set<SectionId> sections;
+    std::set<TupletId> tuplets;
+    std::set<BeamGroupId> beams;
+
+    [[nodiscard]] bool operator==(const ScoreIdentityReservations&) const = default;
+};
+
 struct Score {
     ScoreId id;
     ScoreMetadata metadata;
@@ -899,6 +914,16 @@ struct Score {
     std::vector<ScoreRegion> stale_harmonic_regions;      ///< Invalidated by mutations (§14.1)
     std::vector<ScoreRegion> stale_orchestration_regions; ///< Invalidated by mutations (§14.1)
     std::uint64_t version = 1;                            ///< Monotonically increasing edit counter
+    ScoreIdentityReservations identity_reservations;      ///< Persistent typed identity history
 };
+
+/** Collect stored reservations plus all actually represented typed IDs. */
+[[nodiscard]] ScoreIdentityReservations collect_score_identities(const Score& score);
+
+/** Retain represented and previously observed IDs without changing content/version. */
+void retain_score_identities(Score& score, const ScoreIdentityReservations& observed);
+
+/** Union both documents' represented/stored identities into a restored candidate. */
+void retain_score_identities(Score& restored, const Score& current);
 
 } // namespace sunny::core

@@ -27,6 +27,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <sunny/core/harmony/cadence.hpp>
 #include <sunny/core/types/beat.hpp>
 #include <sunny/core/types/music_types.hpp>
 #include <vector>
@@ -55,19 +56,6 @@ enum class SectionalForm {
 // =============================================================================
 // §10.2 Phrase Structure Types
 // =============================================================================
-
-/**
- * @brief Cadence type terminating a phrase
- */
-enum class CadenceType {
-    PAC,      ///< Perfect authentic cadence
-    IAC,      ///< Imperfect authentic cadence
-    HC,       ///< Half cadence
-    PC,       ///< Plagal cadence
-    DC,       ///< Deceptive cadence
-    Phrygian, ///< Phrygian half cadence
-    None      ///< No cadence identified
-};
 
 /**
  * @brief Phrase structure classification

@@ -9,7 +9,9 @@
 #include <sunny/core/harmony/harmonic_function.hpp>
 #include <sunny/core/harmony/roman_numeral.hpp>
 #include <sunny/core/score/harmony_analysis.hpp>
+#include <sunny/core/score/projection.hpp>
 #include <sunny/core/score/queries.hpp>
+#include <sunny/core/score/time.hpp>
 
 namespace sunny::core {
 
@@ -34,61 +36,6 @@ ScoreHarmonicFunction map_function(HarmonicFunction hf) {
         return ScoreHarmonicFunction::Dominant;
     }
     return ScoreHarmonicFunction::Ambiguous;
-}
-
-/// Collect pitch classes sounding at a given position across all parts.
-PitchClassSet collect_sounding_pcs(const Score& score, ScoreTime position) {
-    PitchClassSet pcs;
-
-    for (const auto& part : score.parts) {
-        if (position.bar < 1 || position.bar > part.measures.size()) continue;
-        const auto& measure = part.measures[position.bar - 1];
-
-        for (const auto& voice : measure.voices) {
-            for (const auto& event : voice.events) {
-                const auto* ng = event.as_note_group();
-                if (!ng) continue;
-
-                Beat event_end = event.offset + ng->duration;
-                if (event.offset <= position.beat && position.beat < event_end) {
-                    for (const auto& note : ng->notes) {
-                        pcs.insert(PitchClass::wrapped(midi_value(note.pitch)));
-                    }
-                }
-            }
-        }
-    }
-
-    return pcs;
-}
-
-/// Collect sorted MIDI note numbers sounding at a position.
-std::vector<MidiNote> collect_sounding_midi(const Score& score, ScoreTime position) {
-    std::vector<MidiNote> notes;
-
-    for (const auto& part : score.parts) {
-        if (position.bar < 1 || position.bar > part.measures.size()) continue;
-        const auto& measure = part.measures[position.bar - 1];
-
-        for (const auto& voice : measure.voices) {
-            for (const auto& event : voice.events) {
-                const auto* ng = event.as_note_group();
-                if (!ng) continue;
-
-                Beat event_end = event.offset + ng->duration;
-                if (event.offset <= position.beat && position.beat < event_end) {
-                    for (const auto& note : ng->notes) {
-                        if (auto mv = MidiNote::from_int(midi_value(note.pitch))) {
-                            notes.push_back(*mv);
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    std::sort(notes.begin(), notes.end());
-    return notes;
 }
 
 /// Build a ChordVoicing from recognised root, quality, and actual notes.
@@ -120,120 +67,119 @@ ChordVoicing build_voicing(PitchClass root,
     return voicing;
 }
 
-/// Check if a position falls within any stale region.
-bool in_stale_region(ScoreTime position, const std::vector<ScoreRegion>& regions) {
-    for (const auto& r : regions) {
-        if (position >= r.start && position < r.end) return true;
-    }
-    return false;
-}
-
 constexpr double HARMONY_CONFIDENCE_THRESHOLD = 0.5;
 
-/// Derive annotations for bars in [start_bar, end_bar].
-HarmonicAnnotationLayer
+/// Derive from exact note/context changes in bars [start_bar, end_bar].
+Result<HarmonicAnnotationLayer>
 derive_for_range(const Score& score, std::uint32_t start_bar, std::uint32_t end_bar) {
     HarmonicAnnotationLayer layer;
+    if (end_bar < start_bar) return layer;
+    auto notes = project_symbolic_notes(score);
+    if (!notes) return std::unexpected(notes.error());
+    auto range_start = score_time_to_absolute_beat({start_bar, Beat::zero()}, score.time_map);
+    auto range_end = score_time_to_absolute_beat({end_bar + 1, Beat::zero()}, score.time_map);
+    if (!range_start || !range_end) return std::unexpected(ErrorCode::InvalidTimeSignature);
+    std::vector<Beat> boundaries{*range_start, *range_end};
+    for (const auto& key : score.key_map) {
+        auto absolute = score_time_to_absolute_beat(key.position, score.time_map);
+        if (!absolute) return std::unexpected(absolute.error());
+        boundaries.push_back(*absolute);
+    }
+    auto slices = partition_symbolic_notes(*notes, boundaries);
+    if (!slices) return std::unexpected(slices.error());
     PitchClassSet prev_pcs;
+    std::vector<MidiNote> prev_notes;
     std::optional<std::size_t> current_idx;
-    // "No previous key" is a real state, not a smuggled out-of-range
-    // sentinel; the PitchClass invariant no longer admits 255.
-    std::optional<PitchClass> prev_key_root;
+    std::optional<KeySignature> previous_key;
+    for (const auto& slice : *slices) {
+        if (slice.start < *range_start || slice.start >= *range_end) continue;
+        auto position_result =
+            absolute_beat_to_score_time(slice.start, score.time_map, score.metadata.total_bars);
+        if (!position_result) return std::unexpected(position_result.error());
+        const ScoreTime position = *position_result;
+        auto key_opt = query_key_at(score, position);
+        if (!key_opt) return std::unexpected(ErrorCode::InvariantViolation);
+        const KeySignature key = *key_opt;
+        const PitchClass key_root = pc(key.root);
+        const bool minor = is_minor_key(key);
+        const auto scale_ints = key.mode.get_intervals();
+        auto duration = checked_sub(std::min(slice.end, *range_end), slice.start);
+        if (!duration) return std::unexpected(duration.error());
+        PitchClassSet pcs;
+        std::vector<MidiNote> midi_notes;
+        for (auto index : slice.sounding_indices) {
+            const auto& note = (*notes)[index];
+            auto value = midi(note.pitch);
+            if (!value) return std::unexpected(value.error());
+            pcs.insert(pitch_class(*value));
+            midi_notes.push_back(*value);
+        }
+        std::sort(midi_notes.begin(), midi_notes.end());
+        if (pcs.empty()) {
+            current_idx.reset();
+            previous_key.reset();
+            continue;
+        }
+        const bool key_changed = !previous_key || key != *previous_key;
+        previous_key = key;
+        if (pcs == prev_pcs && midi_notes == prev_notes && current_idx && !key_changed) {
+            auto extended = checked_add(layer[*current_idx].duration, *duration);
+            if (!extended) return std::unexpected(extended.error());
+            layer[*current_idx].duration = *extended;
+            continue;
+        }
+        prev_pcs = pcs;
+        prev_notes = midi_notes;
+        HarmonicAnnotation ann;
+        ann.position = position;
+        ann.duration = *duration;
+        ann.key_context = key;
+        auto recognised = recognize_chord(pcs);
 
-    for (std::uint32_t bar = start_bar; bar <= end_bar; ++bar) {
-        TimeSignature ts = query_time_signature_at(score, bar);
-        auto key_opt = query_key_at(score, ScoreTime{bar, Beat::zero()});
-        if (!key_opt) continue;
-        KeySignature key = *key_opt;
+        if (recognised) {
+            auto& [root, quality] = *recognised;
+            ann.chord = build_voicing(root, quality, midi_notes);
 
-        PitchClass key_root = pc(key.root);
-        bool minor = is_minor_key(key);
-        auto scale_ints = key.mode.get_intervals();
+            auto numeral = chord_to_numeral(root, quality, key_root, scale_ints, minor);
+            ann.roman_numeral = numeral ? *numeral : "?";
 
-        int num_beats = ts.numerator();
-        int denom = ts.denominator();
-
-        for (int beat_idx = 0; beat_idx < num_beats; ++beat_idx) {
-            Beat offset = Beat::normalise(beat_idx, denom);
-            ScoreTime position{bar, offset};
-            Beat beat_dur = Beat::normalise(1, denom);
-
-            PitchClassSet pcs = collect_sounding_pcs(score, position);
-
-            if (pcs.empty()) {
-                current_idx = std::nullopt;
-                prev_pcs.clear();
-                continue;
-            }
-
-            // Force a new annotation when the key context changes, even
-            // if the pitch class set is identical.
-            bool key_changed = (!prev_key_root || key_root != *prev_key_root);
-            prev_key_root = key_root;
-
-            if (pcs == prev_pcs && current_idx && !key_changed) {
-                layer[*current_idx].duration = layer[*current_idx].duration + beat_dur;
-                continue;
-            }
-
-            prev_pcs = pcs;
-
-            HarmonicAnnotation ann;
-            ann.position = position;
-            ann.duration = beat_dur;
-            ann.key_context = key;
-
-            auto midi_notes = collect_sounding_midi(score, position);
-            auto recognised = recognize_chord(pcs);
-
-            if (recognised) {
-                auto& [root, quality] = *recognised;
-                ann.chord = build_voicing(root, quality, midi_notes);
-
-                auto numeral = chord_to_numeral(root, quality, key_root, scale_ints, minor);
-                ann.roman_numeral = numeral ? *numeral : "?";
-
-                // Derive function from the recognized root's degree
-                // rather than calling analyze_chord_function, which
-                // would re-derive the root independently and risk
-                // divergence between numeral and function.
-                if (numeral) {
-                    auto parsed = parse_roman_numeral_full(*numeral);
-                    if (parsed && parsed->degree >= 0 && parsed->degree < 7) {
-                        static constexpr HarmonicFunction DEGREE_FN[7] = {
-                            HarmonicFunction::Tonic,
-                            HarmonicFunction::Subdominant,
-                            HarmonicFunction::Tonic,
-                            HarmonicFunction::Subdominant,
-                            HarmonicFunction::Dominant,
-                            HarmonicFunction::Tonic,
-                            HarmonicFunction::Dominant,
-                        };
-                        ann.function = map_function(DEGREE_FN[parsed->degree]);
-                    } else {
-                        ann.function = ScoreHarmonicFunction::Ambiguous;
-                    }
+            // Derive function from the recognized root's degree
+            // rather than calling analyze_chord_function, which
+            // would re-derive the root independently and risk
+            // divergence between numeral and function.
+            if (numeral) {
+                auto parsed = parse_roman_numeral_full(*numeral);
+                if (parsed && parsed->degree >= 0 && parsed->degree < 7) {
+                    static constexpr HarmonicFunction DEGREE_FN[7] = {
+                        HarmonicFunction::Tonic,
+                        HarmonicFunction::Subdominant,
+                        HarmonicFunction::Tonic,
+                        HarmonicFunction::Subdominant,
+                        HarmonicFunction::Dominant,
+                        HarmonicFunction::Tonic,
+                        HarmonicFunction::Dominant,
+                    };
+                    ann.function = map_function(DEGREE_FN[parsed->degree]);
                 } else {
                     ann.function = ScoreHarmonicFunction::Ambiguous;
                 }
-                ann.confidence = 1.0f;
             } else {
-                ann.chord.notes = midi_notes;
-                ann.roman_numeral = "?";
                 ann.function = ScoreHarmonicFunction::Ambiguous;
-                ann.confidence = 0.3f;
             }
-
-            layer.push_back(ann);
-            current_idx = layer.size() - 1;
+            ann.confidence = 1.0f;
+        } else {
+            ann.chord.notes = midi_notes;
+            ann.roman_numeral = "?";
+            ann.function = ScoreHarmonicFunction::Ambiguous;
+            ann.confidence = 0.3f;
         }
-    }
 
-    // Filter out annotations below the confidence threshold
+        layer.push_back(ann);
+        current_idx = layer.size() - 1;
+    }
     std::erase_if(layer, [](const HarmonicAnnotation& ann) {
         return ann.confidence < HARMONY_CONFIDENCE_THRESHOLD;
     });
-
     return layer;
 }
 
@@ -248,7 +194,9 @@ Result<HarmonicAnnotationLayer> derive_harmonic_layer(const Score& score) {
         return std::unexpected(ErrorCode::InvariantViolation);
     }
 
-    auto layer = derive_for_range(score, 1, score.metadata.total_bars);
+    auto derived = derive_for_range(score, 1, score.metadata.total_bars);
+    if (!derived) return std::unexpected(derived.error());
+    auto layer = std::move(*derived);
 
     // Post-process: detect cadences at section boundaries and score end
     std::set<std::uint32_t> boundary_bars;
@@ -286,31 +234,58 @@ Result<HarmonicAnnotationLayer> derive_harmonic_layer(const Score& score) {
 VoidResult refresh_stale_regions(Score& score) {
     if (score.stale_harmonic_regions.empty()) return {};
 
-    // Remove annotations within stale regions
-    std::erase_if(score.harmonic_annotations, [&](const HarmonicAnnotation& ann) {
-        return in_stale_region(ann.position, score.stale_harmonic_regions);
-    });
-
-    // Re-derive for each stale region
+    auto derived = derive_harmonic_layer(score);
+    if (!derived) return std::unexpected(derived.error());
+    std::vector<std::pair<Beat, Beat>> regions;
     for (const auto& region : score.stale_harmonic_regions) {
-        std::uint32_t start_bar = region.start.bar;
-        std::uint32_t end_bar = region.end.bar;
-        if (region.end.beat == Beat::zero() && end_bar > start_bar) {
-            --end_bar;
-        }
-
-        auto new_annotations = derive_for_range(score, start_bar, end_bar);
-        score.harmonic_annotations.insert(
-            score.harmonic_annotations.end(), new_annotations.begin(), new_annotations.end());
+        auto start = score_time_to_absolute_beat(region.start, score.time_map);
+        auto end = score_time_to_absolute_beat(region.end, score.time_map);
+        if (!start || !end || *end <= *start)
+            return std::unexpected(ErrorCode::InvalidTimeSignature);
+        regions.emplace_back(*start, *end);
     }
-
-    // Sort by position
-    std::sort(score.harmonic_annotations.begin(),
-              score.harmonic_annotations.end(),
-              [](const HarmonicAnnotation& a, const HarmonicAnnotation& b) {
-                  return a.position < b.position;
-              });
-
+    HarmonicAnnotationLayer replacement;
+    const auto append_fragments = [&](const HarmonicAnnotationLayer& source,
+                                      bool inside) -> VoidResult {
+        for (const auto& annotation : source) {
+            auto start = score_time_to_absolute_beat(annotation.position, score.time_map);
+            if (!start) return std::unexpected(start.error());
+            auto end = checked_add(*start, annotation.duration);
+            if (!end || *end <= *start) return std::unexpected(ErrorCode::InvariantViolation);
+            std::vector<Beat> cuts{*start, *end};
+            for (const auto& region : regions) {
+                if (*start < region.first && region.first < *end) cuts.push_back(region.first);
+                if (*start < region.second && region.second < *end) cuts.push_back(region.second);
+            }
+            std::sort(cuts.begin(), cuts.end());
+            cuts.erase(std::unique(cuts.begin(), cuts.end()), cuts.end());
+            for (std::size_t index = 0; index + 1 < cuts.size(); ++index) {
+                const bool stale =
+                    std::any_of(regions.begin(), regions.end(), [&](const auto& region) {
+                        return region.first <= cuts[index] && cuts[index] < region.second;
+                    });
+                if (stale != inside) continue;
+                auto position = absolute_beat_to_score_time(
+                    cuts[index], score.time_map, score.metadata.total_bars);
+                auto duration = checked_sub(cuts[index + 1], cuts[index]);
+                if (!position || !duration) return std::unexpected(ErrorCode::InvariantViolation);
+                auto fragment = annotation;
+                fragment.position = *position;
+                fragment.duration = *duration;
+                if (cuts[index + 1] != *end) fragment.cadence.reset();
+                replacement.push_back(std::move(fragment));
+            }
+        }
+        return {};
+    };
+    auto kept = append_fragments(score.harmonic_annotations, false);
+    if (!kept) return kept;
+    auto refreshed = append_fragments(*derived, true);
+    if (!refreshed) return refreshed;
+    std::sort(replacement.begin(), replacement.end(), [](const auto& a, const auto& b) {
+        return a.position < b.position;
+    });
+    score.harmonic_annotations = std::move(replacement);
     score.stale_harmonic_regions.clear();
     return {};
 }

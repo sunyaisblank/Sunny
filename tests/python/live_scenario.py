@@ -3,9 +3,8 @@
 The scenario talks to sunny-mcp only through MCP tools, so it makes no
 assumption about what sits behind the bridge. Against the offline model it
 runs in every CI build (test_live_end_to_end.py); against a real Live it is
-the final live check (test_live_host.py). Everything it learns about the
-target is returned, so a live run also records the facts that issue #22
-leaves open.
+one final-stage smoke check (test_live_host.py). The returned observations
+cover this scenario only, not every host-dependent obligation in issue #22.
 """
 
 from __future__ import annotations
@@ -33,7 +32,7 @@ def run_live_smoke(client: McpClient) -> dict[str, Any]:
     """Deploy a small two-part project and verify it by readback.
 
     Preconditions: the Set may hold other tracks; the project inserts its own
-    two tracks and leaves the rest unchanged. Postconditions asserted: the
+    two tracks; its current compiler also updates Scene 0. Postconditions asserted: the
     plan applies with every journal entry acknowledged, every requested note
     is written, the track count rises by exactly two, and the Remote Script
     log records no error. Returns the observations for the record.

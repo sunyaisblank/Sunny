@@ -593,10 +593,14 @@ TonalPlan tonal_plan_f_v3(const json& j) {
 json thematic_unit_j_v3(const ThematicUnit& unit) {
     json occurrences = json::array();
     for (const auto& occurrence : unit.occurrences) {
-        occurrences.push_back({{"position", score_time_to_json(occurrence.position)},
-                               {"part_id", occurrence.part_id.value},
-                               {"transformation", static_cast<int>(occurrence.transformation)},
-                               {"key", occurrence.key}});
+        occurrences.push_back(
+            {{"position", score_time_to_json(occurrence.position)},
+             {"part_id", occurrence.part_id.value},
+             {"transformation", static_cast<int>(occurrence.transformation)},
+             {"key", occurrence.key},
+             {"voice_index",
+              occurrence.voice_index ? json(*occurrence.voice_index) : json(nullptr)},
+             {"end", occurrence.end ? score_time_to_json(*occurrence.end) : json(nullptr)}});
     }
     return {{"id", unit.id.value},
             {"label", unit.label},
@@ -606,7 +610,7 @@ json thematic_unit_j_v3(const ThematicUnit& unit) {
             {"occurrences", occurrences}};
 }
 
-ThematicUnit thematic_unit_f_v3(const json& j) {
+ThematicUnit thematic_unit_f_v3(const json& j, int version) {
     ThematicUnit unit;
     unit.id =
         ThematicUnitId{detail::checked_integer<std::uint64_t>(j.at("id"), "thematic-unit id")};
@@ -624,6 +628,13 @@ ThematicUnit thematic_unit_f_v3(const json& j) {
                                                "ThematicTransformation",
                                                encoded);
         occurrence.key = encoded.at("key").get<std::string>();
+        if (version >= 5) {
+            if (!encoded.at("voice_index").is_null())
+                occurrence.voice_index = detail::checked_integer<std::uint8_t>(
+                    encoded.at("voice_index"), "thematic voice index");
+            if (!encoded.at("end").is_null())
+                occurrence.end = score_time_from_json(encoded.at("end"));
+        }
         unit.occurrences.push_back(std::move(occurrence));
     }
     return unit;
@@ -755,17 +766,20 @@ json melodic_analysis_j_v3(const MelodicAnalysisRecord& m) {
              {"conjunct_proportion", voice.conjunct_proportion},
              {"longest_ascending_run", voice.longest_ascending_run},
              {"longest_descending_run", voice.longest_descending_run},
-             {"chromaticism_rate", voice.chromaticism_rate}});
+             {"chromaticism_rate", voice.chromaticism_rate},
+             {"voice_index", voice.voice_index ? json(*voice.voice_index) : json(nullptr)}});
     }
     json thematic = json::array();
     for (const auto& unit : m.thematic_material)
         thematic.push_back(thematic_unit_j_v3(unit));
     return {{"per_voice_analysis", voices},
             {"primary_melody_voice", m.primary_melody_voice.value},
+            {"primary_melody_voice_index",
+             m.primary_melody_voice_index ? json(*m.primary_melody_voice_index) : json(nullptr)},
             {"thematic_material", thematic}};
 }
 
-MelodicAnalysisRecord melodic_analysis_f_v3(const json& j) {
+MelodicAnalysisRecord melodic_analysis_f_v3(const json& j, int version) {
     MelodicAnalysisRecord m;
     for (const auto& encoded : j.at("per_voice_analysis")) {
         VoiceMelodicAnalysis voice;
@@ -805,12 +819,18 @@ MelodicAnalysisRecord melodic_analysis_f_v3(const json& j) {
         voice.longest_descending_run = detail::checked_integer<std::uint8_t>(
             encoded.at("longest_descending_run"), "longest descending run");
         voice.chromaticism_rate = encoded.at("chromaticism_rate").get<float>();
+        if (version >= 5 && !encoded.at("voice_index").is_null())
+            voice.voice_index = detail::checked_integer<std::uint8_t>(encoded.at("voice_index"),
+                                                                      "melodic voice index");
         m.per_voice_analysis.push_back(std::move(voice));
     }
     m.primary_melody_voice = PartId{detail::checked_integer<std::uint64_t>(
         j.at("primary_melody_voice"), "primary melody part id")};
+    if (version >= 5 && !j.at("primary_melody_voice_index").is_null())
+        m.primary_melody_voice_index = detail::checked_integer<std::uint8_t>(
+            j.at("primary_melody_voice_index"), "primary melody voice index");
     for (const auto& encoded : j.at("thematic_material"))
-        m.thematic_material.push_back(thematic_unit_f_v3(encoded));
+        m.thematic_material.push_back(thematic_unit_f_v3(encoded, version));
     return m;
 }
 
@@ -1147,10 +1167,10 @@ json motivic_analysis_j_v3(const MotivicAnalysisRecord& m) {
             {"thematic_economy", m.thematic_economy}};
 }
 
-MotivicAnalysisRecord motivic_analysis_f_v3(const json& j) {
+MotivicAnalysisRecord motivic_analysis_f_v3(const json& j, int version) {
     MotivicAnalysisRecord m;
     for (const auto& encoded : j.at("thematic_units"))
-        m.thematic_units.push_back(thematic_unit_f_v3(encoded));
+        m.thematic_units.push_back(thematic_unit_f_v3(encoded, version));
     for (const auto& encoded : j.at("transformation_inventory")) {
         TransformationEvent event;
         event.source_theme = ThematicUnitId{detail::checked_integer<std::uint64_t>(
@@ -1181,16 +1201,27 @@ json work_analysis_j_v3(const WorkAnalysis& analysis) {
         {"textural_analysis", textural_analysis_j_v3(analysis.textural_analysis)},
         {"dynamic_analysis", dynamic_analysis_j_v3(analysis.dynamic_analysis)},
         {"motivic_analysis", motivic_analysis_j_v3(analysis.motivic_analysis)}};
+    json evidence = json::object();
+    for (const auto& [domain, item] : analysis.evidence) {
+        evidence[domain] = {
+            {"kind", static_cast<int>(item.kind)},
+            {"method", item.method},
+            {"unavailable_reason",
+             item.unavailable_reason ? json(*item.unavailable_reason) : json(nullptr)},
+            {"unavailable_fields", item.unavailable_fields},
+            {"observations", item.observations}};
+    }
+    result["evidence"] = std::move(evidence);
     if (analysis.orchestration_analysis)
         result["orchestration_analysis"] =
             orchestration_analysis_j_v3(*analysis.orchestration_analysis);
     return result;
 }
 
-WorkAnalysis work_analysis_f_v3(const json& j) {
+WorkAnalysis work_analysis_f_v3(const json& j, int version) {
     WorkAnalysis analysis;
     analysis.harmonic_analysis = harmonic_analysis_f_v3(j.at("harmonic_analysis"));
-    analysis.melodic_analysis = melodic_analysis_f_v3(j.at("melodic_analysis"));
+    analysis.melodic_analysis = melodic_analysis_f_v3(j.at("melodic_analysis"), version);
     analysis.rhythmic_analysis = rhythmic_analysis_f_v3(j.at("rhythmic_analysis"));
     analysis.formal_analysis = formal_analysis_f_v3(j.at("formal_analysis"));
     analysis.voice_leading_analysis = voice_leading_analysis_f_v3(j.at("voice_leading_analysis"));
@@ -1199,7 +1230,27 @@ WorkAnalysis work_analysis_f_v3(const json& j) {
     if (j.contains("orchestration_analysis"))
         analysis.orchestration_analysis =
             orchestration_analysis_f_v3(j.at("orchestration_analysis"));
-    analysis.motivic_analysis = motivic_analysis_f_v3(j.at("motivic_analysis"));
+    analysis.motivic_analysis = motivic_analysis_f_v3(j.at("motivic_analysis"), version);
+    if (version >= 5) {
+        const auto& evidence = j.at("evidence");
+        if (!evidence.is_object())
+            throw json::type_error::create(302, "analysis evidence must be an object", &j);
+        for (const auto& [domain, encoded] : evidence.items()) {
+            AnalysisEvidence item;
+            item.kind = check_enum(encoded.at("kind"),
+                                   AnalysisEvidenceKind::Unavailable,
+                                   "AnalysisEvidenceKind",
+                                   encoded);
+            item.method = encoded.at("method").get<std::string>();
+            if (!encoded.at("unavailable_reason").is_null())
+                item.unavailable_reason = encoded.at("unavailable_reason").get<std::string>();
+            item.unavailable_fields =
+                encoded.at("unavailable_fields").get<std::vector<std::string>>();
+            item.observations = detail::checked_integer<std::uint64_t>(
+                encoded.at("observations"), "analysis observation count");
+            analysis.evidence.emplace(domain, std::move(item));
+        }
+    }
     return analysis;
 }
 
@@ -1795,6 +1846,10 @@ bool version_out_of_range(int version) {
 // Public API
 // =============================================================================
 
+json work_analysis_to_json(const WorkAnalysis& analysis) {
+    return work_analysis_j_v3(analysis);
+}
+
 json composer_profile_to_json(const ComposerProfile& profile) {
     json work_ids = json::array();
     for (const auto& w : profile.works)
@@ -1922,7 +1977,7 @@ Result<IngestedWork> ingested_work_from_json(const json& j) {
         } else if (version == 3) {
             work.metadata = metadata_f_v2(j.at("metadata"));
             work.ingestion_confidence = confidence_f_v2(j.at("ingestion_confidence"));
-            work.analysis = work_analysis_f_v3(j.at("analysis"));
+            work.analysis = work_analysis_f_v3(j.at("analysis"), version);
             work.analysis_complete = j.at("analysis_complete").get<bool>();
             if (j.contains("score")) {
                 auto score_result = score_from_json(j["score"]);
@@ -1932,13 +1987,18 @@ Result<IngestedWork> ingested_work_from_json(const json& j) {
         } else {
             work.metadata = metadata_f_v2(j.at("metadata"));
             work.ingestion_confidence = confidence_f_v4(j.at("ingestion_confidence"));
-            work.analysis = work_analysis_f_v3(j.at("analysis"));
+            work.analysis = work_analysis_f_v3(j.at("analysis"), version);
             work.analysis_complete = j.at("analysis_complete").get<bool>();
             if (j.contains("score")) {
                 auto score_result = score_from_json(j["score"]);
                 if (!score_result) return std::unexpected(score_result.error());
                 work.score = std::move(*score_result);
             }
+        }
+        if (version >= 5) {
+            for (const auto& diagnostic : validate_ingested_work(work))
+                if (diagnostic.rule == "C17" && diagnostic.severity == ValidationSeverity::Error)
+                    return std::unexpected(ErrorCode::ValidationOnLoadFailed);
         }
         return work;
     } catch (const json::exception&) {

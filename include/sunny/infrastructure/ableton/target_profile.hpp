@@ -37,6 +37,7 @@ struct AbletonTargetProfile {
     std::string adapter_name = "Sunny Remote Script";
     std::string adapter_runtime = "control_surface_python";
     std::string adapter_contract = "version_coupled_private";
+    std::string adapter_source_sha256 = SUNNY_BRIDGE_SOURCE_SHA256;
 
     CapabilityState clip_note_insertion = CapabilityState::Unknown;
     CapabilityState native_device_insertion = CapabilityState::Unknown;
@@ -47,7 +48,7 @@ struct AbletonTargetProfile {
     CapabilityState structural_snapshot = CapabilityState::Available;
 };
 
-/** Build the public-LOM feature profile implied by an observed Live version. */
+/** Model version floors from the Max LOM; Python runtime and licensing need host evidence. */
 [[nodiscard]] AbletonTargetProfile modeled_target_profile(AbletonVersion version);
 
 /** Validate a profile supplied by any transport, including non-wire implementations. */

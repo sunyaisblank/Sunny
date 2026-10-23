@@ -6,6 +6,7 @@
  */
 
 #include <catch2/catch_test_macros.hpp>
+#include <limits>
 #include <sunny/core/pitch/pitch_class.hpp>
 #include <sunny/core/scale/definitions.hpp>
 #include <sunny/core/voice_leading/figured_bass.hpp>
@@ -343,18 +344,15 @@ TEST_CASE("sequence with inversions I-V65-I6", "[figured-bass][sequence][core]")
 // diatonic_above edge cases (audit RC-F remediation)
 // =============================================================================
 
-TEST_CASE("diatonic_above handles generic_interval=0 without OOB", "[figured-bass][core]") {
+TEST_CASE("figured bass rejects zero generic intervals", "[figured-bass][core]") {
     // generic_interval < 1 is out of domain (1 = unison, 2 = 2nd, etc.).
-    // The function should return a safe fallback rather than accessing a
-    // negative array index. We test indirectly through realise_figured_bass
-    // with a hand-crafted symbol containing interval=0.
+    // Invalid arithmetic is rejected instead of fabricating a key-root tone.
     FiguredBassSymbol sym;
     sym.figures.push_back({0, FigureAccidental::Natural});
 
     auto result = realise_figured_bass(48, sym, 0, SCALE_MAJOR);
-    // Should not crash; the exact pitch class returned for interval=0
-    // is the key root (safe fallback), so just verify no undefined behaviour.
-    REQUIRE(result.has_value());
+    REQUIRE_FALSE(result.has_value());
+    REQUIRE(result.error() == ErrorCode::VoiceLeadingFailed);
 }
 
 TEST_CASE("diatonic_above negative modulo safety", "[figured-bass][core]") {
@@ -368,4 +366,140 @@ TEST_CASE("diatonic_above negative modulo safety", "[figured-bass][core]") {
     REQUIRE(result.has_value());
     // 8th above C in C major wraps to C (one octave up diatonically)
     REQUIRE(pitch_class(result->upper[0]) == 0);
+}
+
+TEST_CASE("figured bass preserves chromatic letter intervals explicitly",
+          "[figured-bass][core][theory-domain]") {
+    const auto symbol = parse_figured_bass("5/3");
+    REQUIRE(symbol.has_value());
+    const SpelledPitch c{0, 0, 4};
+    const SpelledPitch bb{6, -1, 3};
+    const SpelledPitch as{5, 1, 3};
+    auto ambiguous = realise_figured_bass(58, *symbol, 0, SCALE_MAJOR);
+    REQUIRE_FALSE(ambiguous.has_value());
+    REQUIRE(ambiguous.error() == ErrorCode::InvalidSpelledPitch);
+    auto flat = realise_figured_bass(bb, *symbol, c, SCALE_MAJOR);
+    auto sharp = realise_figured_bass(as, *symbol, c, SCALE_MAJOR);
+    REQUIRE(flat.has_value());
+    REQUIRE(sharp.has_value());
+    REQUIRE(flat->upper == std::vector<MidiNote>{62, 65});  // D4/F4 above Bb3
+    REQUIRE(sharp->upper == std::vector<MidiNote>{60, 64}); // C4/E4 above A#3
+    auto altered = parse_figured_bass("#3/b5");
+    REQUIRE(realise_figured_bass(bb, *altered, c, SCALE_MAJOR)->upper ==
+            std::vector<MidiNote>{63, 64});
+
+    // Written Cb3 and key Cb major require Eb/Gb, despite a B2 MIDI bass.
+    const SpelledPitch cb{0, -1, 3};
+    auto cb_major = realise_figured_bass(cb, *symbol, cb, SCALE_MAJOR);
+    REQUIRE(cb_major->bass == 47);
+    REQUIRE(cb_major->upper == std::vector<MidiNote>{51, 54});
+    const SpelledPitch bs{6, 1, 3}, fs{3, 1, 4};
+    REQUIRE(realise_figured_bass(bs, *symbol, fs, SCALE_MAJOR, 4)->upper ==
+            std::vector<MidiNote>{63, 66}); // D#4/F#4 above B#3
+}
+
+TEST_CASE("figured bass rejects malformed figures and finite-domain violations",
+          "[figured-bass][core][theory-domain]") {
+    for (std::string_view text : {"3/", "/3", "3//5", "30", "#", "b", "10", "999", "3#5"}) {
+        INFO(text);
+        REQUIRE_FALSE(parse_figured_bass(text).has_value());
+    }
+    for (int interval :
+         {-1, 0, 10, std::numeric_limits<int>::min(), std::numeric_limits<int>::max()}) {
+        FiguredBassSymbol invalid{{{interval, FigureAccidental::Natural}}};
+        REQUIRE(realise_figured_bass(48, invalid, 0, SCALE_MAJOR).error() ==
+                ErrorCode::VoiceLeadingFailed);
+    }
+    const auto symbol = parse_figured_bass("5/3");
+    for (int octave : {-2, 10, std::numeric_limits<int>::min(), std::numeric_limits<int>::max()}) {
+        REQUIRE(realise_figured_bass(48, *symbol, 0, SCALE_MAJOR, octave).error() ==
+                ErrorCode::InvalidOctave);
+    }
+    FiguredBassSymbol invalid_accidental{{{3, static_cast<FigureAccidental>(255)}}};
+    REQUIRE_FALSE(realise_figured_bass(48, invalid_accidental, 0, SCALE_MAJOR).has_value());
+    REQUIRE_FALSE(realise_figured_bass(48, FiguredBassSymbol{}, 0, SCALE_MAJOR).has_value());
+    FiguredBassSymbol many;
+    many.figures.assign(MAX_FIGURED_BASS_VOICES, {3, FigureAccidental::Natural});
+    REQUIRE(realise_figured_bass(48, many, 0, SCALE_MAJOR)->upper.size() ==
+            MAX_FIGURED_BASS_VOICES);
+    many.figures.push_back({5, FigureAccidental::Natural});
+    REQUIRE_FALSE(realise_figured_bass(48, many, 0, SCALE_MAJOR).has_value());
+
+    const std::array<Interval, 7> duplicate{0, 2, 4, 5, 7, 9, 9};
+    const std::array<Interval, 7> wide{0, 2, 4, 5, 7, 9, 12};
+    REQUIRE(realise_figured_bass(48, *symbol, 0, duplicate).error() == ErrorCode::InvalidScaleName);
+    REQUIRE(realise_figured_bass(48, *symbol, 0, wide).error() == ErrorCode::InvalidScaleName);
+    REQUIRE(realise_figured_bass(SpelledPitch{7, 0, 3}, *symbol, SpelledPitch{0, 0, 4}, SCALE_MAJOR)
+                .error() == ErrorCode::InvalidLetterName);
+}
+
+TEST_CASE("figured bass compound intervals and highest MIDI registers are checked",
+          "[figured-bass][core][theory-domain]") {
+    FiguredBassSymbol ninth{{{9, FigureAccidental::Natural}}};
+    REQUIRE(realise_figured_bass(48, ninth, 0, SCALE_MAJOR, 0)->upper ==
+            std::vector<MidiNote>{62}); // D4, never D3 for a ninth above C3.
+    const auto triad = parse_figured_bass("5/3");
+    auto top = realise_figured_bass(120, *triad, 0, SCALE_MAJOR);
+    REQUIRE(top.has_value());
+    REQUIRE(top->upper == std::vector<MidiNote>{124, 127});
+    FiguredBassSymbol third{{{3, FigureAccidental::Natural}}};
+    REQUIRE(realise_figured_bass(124, third, 0, SCALE_MAJOR)->upper == std::vector<MidiNote>{127});
+    REQUIRE_FALSE(realise_figured_bass(125, third, 0, SCALE_MAJOR).has_value());
+    FiguredBassSymbol unison{{{1, FigureAccidental::Natural}}};
+    REQUIRE_FALSE(realise_figured_bass(127, unison, 0, SCALE_MAJOR).has_value());
+    // All admitted MIDI basses either give a bounded, correctly ordered
+    // realisation or a domain error; none can emit an upper note below bass.
+    for (int bass = 0; bass <= 127; ++bass) {
+        auto note = MidiNote::from_int(bass);
+        auto result = realise_figured_bass(*note, *triad, 0, SCALE_MAJOR);
+        if (result) {
+            REQUIRE(result->upper.size() == 2);
+            REQUIRE(std::is_sorted(result->all_notes.begin(), result->all_notes.end()));
+            for (auto upper : result->upper)
+                REQUIRE(upper > *note);
+        } else {
+            REQUIRE((result.error() == ErrorCode::InvalidSpelledPitch ||
+                     result.error() == ErrorCode::InvalidMidiNote));
+        }
+    }
+}
+
+TEST_CASE("figured bass sequence respects raised bass and independently minimal motion",
+          "[figured-bass][sequence][core][theory-domain]") {
+    const auto triad = parse_figured_bass("5/3");
+    const std::array<FiguredBassEvent, 2> jump{{{36, *triad}, {84, *triad}}};
+    auto raised = realise_figured_bass_sequence(jump, 0, SCALE_MAJOR);
+    REQUIRE(raised.has_value());
+    REQUIRE(raised->realisations[0].upper == std::vector<MidiNote>{52, 55});
+    REQUIRE(raised->realisations[1].upper == std::vector<MidiNote>{88, 91});
+
+    const std::array<FiguredBassEvent, 2> cadence{{{48, *triad}, {43, *triad}}};
+    auto led = realise_figured_bass_sequence(cadence, 0, SCALE_MAJOR);
+    REQUIRE(led.has_value());
+    const auto& source = led->realisations[0].upper;
+    const auto& target = led->realisations[1].upper;
+    // Independent exhaustive two-voice oracle: B>=47, D>=50, both
+    // above G2, sorted, exactly one of each required pitch class.
+    int minimum_motion = 1000;
+    for (int low = 44; low <= 127; ++low) {
+        for (int high = low; high <= 127; ++high) {
+            if (!((low % 12 == 11 && high % 12 == 2 && low >= 47 && high >= 50) ||
+                  (low % 12 == 2 && high % 12 == 11 && low >= 50 && high >= 47)))
+                continue;
+            minimum_motion = std::min(minimum_motion,
+                                      std::abs(static_cast<int>(source[0]) - low) +
+                                          std::abs(static_cast<int>(source[1]) - high));
+        }
+    }
+    REQUIRE(minimum_motion == 6);
+    REQUIRE(std::abs(static_cast<int>(source[0]) - static_cast<int>(target[0])) +
+                std::abs(static_cast<int>(source[1]) - static_cast<int>(target[1])) ==
+            minimum_motion);
+    REQUIRE(target == std::vector<MidiNote>{62, 71});
+
+    const std::array<SpelledFiguredBassEvent, 2> chromatic{
+        {{SpelledPitch{0, 0, 3}, *triad}, {SpelledPitch{6, -1, 3}, *triad}}};
+    auto spelled = realise_figured_bass_sequence(chromatic, SpelledPitch{0, 0, 4}, SCALE_MAJOR);
+    REQUIRE(spelled.has_value());
+    REQUIRE(spelled->realisations[1].upper == std::vector<MidiNote>{62, 65});
 }

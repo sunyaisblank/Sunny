@@ -22,6 +22,8 @@
 
 #pragma once
 
+#include <span>
+#include <string_view>
 #include <sunny/core/corpus/document.hpp>
 #include <sunny/core/corpus/validation.hpp>
 #include <sunny/core/score/document.hpp>
@@ -111,10 +113,52 @@ analyze_work(CorpusDatabase& corpus, IngestedWorkId work_id, const Score* score 
                                           const StyleProfile& profile);
 
 /**
- * @brief Detect statistically distinctive patterns for a composer.
+ * Supporting inventory for a descriptive comparison of observed harmonic
+ * bigram proportions. Overlapping windows are not independent trials; the
+ * pooled proportion z score is an effect summary, not a calibrated p value.
  */
-[[nodiscard]] Result<void> detect_signature_patterns(CorpusDatabase& corpus,
-                                                     ComposerProfileId composer_id);
+struct SignatureDetectionEvidence {
+    std::uint64_t target_windows = 0;
+    std::uint64_t baseline_windows = 0;
+    std::vector<IngestedWorkId> target_works;
+    std::vector<IngestedWorkId> baseline_works;
+    bool available = false;
+};
+
+/** Compare harmonic bigrams against analysed works owned by other composers. */
+[[nodiscard]] Result<void>
+detect_signature_patterns(CorpusDatabase& corpus,
+                          ComposerProfileId composer_id,
+                          SignatureDetectionEvidence* evidence = nullptr);
+
+/** A produced StyleProfile field and the domain containing it. */
+struct StyleProfileField {
+    std::string_view domain;
+    std::string_view name;
+};
+
+/** A stored analysis field consumed by a profile aggregate. */
+struct StyleProfileSourceField {
+    std::string_view domain;
+    std::string_view path;
+};
+
+/** Actual source dependencies; empty means no implemented aggregate producer. */
+[[nodiscard]] std::span<const StyleProfileSourceField>
+style_profile_field_sources(std::string_view domain, std::string_view field);
+
+/** Every profile field, including fields with no implemented aggregate producer. */
+[[nodiscard]] std::span<const StyleProfileField> style_profile_fields();
+
+/**
+ * Eligibility of a work for one profile field, using its actual source dependencies.
+ * Explicitly unavailable fields never contribute a value or denominator. Absent
+ * legacy evidence remains Unqualified; measured zero remains eligible. Unknown
+ * fields and fields without an aggregate producer return Unavailable.
+ */
+[[nodiscard]] AnalysisEvidenceKind style_profile_field_evidence(const WorkAnalysis& analysis,
+                                                                std::string_view domain,
+                                                                std::string_view field);
 
 // =============================================================================
 // Query

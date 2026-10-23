@@ -985,7 +985,9 @@ Result<CompiledMidiResult> compile_to_midi(const Score& score, int ppq) {
                                                       static_cast<std::uint8_t>(midi_note),
                                                       velocity,
                                                       part.id,
-                                                      tie->release_velocity});
+                                                      tie->release_velocity,
+                                                      fn.event_id,
+                                                      ni});
                     note_positions.push_back(fn.position);
                 }
             }

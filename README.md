@@ -1,231 +1,87 @@
 # Sunny
 
-Sunny lets an AI agent compose music in Ableton Live using musical ideas rather than raw MIDI
-numbers. An agent connected over the Model Context Protocol (MCP) can ask for a Lydian melody, a
-ii-V-I in B-flat, a string section seated in the European layout, or a crescendo into bar 17.
-Sunny turns each request into a checked musical document, and from there into notation files or
-into tracks, clips, devices and mixer settings in a running Live Set.
+Sunny lets an AI agent compose and revise music in Ableton Live through the
+Model Context Protocol (MCP). Its C++23 engine represents musical intent as
+checked documents, so an agent can work with parts, notes, harmony, sounds and
+mixing rather than a sequence of raw MIDI commands.
 
-Most of Sunny is a C++23 music engine that works without Ableton. Only the final step, applying a
-document to a Live Set, needs Live.
+Most of Sunny works without Ableton. The engine can author, analyse, save and
+export a project offline. Applying that project to a Live Set is a separate step.
 
-## What it does
+Native Ableton qualification is still open. [Build and test results](https://github.com/sunyaisblank/Sunny/actions/workflows/ci.yml)
+record verification for each source revision.
 
-Sunny represents music as four kinds of document. Each owns one concern:
+## Start here
 
-| Document | Holds | Can be turned into |
-|---|---|---|
-| Score | parts, notes, rhythm, harmony, dynamics, form | MIDI events, Standard MIDI Files, MusicXML, LilyPond, Live clips |
-| Timbre | sound sources, effects, modulation, presets | Live device chains |
-| Mix | channels, buses, sends, levels, panning | Live mixer settings |
-| Corpus | ingested MIDI and MusicXML works, style statistics | composer and period profiles |
+- [Author music](docs/authoring.md): the project model, a first phrase, editing and native realization.
+- [Install and operate](docs/operations.md): the paired release, Windows/Docker setup, configuration, backup and recovery.
+- [Develop Sunny](docs/development.md): build, tests, source ownership and optional analysis tools.
+- [Final qualification](docs/qualification.md): the remaining exact-host, save/reopen, visual and audio checks.
 
-Beneath the documents sits a theory library covering pitch and spelling, scales, chords and
-Roman-numeral analysis, voice leading and species counterpoint, rhythm, tuning systems, post-tonal
-set theory and acoustics. Pitch and time arithmetic is exact: durations are rational numbers and
-overflow is checked, and the engine refuses an invalid request rather than guessing.
+The [project goal](https://github.com/sunyaisblank/Sunny/issues/1#issuecomment-6301306386)
+and [operating lifecycle](https://github.com/sunyaisblank/Sunny/issues/36) track
+the accepted scope, remaining work and completion evidence.
 
-Everything is exposed as MCP tools by the `sunny-mcp` program, which speaks JSON-RPC on standard
-input and output. `tools/list` returns the current inventory. The same engine is also available
-from Python.
+These guides ship together in the offline release's `operator/` directory.
+The detailed [formal specifications](https://github.com/sunyaisblank/Sunny/tree/lifecycle-distribution/docs/formal)
+are references for implementers.
 
-```
-AI client ──MCP (stdio)──▶ sunny-mcp ──TCP 9001──▶ Sunny Remote Script ──▶ Ableton Live
-                             │
-                             └── theory engine and documents (no Live needed)
-```
+## The model
 
-Documents reach Live only as a project: a Score, one Timbre profile for each of its parts, and a
-Mix graph. `project_plan_to_ableton` records a snapshot of the Live Set and the exact list of
-changes without touching Live. `project_apply_ableton_plan` applies that plan once, refuses if
-the Set has changed in the meantime, and returns a journal of every change it attempted,
-including after a partial failure. `project_compile_to_ableton` does both in one call. Values
-Live cannot represent, such as a fader above +6 dB, are refused before anything is sent.
-
-A few quick tools (`create_progression_clip`, `apply_euclidean_rhythm`, `apply_arpeggio`) write a
-single clip into an empty clip slot without a project. They record only changes Live
-acknowledged, report a lost response as indeterminate rather than as a failure, and can be undone
-with `undo_ableton_operation`.
-
-A separate `max-package/` builds five Max externals (`sunny.lfo~`, `sunny.adsr~`, `sunny.hold~`,
-`sunny.clock~`, `sunny.events`) from the same render code. See `max-package/readme.md`.
-
-## Building
-
-You need CMake 3.28 or later, a C++23 compiler (GCC 13+ or Clang 16+) and, for the optional
-Python bindings, Python 3.10+ with development headers.
-
-```bash
-cmake --preset release          # configure into .bin/
-cmake --build --preset release
-ctest --preset release          # C++ tests
-```
-
-`cmake --preset debug` builds into `.bin-debug/`. To install the server, libraries, headers and
-CMake package files, run `cmake --install .bin --prefix /your/prefix`.
-
-The Makefile wraps common tasks:
-
-```bash
-make                  # build and run the C++ tests
-make python-check     # ruff, mypy, native stub comparison, Python tests
-make package-check    # build a separate program against the installed package
-make max-sdk-header-check  # compile the Max wrappers against the pinned Max SDK headers
-make coverage         # line and branch coverage (clang)
-make analysis         # CodeQL queries and Mull mutation testing
-make help
-```
-
-Source files are listed explicitly in CMake, so re-run the configure step after adding one.
-
-## Using it with an AI client
-
-Point your MCP client at the built server:
-
-```json
-{
-  "mcpServers": {
-    "sunny": {
-      "command": "/path/to/Sunny/.bin/sunny-mcp",
-      "env": { "SUNNY_ABLETON_HOST": "127.0.0.1", "SUNNY_TCP_PORT": "9001" }
-    }
-  }
-}
-```
-
-Without `SUNNY_ABLETON_HOST` the server runs offline: theory, document and notation tools work,
-and tools that change Live decline with an explicit error. `SUNNY_TCP_PORT` defaults to 9001.
-Under WSL2 with Live on the Windows host, use the Windows host's IP address.
-
-The server also runs from a Docker image, which needs nothing else installed on the host. MCP
-still travels over standard input and output, so the client starts the container itself:
-
-```bash
-docker build -t sunny-mcp .
-```
-
-```json
-{
-  "mcpServers": {
-    "sunny": {
-      "command": "docker",
-      "args": ["run", "-i", "--rm", "-e", "SUNNY_ABLETON_HOST=192.168.1.20", "sunny-mcp"]
-    }
-  }
-}
-```
-
-Replace the address with the machine running Live. The container's only network use is the
-outbound connection to the Remote Script.
-
-## Connecting Ableton Live
-
-Copy the Remote Script into the `Remote Scripts` folder of your Live User Library and select it
-as a control surface (Preferences, Link/Tempo/MIDI, Control Surface: Sunny):
-
-```bash
-cp -r remote_script/Sunny "${HOME}/Music/Ableton/User Library/Remote Scripts/Sunny"
-```
-
-The script listens on TCP port 9001, bound to `127.0.0.1` unless `SUNNY_BIND_HOST` is set in the
-environment of the Live process. If you bind to another interface, restrict access with a
-firewall: the port accepts commands that change your Live Set.
-
-Note writing needs Live 11 or later. Inserting native devices for Timbre and Mix uses
-`Track.insert_device`, which needs Live 12.3 or later and supports Live's built-in devices only.
-Each deployment result reports what Live could not represent (for example third-party plug-ins
-or modulation the Live API does not expose) instead of silently dropping it. The Remote Script
-runs inside Live's own Python, which is 3.7 in Live 11, so it avoids newer syntax.
-
-## Live testing
-
-Development and CI need no Ableton. A real Live Set is checked last, from any machine that can
-reach the one running Live:
-
-1. On the Live machine, install the Remote Script as above and let it listen beyond loopback by
-   setting `SUNNY_BIND_HOST=0.0.0.0` in the environment Live starts with (a user environment
-   variable on Windows, `launchctl setenv` on macOS), then restart Live. Allow TCP 9001 through
-   the firewall from the testing machine only.
-2. Open an empty or scratch Set: the check adds two tracks.
-3. On the testing machine, run the check through the local build or the Docker image:
-
-   ```bash
-   export SUNNY_LIVE_HOST=192.168.1.20
-   export SUNNY_MCP_COMMAND="docker run -i --rm -e SUNNY_ABLETON_HOST -e SUNNY_TCP_PORT sunny-mcp"
-   pytest tests/python/test_live_host.py -s
-   ```
-
-The check deploys a small two-part project, verifies it by reading Live back, and prints what it
-observed. The same scenario runs against the offline Live model in every CI build.
-
-When something goes wrong inside Live, `get_ableton_remote_log` returns the Remote Script's own
-records: every request with its outcome, every refusal and every error, numbered so a client can
-poll for newer records with `after_sequence`. The log is held in memory inside Live (the last
-1,000 records) and needs no access to Live's own log file. `sunny-mcp` writes its own diagnostics
-to standard error, which `docker logs` or the MCP client's log shows.
-
-## Python
-
-The optional `sunny` package is a thin layer over the same engine:
-
-```bash
-uv build --wheel && uv pip install dist/sunny-*.whl    # or `uv sync` in a checkout
-```
-
-```python
-from sunny.core.engine import TheoryEngine
-
-engine = TheoryEngine()
-engine.get_scale_notes("C", "lydian", octave=4)
-engine.generate_progression("C", "major", ["I", "vi", "IV", "V"])
-```
-
-The package raises an error if its native module is missing rather than approximating.
-
-## How it is tested
-
-Development does not require Ableton. The C++ and Python suites exercise the engine, the
-documents, the notation and MIDI writers, the MCP server and the TCP bridge. Live itself is
-represented by one offline model of its Python API (`tests/python/live_model.py`), built from
-Ableton's own Remote Script sources and the Live Object Model documentation. End-to-end tests run
-the real `sunny-mcp` over MCP, through TCP and the real Remote Script, into that model, and check
-the resulting Set: notes in beats, tracks, devices, mixer values, routing and the change journal,
-for both Live 11 and Live 12.
-
-Expected values in tests come from the relevant standard or a hand derivation, never from the
-code under test. CI builds and tests on Linux and macOS, runs the end-to-end tests, and builds the
-Max externals on macOS and Windows.
-
-## Limitations
-
-- Sunny has not yet been run against a real Live Set end to end. Behaviour that Ableton's
-  documentation does not settle is listed in GitHub issue #22 and is settled by the live check
-  above.
-- Known defects and their status are tracked as GitHub issues labelled `remediation`.
-- Documents live in the server's memory for the life of the process. Score, Mix and Corpus
-  documents can be exported with `score_get_json`, `get_mix_json` and `get_corpus_json`; Timbre
-  profiles have no JSON export tool yet.
-- Audio is never rendered or analysed, so nothing Sunny reports is a claim about how the result
-  sounds. Loudness targets and reference comparisons are intentions, not measurements.
-- Live's current-scale setting is readable but not written.
-- The Max externals have been built and checked against the Max SDK headers, but not yet loaded
-  in Max or Max for Live.
-
-## Repository layout
-
-| Path | Contents |
+| Document | Owns |
 |---|---|
-| `include/sunny/`, `src/` | C++ engine: `core` (theory and documents), `render`, `max`, `infrastructure` (formats, MCP, Ableton bridge) |
-| `apps/` | The `sunny-mcp` entry point |
-| `remote_script/Sunny/` | The Ableton Live Remote Script and the shared bridge contract |
-| `python/sunny/` | Python package |
-| `max-package/` | Max externals, help patchers and reference pages |
-| `tests/` | C++ and Python tests, mirroring the source layout |
-| `docs/formal/` | Specifications of the music model, the four documents, projects and rendering |
-| `cmake/`, `.analysis/` | Build policy, layering checks and static-analysis queries |
+| Score | Parts, notes, rhythm, harmony, expression and form |
+| Timbre | Each Part's sound source, effects, modulation and presets |
+| Mix | Channels, buses, sends, levels, panning and routing intent |
+| Corpus | Ingested works and traceable style-analysis evidence |
 
-The layering rule is enforced at configure time: `core` depends on nothing else in Sunny,
-`render` only on `core`, and `infrastructure` on both.
+An owning project joins a Score, its Timbre profiles and its Mix through stable
+Part identities. Project edits and undo preserve those relationships.
+`workspace_save` persists the authored workspace; unsaved changes remain in memory.
+Native operation history is separate from musical undo.
+
+```text
+AI client → MCP over stdio → sunny-mcp → Sunny Remote Script → Ableton Live
+                                │
+                                └→ theory, documents, analysis and file exports
+```
+
+The theory library covers pitch and spelling, scales, chords, voice leading,
+counterpoint, rhythm, tuning, post-tonal sets and acoustics. Musical time uses
+checked rational arithmetic. Scores export MIDI, MusicXML and LilyPond.
+
+## Build the engine
+
+Use CMake 3.28+, a C++23 compiler (GCC 13+ or Clang 16+), and Python development
+headers for the optional bindings:
+
+```bash
+cmake --preset release
+cmake --build --preset release
+ctest --preset release
+```
+
+The executable is `.bin/sunny-mcp`. `tools/list` is its authoritative MCP tool
+inventory. [Development](docs/development.md) explains the other build profiles
+and checks; normal development needs no Live installation.
+
+## Use it with Live
+
+Docker is the normal delivery path. The production profile pairs a Windows 11
+client running a Linux/amd64 Docker Desktop engine with native Windows Live
+12.4.5 Suite. The Windows operators need no installed Python interpreter.
+
+For ongoing work, save the workspace, establish fresh authority with
+`doctor_ableton`, then use the managed `project_realization_*` plan, apply,
+inspect and update tools. They retain original operation receipts and reconcile
+lost replies without replaying mutations. The separate
+`project_*_to_ableton` deployment tools create a fresh realization; they are not
+the managed revision workflow.
+
+No exact host/version combination has passed all final gates. Live 12.3 and
+limited Live 11 compatibility remain separately unqualified. The engine does
+not render or measure audio; native parameter readback cannot establish sound
+or saved `.als` behavior. See the [supported native intent](docs/authoring.md#supported-native-intent).
 
 ## Licence
 

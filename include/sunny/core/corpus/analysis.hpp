@@ -11,6 +11,16 @@
  * Postcondition: WorkAnalysis fields are populated with data derived from
  *                the score's note content, key map, tempo map, and section map.
  *
+ * Symbolic timing uses the Score's whole-note allocations (including tuplets
+ * and allocated grace notes), with each individual duration tie folded once.
+ * Melodic lanes are (PartId, voice_index); at a simultaneous onset the highest
+ * newly attacked MIDI note is selected. This is an explicit melodic heuristic.
+ * Motifs cover contiguous, nonoverlapping 3–8 note windows with identical
+ * directed semitone intervals and exact rational duration ratios. Occurrences
+ * in the same lane cannot overlap; separate lanes remain independent.
+ * No human thematic importance or performance timing is inferred. Full analysis
+ * reports methods and unavailable fields in its per-domain evidence map.
+ *
  * Domains:
  *   1. Harmonic   — chord vocabulary, progressions, cadences, modulations
  *   2. Melodic    — intervals, contour, range, chromaticism per voice
@@ -36,32 +46,32 @@ namespace sunny::core {
  * @param score Validated Score IR document
  * @return Populated WorkAnalysis
  */
-[[nodiscard]] WorkAnalysis analyze_score(const Score& score);
+[[nodiscard]] Result<WorkAnalysis> analyze_score(const Score& score);
 
 /**
  * @brief Analyze only the harmonic domain.
  */
-[[nodiscard]] HarmonicAnalysisRecord analyze_harmonic(const Score& score);
+[[nodiscard]] Result<HarmonicAnalysisRecord> analyze_harmonic(const Score& score);
 
 /**
  * @brief Analyze only the melodic domain.
  */
-[[nodiscard]] MelodicAnalysisRecord analyze_melodic(const Score& score);
+[[nodiscard]] Result<MelodicAnalysisRecord> analyze_melodic(const Score& score);
 
 /**
  * @brief Analyze only the rhythmic domain.
  */
-[[nodiscard]] RhythmicAnalysisRecord analyze_rhythmic(const Score& score);
+[[nodiscard]] Result<RhythmicAnalysisRecord> analyze_rhythmic(const Score& score);
 
 /**
  * @brief Analyze only the formal domain.
  */
-[[nodiscard]] FormalAnalysisRecord analyze_formal(const Score& score);
+[[nodiscard]] Result<FormalAnalysisRecord> analyze_formal(const Score& score);
 
 /**
  * @brief Analyze only the voice-leading domain.
  */
-[[nodiscard]] VoiceLeadingAnalysisRecord analyze_voice_leading(const Score& score);
+[[nodiscard]] Result<VoiceLeadingAnalysisRecord> analyze_voice_leading(const Score& score);
 
 /**
  * @brief Analyze only the textural domain.
@@ -83,6 +93,6 @@ namespace sunny::core {
 /**
  * @brief Analyze only the motivic domain.
  */
-[[nodiscard]] MotivicAnalysisRecord analyze_motivic(const Score& score);
+[[nodiscard]] Result<MotivicAnalysisRecord> analyze_motivic(const Score& score);
 
 } // namespace sunny::core

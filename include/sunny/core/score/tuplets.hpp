@@ -76,4 +76,22 @@ cumulative_tuplet_written_ratio(const std::vector<const TupletContext*>& chain) 
     return ratio;
 }
 
+/** Check the exact displayed-duration algebra before a notation backend emits. */
+[[nodiscard]] inline VoidResult validate_tuplet_written_durations(const Score& score) {
+    for (const auto& part : score.parts)
+        for (const auto& measure : part.measures)
+            for (const auto& voice : measure.voices) {
+                const auto contexts = collect_tuplet_contexts(voice);
+                for (const auto& event : voice.events) {
+                    auto chain = tuplet_context_chain(event_tuplet_context(event), contexts);
+                    if (!chain) return std::unexpected(chain.error());
+                    auto ratio = cumulative_tuplet_written_ratio(*chain);
+                    if (!ratio) return std::unexpected(ratio.error());
+                    auto written = checked_mul(event.duration(), *ratio);
+                    if (!written) return std::unexpected(written.error());
+                }
+            }
+    return {};
+}
+
 } // namespace sunny::core

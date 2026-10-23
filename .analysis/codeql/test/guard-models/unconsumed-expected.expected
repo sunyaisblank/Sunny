@@ -1,0 +1,3 @@
+| models.cpp:70:5:70:12 | call to fallible | Return value of fallible (returning std::expected) is discarded without checking for error. |
+| models.cpp:71:5:71:17 | call to fallible_void | Return value of fallible_void (returning std::expected) is discarded without checking for error. |
+| models.cpp:73:16:73:16 | call to operator= | Return value of operator= (returning std::expected) is discarded without checking for error. |

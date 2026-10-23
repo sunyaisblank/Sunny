@@ -866,7 +866,7 @@ TEST_CASE("set_semantic_descriptors replaces descriptors", "[timbre-ir][workflow
     d.warmth = 0.1f;
     d.tags = {"bright", "sharp"};
 
-    set_semantic_descriptors(p, d);
+    REQUIRE(set_semantic_descriptors(p, d));
     CHECK(p.semantic_descriptors.brightness == Approx(0.9f));
     CHECK(p.semantic_descriptors.tags.size() == 2);
 }
@@ -1309,4 +1309,182 @@ TEST_CASE("morph_presets requires known presets and a start inside the score",
     CHECK(profile.preset_morphs.empty());
     morph.start = SCORE_START;
     CHECK(morph_presets(profile, morph, library));
+}
+
+TEST_CASE("Timbre intrinsic domains reject invalid sources without changing the profile",
+          "[timbre-ir][workflow][authoring]") {
+    auto profile = create_timbre_profile(TimbreProfileId{1}, PartId{1}, "Domain fixture");
+    const auto before = timbre_to_json(profile);
+    const auto reject = [&](SoundSourceData candidate) {
+        CHECK_FALSE(set_sound_source(profile, std::move(candidate)));
+        CHECK(timbre_to_json(profile) == before);
+    };
+    SECTION("subtractive frequency is positive") {
+        SubtractiveSynth source;
+        source.oscillators = {Oscillator{}};
+        source.filter.cutoff = -100.0f;
+        reject({std::move(source)});
+    }
+    SECTION("FM ratios are positive") {
+        FMSynth source;
+        source.operators = {FMOperator{}};
+        source.operators[0].ratio = 0.0f;
+        reject({std::move(source)});
+    }
+    SECTION("negative nested source enum values are undefined") {
+        SubtractiveSynth source;
+        source.oscillators = {Oscillator{}};
+        source.filter_routing = static_cast<SubtractiveSynth::FilterRouting>(-1);
+        reject({std::move(source)});
+    }
+    SECTION("FM custom routing is a DAG") {
+        FMSynth source;
+        source.operators = {FMOperator{}, FMOperator{}};
+        source.algorithm.use_preset = false;
+        source.algorithm.custom_routing = {{0, 1, 0.5f}, {1, 0, 0.5f}};
+        reject({std::move(source)});
+    }
+    SECTION("wavetable position is normalised") {
+        WavetableSynth source;
+        source.position = 1.01f;
+        reject({std::move(source)});
+    }
+    SECTION("granular duration obeys the admitted 1 to 500 ms profile") {
+        GranularSynth source;
+        source.grain_size = 0.99f;
+        reject({std::move(source)});
+    }
+    SECTION("additive partial amplitudes are normalised") {
+        AdditiveSynth source;
+        source.partials = {PartialDefinition{}};
+        source.partials[0].amplitude = -0.1f;
+        reject({std::move(source)});
+    }
+    SECTION("physical model frequency ratios are positive") {
+        PhysicalModelSource source;
+        source.resonator.frequency_ratio = 0.0f;
+        reject({std::move(source)});
+    }
+    SECTION("sampler zones have ordered MIDI bounds") {
+        SamplerSource source;
+        source.library = "fixture";
+        source.sample_map.zones = {{60, 59, 0, 127}};
+        reject({std::move(source)});
+    }
+    SECTION("hybrid layers are non-null and recursively checked") {
+        HybridSource source;
+        source.layers.push_back(nullptr);
+        reject({std::move(source)});
+    }
+    SECTION("an explicit amplifier envelope releases to silence") {
+        SubtractiveSynth source;
+        source.oscillators = {Oscillator{}};
+        source.amplifier.stages = {{1.0f, 1.0f, EnvelopeCurve::Linear}};
+        reject({std::move(source)});
+    }
+}
+
+TEST_CASE("Timbre effect adds and replacements are atomic over intrinsic domains and identities",
+          "[timbre-ir][workflow][authoring]") {
+    auto profile = create_timbre_profile(TimbreProfileId{1}, PartId{1}, "Effects");
+    const auto before = timbre_to_json(profile);
+    std::vector<EffectParameters> invalid;
+    DistortionEffect distortion;
+    distortion.drive = 1.01f;
+    invalid.emplace_back(distortion);
+    DelayEffect delay;
+    delay.delay_time.ms = -1.0f;
+    invalid.emplace_back(delay);
+    ReverbEffect reverb;
+    reverb.decay_time = 0.0f;
+    invalid.emplace_back(reverb);
+    ChorusEffect chorus;
+    chorus.voices = 0;
+    invalid.emplace_back(chorus);
+    PhaserEffect phaser;
+    phaser.stages = 1;
+    invalid.emplace_back(phaser);
+    FlangerEffect flanger;
+    flanger.feedback = -1.01f;
+    invalid.emplace_back(flanger);
+    EQEffect eq;
+    eq.bands = {EQBand{}};
+    eq.bands[0].q = 0.0f;
+    invalid.emplace_back(eq);
+    CompressorEffect compressor;
+    compressor.attack = -10.0f;
+    invalid.emplace_back(compressor);
+    for (const auto& parameters : invalid) {
+        CAPTURE(parameters.index());
+        CHECK_FALSE(add_effect(profile, {EffectId{1}, parameters, true, 1.0f}));
+        CHECK(timbre_to_json(profile) == before);
+    }
+    compressor = CompressorEffect{};
+    compressor.ratio = 1.0f; // No compression, a valid boundary.
+    compressor.attack = 0.0f;
+    compressor.release = 0.0f; // Explicit instantaneous release.
+    REQUIRE(add_effect(profile, {EffectId{1}, compressor, true, 0.0f}));
+    const auto one_effect = timbre_to_json(profile);
+    CHECK_FALSE(add_effect(profile, {EffectId{1}, ReverbEffect{}, true, 1.0f}));
+    CHECK(timbre_to_json(profile) == one_effect);
+    compressor.ratio = 0.25f;
+    CHECK_FALSE(replace_effect(profile, {EffectId{1}, compressor, true, 1.0f}));
+    CHECK(timbre_to_json(profile) == one_effect);
+    CHECK_FALSE(set_parameter(profile, "source.filter.cutoff", -100.0f));
+    CHECK_FALSE(
+        set_parameter(profile, "source.filter.cutoff", std::numeric_limits<float>::infinity()));
+    CHECK(timbre_to_json(profile) == one_effect);
+    CHECK(set_parameter(profile, "source.oscillators[0].phase", 0.0f));
+    CHECK(set_parameter(profile, "source.oscillators[0].phase", 1.0f));
+}
+
+TEST_CASE("Timbre references can be removed before effects and macro paths follow identities",
+          "[timbre-ir][workflow][authoring]") {
+    auto profile = create_timbre_profile(TimbreProfileId{1}, PartId{1}, "Revision");
+    REQUIRE(add_effect(profile, {EffectId{7}, ReverbEffect{}, true, 1.0f}));
+    REQUIRE(add_automation(profile, {"insert_chain.effects[0].mix", {{SCORE_START, 0.5f}}}));
+    const auto before = timbre_to_json(profile);
+    CHECK_FALSE(remove_effect(profile, EffectId{7}));
+    CHECK(timbre_to_json(profile) == before);
+    REQUIRE(remove_automation(profile, 0));
+    REQUIRE(remove_effect(profile, EffectId{7}));
+    CHECK(profile.insert_chain.effects.empty());
+
+    MacroKnob first;
+    first.index = 3;
+    first.name = "First";
+    MacroKnob second;
+    second.index = 9;
+    second.name = "Second";
+    REQUIRE(create_macro(profile, first));
+    REQUIRE(create_macro(profile, second));
+    REQUIRE(add_automation(profile, {"modulation.macro_knobs[1].value", {{SCORE_START, 0.25f}}}));
+    REQUIRE(remove_macro(profile, 3));
+    REQUIRE(profile.modulation.macro_knobs.size() == 1);
+    CHECK(profile.modulation.macro_knobs[0].index == 9);
+    CHECK(profile.parameter_automation[0].parameter_path == "modulation.macro_knobs[0].value");
+    const auto retained = timbre_to_json(profile);
+    CHECK_FALSE(remove_macro(profile, 9));
+    CHECK(timbre_to_json(profile) == retained);
+}
+
+TEST_CASE("Timbre replacement retains reference semantics or rejects kind changes atomically",
+          "[timbre-ir][workflow][authoring]") {
+    auto profile = create_timbre_profile(TimbreProfileId{1}, PartId{1}, "Replacement");
+    REQUIRE(add_effect(profile, {EffectId{1}, CompressorEffect{}, true, 1.0f}));
+    REQUIRE(
+        add_automation(profile, {"insert_chain.effects[0].threshold", {{SCORE_START, -10.0f}}}));
+    DeviceParameter mapping;
+    mapping.device_index = 1;
+    mapping.parameter_name = "Threshold";
+    mapping.source_min = -100.0f;
+    mapping.source_max = 0.0f;
+    profile.rendering.parameter_map["insert_chain.effects[0].threshold"] = mapping;
+    const auto before = timbre_to_json(profile);
+    CHECK_FALSE(replace_effect(profile, {EffectId{1}, ReverbEffect{}, true, 1.0f}));
+    CHECK(timbre_to_json(profile) == before);
+    REQUIRE(remove_automation(profile, 0));
+    REQUIRE(remove_parameter_mapping(profile, "insert_chain.effects[0].threshold"));
+    REQUIRE(replace_effect(profile, {EffectId{1}, ReverbEffect{}, true, 1.0f}));
+    CHECK(profile.insert_chain.effects[0].id == EffectId{1});
 }

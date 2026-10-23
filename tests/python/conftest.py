@@ -5,7 +5,10 @@ Provides common fixtures for integration testing.
 
 from __future__ import annotations
 
+import importlib.util
+import os
 import sys
+from importlib.machinery import PathFinder
 from pathlib import Path
 
 import pytest
@@ -22,10 +25,28 @@ sys.meta_path[:] = [
     finder for finder in sys.meta_path if finder.__class__.__module__ != "_editable_skbc_sunny"
 ]
 
-# Add build directory to path for sunny_native
-BUILD_DIR = PROJECT_ROOT / ".bin" / "python"
-if BUILD_DIR.exists():
+# Share stubtest's explicit build selector. Otherwise honour an extension on
+# PYTHONPATH before using the conventional local build as a fallback.
+configured_build = os.environ.get("SUNNY_NATIVE_BUILD_DIR")
+BUILD_DIR = (
+    Path(configured_build).resolve()
+    if configured_build is not None
+    else PROJECT_ROOT / ".bin" / "python"
+)
+python_paths = [entry for entry in os.environ.get("PYTHONPATH", "").split(os.pathsep) if entry]
+if configured_build is not None or (
+    PathFinder.find_spec("sunny_native", python_paths) is None and BUILD_DIR.exists()
+):
     sys.path.insert(0, str(BUILD_DIR))
+if configured_build is not None:
+    importlib.invalidate_caches()
+    specification = importlib.util.find_spec("sunny_native")
+    if (
+        specification is None
+        or specification.origin is None
+        or Path(specification.origin).resolve().parent != BUILD_DIR
+    ):
+        raise pytest.UsageError(f"sunny_native is not importable from selected build {BUILD_DIR}")
 
 # Add both Python packages to the import path.
 sys.path.insert(0, str(PROJECT_ROOT / "python"))

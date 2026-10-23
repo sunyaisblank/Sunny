@@ -71,11 +71,12 @@ Score make_valid_score(std::uint32_t total_bars = 4) {
 }
 
 /// Serialised document with volatile fields neutralised for identity
-/// comparison: the version counter advances through undo by contract,
-/// and event ids are reallocated on redo.
+/// comparison: version and retired-ID reservations advance through undo.
+/// Restored content retains exactly its original typed identities.
 json canonical(const Score& score) {
     json j = score_to_json(score);
     j.erase("version");
+    j.erase("identity_reservations");
     return j;
 }
 

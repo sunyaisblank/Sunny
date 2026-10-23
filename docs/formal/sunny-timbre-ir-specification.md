@@ -937,6 +937,24 @@ TimbreAutomation breakpoints are target-independent IR data. A target may compil
 | T10 | Error | A rendering map has an unresolved IR path, invalid/aliased target, invalid domain/curve/current value, or non-materialisable device index |
 | T11 | Error | An automation lane has an unresolved target, undefined interpolation, no breakpoints, a non-finite value, an invalid time, or non-increasing times |
 | T12 | Error | An owned LFO, modulation envelope, step sequencer, or macro violates its enum, numeric domain, curve, timing, target, or identity invariant |
+| T13 | Error | A source/effect/semantic descriptor violates its intrinsic numeric or enum domain, an effect identity is zero/duplicated, or the supplied sample rate is non-positive/non-finite |
+
+T13 admits finite physical frequencies/ratios above zero, non-negative elapsed times,
+normalised controls in `[0,1]`, and bipolar controls in `[-1,1]`. Compression ratios are at least
+one; RT60 and filter Q are positive. Zero compressor release and zero envelope-stage duration
+represent instantaneous transitions. Empty envelopes retain an unspecified contour; an explicit
+amplifier contour ends at zero. Granular grain size `[1,500]` ms and Phaser stages `[2,24]` are
+Sunny's admitted authoring profile, rather than universal physical or Ableton limits. Other
+physical offsets and dB values are finite without importing target GUI ranges. Detune beyond
+100 cents retains T4's warning semantics. Custom FM routing has valid endpoints and is acyclic;
+sample-zone endpoints are ordered within MIDI `[0,127]`; Hybrid layers are non-null and obey the
+same recursive domains. Source asset identifiers remain opaque and do not prove audio availability.
+
+Effect addition and replacement, scalar parameter changes, semantic changes and preset loading
+reject invalid candidates atomically. Replacements retain and validate automation and rendering
+references; changing an effect kind never silently discards incompatible references. T11 checks
+finite automation values independently of the scalar domains; it does not establish scalar-domain
+or aggregate Score-time validity of those lanes.
 
 ### 10.2 Perceptual Validation [E]
 
@@ -961,6 +979,12 @@ These validations require audio rendering and analysis:
 | `add_effect` | Add an effect to the insert chain |
 | `remove_effect` | Remove an effect from the chain; modulation and macro targets, automation lanes, and rendering-map paths and device indices that address later effects shift with them. Removal of an effect that is still referenced, or one that would make a valid profile invalid, is refused and leaves the profile unchanged |
 | `reorder_effects` | Apply an exact effect-ID permutation; every modulation/macro target, automation lane, and rendering-map reference follows its effect. Invalid length, duplicate IDs, or missing IDs leave the complete profile unchanged |
+| `get_timbre_json` | Inspect/export the complete profile and collection identities |
+| `replace_timbre_effect` | Replace one effect at its stable ID using a complete `add_effect` configuration; omitted fields use construction defaults and incompatible retained references reject atomically |
+| `remove_timbre_automation` | Remove one lane by its zero-based position |
+| `remove_timbre_modulation` | Remove one routing by its zero-based position |
+| `remove_timbre_macro` | Remove a macro by its stable source index; position-addressed paths to later macros follow them and references to the removed macro reject atomically |
+| `remove_timbre_parameter_mapping` | Remove one rendering mapping by its source path |
 | `set_parameter` | Set any parameter by path |
 | `get_parameter` | Read a numeric parameter by path |
 | `create_modulation_lfo` | Add a validated owned LFO source and return its index |

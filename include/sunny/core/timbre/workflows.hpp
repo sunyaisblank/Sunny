@@ -81,6 +81,17 @@ create_timbre_profile(TimbreProfileId id, PartId part_id, const std::string& nam
 [[nodiscard]] Result<void> reorder_effects(TimbreProfile& profile,
                                            const std::vector<EffectId>& new_order);
 
+/** Replace one effect at its stable identity; preserve and validate all references. */
+[[nodiscard]] Result<void> replace_effect(TimbreProfile& profile, Effect replacement);
+
+/** Remove one lane/routing by its zero-based position. */
+[[nodiscard]] Result<void> remove_automation(TimbreProfile& profile, std::size_t index);
+[[nodiscard]] Result<void> remove_modulation(TimbreProfile& profile, std::size_t index);
+/** Remove a macro by its stable source index, refusing remaining references. */
+[[nodiscard]] Result<void> remove_macro(TimbreProfile& profile, std::uint8_t index);
+[[nodiscard]] Result<void> remove_parameter_mapping(TimbreProfile& profile,
+                                                    const std::string& path);
+
 // =============================================================================
 // Parameter Access (§11: set_parameter)
 // =============================================================================
@@ -165,7 +176,8 @@ set_parameter(TimbreProfile& profile, const std::string& path, float value);
 /**
  * @brief Set or replace the semantic timbral descriptors.
  */
-void set_semantic_descriptors(TimbreProfile& profile, SemanticTimbreDescriptor descriptors);
+[[nodiscard]] Result<void> set_semantic_descriptors(TimbreProfile& profile,
+                                                    SemanticTimbreDescriptor descriptors);
 
 /**
  * @brief Derive semantic descriptors from the current synthesis parameters.

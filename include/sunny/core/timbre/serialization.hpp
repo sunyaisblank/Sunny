@@ -31,6 +31,10 @@ namespace sunny::core {
 // migrate v1/v2 matrices to an empty collection without inventing sources.
 constexpr int TIMBRE_IR_SCHEMA_VERSION = 3;
 
+/** Reuse the existing profile-preset representation for the shared preset library. */
+[[nodiscard]] nlohmann::json timbre_preset_to_json(const TimbrePreset& preset);
+[[nodiscard]] Result<TimbrePreset> timbre_preset_from_json(const nlohmann::json& json);
+
 /**
  * @brief Serialise a TimbreProfile to JSON
  */

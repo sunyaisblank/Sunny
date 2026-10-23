@@ -18,6 +18,7 @@
 #include <sunny/core/score/time.hpp>
 #include <sunny/core/score/tuplets.hpp>
 #include <sunny/core/score/validation.hpp>
+#include <sunny/core/score/workflows.hpp>
 #include <sunny/core/voice_leading/voice_leading.hpp>
 #include <tuple>
 
@@ -293,13 +294,7 @@ Result<void> materialise_tuplet_span(std::vector<Event>& events,
     }
     if (!visible) return {};
 
-    detail::FreshIdAllocator<TupletId> tuplet_ids;
-    for (const auto& part : score.parts)
-        for (const auto& measure : part.measures)
-            for (const auto& voice : measure.voices)
-                for (const auto& event : voice.events)
-                    if (const auto* context = event_tuplet_context(event))
-                        tuplet_ids.include(context->id);
+    auto tuplet_ids = detail::tuplet_id_allocator(score);
     auto tuplet_id = tuplet_ids.allocate();
     if (!tuplet_id) return std::unexpected(tuplet_id.error());
     const TupletContext context{*tuplet_id,
@@ -1015,6 +1010,7 @@ Result<MutationResult> insert_note(Score& score,
                                    UndoStack* undo) {
     if (detail::score_version_exhausted(score))
         return std::unexpected(ErrorCode::ArithmeticOverflow);
+    const detail::ScoreIdentityCommit identities(score);
     if (!valid_note_payload(note)) return std::unexpected(ErrorCode::InvalidMutation);
     Part* part = find_part(score, part_id);
     if (!part) return std::unexpected(ErrorCode::InvalidMutation);
@@ -1158,7 +1154,7 @@ Result<MutationResult> insert_note(Score& score,
         return std::unexpected(ErrorCode::InvalidMutation);
     }
 
-    if (auto advanced = detail::advance_score_version(score); !advanced)
+    if (auto advanced = identities.advance(score); !advanced)
         return std::unexpected(advanced.error());
 
     push_snapshot(
@@ -1188,6 +1184,7 @@ Result<MutationResult> insert_chord_symbol(Score& score,
                                            UndoStack* undo) {
     if (detail::score_version_exhausted(score))
         return std::unexpected(ErrorCode::ArithmeticOverflow);
+    const detail::ScoreIdentityCommit identities(score);
 
     Score candidate = score;
     Part* part = find_part(candidate, part_id);
@@ -1215,7 +1212,7 @@ Result<MutationResult> insert_chord_symbol(Score& score,
                      [](const Event& lhs, const Event& rhs) { return lhs.offset < rhs.offset; });
 
     if (!is_compilable(candidate)) return std::unexpected(ErrorCode::InvalidMutation);
-    if (auto advanced = detail::advance_score_version(candidate); !advanced)
+    if (auto advanced = identities.advance(candidate); !advanced)
         return std::unexpected(advanced.error());
 
     auto before = undo ? std::optional<Score>{score} : std::nullopt;
@@ -1228,6 +1225,7 @@ Result<MutationResult> insert_chord_symbol(Score& score,
 Result<MutationResult> delete_event(Score& score, EventId event_id, UndoStack* undo) {
     if (detail::score_version_exhausted(score))
         return std::unexpected(ErrorCode::ArithmeticOverflow);
+    const detail::ScoreIdentityCommit identities(score);
     auto loc = find_event(score, event_id);
     if (!loc.event) {
         return std::unexpected(ErrorCode::InvalidMutation);
@@ -1240,7 +1238,7 @@ Result<MutationResult> delete_event(Score& score, EventId event_id, UndoStack* u
     if (!delete_event_content_and_repair_spans(score, event_id))
         return std::unexpected(ErrorCode::InvalidMutation);
 
-    if (auto advanced = detail::advance_score_version(score); !advanced)
+    if (auto advanced = identities.advance(score); !advanced)
         return std::unexpected(advanced.error());
 
     push_snapshot(undo, std::move(before), "delete_event");
@@ -1257,6 +1255,7 @@ Result<MutationResult> modify_pitch(Score& score,
                                     UndoStack* undo) {
     if (detail::score_version_exhausted(score))
         return std::unexpected(ErrorCode::ArithmeticOverflow);
+    const detail::ScoreIdentityCommit identities(score);
     if (new_pitch.letter > 6) return std::unexpected(ErrorCode::InvalidMutation);
     auto loc = find_event(score, event_id);
     if (!loc.event) return std::unexpected(ErrorCode::InvalidMutation);
@@ -1273,7 +1272,7 @@ Result<MutationResult> modify_pitch(Score& score,
         score = std::move(before_state);
         return std::unexpected(ErrorCode::InvalidMutation);
     }
-    if (auto advanced = detail::advance_score_version(score); !advanced)
+    if (auto advanced = identities.advance(score); !advanced)
         return std::unexpected(advanced.error());
 
     push_snapshot(
@@ -1288,6 +1287,7 @@ Result<MutationResult>
 modify_duration(Score& score, EventId event_id, Beat new_duration, UndoStack* undo) {
     if (detail::score_version_exhausted(score))
         return std::unexpected(ErrorCode::ArithmeticOverflow);
+    const detail::ScoreIdentityCommit identities(score);
     if (new_duration <= Beat::zero()) return std::unexpected(ErrorCode::InvalidMutation);
 
     Score candidate = score;
@@ -1317,7 +1317,7 @@ modify_duration(Score& score, EventId event_id, Beat new_duration, UndoStack* un
         return std::unexpected(resized ? ErrorCode::InvalidMutation : resized.error());
 
     if (!is_compilable(candidate)) return std::unexpected(ErrorCode::InvalidMutation);
-    if (auto advanced = detail::advance_score_version(candidate); !advanced)
+    if (auto advanced = identities.advance(candidate); !advanced)
         return std::unexpected(advanced.error());
     mark_harmonic_stale(candidate, affected_bar);
     score = std::move(candidate);
@@ -1334,6 +1334,7 @@ Result<MutationResult> modify_velocity(Score& score,
                                        UndoStack* undo) {
     if (detail::score_version_exhausted(score))
         return std::unexpected(ErrorCode::ArithmeticOverflow);
+    const detail::ScoreIdentityCommit identities(score);
     if (!valid_velocity_value(new_velocity)) return std::unexpected(ErrorCode::InvalidMutation);
     auto loc = find_event(score, event_id);
     if (!loc.event) return std::unexpected(ErrorCode::InvalidMutation);
@@ -1350,7 +1351,7 @@ Result<MutationResult> modify_velocity(Score& score,
         score = std::move(before_state);
         return std::unexpected(ErrorCode::InvalidMutation);
     }
-    if (auto advanced = detail::advance_score_version(score); !advanced)
+    if (auto advanced = identities.advance(score); !advanced)
         return std::unexpected(advanced.error());
 
     push_snapshot(undo,
@@ -1367,6 +1368,7 @@ Result<MutationResult> modify_release_velocity(Score& score,
                                                UndoStack* undo) {
     if (detail::score_version_exhausted(score))
         return std::unexpected(ErrorCode::ArithmeticOverflow);
+    const detail::ScoreIdentityCommit identities(score);
     if (new_release_velocity > 127) return std::unexpected(ErrorCode::InvalidMutation);
     auto loc = find_event(score, event_id);
     if (!loc.event) return std::unexpected(ErrorCode::InvalidMutation);
@@ -1380,7 +1382,7 @@ Result<MutationResult> modify_release_velocity(Score& score,
         score = std::move(before_state);
         return std::unexpected(ErrorCode::InvalidMutation);
     }
-    if (auto advanced = detail::advance_score_version(score); !advanced)
+    if (auto advanced = identities.advance(score); !advanced)
         return std::unexpected(advanced.error());
 
     push_snapshot(undo,
@@ -1396,6 +1398,7 @@ Result<MutationResult> set_articulation(Score& score,
                                         UndoStack* undo) {
     if (detail::score_version_exhausted(score))
         return std::unexpected(ErrorCode::ArithmeticOverflow);
+    const detail::ScoreIdentityCommit identities(score);
     if (articulation && !valid_articulation_type(*articulation))
         return std::unexpected(ErrorCode::InvalidMutation);
     auto loc = find_event(score, event_id);
@@ -1428,7 +1431,7 @@ Result<MutationResult> set_articulation(Score& score,
         score = std::move(before_state);
         return std::unexpected(ErrorCode::InvalidMutation);
     }
-    if (auto advanced = detail::advance_score_version(score); !advanced)
+    if (auto advanced = identities.advance(score); !advanced)
         return std::unexpected(advanced.error());
 
     push_snapshot(undo,
@@ -1442,6 +1445,7 @@ Result<MutationResult>
 set_dynamic(Score& score, PartId part_id, ScoreTime position, DynamicLevel level, UndoStack* undo) {
     if (detail::score_version_exhausted(score))
         return std::unexpected(ErrorCode::ArithmeticOverflow);
+    const detail::ScoreIdentityCommit identities(score);
     if (!valid_dynamic_level(level)) return std::unexpected(ErrorCode::InvalidMutation);
     Part* part = find_part(score, part_id);
     if (!part) return std::unexpected(ErrorCode::InvalidMutation);
@@ -1464,7 +1468,7 @@ set_dynamic(Score& score, PartId part_id, ScoreTime position, DynamicLevel level
                 std::optional<Score> before;
                 if (undo) before = score;
                 ng->notes[0].dynamic = level;
-                if (auto advanced = detail::advance_score_version(score); !advanced)
+                if (auto advanced = identities.advance(score); !advanced)
                     return std::unexpected(advanced.error());
                 push_snapshot(undo, std::move(before), "set_dynamic");
                 return MutationResult{{}};
@@ -1484,6 +1488,7 @@ Result<MutationResult> insert_hairpin(Score& score,
                                       UndoStack* undo) {
     if (detail::score_version_exhausted(score))
         return std::unexpected(ErrorCode::ArithmeticOverflow);
+    const detail::ScoreIdentityCommit identities(score);
     if (static_cast<std::uint8_t>(type) > static_cast<std::uint8_t>(HairpinType::Diminuendo) ||
         (target && !valid_dynamic_level(*target)))
         return std::unexpected(ErrorCode::InvalidMutation);
@@ -1500,7 +1505,7 @@ Result<MutationResult> insert_hairpin(Score& score,
     if (undo) before = score;
 
     part->hairpins.push_back(Hairpin{start, end, type, target});
-    if (auto advanced = detail::advance_score_version(score); !advanced)
+    if (auto advanced = identities.advance(score); !advanced)
         return std::unexpected(advanced.error());
     push_snapshot(undo, std::move(before), "insert_hairpin");
     return MutationResult{{}};
@@ -1510,6 +1515,7 @@ Result<MutationResult>
 set_tie(Score& score, EventId event_id, std::uint8_t note_index, bool tied, UndoStack* undo) {
     if (detail::score_version_exhausted(score))
         return std::unexpected(ErrorCode::ArithmeticOverflow);
+    const detail::ScoreIdentityCommit identities(score);
     auto loc = find_event(score, event_id);
     if (!loc.event) return std::unexpected(ErrorCode::InvalidMutation);
 
@@ -1525,7 +1531,7 @@ set_tie(Score& score, EventId event_id, std::uint8_t note_index, bool tied, Undo
         score = std::move(before_state);
         return std::unexpected(ErrorCode::InvalidMutation);
     }
-    if (auto advanced = detail::advance_score_version(score); !advanced)
+    if (auto advanced = identities.advance(score); !advanced)
         return std::unexpected(advanced.error());
 
     push_snapshot(
@@ -1538,6 +1544,7 @@ Result<MutationResult>
 transpose_event(Score& score, EventId event_id, DiatonicInterval interval, UndoStack* undo) {
     if (detail::score_version_exhausted(score))
         return std::unexpected(ErrorCode::ArithmeticOverflow);
+    const detail::ScoreIdentityCommit identities(score);
     auto loc = find_event(score, event_id);
     if (!loc.event) return std::unexpected(ErrorCode::InvalidMutation);
 
@@ -1555,7 +1562,7 @@ transpose_event(Score& score, EventId event_id, DiatonicInterval interval, UndoS
         return std::unexpected(ErrorCode::InvalidMutation);
     }
 
-    if (auto advanced = detail::advance_score_version(score); !advanced)
+    if (auto advanced = identities.advance(score); !advanced)
         return std::unexpected(advanced.error());
 
     push_snapshot(undo,
@@ -1575,6 +1582,7 @@ Result<MutationResult>
 insert_measures(Score& score, std::uint32_t after_bar, std::uint32_t count, UndoStack* undo) {
     if (detail::score_version_exhausted(score))
         return std::unexpected(ErrorCode::ArithmeticOverflow);
+    const detail::ScoreIdentityCommit identities(score);
     constexpr auto max_bar = std::numeric_limits<std::uint32_t>::max();
     if (count == 0 || after_bar < 1 || after_bar > score.metadata.total_bars ||
         score.metadata.total_bars >= max_bar || count >= max_bar - score.metadata.total_bars) {
@@ -1665,7 +1673,7 @@ insert_measures(Score& score, std::uint32_t after_bar, std::uint32_t count, Undo
 
     candidate.metadata.total_bars += count;
     if (!is_compilable(candidate)) return std::unexpected(ErrorCode::InvalidMutation);
-    if (auto advanced = detail::advance_score_version(candidate); !advanced)
+    if (auto advanced = identities.advance(candidate); !advanced)
         return std::unexpected(advanced.error());
     score = std::move(candidate);
 
@@ -1678,6 +1686,7 @@ Result<MutationResult>
 delete_measures(Score& score, std::uint32_t bar, std::uint32_t count, UndoStack* undo) {
     if (detail::score_version_exhausted(score))
         return std::unexpected(ErrorCode::ArithmeticOverflow);
+    const detail::ScoreIdentityCommit identities(score);
     if (count == 0 || bar < 1 || bar > score.metadata.total_bars ||
         count > score.metadata.total_bars - bar + 1) {
         return std::unexpected(ErrorCode::InvalidMutation);
@@ -1817,7 +1826,7 @@ delete_measures(Score& score, std::uint32_t bar, std::uint32_t count, UndoStack*
     splice_spans_for_deleted_bars(score.stale_orchestration_regions, bar, count);
 
     score.metadata.total_bars -= count;
-    if (auto advanced = detail::advance_score_version(score); !advanced)
+    if (auto advanced = identities.advance(score); !advanced)
         return std::unexpected(advanced.error());
 
     push_snapshot(undo, std::move(before), "delete_measures");
@@ -1828,16 +1837,148 @@ delete_measures(Score& score, std::uint32_t bar, std::uint32_t count, UndoStack*
 Result<MutationResult> set_score_tuning(Score& score, ScoreTuning tuning, UndoStack* undo) {
     if (detail::score_version_exhausted(score))
         return std::unexpected(ErrorCode::ArithmeticOverflow);
+    const detail::ScoreIdentityCommit identities(score);
     if (auto valid = validate_score_tuning(tuning); !valid) return std::unexpected(valid.error());
 
     std::optional<Score> before;
     if (undo) before = score;
     Score candidate = score;
     candidate.tuning = std::move(tuning);
-    if (auto advanced = detail::advance_score_version(candidate); !advanced)
+    if (auto advanced = identities.advance(candidate); !advanced)
         return std::unexpected(advanced.error());
     score = std::move(candidate);
     push_snapshot(undo, std::move(before), "set_score_tuning");
+    return MutationResult{{}};
+}
+
+Result<MutationResult> set_tempo_map(Score& score, TempoMap tempo_map, UndoStack* undo) {
+    if (detail::score_version_exhausted(score))
+        return std::unexpected(ErrorCode::ArithmeticOverflow);
+    const detail::ScoreIdentityCommit identities(score);
+    Score candidate = score;
+    candidate.tempo_map = std::move(tempo_map);
+    auto diagnostics = validate_score(candidate);
+    for (const auto& diagnostic : diagnostics)
+        if (diagnostic.severity == ValidationSeverity::Error)
+            return std::unexpected(diagnostic.error_code);
+    if (auto advanced = identities.advance(candidate); !advanced)
+        return std::unexpected(advanced.error());
+    auto before = undo ? std::optional<Score>{score} : std::nullopt;
+    score = std::move(candidate);
+    push_snapshot(undo, std::move(before), "set_tempo_map");
+    return MutationResult{std::move(diagnostics)};
+}
+
+Result<TupletId> create_tuplet_group(Score& score,
+                                     std::span<const EventId> members,
+                                     std::uint8_t actual,
+                                     std::uint8_t normal,
+                                     Beat normal_type,
+                                     Beat scaled_allocation,
+                                     UndoStack* undo) {
+    if (detail::score_version_exhausted(score))
+        return std::unexpected(ErrorCode::ArithmeticOverflow);
+    const detail::ScoreIdentityCommit identities(score);
+    if (actual == 0 || normal == 0 || normal_type <= Beat::zero() ||
+        scaled_allocation <= Beat::zero())
+        return std::unexpected(ErrorCode::TupletInvalidRatio);
+    if (members.empty()) return std::unexpected(ErrorCode::TupletSpanError);
+    auto expected = checked_mul(normal_type, Beat{normal, 1});
+    if (!expected) return std::unexpected(expected.error());
+    if (*expected != scaled_allocation) return std::unexpected(ErrorCode::TupletSpanError);
+    std::set<EventId> selected(members.begin(), members.end());
+    if (selected.size() != members.size()) return std::unexpected(ErrorCode::TupletSpanError);
+
+    Score candidate = score;
+    EventLocation owner;
+    for (const auto member : selected) {
+        auto location = find_event(candidate, member);
+        if (!location.event || (!location.event->is_note_group() && !location.event->is_rest()))
+            return std::unexpected(ErrorCode::TupletSpanError);
+        if (event_tuplet_context(*location.event))
+            return std::unexpected(ErrorCode::TupletSpanError);
+        if (!owner.event)
+            owner = location;
+        else if (location.part != owner.part || location.measure != owner.measure ||
+                 location.voice != owner.voice)
+            return std::unexpected(ErrorCode::TupletSpanError);
+    }
+    if (!owner.voice) return std::unexpected(ErrorCode::TupletSpanError);
+    Beat sum = Beat::zero();
+    std::optional<Beat> end;
+    bool left_membership = false;
+    for (const auto& event : owner.voice->events) {
+        if (!event.is_note_group() && !event.is_rest()) continue;
+        if (!selected.contains(event.id)) {
+            if (end) left_membership = true;
+            continue;
+        }
+        if (left_membership || (end && event.offset != *end))
+            return std::unexpected(ErrorCode::TupletSpanError);
+        if (event.duration() <= Beat::zero()) return std::unexpected(ErrorCode::TupletSpanError);
+        auto next_sum = checked_add(sum, event.duration());
+        auto next_end = checked_add(event.offset, event.duration());
+        if (!next_sum) return std::unexpected(next_sum.error());
+        if (!next_end) return std::unexpected(next_end.error());
+        sum = *next_sum;
+        end = *next_end;
+    }
+    if (sum != scaled_allocation) return std::unexpected(ErrorCode::TupletSpanError);
+
+    auto allocator = detail::tuplet_id_allocator(candidate);
+    auto id = allocator.allocate();
+    if (!id) return std::unexpected(id.error());
+    const TupletContext context{*id, actual, normal, normal_type, std::nullopt};
+    for (auto& event : owner.voice->events) {
+        if (!selected.contains(event.id)) continue;
+        if (auto* group = std::get_if<NoteGroup>(&event.payload))
+            group->tuplet_context = context;
+        else
+            std::get<RestEvent>(event.payload).tuplet_context = context;
+    }
+    if (!is_compilable(candidate)) return std::unexpected(ErrorCode::InvalidMutation);
+    if (auto advanced = identities.advance(candidate); !advanced)
+        return std::unexpected(advanced.error());
+    auto before = undo ? std::optional<Score>{score} : std::nullopt;
+    score = std::move(candidate);
+    push_snapshot(undo, std::move(before), "create_tuplet_group");
+    return *id;
+}
+
+Result<MutationResult> remove_tuplet_group(Score& score, TupletId tuplet_id, UndoStack* undo) {
+    if (detail::score_version_exhausted(score))
+        return std::unexpected(ErrorCode::ArithmeticOverflow);
+    const detail::ScoreIdentityCommit identities(score);
+    Score candidate = score;
+    Voice* owner = nullptr;
+    for (auto& part : candidate.parts)
+        for (auto& measure : part.measures)
+            for (auto& voice : measure.voices)
+                for (const auto& event : voice.events) {
+                    const auto* context = event_tuplet_context(event);
+                    if (!context) continue;
+                    if (context->nested_in == tuplet_id)
+                        return std::unexpected(ErrorCode::TupletSpanError);
+                    if (context->id != tuplet_id) continue;
+                    if (context->nested_in || (owner && owner != &voice))
+                        return std::unexpected(ErrorCode::TupletSpanError);
+                    owner = &voice;
+                }
+    if (!owner) return std::unexpected(ErrorCode::TupletSpanError);
+    for (auto& event : owner->events) {
+        const auto* context = event_tuplet_context(event);
+        if (!context || context->id != tuplet_id) continue;
+        if (auto* group = std::get_if<NoteGroup>(&event.payload))
+            group->tuplet_context.reset();
+        else
+            std::get<RestEvent>(event.payload).tuplet_context.reset();
+    }
+    if (!is_compilable(candidate)) return std::unexpected(ErrorCode::InvalidMutation);
+    if (auto advanced = identities.advance(candidate); !advanced)
+        return std::unexpected(advanced.error());
+    auto before = undo ? std::optional<Score>{score} : std::nullopt;
+    score = std::move(candidate);
+    push_snapshot(undo, std::move(before), "remove_tuplet_group");
     return MutationResult{{}};
 }
 
@@ -1847,6 +1988,7 @@ Result<MutationResult> set_time_signature(Score& score,
                                           UndoStack* undo) {
     if (detail::score_version_exhausted(score))
         return std::unexpected(ErrorCode::ArithmeticOverflow);
+    const detail::ScoreIdentityCommit identities(score);
     auto requested_duration = checked_measure_duration(time_sig);
     if (bar < 1 || bar > score.metadata.total_bars || !requested_duration) {
         return std::unexpected(ErrorCode::InvalidMutation);
@@ -1901,7 +2043,7 @@ Result<MutationResult> set_time_signature(Score& score,
     if (!tempo_durations) return std::unexpected(tempo_durations.error());
     if (!is_compilable(candidate)) return std::unexpected(ErrorCode::InvalidMutation);
 
-    if (auto advanced = detail::advance_score_version(candidate); !advanced)
+    if (auto advanced = identities.advance(candidate); !advanced)
         return std::unexpected(advanced.error());
     score = std::move(candidate);
     push_snapshot(undo, std::move(before), "set_time_signature");
@@ -1912,6 +2054,7 @@ Result<MutationResult>
 set_key_signature(Score& score, ScoreTime position, KeySignature key, UndoStack* undo) {
     if (detail::score_version_exhausted(score))
         return std::unexpected(ErrorCode::ArithmeticOverflow);
+    const detail::ScoreIdentityCommit identities(score);
     if (!valid_global_point(score, position)) return std::unexpected(ErrorCode::InvalidScoreTime);
 
     std::optional<Score> before;
@@ -1937,7 +2080,7 @@ set_key_signature(Score& score, ScoreTime position, KeySignature key, UndoStack*
     }
 
     if (!is_compilable(candidate)) return std::unexpected(ErrorCode::InvalidMutation);
-    if (auto advanced = detail::advance_score_version(candidate); !advanced)
+    if (auto advanced = identities.advance(candidate); !advanced)
         return std::unexpected(advanced.error());
     score = std::move(candidate);
     push_snapshot(undo, std::move(before), "set_key_signature");
@@ -1952,6 +2095,7 @@ Result<MutationResult>
 add_part(Score& score, PartDefinition definition, std::size_t position_in_order, UndoStack* undo) {
     if (detail::score_version_exhausted(score))
         return std::unexpected(ErrorCode::ArithmeticOverflow);
+    const detail::ScoreIdentityCommit identities(score);
     std::optional<Score> before;
     if (undo) before = score;
     Score candidate = score;
@@ -1993,7 +2137,7 @@ add_part(Score& score, PartDefinition definition, std::size_t position_in_order,
     }
 
     if (!is_compilable(candidate)) return std::unexpected(ErrorCode::InvalidMutation);
-    if (auto advanced = detail::advance_score_version(candidate); !advanced)
+    if (auto advanced = identities.advance(candidate); !advanced)
         return std::unexpected(advanced.error());
     score = std::move(candidate);
     push_snapshot(undo, std::move(before), "add_part");
@@ -2003,6 +2147,7 @@ add_part(Score& score, PartDefinition definition, std::size_t position_in_order,
 Result<MutationResult> remove_part(Score& score, PartId part_id, UndoStack* undo) {
     if (detail::score_version_exhausted(score))
         return std::unexpected(ErrorCode::ArithmeticOverflow);
+    const detail::ScoreIdentityCommit identities(score);
     if (score.parts.size() <= 1) {
         return std::unexpected(ErrorCode::InvalidMutation);
     }
@@ -2055,7 +2200,7 @@ Result<MutationResult> remove_part(Score& score, PartId part_id, UndoStack* undo
     remove_part_from_regions(candidate.stale_orchestration_regions);
 
     if (!is_compilable(candidate)) return std::unexpected(ErrorCode::InvalidMutation);
-    if (auto advanced = detail::advance_score_version(candidate); !advanced)
+    if (auto advanced = identities.advance(candidate); !advanced)
         return std::unexpected(advanced.error());
     score = std::move(candidate);
     push_snapshot(undo, std::move(before), "remove_part");
@@ -2072,6 +2217,7 @@ Result<MutationResult> transpose_region(Score& score,
                                         UndoStack* undo) {
     if (detail::score_version_exhausted(score))
         return std::unexpected(ErrorCode::ArithmeticOverflow);
+    const detail::ScoreIdentityCommit identities(score);
     if (!valid_score_region(score, region)) return std::unexpected(ErrorCode::InvalidRegion);
     Score before_state = score;
 
@@ -2114,7 +2260,7 @@ Result<MutationResult> transpose_region(Score& score,
         score = std::move(before_state);
         return std::unexpected(ErrorCode::InvalidMutation);
     }
-    if (auto advanced = detail::advance_score_version(score); !advanced)
+    if (auto advanced = identities.advance(score); !advanced)
         return std::unexpected(advanced.error());
 
     push_snapshot(undo,
@@ -2129,6 +2275,7 @@ Result<MutationResult> transpose_region(Score& score,
 Result<MutationResult> delete_region(Score& score, const ScoreRegion& region, UndoStack* undo) {
     if (detail::score_version_exhausted(score))
         return std::unexpected(ErrorCode::ArithmeticOverflow);
+    const detail::ScoreIdentityCommit identities(score);
     if (!valid_score_region(score, region)) return std::unexpected(ErrorCode::InvalidRegion);
     std::optional<Score> before;
     if (undo) before = score;
@@ -2140,7 +2287,7 @@ Result<MutationResult> delete_region(Score& score, const ScoreRegion& region, Un
     for (const auto id : selected)
         delete_event_content_and_repair_spans(score, id);
 
-    if (auto advanced = detail::advance_score_version(score); !advanced)
+    if (auto advanced = identities.advance(score); !advanced)
         return std::unexpected(advanced.error());
     push_snapshot(undo, std::move(before), "delete_region");
 
@@ -2157,6 +2304,7 @@ Result<MutationResult> add_voice(
     Score& score, std::uint32_t bar, PartId part_id, std::uint8_t voice_number, UndoStack* undo) {
     if (detail::score_version_exhausted(score))
         return std::unexpected(ErrorCode::ArithmeticOverflow);
+    const detail::ScoreIdentityCommit identities(score);
     return add_voice(score, bar, part_id, voice_number, 0, undo);
 }
 
@@ -2168,6 +2316,7 @@ Result<MutationResult> add_voice(Score& score,
                                  UndoStack* undo) {
     if (detail::score_version_exhausted(score))
         return std::unexpected(ErrorCode::ArithmeticOverflow);
+    const detail::ScoreIdentityCommit identities(score);
     Part* part = find_part(score, part_id);
     if (!part) return std::unexpected(ErrorCode::InvalidMutation);
     if (staff_index >= part->definition.staff_count)
@@ -2207,7 +2356,7 @@ Result<MutationResult> add_voice(Score& score,
         [](const Voice& voice, std::uint8_t index) { return voice.voice_index < index; });
     measure.voices.insert(insertion, std::move(new_voice));
 
-    if (auto advanced = detail::advance_score_version(score); !advanced)
+    if (auto advanced = identities.advance(score); !advanced)
         return std::unexpected(advanced.error());
     push_snapshot(undo, std::move(before), "add_voice");
     return MutationResult{{}};
@@ -2217,6 +2366,7 @@ Result<MutationResult> remove_voice(
     Score& score, std::uint32_t bar, PartId part_id, std::uint8_t voice_number, UndoStack* undo) {
     if (detail::score_version_exhausted(score))
         return std::unexpected(ErrorCode::ArithmeticOverflow);
+    const detail::ScoreIdentityCommit identities(score);
     Part* part = find_part(score, part_id);
     if (!part) return std::unexpected(ErrorCode::InvalidMutation);
 
@@ -2253,7 +2403,7 @@ Result<MutationResult> remove_voice(
     if (it == measure.voices.end()) return std::unexpected(ErrorCode::InvalidMutation);
     measure.voices.erase(it);
 
-    if (auto advanced = detail::advance_score_version(score); !advanced)
+    if (auto advanced = identities.advance(score); !advanced)
         return std::unexpected(advanced.error());
     push_snapshot(undo, std::move(before), "remove_voice");
     return MutationResult{{}};
@@ -2267,6 +2417,7 @@ Result<MutationResult>
 reorder_parts(Score& score, const std::vector<PartId>& new_order, UndoStack* undo) {
     if (detail::score_version_exhausted(score))
         return std::unexpected(ErrorCode::ArithmeticOverflow);
+    const detail::ScoreIdentityCommit identities(score);
     if (new_order.size() != score.parts.size()) {
         return std::unexpected(ErrorCode::InvalidMutation);
     }
@@ -2309,7 +2460,7 @@ reorder_parts(Score& score, const std::vector<PartId>& new_order, UndoStack* und
     }
     score.parts = std::move(reordered);
 
-    if (auto advanced = detail::advance_score_version(score); !advanced)
+    if (auto advanced = identities.advance(score); !advanced)
         return std::unexpected(advanced.error());
     push_snapshot(undo, std::move(before), "reorder_parts");
     return MutationResult{{}};
@@ -2319,6 +2470,7 @@ Result<MutationResult>
 set_part_directive(Score& score, PartId part_id, PartDirective directive, UndoStack* undo) {
     if (detail::score_version_exhausted(score))
         return std::unexpected(ErrorCode::ArithmeticOverflow);
+    const detail::ScoreIdentityCommit identities(score);
     Part* part = find_part(score, part_id);
     if (!part) return std::unexpected(ErrorCode::InvalidMutation);
     if (!valid_part_span(score, *part, directive.start, directive.end))
@@ -2341,7 +2493,7 @@ set_part_directive(Score& score, PartId part_id, PartDirective directive, UndoSt
     candidate_part->part_directives.push_back(directive);
 
     if (!is_compilable(candidate)) return std::unexpected(ErrorCode::InvalidMutation);
-    if (auto advanced = detail::advance_score_version(candidate); !advanced)
+    if (auto advanced = identities.advance(candidate); !advanced)
         return std::unexpected(advanced.error());
     score = std::move(candidate);
     push_snapshot(undo, std::move(before), "set_part_directive");
@@ -2352,18 +2504,34 @@ Result<MutationResult>
 assign_instrument(Score& score, PartId part_id, InstrumentType instrument, UndoStack* undo) {
     if (detail::score_version_exhausted(score))
         return std::unexpected(ErrorCode::ArithmeticOverflow);
-    Part* part = find_part(score, part_id);
-    if (!part) return std::unexpected(ErrorCode::InvalidMutation);
-
-    std::optional<Score> before;
-    if (undo) before = score;
-
+    const detail::ScoreIdentityCommit identities(score);
+    if (static_cast<std::uint8_t>(instrument) > static_cast<std::uint8_t>(InstrumentType::Custom))
+        return std::unexpected(ErrorCode::InvalidMutation);
+    Score candidate = score;
+    Part* part = find_part(candidate, part_id);
+    if (!part || uses_gm_percussion_channel(part->definition.instrument_type) !=
+                     uses_gm_percussion_channel(instrument))
+        return std::unexpected(ErrorCode::InvalidMutation);
+    const auto profile = standard_instrument_profile(instrument);
     part->definition.instrument_type = instrument;
-
-    if (auto advanced = detail::advance_score_version(score); !advanced)
+    part->definition.range = profile.range;
+    part->definition.transposition = profile.transposition;
+    part->definition.clef = profile.clef;
+    if (candidate.metadata.total_bars == std::numeric_limits<std::uint32_t>::max())
+        return std::unexpected(ErrorCode::ArithmeticOverflow);
+    mark_orchestration_stale(
+        candidate,
+        ScoreRegion{SCORE_START, {candidate.metadata.total_bars + 1, Beat::zero()}, {part_id}});
+    auto diagnostics = validate_score(candidate);
+    for (const auto& diagnostic : diagnostics)
+        if (diagnostic.severity == ValidationSeverity::Error)
+            return std::unexpected(diagnostic.error_code);
+    if (auto advanced = identities.advance(candidate); !advanced)
         return std::unexpected(advanced.error());
+    auto before = undo ? std::optional<Score>{score} : std::nullopt;
+    score = std::move(candidate);
     push_snapshot(undo, std::move(before), "assign_instrument");
-    return MutationResult{{}};
+    return MutationResult{std::move(diagnostics)};
 }
 
 Result<MutationResult> set_articulation_mapping(Score& score,
@@ -2373,6 +2541,7 @@ Result<MutationResult> set_articulation_mapping(Score& score,
                                                 UndoStack* undo) {
     if (detail::score_version_exhausted(score))
         return std::unexpected(ErrorCode::ArithmeticOverflow);
+    const detail::ScoreIdentityCommit identities(score);
     Part* part = find_part(score, part_id);
     if (!part || static_cast<std::uint8_t>(articulation) >
                      static_cast<std::uint8_t>(ArticulationType::BendDown))
@@ -2389,7 +2558,7 @@ Result<MutationResult> set_articulation_mapping(Score& score,
         part->definition.rendering.articulation_map.erase(articulation);
     }
 
-    if (auto advanced = detail::advance_score_version(score); !advanced)
+    if (auto advanced = identities.advance(score); !advanced)
         return std::unexpected(advanced.error());
     push_snapshot(undo, std::move(before), "set_articulation_mapping");
     return MutationResult{{}};
@@ -2403,6 +2572,7 @@ Result<MutationResult>
 copy_region(Score& score, const ScoreRegion& src, ScoreTime dest, UndoStack* undo) {
     if (detail::score_version_exhausted(score))
         return std::unexpected(ErrorCode::ArithmeticOverflow);
+    const detail::ScoreIdentityCommit identities(score);
     if (!valid_score_region(score, src) || !valid_global_point(score, dest))
         return std::unexpected(ErrorCode::InvalidRegion);
     std::optional<Score> before;
@@ -2490,7 +2660,7 @@ copy_region(Score& score, const ScoreRegion& src, ScoreTime dest, UndoStack* und
 
     if (!is_compilable(candidate)) return std::unexpected(ErrorCode::InvalidMutation);
 
-    if (auto advanced = detail::advance_score_version(candidate); !advanced)
+    if (auto advanced = identities.advance(candidate); !advanced)
         return std::unexpected(advanced.error());
     candidate.stale_harmonic_regions.push_back(src);
     score = std::move(candidate);
@@ -2513,6 +2683,7 @@ Result<MutationResult>
 move_region(Score& score, const ScoreRegion& src, ScoreTime dest, UndoStack* undo) {
     if (detail::score_version_exhausted(score))
         return std::unexpected(ErrorCode::ArithmeticOverflow);
+    const detail::ScoreIdentityCommit identities(score);
     if (!valid_score_region(score, src) || !valid_global_point(score, dest))
         return std::unexpected(ErrorCode::InvalidRegion);
     std::optional<Score> before;
@@ -2539,7 +2710,8 @@ move_region(Score& score, const ScoreRegion& src, ScoreTime dest, UndoStack* und
     for (const auto id : selected)
         delete_event_content_and_repair_spans(score, id);
 
-    // copy_region already bumped version; no extra bump needed
+    // copy_region already bumped version; no extra bump needed.
+    identities.retain(score);
     push_snapshot(undo, std::move(before), "move_region");
 
     score.stale_harmonic_regions.push_back(src);
@@ -2560,6 +2732,7 @@ Result<MutationResult>
 set_dynamic_region(Score& score, const ScoreRegion& region, DynamicLevel level, UndoStack* undo) {
     if (detail::score_version_exhausted(score))
         return std::unexpected(ErrorCode::ArithmeticOverflow);
+    const detail::ScoreIdentityCommit identities(score);
     if (!valid_score_region(score, region)) return std::unexpected(ErrorCode::InvalidRegion);
     if (!valid_dynamic_level(level)) return std::unexpected(ErrorCode::InvalidMutation);
     std::optional<Score> before;
@@ -2572,7 +2745,7 @@ set_dynamic_region(Score& score, const ScoreRegion& region, DynamicLevel level, 
         }
     });
 
-    if (auto advanced = detail::advance_score_version(score); !advanced)
+    if (auto advanced = identities.advance(score); !advanced)
         return std::unexpected(advanced.error());
     push_snapshot(undo, std::move(before), "set_dynamic_region");
     return MutationResult{{}};
@@ -2582,6 +2755,7 @@ Result<MutationResult>
 scale_velocity_region(Score& score, const ScoreRegion& region, double factor, UndoStack* undo) {
     if (detail::score_version_exhausted(score))
         return std::unexpected(ErrorCode::ArithmeticOverflow);
+    const detail::ScoreIdentityCommit identities(score);
     if (!valid_score_region(score, region)) return std::unexpected(ErrorCode::InvalidRegion);
     if (!std::isfinite(factor) || factor < 0.0) return std::unexpected(ErrorCode::InvalidMutation);
     std::optional<Score> before;
@@ -2599,7 +2773,7 @@ scale_velocity_region(Score& score, const ScoreRegion& region, double factor, Un
         }
     });
 
-    if (auto advanced = detail::advance_score_version(score); !advanced)
+    if (auto advanced = identities.advance(score); !advanced)
         return std::unexpected(advanced.error());
     push_snapshot(undo, std::move(before), "scale_velocity_region");
     return MutationResult{{}};
@@ -2608,6 +2782,7 @@ scale_velocity_region(Score& score, const ScoreRegion& region, double factor, Un
 Result<MutationResult> retrograde_region(Score& score, const ScoreRegion& region, UndoStack* undo) {
     if (detail::score_version_exhausted(score))
         return std::unexpected(ErrorCode::ArithmeticOverflow);
+    const detail::ScoreIdentityCommit identities(score);
     if (!valid_score_region(score, region)) return std::unexpected(ErrorCode::InvalidRegion);
     std::optional<Score> before;
     if (undo) before = score;
@@ -2678,7 +2853,7 @@ Result<MutationResult> retrograde_region(Score& score, const ScoreRegion& region
     }
 
     if (!is_compilable(candidate)) return std::unexpected(ErrorCode::InvalidMutation);
-    if (auto advanced = detail::advance_score_version(candidate); !advanced)
+    if (auto advanced = identities.advance(candidate); !advanced)
         return std::unexpected(advanced.error());
     candidate.stale_harmonic_regions.push_back(region);
     score = std::move(candidate);
@@ -2710,6 +2885,7 @@ Result<MutationResult>
 invert_region(Score& score, const ScoreRegion& region, SpelledPitch axis, UndoStack* undo) {
     if (detail::score_version_exhausted(score))
         return std::unexpected(ErrorCode::ArithmeticOverflow);
+    const detail::ScoreIdentityCommit identities(score);
     if (!valid_score_region(score, region)) return std::unexpected(ErrorCode::InvalidRegion);
     if (axis.letter > 6) return std::unexpected(ErrorCode::InvalidMutation);
     Score before_state = score;
@@ -2746,7 +2922,7 @@ invert_region(Score& score, const ScoreRegion& region, SpelledPitch axis, UndoSt
         score = std::move(before_state);
         return std::unexpected(ErrorCode::InvalidMutation);
     }
-    if (auto advanced = detail::advance_score_version(score); !advanced)
+    if (auto advanced = identities.advance(score); !advanced)
         return std::unexpected(advanced.error());
     push_snapshot(
         undo, undo ? std::optional<Score>{std::move(before_state)} : std::nullopt, "invert_region");
@@ -2760,6 +2936,7 @@ Result<MutationResult>
 augment_region(Score& score, const ScoreRegion& region, Beat factor, UndoStack* undo) {
     if (detail::score_version_exhausted(score))
         return std::unexpected(ErrorCode::ArithmeticOverflow);
+    const detail::ScoreIdentityCommit identities(score);
     if (!valid_score_region(score, region)) return std::unexpected(ErrorCode::InvalidRegion);
     if (factor.numerator() <= 0) {
         return std::unexpected(ErrorCode::InvalidMutation);
@@ -2809,7 +2986,7 @@ augment_region(Score& score, const ScoreRegion& region, Beat factor, UndoStack* 
     }
     if (!is_compilable(candidate)) return std::unexpected(ErrorCode::InvalidMutation);
 
-    if (auto advanced = detail::advance_score_version(candidate); !advanced)
+    if (auto advanced = identities.advance(candidate); !advanced)
         return std::unexpected(advanced.error());
     candidate.stale_harmonic_regions.push_back(region);
     score = std::move(candidate);
@@ -2832,6 +3009,7 @@ Result<MutationResult>
 diminute_region(Score& score, const ScoreRegion& region, Beat factor, UndoStack* undo) {
     if (detail::score_version_exhausted(score))
         return std::unexpected(ErrorCode::ArithmeticOverflow);
+    const detail::ScoreIdentityCommit identities(score);
     if (!valid_score_region(score, region)) return std::unexpected(ErrorCode::InvalidRegion);
     if (factor.numerator() <= 0) {
         return std::unexpected(ErrorCode::InvalidMutation);
@@ -2881,7 +3059,7 @@ diminute_region(Score& score, const ScoreRegion& region, Beat factor, UndoStack*
     }
     if (!is_compilable(candidate)) return std::unexpected(ErrorCode::InvalidMutation);
 
-    if (auto advanced = detail::advance_score_version(candidate); !advanced)
+    if (auto advanced = identities.advance(candidate); !advanced)
         return std::unexpected(advanced.error());
     candidate.stale_harmonic_regions.push_back(region);
     score = std::move(candidate);
@@ -2908,6 +3086,7 @@ Result<MutationResult>
 reorchestrate(Score& score, const ScoreRegion& region, PartId target, UndoStack* undo) {
     if (detail::score_version_exhausted(score))
         return std::unexpected(ErrorCode::ArithmeticOverflow);
+    const detail::ScoreIdentityCommit identities(score);
     if (!valid_score_region(score, region)) return std::unexpected(ErrorCode::InvalidRegion);
     Part* target_part = find_part(score, target);
     if (!target_part) return std::unexpected(ErrorCode::InvalidMutation);
@@ -2977,7 +3156,7 @@ reorchestrate(Score& score, const ScoreRegion& region, PartId target, UndoStack*
 
     if (!is_compilable(candidate)) return std::unexpected(ErrorCode::InvalidMutation);
 
-    if (auto advanced = detail::advance_score_version(candidate); !advanced)
+    if (auto advanced = identities.advance(candidate); !advanced)
         return std::unexpected(advanced.error());
     mark_orchestration_stale(candidate, region);
     score = std::move(candidate);
@@ -3003,6 +3182,7 @@ Result<MutationResult> double_at_interval(Score& score,
                                           UndoStack* undo) {
     if (detail::score_version_exhausted(score))
         return std::unexpected(ErrorCode::ArithmeticOverflow);
+    const detail::ScoreIdentityCommit identities(score);
     if (!valid_score_region(score, region)) return std::unexpected(ErrorCode::InvalidRegion);
     Part* target_part = find_part(score, target);
     if (!target_part) return std::unexpected(ErrorCode::InvalidMutation);
@@ -3076,13 +3256,7 @@ Result<MutationResult> double_at_interval(Score& score,
     Part* candidate_target = find_part(candidate, target);
     if (!candidate_target) return std::unexpected(ErrorCode::InvalidMutation);
 
-    detail::FreshIdAllocator<TupletId> tuplet_ids;
-    for (const auto& part : candidate.parts)
-        for (const auto& measure : part.measures)
-            for (const auto& voice : measure.voices)
-                for (const auto& event : voice.events)
-                    if (const auto* context = event_tuplet_context(event))
-                        tuplet_ids.include(context->id);
+    auto tuplet_ids = detail::tuplet_id_allocator(candidate);
     std::map<TupletKey, TupletContext> copied_tuplets;
 
     for (auto& rec : records) {
@@ -3132,7 +3306,7 @@ Result<MutationResult> double_at_interval(Score& score,
 
     if (!is_compilable(candidate)) return std::unexpected(ErrorCode::InvalidMutation);
 
-    if (auto advanced = detail::advance_score_version(candidate); !advanced)
+    if (auto advanced = identities.advance(candidate); !advanced)
         return std::unexpected(advanced.error());
     mark_orchestration_stale(candidate, region);
     score = std::move(candidate);
@@ -3155,6 +3329,7 @@ Result<MutationResult> set_texture_role(
     Score& score, const ScoreRegion& region, PartId part_id, TexturalRole role, UndoStack* undo) {
     if (detail::score_version_exhausted(score))
         return std::unexpected(ErrorCode::ArithmeticOverflow);
+    const detail::ScoreIdentityCommit identities(score);
     if (!valid_score_region(score, region)) return std::unexpected(ErrorCode::InvalidRegion);
     if (static_cast<std::uint8_t>(role) > static_cast<std::uint8_t>(TexturalRole::Accompagnato) ||
         (!region.parts.empty() &&
@@ -3193,7 +3368,7 @@ Result<MutationResult> set_texture_role(
     }
 
     if (!is_compilable(candidate)) return std::unexpected(ErrorCode::InvalidMutation);
-    if (auto advanced = detail::advance_score_version(candidate); !advanced)
+    if (auto advanced = identities.advance(candidate); !advanced)
         return std::unexpected(advanced.error());
     mark_orchestration_stale(candidate, region);
     score = std::move(candidate);
@@ -3208,6 +3383,7 @@ Result<MutationResult> apply_voice_leading(Score& score,
                                            UndoStack* undo) {
     if (detail::score_version_exhausted(score))
         return std::unexpected(ErrorCode::ArithmeticOverflow);
+    const detail::ScoreIdentityCommit identities(score);
     if (!valid_score_region(score, region)) return std::unexpected(ErrorCode::InvalidRegion);
     // Require harmonic annotations in the region
     auto annotations = query_harmony_range(score, region.start, region.end);
@@ -3307,7 +3483,7 @@ Result<MutationResult> apply_voice_leading(Score& score,
             });
     }
 
-    if (auto advanced = detail::advance_score_version(score); !advanced)
+    if (auto advanced = identities.advance(score); !advanced)
         return std::unexpected(advanced.error());
 
     push_snapshot(undo, std::move(before), "apply_voice_leading");
@@ -3322,6 +3498,7 @@ Result<MutationResult> apply_voice_leading(Score& score,
 // =============================================================================
 
 void UndoStack::record(Score before, std::string description) {
+    retain_score_identities(before, ScoreIdentityReservations{});
     if (group_depth > 0) {
         if (group_has_snapshot) return;
         description = group_description;
@@ -3369,6 +3546,7 @@ VoidResult undo(Score& score, UndoStack& stack) {
     }
     if (detail::score_version_exhausted(score))
         return std::unexpected(ErrorCode::ArithmeticOverflow);
+    const detail::ScoreIdentityCommit identities(score);
 
     UndoEntry entry = std::move(stack.undo_entries.back());
     stack.undo_entries.pop_back();
@@ -3379,8 +3557,10 @@ VoidResult undo(Score& score, UndoStack& stack) {
         UndoEntry{score.version, std::make_shared<const Score>(score), entry.description});
 
     const std::uint64_t next_version = score.version + 1;
-    score = *entry.state;
-    score.version = next_version;
+    Score restored = *entry.state;
+    identities.retain(restored);
+    restored.version = next_version;
+    score = std::move(restored);
 
     return {};
 }
@@ -3391,6 +3571,7 @@ VoidResult redo(Score& score, UndoStack& stack) {
     }
     if (detail::score_version_exhausted(score))
         return std::unexpected(ErrorCode::ArithmeticOverflow);
+    const detail::ScoreIdentityCommit identities(score);
 
     UndoEntry entry = std::move(stack.redo_entries.back());
     stack.redo_entries.pop_back();
@@ -3400,8 +3581,10 @@ VoidResult redo(Score& score, UndoStack& stack) {
         UndoEntry{score.version, std::make_shared<const Score>(score), entry.description});
 
     const std::uint64_t next_version = score.version + 1;
-    score = *entry.state;
-    score.version = next_version;
+    Score restored = *entry.state;
+    identities.retain(restored);
+    restored.version = next_version;
+    score = std::move(restored);
 
     return {};
 }

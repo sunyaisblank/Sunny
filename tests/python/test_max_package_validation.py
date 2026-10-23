@@ -6,6 +6,7 @@ import hashlib
 import importlib.util
 import os
 import shutil
+import struct
 import subprocess
 import sys
 import zipfile
@@ -187,6 +188,95 @@ def test_max_archive_repeat_is_identical_and_changed_inputs_are_declined(tmp_pat
     content.write_text("changed", encoding="utf-8")
     declined = _run_archive(staged, archive)
     assert declined.returncode != 0
+    assert (archive.read_bytes(), sidecar.read_bytes()) == before
+
+
+def test_max_archive_normalizes_copy_metadata_in_both_zip_headers(tmp_path: Path) -> None:
+    """Explicitly different access times cannot change an immutable package pair."""
+    staged = tmp_path / "package"
+    staged.mkdir()
+    content = staged / "content.txt"
+    content.write_bytes(b"original")
+    archive = tmp_path / "Sunny.zip"
+    sidecar = Path(f"{archive}.sha256")
+    script = Path(__file__).parents[2] / "max-package" / "cmake" / "CreateArchive.cmake"
+    driver = tmp_path / "controlled-copy-metadata.cmake"
+    # Set the actual COPY result's times at the filesystem boundary. No sleep
+    # or guessed clock crossing is required, and the real archiver still runs.
+    driver.write_text(
+        "macro(file)\n"
+        "  _file(${ARGV})\n"
+        '  if("${ARGV0}" STREQUAL "COPY")\n'
+        "    execute_process(COMMAND\n"
+        f'      "{Path(sys.executable).as_posix()}" -c\n'
+        '      "import os,pathlib,sys; root=pathlib.Path(sys.argv[1]); '
+        "t=int(sys.argv[2]); [os.utime(p,(t,t)) for p in [root,*root.rglob('*')]]\"\n"
+        '      "${_work}/Sunny" "${SUNNY_TEST_COPY_TIMESTAMP}"\n'
+        "      RESULT_VARIABLE _metadata_result)\n"
+        "    if(NOT _metadata_result EQUAL 0)\n"
+        '      message(FATAL_ERROR "Controlled copied-file metadata failed")\n'
+        "    endif()\n"
+        "  endif()\n"
+        "endmacro()\n"
+        f'include("{script.as_posix()}")\n',
+        encoding="utf-8",
+    )
+
+    def run(timestamp: int):
+        return subprocess.run(
+            [
+                "cmake",
+                f"-DSUNNY_MAX_STAGED_PACKAGE={staged}",
+                f"-DSUNNY_MAX_ARCHIVE={archive}",
+                f"-DSUNNY_TEST_COPY_TIMESTAMP={timestamp}",
+                "-P",
+                str(driver),
+            ],
+            # The package owns its fixed clock; ambient build settings must
+            # neither override its epoch nor alter the ZIP DOS calendar date.
+            env={**os.environ, "SOURCE_DATE_EPOCH": "0", "TZ": "America/Los_Angeles"},
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+
+    first = run(946684800)  # 2000, far from the package's declared 1980 epoch.
+    assert first.returncode == 0, first.stderr
+    before = archive.read_bytes(), sidecar.read_bytes()
+    with zipfile.ZipFile(archive) as zipped:
+        assert zipped.read("Sunny/content.txt") == b"original"
+        assert {entry.filename for entry in zipped.infolist()} == {"Sunny/", "Sunny/content.txt"}
+        for entry in zipped.infolist():
+            assert entry.date_time == (1980, 1, 1, 0, 0, 0)
+            name_length, extra_length = struct.unpack_from(
+                "<HH", before[0], entry.header_offset + 26
+            )
+            offset = entry.header_offset + 30 + name_length
+            local_extra = before[0][offset : offset + extra_length]
+            for extra in (local_extra, entry.extra):
+                offset = 0
+                timestamp_fields = 0
+                while offset < len(extra):
+                    identifier, length = struct.unpack_from("<HH", extra, offset)
+                    data = extra[offset + 4 : offset + 4 + length]
+                    assert len(data) == length
+                    if identifier == 0x5455:  # UT: actual ZIP timestamp extra.
+                        assert data[0] & 1 and len(data) >= 5
+                        assert (len(data) - 1) % 4 == 0
+                        for value_offset in range(1, len(data), 4):
+                            assert struct.unpack_from("<I", data, value_offset)[0] == 315532800
+                            timestamp_fields += 1
+                    offset += 4 + length
+                assert offset == len(extra) and timestamp_fields > 0
+
+    second = run(978307200)  # 2001; the original --mtime-only writer differs.
+    assert second.returncode == 0, second.stderr
+    assert "Retained identical" in second.stdout
+    assert (archive.read_bytes(), sidecar.read_bytes()) == before
+    assert not Path(f"{archive}.work").exists()
+    content.write_bytes(b"changed")
+    declined = run(1009843200)
+    assert declined.returncode != 0 and "different bytes" in declined.stderr
     assert (archive.read_bytes(), sidecar.read_bytes()) == before
 
 

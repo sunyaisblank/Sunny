@@ -276,6 +276,8 @@ TEST_CASE("compile_to_midi: tied notes merge into single event", "[score][midi]"
     CHECK(midi.notes[0].duration_ticks == 3840);
     CHECK(midi.notes[0].note == 60);
     CHECK(midi.notes[0].release_velocity == 93);
+    CHECK(midi.notes[0].attack_event_id == score.parts[0].measures[0].voices[0].events[0].id);
+    CHECK(midi.notes[0].attack_note_index == 0);
 
     const auto note_events = compile_to_note_events(score);
     REQUIRE(note_events.has_value());

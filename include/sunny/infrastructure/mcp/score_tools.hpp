@@ -9,11 +9,11 @@
  * identifiers, so that tool calls can create and manipulate
  * scores across a session.
  *
- * Tools registered (29, all prefixed score_):
+ * Tools registered (33, all prefixed score_):
  *
  * Composition:
  * - score_create, score_set_tuning, score_set_formal_plan, score_add_part,
- *   score_set_section_harmony
+ *   score_set_section_harmony, score_remove_part, score_reorder_parts
  *
  * Arrangement:
  * - score_write_melody, score_write_harmony, score_reorchestrate,

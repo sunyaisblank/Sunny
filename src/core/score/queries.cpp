@@ -6,7 +6,9 @@
 
 #include <algorithm>
 #include <limits>
+#include <map>
 #include <set>
+#include <sunny/core/score/projection.hpp>
 #include <sunny/core/score/queries.hpp>
 #include <sunny/core/score/time.hpp>
 
@@ -82,15 +84,14 @@ std::vector<LocatedEvent> query_notes_in_range(const Score& score, const ScoreRe
 // =============================================================================
 
 std::optional<HarmonicAnnotation> query_harmony_at(const Score& score, ScoreTime time) {
+    auto absolute = score_time_to_absolute_beat(time, score.time_map);
+    if (!absolute) return std::nullopt;
     const HarmonicAnnotation* best = nullptr;
-    for (const auto& ha : score.harmonic_annotations) {
-        if (ha.position <= time) {
-            // Check if time falls within this annotation's duration
-            // (approximate: compare position only since we'd need absolute beat math)
-            best = &ha;
-        } else {
-            break;
-        }
+    for (const auto& annotation : score.harmonic_annotations) {
+        auto start = score_time_to_absolute_beat(annotation.position, score.time_map);
+        if (!start) continue;
+        auto end = checked_add(*start, annotation.duration);
+        if (end && *start <= *absolute && *absolute < *end) best = &annotation;
     }
     if (best) return *best;
     return std::nullopt;
@@ -170,29 +171,14 @@ std::optional<DynamicLevel> query_dynamics_at(const Score& score, PartId part_id
 
 std::vector<PartId> query_parts_playing_at(const Score& score, ScoreTime time) {
     std::vector<PartId> result;
-
-    for (const auto& part : score.parts) {
-        if (time.bar < 1 || time.bar > part.measures.size()) continue;
-        const auto& measure = part.measures[time.bar - 1];
-
-        bool playing = false;
-        for (const auto& voice : measure.voices) {
-            for (const auto& event : voice.events) {
-                if (!event.is_note_group()) continue;
-                Beat event_end = event.offset + event.duration();
-                if (event.offset <= time.beat && time.beat < event_end) {
-                    playing = true;
-                    break;
-                }
-            }
-            if (playing) break;
-        }
-
-        if (playing) {
-            result.push_back(part.id);
-        }
+    auto absolute = score_time_to_absolute_beat(time, score.time_map);
+    auto notes = project_symbolic_notes(score);
+    if (!absolute || !notes) return result;
+    for (const auto& note : *notes) {
+        if (note.start <= *absolute && *absolute < note.end &&
+            std::find(result.begin(), result.end(), note.part_id) == result.end())
+            result.push_back(note.part_id);
     }
-
     return result;
 }
 
@@ -367,16 +353,15 @@ std::vector<Diagnostic> query_diagnostics(const Score& score) {
 std::vector<HarmonicAnnotation>
 query_harmony_range(const Score& score, ScoreTime start, ScoreTime end) {
     std::vector<HarmonicAnnotation> result;
-    for (const auto& ha : score.harmonic_annotations) {
-        // Compute annotation end as position + duration (approximate bar-level)
-        ScoreTime ha_end = ha.position;
-        // Simple approximation: treat duration as beat offset within the bar
-        ha_end.beat = ha_end.beat + ha.duration;
-
-        // Overlaps if annotation starts before end AND annotation ends after start
-        if (ha.position < end && ha_end > start) {
-            result.push_back(ha);
-        }
+    auto range_start = score_time_to_absolute_beat(start, score.time_map);
+    auto range_end = score_time_to_absolute_beat(end, score.time_map);
+    if (!range_start || !range_end || *range_end <= *range_start) return result;
+    for (const auto& annotation : score.harmonic_annotations) {
+        auto annotation_start = score_time_to_absolute_beat(annotation.position, score.time_map);
+        if (!annotation_start) continue;
+        auto annotation_end = checked_add(*annotation_start, annotation.duration);
+        if (annotation_end && *annotation_start < *range_end && *annotation_end > *range_start)
+            result.push_back(annotation);
     }
     return result;
 }
@@ -388,41 +373,26 @@ query_harmony_range(const Score& score, ScoreTime start, ScoreTime end) {
 std::vector<MelodyNote>
 query_melody_for(const Score& score, PartId part_id, const ScoreRegion& region) {
     std::vector<MelodyNote> result;
-
-    for (const auto& part : score.parts) {
-        if (part.id != part_id) continue;
-
-        for (const auto& measure : part.measures) {
-            if (!bar_in_region(measure.bar_number, region)) continue;
-
-            // Use voice 0 as the melody voice
-            if (measure.voices.empty()) continue;
-            const auto& voice = measure.voices[0];
-
-            for (const auto& event : voice.events) {
-                const auto* ng = event.as_note_group();
-                if (!ng || ng->notes.empty()) continue;
-
-                ScoreTime etime{measure.bar_number, event.offset};
-                if (!time_in_region(etime, region)) continue;
-
-                // Take the highest pitch as the melody note
-                const Note* highest = &ng->notes[0];
-                int highest_midi = midi_value(highest->pitch);
-                for (std::size_t i = 1; i < ng->notes.size(); ++i) {
-                    int mv = midi_value(ng->notes[i].pitch);
-                    if (mv > highest_midi) {
-                        highest = &ng->notes[i];
-                        highest_midi = mv;
-                    }
-                }
-
-                result.push_back({highest->pitch, ng->duration, etime});
-            }
-        }
-        break;
+    auto spans = project_symbolic_notes(score);
+    if (!spans) return result;
+    auto notes = fold_symbolic_ties(*spans);
+    if (!notes) return result;
+    std::map<EventId, const SymbolicNoteSpan*> highest_attacks;
+    for (const auto& note : *notes) {
+        if (note.part_id != part_id || note.voice_index != 0 ||
+            !time_in_region(note.source_position, region))
+            continue;
+        auto [it, inserted] = highest_attacks.try_emplace(note.event_id, &note);
+        if (!inserted && midi_value(note.pitch) > midi_value(it->second->pitch)) it->second = &note;
     }
-
+    for (const auto& [event_id, note] : highest_attacks) {
+        (void)event_id;
+        auto duration = checked_sub(note->end, note->start);
+        if (duration) result.push_back({note->pitch, *duration, note->source_position});
+    }
+    std::sort(result.begin(), result.end(), [](const MelodyNote& a, const MelodyNote& b) {
+        return a.position < b.position;
+    });
     return result;
 }
 

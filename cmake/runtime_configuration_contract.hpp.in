@@ -1,0 +1,12 @@
+/** Generated from the standalone native configuration authority. */
+#pragma once
+#include <cstddef>
+#include <cstdint>
+
+namespace sunny::infrastructure {
+inline constexpr std::uint32_t SUNNY_CONFIGURATION_SCHEMA_VERSION = @CONFIGURATION_SCHEMA_VERSION@;
+inline constexpr char SUNNY_CONFIGURATION_CONTRACT[] = "versioned_json";
+inline constexpr std::size_t SUNNY_CONFIGURATION_MAX_BYTES = @MAX_CONFIGURATION_BYTES@;
+inline constexpr int SUNNY_CONFIGURATION_MAX_DEPTH = @MAX_CONFIGURATION_DEPTH@;
+inline constexpr std::size_t SUNNY_CONFIGURATION_MAX_PATH_BYTES = @MAX_CONFIGURATION_PATH_BYTES@;
+} // namespace sunny::infrastructure

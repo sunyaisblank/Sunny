@@ -61,9 +61,12 @@ file(COPY "${_staged}/" DESTINATION "${_work}/Sunny")
 set(_candidate "${_work}/candidate.zip")
 execute_process(
     COMMAND
+        # Explicit --mtime fixes only modification time. SOURCE_DATE_EPOCH
+        # fixes access/creation/birth times too, including ZIP extra fields.
+        "${CMAKE_COMMAND}" -E env SOURCE_DATE_EPOCH=315532800 TZ=UTC
         "${CMAKE_COMMAND}" -E chdir "${_work}"
         "${CMAKE_COMMAND}" -E tar cf "${_candidate}" --format=zip
-        "--mtime=1980-01-01 00:00:00" Sunny
+        Sunny
     RESULT_VARIABLE _archive_result
     ERROR_VARIABLE _archive_error
 )

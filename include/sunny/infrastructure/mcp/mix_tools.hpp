@@ -17,6 +17,8 @@
  * Processing:
  * - add_channel_effect, add_bus_effect, add_aux_effect, add_master_effect
  * - map_mix_effect_parameter
+ * - inspect_mix_effect, replace_mix_effect, remove_mix_effect, reorder_mix_effects
+ * - remove_mix_automation, remove_mix_parameter_mapping
  * - set_channel_level, set_channel_relative_level, resolve_mix_fader_levels
  * - set_channel_pan, set_channel_depth
  * - set_loudness_target

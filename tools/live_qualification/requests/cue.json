@@ -1,0 +1,10 @@
+{
+  "bridge_protocol_version": 47,
+  "type": "call",
+  "path": "song",
+  "name": "sunny_set_cue",
+  "args": [
+    8.0,
+    "SUNNY_HOST_PROBE_CUE"
+  ]
+}

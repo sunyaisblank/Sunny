@@ -1105,7 +1105,7 @@ caller-supplied.
 | X4 | Warning | Channel has no insert processing (intentional?) |
 | X5 | Warning | Channel fader is at −∞ (silence) but not muted |
 | X6 | Error | Sidechain source references a non-existent channel or bus |
-| X7 | Error | Any effect variant violates its documented finite numeric/cardinality domain |
+| X7 | Error | Any effect variant violates its documented finite numeric/cardinality domain, or Channel input trim is non-finite/outside [-24,+24] dB |
 | X8 | Error | An effect target mapping has an unresolved path, invalid domain/curve, empty target, or same-effect target alias |
 | X9 | Error | Relative faders contain a missing reference, dependency cycle, non-finite value, invalid loudness target, or derived value above +12 dB |
 | X10 | Error | Channel/group assignments or child/parent group routing do not exactly mirror the corresponding member list, including dangling or duplicate members |
@@ -1127,6 +1127,14 @@ remain mapping facts:
 | Saturation | drive/mix `[0,1]`; output `[-120,120]` dB; Tape bias `[-1,1]`; Tube requires a non-empty model identifier |
 | Stereo | width `[0,4]`; mid/side balance `[0,1]`; optional mono-below `[20,20000]` Hz |
 | Delay/Reverb | exact envelopes in §3.7 |
+
+All effect and nested processing enums must identify defined values. Effect additions on Channel,
+Group, Aux and Master owners validate the candidate graph before publication and return an error
+without changing the graph on invalid parameters, identities or references. Replacement changes
+an effect's source parameters and enablement while retaining its stable identity and target
+mappings. Incompatible retained automation/mapping paths reject the replacement. Removal refuses
+automation or processing-rationale references to the removed effect. Exact reordering and removal
+relocate position-addressed automation to preserve the identities of retained effects.
 
 ### 11.2 Audio Quality Validation [E]
 
@@ -1179,7 +1187,13 @@ remain mapping facts:
 | `add_aux_effect` | Add processing to an aux bus |
 | `add_master_effect` | Add processing to the master bus chain |
 | `map_mix_effect_parameter` | Declare and preflight an effect-relative source-to-DeviceParameter mapping |
+| `inspect_mix_effect` | Read one effect's numeric parameters and non-scalar path inventory by stable ID |
+| `replace_mix_effect` | Replace source configuration/enablement using a complete construction configuration; retain identity, mappings and compatible automation |
+| `remove_mix_effect` | Remove an unreferenced effect and relocate later effect lanes atomically |
+| `reorder_mix_effects` | Apply an exact effect-ID permutation to a canonical owner chain; lanes follow effect identities |
+| `remove_mix_parameter_mapping` | Remove one mapping by effect identity and source path |
 | `set_channel_level` | Set an absolute fader value and clear prior relative intent |
+| `set_channel_flags` | Set selected authored mute/solo booleans atomically; preserve other flags and Channels |
 | `set_channel_relative_level` | Set and transactionally preflight a channel relation |
 | `resolve_mix_fader_levels` | Return the complete static solution and measured residuals without contacting Ableton |
 | `set_channel_pan` | Set spatial position |
@@ -1191,6 +1205,7 @@ remain mapping facts:
 | Tool | Description |
 |------|-------------|
 | `add_mix_automation` | Add parameter automation |
+| `remove_mix_automation` | Remove one lane by its zero-based position in `get_mix_json` |
 
 **Analysis and reference tools**:
 
@@ -1309,16 +1324,17 @@ The MCP server exposes tools from all four layers in a unified namespace. An age
 
 The deployed MCP server exposes the following registration groups:
 
-| Registration group | Tool count | Examples |
-|--------------------|-----------:|----------|
-| Core and Ableton | 11 | `analyze_harmony`, `create_progression_clip`, `get_ableton_session_state`, `get_ableton_remote_log` |
-| Score IR | 31 | `score_create`, `score_insert_chord_symbol`, `score_compile_to_musicxml` |
-| Timbre IR | 22 | `set_sound_source`, `map_timbre_parameter`, `validate_timbre` |
-| Mix IR | 27 | `set_channel_relative_level`, `resolve_mix_fader_levels`, `validate_mix` |
-| Corpus IR | 22 | `ingest_midi`, `remove_ingested_work`, `query_style_profile` |
-| Project | 4 | `project_validate`, `project_plan_to_ableton`, `project_apply_ableton_plan`, `project_compile_to_ableton` |
+| Registration group | Examples |
+|--------------------|----------|
+| Core and Ableton | `analyze_harmony`, `create_progression_clip`, `get_ableton_session_state`, `get_ableton_remote_log` |
+| Score IR | `score_create`, `score_remove_part`, `score_reorder_parts`, `score_compile_to_musicxml` |
+| Timbre IR | `set_sound_source`, `map_timbre_parameter`, `validate_timbre` |
+| Mix IR | `set_channel_input_trim`, `set_channel_relative_level`, `resolve_mix_fader_levels`, `validate_mix` |
+| Corpus IR | `ingest_midi`, `get_work_analysis`, `query_style_profile` |
+| Project and workspace | `create_project`, `bind_project`, `get_project_json`, `project_plan_to_ableton`, `project_apply_ableton_plan` |
+| Managed native realization | `project_realization_create`, `project_realization_update_geometry`, `project_realization_apply_song_settings`, `project_realization_author_effects`, `project_realization_replace_mix_lane`, `project_realization_reconcile` |
 
-Total: 117 tools. `tools/list` is the runtime authority.
+`tools/list` is the runtime authority for the complete tool inventory.
 
 ---
 
